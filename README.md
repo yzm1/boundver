@@ -26,6 +26,11 @@ Each component gets three fingerprints:
 
 Components are grouped into **slices** — named subsets with their own stable fingerprints. Adding an unrelated component changes the full-project hash but leaves existing slice fingerprints untouched.
 
+Each component also reports `boundary_status` in lock output:
+- `ok`: boundary paths were declared and hashed successfully
+- `partial`: boundary kind is `implicit` and no boundary paths are declared (API fingerprint is `null`)
+- `error`: explicit boundary kind has no paths, or declared paths produced no API digest
+
 ## Quick start
 
 ```bash
