@@ -705,6 +705,7 @@ def main():
     st = sub.add_parser("status", help="Show lockfile summary and warnings")
     st.add_argument("--config", default="boundary.config.json")
     st.add_argument("--lock", default="boundary.lock.json")
+    st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
 
     args = parser.parse_args()
 
