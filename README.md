@@ -144,6 +144,17 @@ python boundary_lock.py slice auth-api
 | `leaf` | No downstream consumers — boundary is the component itself |
 | `implicit` | No explicit boundary artifact yet (API fingerprint will be `null`) |
 
+
+## Near-term implementation focus
+
+boundver remains a public, language-agnostic tool. Near-term work is focused on:
+
+- strict config validation and no silent fingerprint fallback
+- explicit source mode behavior (`head`, `index`, `working-tree`)
+- portability for external users (no implicit dependency on internal/proprietary boundary artifacts)
+
+Short term deliverables: `validate-config`, strict digest selection, explicit source modes, and public examples that avoid proprietary dependencies.
+
 ## CI integration
 
 ### GitHub Actions — PR verification
