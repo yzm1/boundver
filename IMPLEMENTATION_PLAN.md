@@ -41,19 +41,19 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 
 ## Phase 2: Near-term correctness & portability (high priority)
 
-- [ ] Add `boundver validate-config` command with strict failures for:
+- [x] Add `boundver validate-config` command with strict failures for:
   - unknown slice components
   - unknown slice modes
   - unsupported `defaults.compat_mode`
   - empty `paths` where a provider requires source artifacts
   - configured boundary path missing on disk
   - API slices containing components/boundaries with no API fingerprint
-- [ ] Remove silent fallback from `api`/`compat` slice selection to `exact`.
-- [ ] Add explicit fingerprint source selection and document defaults:
+- [x] Remove silent fallback from `api`/`compat` slice selection to `exact`.
+- [x] Add explicit fingerprint source selection and document defaults:
   - `--source=head`
   - `--source=index`
   - `--source=working-tree`
-- [ ] Ensure `compat_mode` behavior matches config and docs.
+- [x] Ensure `compat_mode` behavior matches config and docs.
 - [ ] Add a clear error/warning model (`error`, `partial`, `ok`) for boundary extraction status.
 
 ### Public portability requirement (non-proprietary baseline)
@@ -86,7 +86,7 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 - [ ] Add `--exit-code` option for `verify` (already exits 1 on mismatch — document it)
 - [ ] Color output in TTY mode (red for breaking, yellow for API changes, green for unchanged)
 - [ ] Add shell completions (bash, zsh, fish)
-- [ ] Add `boundver check-config` alias to `validate-config` for discoverability
+- [x] Add `boundver check-config` alias to `validate-config` for discoverability
 
 ## Phase 5: Config schema & validation
 
@@ -139,8 +139,15 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 
 ## Next increment (concrete execution order)
 
-1. Implement `validate-config` and strict error cases listed in Phase 2.
-2. Remove `api`/`compat` silent fallback and enforce explicit digest selection.
-3. Add and document `--source=head|index|working-tree`, then align behavior/tests.
-4. Add packaging skeleton (`pyproject.toml`, console entrypoint) so external users can install/run it.
-5. Add tests for the new strict behavior and portability constraints.
+Completed in current implementation:
+
+1. ✅ Implemented `validate-config`/`check-config` and strict error cases in Phase 2.
+2. ✅ Removed `api`/`compat` silent fallback and enforced explicit digest selection (with `--allow-partial` escape hatch).
+3. ✅ Added and documented `--source=head|index|working-tree` and wired it into generate/verify hashing.
+4. ✅ Added `compat_mode` handling (`major`/`semver_major`/`semver_major_minor`) in compatibility digest computation.
+
+Next work to execute:
+
+1. Add packaging skeleton (`pyproject.toml`, console entrypoint) so external users can install/run it.
+2. Add tests for strict behavior, source modes, and portability constraints.
+3. Add docs/examples that demonstrate only non-proprietary/public provider baselines by default.
