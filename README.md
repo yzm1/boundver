@@ -153,7 +153,7 @@ boundver remains a public, language-agnostic tool. Near-term work is focused on:
 - explicit source mode behavior (`head`, `index`, `working-tree`)
 - portability for external users (no implicit dependency on internal/proprietary boundary artifacts)
 
-See `IMPLEMENTATION_PLAN.md` for the adjusted roadmap and public-portability requirements.
+Short term deliverables: `validate-config`, strict digest selection, explicit source modes, and public examples that avoid proprietary dependencies.
 
 ## CI integration
 

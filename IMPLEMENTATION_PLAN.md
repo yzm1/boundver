@@ -1,8 +1,8 @@
 # Implementation Plan: boundver as a Public Tool
 
-This plan keeps the **public-tool packaging path** intact while tightening the **near-term implementation priorities**.
+This plan is for shipping boundver as a public tool.
 
-The immediate goal is to improve correctness and portability so external users can run the tool without internal/proprietary assumptions.
+Immediate execution focus: fix correctness gaps (validation/fallback/source selection) and ensure default usage works without internal or proprietary artifacts.
 
 ---
 
@@ -137,10 +137,10 @@ The immediate goal is to improve correctness and portability so external users c
 
 ---
 
-## Priority order for the next increment
+## Next increment (concrete execution order)
 
-1. **Phase 2 correctness/portability items** (strict validation + no silent fallback + source-mode clarity)
-2. **Phase 1 packaging skeleton** (pyproject + console entrypoint)
-3. **Phase 3 tests** for new strict behavior
-4. **Phase 6 docs updates** to remove proprietary assumptions from defaults/examples
-5. Continue with later phases toward public release
+1. Implement `validate-config` and strict error cases listed in Phase 2.
+2. Remove `api`/`compat` silent fallback and enforce explicit digest selection.
+3. Add and document `--source=head|index|working-tree`, then align behavior/tests.
+4. Add packaging skeleton (`pyproject.toml`, console entrypoint) so external users can install/run it.
+5. Add tests for the new strict behavior and portability constraints.
