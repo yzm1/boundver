@@ -335,8 +335,23 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         boundary = comp.get("boundary", {})
         boundary_paths = boundary.get("paths", [])
         api_digest = None
+        boundary_status = "ok"
+        boundary_errors: List[str] = []
+        boundary_kind = boundary.get("kind", "unknown")
         if boundary_paths:
             api_digest = git_hash_files(repo_root, comp_path, boundary_paths, source=source)
+            if api_digest is None:
+                boundary_status = "error"
+                boundary_errors.append("Declared boundary paths produced no digest")
+        else:
+            if boundary_kind == "implicit":
+                boundary_status = "partial"
+                boundary_errors.append("No boundary paths declared for implicit boundary")
+            elif boundary_kind == "leaf":
+                boundary_status = "ok"
+            else:
+                boundary_status = "error"
+                boundary_errors.append("No boundary paths declared for explicit boundary kind")
 
         # Compatibility fingerprint: derived from semver major (or major.minor)
         compat_digest = None
@@ -352,7 +367,8 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         entry = {
             "version": version,
             "path": comp_path,
-            "boundary_kind": boundary.get("kind", "unknown"),
+            "boundary_kind": boundary_kind,
+            "boundary_status": boundary_status,
             "fingerprints": {
                 "exact": exact_digest,
                 "api": api_digest,
@@ -364,6 +380,8 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
                 "exact_version": exact_ver,
             },
         }
+        if boundary_errors:
+            entry["boundary_errors"] = boundary_errors
 
         # Flag vendored copies
         if "vendored_copies" in comp:
@@ -633,18 +651,26 @@ def print_status(lockfile: dict) -> None:
 
     # Boundary coverage
     boundary_kinds: Dict[str, int] = {}
+    boundary_states: Dict[str, int] = {}
     for c in comps.values():
         kind = c.get("boundary_kind", "unknown")
         boundary_kinds[kind] = boundary_kinds.get(kind, 0) + 1
+        state = c.get("boundary_status", "unknown")
+        boundary_states[state] = boundary_states.get(state, 0) + 1
     print("\n  Boundary coverage:")
     for kind, count in sorted(boundary_kinds.items()):
         print(f"    {kind}: {count}")
+    print("\n  Boundary extraction status:")
+    for state, count in sorted(boundary_states.items()):
+        print(f"    {state}: {count}")
 
     # Warnings
     warnings = []
     for name, c in comps.items():
         for w in c.get("warnings", []):
             warnings.append(f"    {name}: {w}")
+        for e in c.get("boundary_errors", []):
+            warnings.append(f"    {name}: boundary {c.get('boundary_status', 'unknown')} - {e}")
     if warnings:
         print(f"\n  WARNINGS ({len(warnings)}):")
         for w in warnings:

@@ -33,6 +33,72 @@ class BoundaryLockTests(unittest.TestCase):
         errs = boundary_lock.validate_config(cfg, Path.cwd())
         self.assertTrue(any("api mode cannot include" in e for e in errs))
 
+    def test_generate_lockfile_marks_partial_when_no_boundary_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            comp_dir = root / "svc"
+            comp_dir.mkdir(parents=True)
+            (comp_dir / "x.txt").write_text("hello")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"kind": "implicit", "paths": []},
+                    }
+                },
+                "slices": {},
+            }
+            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            entry = lock["components"]["svc"]
+            self.assertEqual(entry["boundary_status"], "partial")
+            self.assertIn("No boundary paths declared for implicit boundary", entry.get("boundary_errors", []))
+
+    def test_generate_lockfile_marks_ok_when_boundary_hashes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            comp_dir = root / "svc"
+            comp_dir.mkdir(parents=True)
+            (comp_dir / "api.yaml").write_text("openapi: 3.0.0")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"kind": "openapi", "paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            entry = lock["components"]["svc"]
+            self.assertEqual(entry["boundary_status"], "ok")
+            self.assertIsNotNone(entry["fingerprints"]["api"])
+
+    def test_generate_lockfile_marks_error_for_explicit_kind_without_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            comp_dir = root / "svc"
+            comp_dir.mkdir(parents=True)
+            (comp_dir / "main.py").write_text("print('x')")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"kind": "openapi", "paths": []},
+                    }
+                },
+                "slices": {},
+            }
+            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            entry = lock["components"]["svc"]
+            self.assertEqual(entry["boundary_status"], "error")
+            self.assertIn(
+                "No boundary paths declared for explicit boundary kind",
+                entry.get("boundary_errors", []),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

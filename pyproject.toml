@@ -12,6 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "boundver contributors" }]
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest>=7,<9"]
+
 [project.scripts]
 boundver = "boundver.cli:main"
 

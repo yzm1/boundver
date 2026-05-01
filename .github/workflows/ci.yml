@@ -1,0 +1,13 @@
+name: CI (disabled until v1.0)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  disabled_notice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: CI disabled notice
+        run: |
+          echo "CI is intentionally disabled until v1.0 to control costs during rapid multi-agent development."
+          echo "Re-enable push/pull_request matrix testing once the project reaches v1.0."
