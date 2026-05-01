@@ -20,7 +20,6 @@ boundver = "boundver.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["boundary_lock"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
