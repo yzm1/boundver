@@ -145,23 +145,15 @@ python boundary_lock.py slice auth-api
 | `implicit` | No explicit boundary artifact yet (API fingerprint will be `null`) |
 
 
-## Current maturity and CI guidance
+## Near-term implementation focus
 
-boundver is currently a strong **prototype** with the right architecture, but should be treated as a boundary lockfile engine (v0) until strict validation and no-fallback digest selection are completed.
+boundver remains a public, language-agnostic tool. Near-term work is focused on:
 
-Recommended trust model today:
+- strict config validation and no silent fingerprint fallback
+- explicit source mode behavior (`head`, `index`, `working-tree`)
+- portability for external users (no implicit dependency on internal/proprietary boundary artifacts)
 
-- ✅ Safe for component inventory, exact tree-change tracking, rough boundary-file change tracking, slice tracking, and vendored-copy drift surfacing.
-- ⚠️ Not yet ideal as final CI authority for semantic API compatibility guarantees without strict validation and semantic boundary providers.
-
-Planned maturity path:
-
-- **v0**: raw path-based boundary fingerprints
-- **v1**: strict validation + no silent fallback
-- **v2**: semantic/canonical boundary providers
-- **v3**: behavioral fingerprints for pipelines/config/evals
-
-See `IMPLEMENTATION_PLAN.md` for the prioritized roadmap.
+See `IMPLEMENTATION_PLAN.md` for the adjusted roadmap and public-portability requirements.
 
 ## CI integration
 
