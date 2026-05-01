@@ -2,7 +2,7 @@
 
 **Semantic version fingerprints for multi-component repositories.**
 
-boundver answers three questions per component — *did the implementation change?*, *did the public API change?*, *is it still compatible?* — using content-addressed fingerprints derived from Git and declared boundary files. No external dependencies. No build system required.
+boundver answers three questions per component — *did the implementation change?*, *did the declared boundary change?*, *is it still compatible?* — using content-addressed fingerprints derived from Git state and declared boundary files. No external dependencies. No build system required.
 
 ## Why
 
@@ -20,11 +20,13 @@ Each component gets three fingerprints:
 
 | Fingerprint | Question it answers | What it hashes |
 |---|---|---|
-| `exact` | Did anything change? | Git tree hash of the entire component directory |
-| `api` | Did the public boundary change? | Hash of only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
+| `exact` | Did anything change? | Canonical SHA-256 digest of component file paths + file bytes |
+| `api` | Did the declared boundary files change? | Hash of only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
 | `compat` | Is it still compatible? | Derived from SemVer major version |
 
 Components are grouped into **slices** — named subsets with their own stable fingerprints. Adding an unrelated component changes the full-project hash but leaves existing slice fingerprints untouched.
+
+> **Important:** `api` is currently a **declared-boundary file fingerprint**, not a semantic API diff. Formatting, ordering, or comment-only edits in boundary artifacts can change it.
 
 Each component also reports `boundary_status` in lock output:
 - `ok`: boundary paths were declared and hashed successfully
@@ -34,9 +36,8 @@ Each component also reports `boundary_status` in lock output:
 ## Quick start
 
 ```bash
-# Install (single file, no dependencies)
-curl -O https://raw.githubusercontent.com/yzm1/boundver/main/boundary_lock.py
-chmod +x boundary_lock.py
+# Install
+pip install boundver
 
 # Create a config (see Config Reference below)
 cat > boundary.config.json << 'EOF'
@@ -47,7 +48,7 @@ cat > boundary.config.json << 'EOF'
       "path": "services/auth",
       "version_source": { "file": "package.json", "field": "version" },
       "boundary": {
-        "kind": "openapi",
+        "provider": "openapi",
         "paths": ["openapi.yaml"]
       }
     }
@@ -63,19 +64,19 @@ cat > boundary.config.json << 'EOF'
 EOF
 
 # Generate the lockfile
-python boundary_lock.py generate
+boundver generate
 
 # Check current status
-python boundary_lock.py status
+boundver status
 
 # Verify lockfile matches repo state
-python boundary_lock.py verify
+boundver verify
 
 # Diff two lockfiles
-python boundary_lock.py diff old.lock.json boundary.lock.json
+boundver diff old.lock.json boundary.lock.json
 
 # Inspect a specific slice
-python boundary_lock.py slice auth-api
+boundver slice auth-api
 ```
 
 ## Behavior matrix
@@ -92,6 +93,8 @@ python boundary_lock.py slice auth-api
 
 ### `boundary.config.json`
 
+Schema file: `boundary.config.schema.json` (Draft 2020-12).
+
 ```json
 {
   "project": "my-project",
@@ -107,7 +110,7 @@ python boundary_lock.py slice auth-api
         "field": "version"
       },
       "boundary": {
-        "kind": "openapi | python-exports | typescript-exports | leaf | implicit",
+        "provider": "openapi | python-exports | typescript-exports | leaf | implicit",
         "paths": ["openapi.yaml"],
         "note": "optional explanation"
       },
@@ -137,7 +140,7 @@ python boundary_lock.py slice auth-api
 "version_source": null
 ```
 
-### Boundary kinds
+### Boundary providers
 
 | Kind | Meaning |
 |---|---|
@@ -147,7 +150,7 @@ python boundary_lock.py slice auth-api
 | `service-definition` | A service definition file (JSON/YAML) defines the contract |
 | `sam-routes` | AWS SAM template route definitions |
 | `leaf` | No downstream consumers — boundary is the component itself |
-| `implicit` | No explicit boundary artifact yet (API fingerprint will be `null`) |
+| `implicit` | No explicit boundary artifact yet (`api` fingerprint will be `null`) |
 
 
 ## Near-term implementation focus
@@ -177,12 +180,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python boundary_lock.py verify
+      - run: boundver verify
       - name: Show diff on failure
         if: failure()
         run: |
-          python boundary_lock.py generate --out boundary.lock.new.json
-          python boundary_lock.py diff boundary.lock.json boundary.lock.new.json
+          boundver generate --out boundary.lock.new.json
+          boundver diff boundary.lock.json boundary.lock.new.json
 ```
 
 ### Conditional builds using slice fingerprints
@@ -205,7 +208,7 @@ fi
 
 - **No external dependencies.** Only Git and Python stdlib. Runs anywhere Python 3.8+ and Git are available.
 - **Deterministic output.** Canonical JSON (sorted keys, compact separators) ensures two machines produce identical hashes from identical repo state.
-- **Git-native exact hashing.** Uses `git rev-parse HEAD:<path>` — fast, built-in, changes exactly when files change.
+- **Canonical exact hashing across source modes.** `exact` uses one canonical SHA-256 file-content digest model for `head`, `index`, and `working-tree`, enabling direct cross-source comparison.
 - **Config/lockfile split.** Config is human-maintained (what exists). Lockfile is machine-generated (current state). Mirrors `package.json` / `package-lock.json`.
 - **Language-agnostic boundaries.** Instead of parsing ASTs, you declare which files constitute the public boundary. Works with any language or artifact format.
 

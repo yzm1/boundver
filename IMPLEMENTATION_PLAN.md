@@ -8,7 +8,7 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 
 ## Phase 1: Package structure & installability
 
-- [ ] Restructure into a proper Python package:
+- [x] Restructure into a proper Python package:
   ```
   boundver/
   ├── pyproject.toml
@@ -31,12 +31,12 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
       └── fixtures/
           └── (sample repos as git bundles or temp dirs)
   ```
-- [ ] Create `pyproject.toml` with:
+- [x] Create `pyproject.toml` with:
   - `[project.scripts]` entry: `boundver = "boundver.cli:main"`
   - Minimum Python 3.8
   - Zero runtime dependencies
   - Dev dependencies: pytest, ruff, mypy
-- [ ] Add `LICENSE` file (MIT)
+- [x] Add `LICENSE` file (MIT)
 - [ ] Support `pipx install boundver` and `pip install boundver`
 
 ## Phase 2: Near-term correctness & portability (high priority)
@@ -54,7 +54,7 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
   - `--source=index`
   - `--source=working-tree`
 - [x] Ensure `compat_mode` behavior matches config and docs.
-- [ ] Add a clear error/warning model (`error`, `partial`, `ok`) for boundary extraction status.
+- [x] Add a clear error/warning model (`error`, `partial`, `ok`) for boundary extraction status.
 
 ### Public portability requirement (non-proprietary baseline)
 
@@ -111,8 +111,8 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
   - CI integration cookbook (GitHub Actions, GitLab CI, Jenkins)
   - Conceptual guide: "What are boundary fingerprints?"
   - Migration guide for teams currently using manual versioning
-- [ ] Add `CONTRIBUTING.md`
-- [ ] Add `CHANGELOG.md` (keep-a-changelog format)
+- [x] Add `CONTRIBUTING.md`
+- [x] Add `CHANGELOG.md` (keep-a-changelog format)
 - [ ] Add a dedicated "public vs proprietary providers" doc with examples.
 
 ## Phase 7: Publishing & distribution
@@ -148,6 +148,6 @@ Completed in current implementation:
 
 Next work to execute:
 
-1. Add packaging skeleton (`pyproject.toml`, console entrypoint) so external users can install/run it.
-2. Add tests for strict behavior, source modes, and portability constraints.
-3. Add docs/examples that demonstrate only non-proprietary/public provider baselines by default.
+1. Add packaging smoke checks in CI to validate install/run from built artifacts.
+2. Expand tests for remaining portability constraints and edge cases.
+3. Continue docs/examples cleanup toward non-proprietary/public provider baselines by default.

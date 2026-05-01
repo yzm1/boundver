@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/boundver/boundary.config.schema.json",
+  "title": "boundver config",
+  "type": "object",
+  "required": ["project", "components", "slices"],
+  "properties": {
+    "project": { "type": "string", "minLength": 1 },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "compat_mode": {
+          "type": "string",
+          "enum": ["major", "semver_major", "semver_major_minor"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "boundary"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "ecosystem": { "type": "string" },
+          "version_source": {
+            "oneOf": [
+              {"type": "null"},
+              {"type": "object"}
+            ]
+          },
+          "boundary": {
+            "type": "object",
+            "required": ["provider"],
+            "properties": {
+              "provider": { "type": "string", "minLength": 1 },
+              "paths": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "note": { "type": "string" }
+            },
+            "additionalProperties": true
+          },
+          "vendored_copies": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "slices": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["components"],
+        "properties": {
+          "description": { "type": "string" },
+          "mode": { "type": "string", "enum": ["exact", "api", "compat"] },
+          "components": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

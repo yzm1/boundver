@@ -11,12 +11,12 @@ Slices group components and produce their own stable fingerprints.
 Adding an unrelated component does NOT change existing slice fingerprints.
 
 Usage:
-    python boundary_lock.py generate [--config boundary.config.json] [--out boundary.lock.json]
-    python boundary_lock.py verify  [--config boundary.config.json] [--lock boundary.lock.json]
-    python boundary_lock.py diff    <old.lock.json> <new.lock.json>
-    python boundary_lock.py slice   <slice_name> [--config boundary.config.json] [--lock boundary.lock.json]
-    python boundary_lock.py validate-config [--config boundary.config.json]
-    python boundary_lock.py status  [--config boundary.config.json] [--lock boundary.lock.json]
+    boundver generate [--config boundary.config.json] [--out boundary.lock.json]
+    boundver verify  [--config boundary.config.json] [--lock boundary.lock.json]
+    boundver diff    <old.lock.json> <new.lock.json>
+    boundver slice   <slice_name> [--config boundary.config.json] [--lock boundary.lock.json]
+    boundver validate-config [--config boundary.config.json]
+    boundver status  [--config boundary.config.json] [--lock boundary.lock.json]
 
 Requires: git (for tree hashes), Python 3.8+
 No external dependencies.
@@ -46,6 +46,11 @@ def sha256_hex(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def boundary_provider_name(boundary: dict) -> str:
+    """Return boundary provider name."""
+    return boundary.get("provider") or "unknown"
+
+
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
@@ -59,49 +64,59 @@ def git_root() -> Path:
     return Path(result.stdout.strip())
 
 
-def git_tree_hash(path: str, source: str = "head") -> Optional[str]:
-    """Get a digest for a path from HEAD, index, or working tree."""
-    if source == "head":
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", f"HEAD:{path}"],
-                capture_output=True, text=True, check=True,
-            )
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
-            return None
+def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+    """Run git against a specific repository root regardless of process CWD."""
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True, text=True, check=True,
+    )
 
-    try:
-        repo_root = git_root()
-    except subprocess.CalledProcessError:
-        return None
 
+def git_tree_hash(repo_root: Path, path: str, source: str = "head") -> Optional[str]:
+    """Get a canonical SHA-256 digest for a path from HEAD, index, or working tree."""
     target = repo_root / path
+    content_parts: List[str] = []
+
+    if source == "head":
+        files = _head_files_for_path(repo_root, path)
+        for rel in files:
+            content_parts.append(f"file:{rel}\n")
+            content_parts.append(_read_path_content(repo_root, repo_root / rel, source))
+        return sha256_hex("".join(content_parts)) if content_parts else None
+
     if not target.exists():
         return None
-
     if target.is_file():
-        files = [target]
+        files = [str(target.relative_to(repo_root))]
     else:
-        files = [f for f in sorted(target.rglob("*")) if f.is_file() and not _is_ignored(f)]
+        files = [
+            str(f.relative_to(repo_root))
+            for f in sorted(target.rglob("*"))
+            if f.is_file() and not _is_ignored(f)
+        ]
 
-    content_parts = []
-    for f in files:
-        rel = str(f.relative_to(repo_root))
+    for rel in files:
         content_parts.append(f"file:{rel}\n")
-        if source == "index":
-            try:
-                result = subprocess.run(
-                    ["git", "show", f":{rel}"],
-                    capture_output=True, text=True, check=True,
-                )
-                content_parts.append(result.stdout)
-            except subprocess.CalledProcessError:
-                content_parts.append(f.read_text(errors="replace"))
-        else:  # working-tree
-            content_parts.append(f.read_text(errors="replace"))
-
+        content_parts.append(_read_path_content(repo_root, repo_root / rel, source))
     return sha256_hex("".join(content_parts)) if content_parts else None
+
+
+def _head_files_for_path(repo_root: Path, path: str) -> List[str]:
+    """List files at a repo-relative path as represented in HEAD."""
+    try:
+        result = _git_run(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", path])
+    except subprocess.CalledProcessError:
+        return []
+
+    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if files:
+        return files
+
+    try:
+        result = _git_run(repo_root, ["cat-file", "-t", f"HEAD:{path}"])
+    except subprocess.CalledProcessError:
+        return []
+    return [path] if result.stdout.strip() == "blob" else []
 
 
 def git_hash_files(repo_root: Path, component_path: str, relative_paths: List[str], source: str = "working-tree") -> Optional[str]:
@@ -130,19 +145,13 @@ def _read_path_content(repo_root: Path, full_path: Path, source: str) -> str:
     rel = str(full_path.relative_to(repo_root))
     if source == "index":
         try:
-            result = subprocess.run(
-                ["git", "show", f":{rel}"],
-                capture_output=True, text=True, check=True,
-            )
+            result = _git_run(repo_root, ["show", f":{rel}"])
             return result.stdout
         except subprocess.CalledProcessError:
             return full_path.read_text(errors="replace")
     if source == "head":
         try:
-            result = subprocess.run(
-                ["git", "show", f"HEAD:{rel}"],
-                capture_output=True, text=True, check=True,
-            )
+            result = _git_run(repo_root, ["show", f"HEAD:{rel}"])
             return result.stdout
         except subprocess.CalledProcessError:
             return full_path.read_text(errors="replace")
@@ -329,7 +338,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         compat_mode = defaults.get("compat_mode", "major")
 
         # Exact fingerprint: git tree hash of the whole component directory
-        exact_digest = git_tree_hash(comp_path, source=source)
+        exact_digest = git_tree_hash(repo_root, comp_path, source=source)
 
         # API fingerprint: hash only the boundary paths (if any)
         boundary = comp.get("boundary", {})
@@ -337,17 +346,17 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         api_digest = None
         boundary_status = "ok"
         boundary_errors: List[str] = []
-        boundary_kind = boundary.get("kind", "unknown")
+        boundary_provider = boundary_provider_name(boundary)
         if boundary_paths:
             api_digest = git_hash_files(repo_root, comp_path, boundary_paths, source=source)
             if api_digest is None:
                 boundary_status = "error"
                 boundary_errors.append("Declared boundary paths produced no digest")
         else:
-            if boundary_kind == "implicit":
+            if boundary_provider == "implicit":
                 boundary_status = "partial"
                 boundary_errors.append("No boundary paths declared for implicit boundary")
-            elif boundary_kind == "leaf":
+            elif boundary_provider == "leaf":
                 boundary_status = "ok"
             else:
                 boundary_status = "error"
@@ -367,7 +376,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         entry = {
             "version": version,
             "path": comp_path,
-            "boundary_kind": boundary_kind,
+            "boundary_provider": boundary_provider,
             "boundary_status": boundary_status,
             "fingerprints": {
                 "exact": exact_digest,
@@ -388,7 +397,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
             entry["vendored_copies"] = comp["vendored_copies"]
             # Check if vendored copies are in sync
             for vc in comp["vendored_copies"]:
-                vc_hash = git_tree_hash(vc.rstrip("/"), source=source)
+                vc_hash = git_tree_hash(repo_root, vc.rstrip("/"), source=source)
                 entry.setdefault("vendored_digests", {})[vc] = vc_hash
                 if vc_hash != exact_digest:
                     entry.setdefault("warnings", []).append(
@@ -439,6 +448,13 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
 
 def validate_config(config: dict, repo_root: Path) -> List[str]:
     errors: List[str] = []
+    if not isinstance(config, dict):
+        return ["Config root must be a JSON object"]
+
+    for required_key in ("project", "components", "slices"):
+        if required_key not in config:
+            errors.append(f"Missing required top-level field: {required_key}")
+
     supported_modes = {"exact", "api", "compat"}
     compat_mode = config.get("defaults", {}).get("compat_mode", "major")
     if compat_mode not in {"major", "semver_major", "semver_major_minor"}:
@@ -446,10 +462,28 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
 
     components = config.get("components", {})
     slices = config.get("slices", {})
+    if not isinstance(components, dict):
+        errors.append("Field 'components' must be an object")
+        components = {}
+    if not isinstance(slices, dict):
+        errors.append("Field 'slices' must be an object")
+        slices = {}
 
     for name, comp in components.items():
+        if "path" not in comp:
+            errors.append(f"Component '{name}' missing required field: path")
+            continue
         boundary = comp.get("boundary", {})
-        kind = boundary.get("kind", "unknown")
+        if not isinstance(boundary, dict):
+            errors.append(f"Component '{name}' boundary must be an object")
+            continue
+        if "kind" in boundary:
+            errors.append(
+                f"Component '{name}' uses legacy boundary.kind; use boundary.provider instead"
+            )
+        if "provider" not in boundary:
+            errors.append(f"Component '{name}' missing required field: boundary.provider")
+        kind = boundary_provider_name(boundary)
         paths = boundary.get("paths", [])
         if kind == "service-definition" and not paths:
             errors.append(f"Component '{name}' has service-definition boundary with empty paths")
@@ -467,7 +501,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                 errors.append(f"Slice '{sname}' references unknown component: {cname}")
                 continue
             if mode == "api":
-                kind = components[cname].get("boundary", {}).get("kind")
+                kind = boundary_provider_name(components[cname].get("boundary", {}))
                 paths = components[cname].get("boundary", {}).get("paths", [])
                 if kind in {"leaf", "implicit"}:
                     errors.append(f"Slice '{sname}' in api mode cannot include '{cname}' ({kind})")
@@ -653,7 +687,7 @@ def print_status(lockfile: dict) -> None:
     boundary_kinds: Dict[str, int] = {}
     boundary_states: Dict[str, int] = {}
     for c in comps.values():
-        kind = c.get("boundary_kind", "unknown")
+        kind = c.get("boundary_provider", "unknown")
         boundary_kinds[kind] = boundary_kinds.get(kind, 0) + 1
         state = c.get("boundary_status", "unknown")
         boundary_states[state] = boundary_states.get(state, 0) + 1
