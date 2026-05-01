@@ -1,6 +1,8 @@
 # Implementation Plan: boundver as a Public Tool
 
-This plan covers what's needed to take boundver from an internal single-file script to a published, installable CLI tool.
+This plan is for shipping boundver as a public tool.
+
+Immediate execution focus: fix correctness gaps (validation/fallback/source selection) and ensure default usage works without internal or proprietary artifacts.
 
 ---
 
@@ -37,13 +39,38 @@ This plan covers what's needed to take boundver from an internal single-file scr
 - [ ] Add `LICENSE` file (MIT)
 - [ ] Support `pipx install boundver` and `pip install boundver`
 
-## Phase 2: Testing
+## Phase 2: Near-term correctness & portability (high priority)
+
+- [x] Add `boundver validate-config` command with strict failures for:
+  - unknown slice components
+  - unknown slice modes
+  - unsupported `defaults.compat_mode`
+  - empty `paths` where a provider requires source artifacts
+  - configured boundary path missing on disk
+  - API slices containing components/boundaries with no API fingerprint
+- [x] Remove silent fallback from `api`/`compat` slice selection to `exact`.
+- [x] Add explicit fingerprint source selection and document defaults:
+  - `--source=head`
+  - `--source=index`
+  - `--source=working-tree`
+- [x] Ensure `compat_mode` behavior matches config and docs.
+- [ ] Add a clear error/warning model (`error`, `partial`, `ok`) for boundary extraction status.
+
+### Public portability requirement (non-proprietary baseline)
+
+- [ ] Ensure default CLI/examples/docs do **not** assume internal HSL/TechScout artifacts.
+- [ ] Treat `service-definition` and other organization-specific contracts as optional adapters/providers.
+- [ ] Ship public examples that rely only on accessible artifacts (OpenAPI, Python exports, TypeScript exports, JSON Schema, etc.).
+- [ ] If a config references unavailable proprietary boundary sources, fail with actionable guidance instead of implicit fallback.
+
+## Phase 3: Testing
 
 - [ ] Unit tests for each module (canonical JSON, sha256, semver parsing, TOML/YAML extraction)
 - [ ] Integration tests using temporary git repos (`git init` + commits in tmp dirs)
 - [ ] Snapshot tests for lockfile output (golden file comparison)
 - [ ] Edge case tests:
   - Component with no version source
+  - Component with missing/unavailable boundary source
   - Component with `implicit` boundary (api fingerprint = null)
   - Empty slices
   - Vendored copy drift detection
@@ -51,7 +78,7 @@ This plan covers what's needed to take boundver from an internal single-file scr
   - Git repo with no commits
 - [ ] CI pipeline (GitHub Actions): lint, type-check, test on Python 3.8–3.12
 
-## Phase 3: CLI polish
+## Phase 4: CLI polish
 
 - [ ] Add `boundver init` command — interactive config scaffolding
 - [ ] Add `--format json|text|table` output option for all commands
@@ -59,20 +86,20 @@ This plan covers what's needed to take boundver from an internal single-file scr
 - [ ] Add `--exit-code` option for `verify` (already exits 1 on mismatch — document it)
 - [ ] Color output in TTY mode (red for breaking, yellow for API changes, green for unchanged)
 - [ ] Add shell completions (bash, zsh, fish)
-- [ ] Add `boundver check-config` command for config validation before generation
+- [x] Add `boundver check-config` alias to `validate-config` for discoverability
 
-## Phase 4: Config schema & validation
+## Phase 5: Config schema & validation
 
 - [ ] JSON Schema for `boundary.config.json` — publish alongside the tool
 - [ ] Validate config on load with clear error messages:
   - Missing required fields
   - Unknown component references in slices
   - Duplicate component paths
-  - Invalid boundary kinds
+  - Invalid/unknown boundary provider names
 - [ ] Provide schema for editor autocompletion (VS Code, JetBrains)
 - [ ] Add `$schema` field support in config files
 
-## Phase 5: Documentation
+## Phase 6: Documentation
 
 - [ ] Expand README with:
   - Logo/banner
@@ -86,53 +113,41 @@ This plan covers what's needed to take boundver from an internal single-file scr
   - Migration guide for teams currently using manual versioning
 - [ ] Add `CONTRIBUTING.md`
 - [ ] Add `CHANGELOG.md` (keep-a-changelog format)
+- [ ] Add a dedicated "public vs proprietary providers" doc with examples.
 
-## Phase 6: Publishing & distribution
+## Phase 7: Publishing & distribution
 
 - [ ] Register `boundver` on PyPI
 - [ ] Set up automated release workflow:
   - Tag-triggered: push `v1.0.0` tag → build + publish to PyPI
   - GitHub Release with auto-generated notes
-- [ ] Provide standalone single-file download option (for teams that don't want pip):
-  - `curl -sSL https://raw.githubusercontent.com/yzm1/boundver/main/boundver.py | python - generate`
+- [ ] Provide standalone single-file download option (for teams that don't want pip)
 - [ ] Docker image for CI environments without Python
 - [ ] Homebrew formula (stretch goal)
 
-## Phase 7: Features for v1.0
+## Phase 8: Features for v1.0+
 
 - [ ] `boundver watch` — file watcher that regenerates on save (dev experience)
-- [ ] Config includes/extends — split large configs across files:
-  ```json
-  { "extends": ["./components/services.json", "./components/libs.json"] }
-  ```
-- [ ] Glob patterns in `boundary.paths`:
-  ```json
-  "paths": ["src/**/__init__.py", "!src/**/internal/**"]
-  ```
+- [ ] Config includes/extends — split large configs across files
+- [ ] Glob patterns in boundary sources
 - [ ] Pre-commit hook integration (`pre-commit-hooks.yaml`)
 - [ ] `boundver why <component>` — show which slices include a component and what would change
 - [ ] GitHub Action wrapper (`uses: yzm1/boundver-action@v1`)
 - [ ] Support `boundary.config.yaml` and `boundary.config.toml` as alternatives to JSON
 
-## Phase 8: Ecosystem integrations (post-v1.0)
-
-- [ ] VS Code extension — inline status indicators showing fingerprint state
-- [ ] GitHub bot / PR comment — auto-comment with diff summary on PRs that change the lockfile
-- [ ] Monorepo framework adapters (Nx, Turborepo, Lerna) — import component topology from existing configs
-- [ ] Language-specific boundary analyzers (optional plugins):
-  - Python: extract public API from `__all__` / type stubs
-  - TypeScript: extract from `.d.ts` generation
-  - OpenAPI: validate spec completeness
-
 ---
 
-## Priority order for first public release (MVP)
+## Next increment (concrete execution order)
 
-1. **Package structure** — installable via pip/pipx
-2. **Tests** — comprehensive enough to accept contributions safely
-3. **Config validation** — clear errors for misconfiguration
-4. **CI workflow** — lint + test + type-check
-5. **PyPI publish** — `pip install boundver` works
-6. **README + badges** — discoverable and credible
+Completed in current implementation:
 
-Everything else can follow in subsequent releases.
+1. ✅ Implemented `validate-config`/`check-config` and strict error cases in Phase 2.
+2. ✅ Removed `api`/`compat` silent fallback and enforced explicit digest selection (with `--allow-partial` escape hatch).
+3. ✅ Added and documented `--source=head|index|working-tree` and wired it into generate/verify hashing.
+4. ✅ Added `compat_mode` handling (`major`/`semver_major`/`semver_major_minor`) in compatibility digest computation.
+
+Next work to execute:
+
+1. Add packaging skeleton (`pyproject.toml`, console entrypoint) so external users can install/run it.
+2. Add tests for strict behavior, source modes, and portability constraints.
+3. Add docs/examples that demonstrate only non-proprietary/public provider baselines by default.
