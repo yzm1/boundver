@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-openapi",
+  "components": {
+    "svc": {
+      "path": "examples/openapi/service",
+      "version_source": {"file": "version.json", "field": "version"},
+      "boundary": {"provider": "openapi", "paths": ["openapi.yaml"]}
+    }
+  },
+  "slices": {
+    "svc-boundary": {"mode": "boundary", "components": ["svc"]}
+  }
+}

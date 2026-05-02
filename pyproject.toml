@@ -13,7 +13,9 @@ authors = [{ name = "boundver contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7,<9"]
+schema = ["jsonschema>=4"]
+yaml = ["PyYAML>=6"]
+dev = ["pytest>=7,<9", "jsonschema>=4", "build>=1.2", "PyYAML>=6"]
 
 [project.scripts]
 boundver = "boundver.cli:main"

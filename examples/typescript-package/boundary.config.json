@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-typescript-package",
+  "components": {
+    "pkg": {
+      "path": "examples/typescript-package/src",
+      "version_source": {"file": "../package.json", "field": "version"},
+      "boundary": {"provider": "typescript-exports", "paths": ["index.ts"]}
+    }
+  },
+  "slices": {
+    "pkg-boundary": {"mode": "boundary", "components": ["pkg"]}
+  }
+}

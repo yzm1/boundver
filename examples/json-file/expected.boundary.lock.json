@@ -1,0 +1,35 @@
+{
+  "schema": "boundary-lock/v1",
+  "project": "example-json-file",
+  "components": {
+    "svc": {
+      "version": null,
+      "path": "examples/json-file/service",
+      "boundary_provider": "json-file",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "2c3a31b2ddfa54b401cf05ba846a17d47a082e48663a725eeba7f7dcd0a7696e",
+        "boundary": "8a9ce9465d4da4c97b1fa3d6d51fc8f078917990a71c6219829937085c498ba7",
+        "compat": null
+      },
+      "semver": {
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
+      }
+    }
+  },
+  "slices": {
+    "svc-boundary": {
+      "description": "",
+      "mode": "boundary",
+      "components": [
+        "svc"
+      ],
+      "fingerprint": "6af6618ae0fffae3b4f4e9d39aade95009548d8a1234d918abfb905262c8e5b0",
+      "component_digests": {
+        "svc": "8a9ce9465d4da4c97b1fa3d6d51fc8f078917990a71c6219829937085c498ba7"
+      }
+    }
+  }
+}

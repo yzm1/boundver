@@ -33,6 +33,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .versions import (
+    _extract_json_field,
+    _extract_toml_field,
+    _extract_yaml_field,
+    extract_version,
+    parse_semver,
+    yaml,
+)
+
+MAX_HASH_FILES = 50000
+MAX_HASH_FILE_BYTES = 50 * 1024 * 1024  # 50 MiB per file guardrail
+
 # ---------------------------------------------------------------------------
 # Canonical JSON (RFC 8785 subset: sorted keys, no whitespace, UTF-8)
 # ---------------------------------------------------------------------------
@@ -72,43 +84,77 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     )
 
 
-def git_tree_hash(repo_root: Path, path: str, source: str = "head") -> Optional[str]:
-    """Get a canonical SHA-256 digest for a path from HEAD, index, or working tree."""
+def _to_posix(rel_path: str) -> str:
+    return rel_path.replace("\\", "/")
+
+
+def _enforce_hash_guardrails(full_path: Path, file_count: int) -> None:
+    if file_count > MAX_HASH_FILES:
+        raise ValueError(f"Hash guardrail exceeded: >{MAX_HASH_FILES} files")
+
+
+def _enforce_content_size(content: bytes, path_label: str) -> None:
+    size = len(content)
+    if size > MAX_HASH_FILE_BYTES:
+        raise ValueError(
+            f"Hash guardrail exceeded: file too large ({size} bytes) at {path_label}"
+        )
+
+def _is_within(base: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def source_tree_digest(repo_root: Path, path: str, source: str = "head") -> Optional[str]:
+    """Canonical SHA-256 digest for a path from HEAD, index, or working tree."""
     target = repo_root / path
-    content_parts: List[str] = []
+    content_parts: List[bytes] = []
+    file_count = 0
 
     if source == "head":
-        files = _head_files_for_path(repo_root, path)
+        files = list_head_files(repo_root, path)
         for rel in files:
-            content_parts.append(f"file:{rel}\n")
-            content_parts.append(_read_path_content(repo_root, repo_root / rel, source))
-        return sha256_hex("".join(content_parts)) if content_parts else None
+            posix_rel = _to_posix(rel)
+            content_parts.append(f"file:{posix_rel}\n".encode("utf-8"))
+            file_count += 1
+            _enforce_hash_guardrails(repo_root / rel, file_count)
+            content = _read_path_content(repo_root, repo_root / rel, source)
+            _enforce_content_size(content, posix_rel)
+            content_parts.append(content)
+        return hashlib.sha256(b"".join(content_parts)).hexdigest() if content_parts else None
 
     if not target.exists():
         return None
     if target.is_file():
-        files = [str(target.relative_to(repo_root))]
+        files = [_to_posix(str(target.relative_to(repo_root)))]
     else:
         files = [
-            str(f.relative_to(repo_root))
+            _to_posix(str(f.relative_to(repo_root)))
             for f in sorted(target.rglob("*"))
             if f.is_file() and not _is_ignored(f)
         ]
 
     for rel in files:
-        content_parts.append(f"file:{rel}\n")
-        content_parts.append(_read_path_content(repo_root, repo_root / rel, source))
-    return sha256_hex("".join(content_parts)) if content_parts else None
+        content_parts.append(f"file:{rel}\n".encode("utf-8"))
+        file_count += 1
+        _enforce_hash_guardrails(repo_root / rel, file_count)
+        content = _read_path_content(repo_root, repo_root / rel, source)
+        _enforce_content_size(content, rel)
+        content_parts.append(content)
+    return hashlib.sha256(b"".join(content_parts)).hexdigest() if content_parts else None
 
 
-def _head_files_for_path(repo_root: Path, path: str) -> List[str]:
+def list_head_files(repo_root: Path, path: str) -> List[str]:
     """List files at a repo-relative path as represented in HEAD."""
     try:
         result = _git_run(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", path])
     except subprocess.CalledProcessError:
         return []
 
-    files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
     if files:
         return files
 
@@ -116,61 +162,98 @@ def _head_files_for_path(repo_root: Path, path: str) -> List[str]:
         result = _git_run(repo_root, ["cat-file", "-t", f"HEAD:{path}"])
     except subprocess.CalledProcessError:
         return []
-    return [path] if result.stdout.strip() == "blob" else []
+    return [_to_posix(path)] if result.stdout.strip() == "blob" else []
 
 
-def git_hash_files(repo_root: Path, component_path: str, relative_paths: List[str], source: str = "working-tree") -> Optional[str]:
+def _head_entries_for_path(repo_root: Path, base_path: str) -> List[str]:
+    """List file entries for a repo-relative path at HEAD.
+
+    If `base_path` is a file in HEAD, returns one entry.
+    If it's a directory, returns all descendant files.
+    """
+    base = base_path.rstrip("/")
+    files = list_head_files(repo_root, base)
+    if files:
+        return files
+    return []
+
+
+def boundary_paths_digest(
+    repo_root: Path, component_path: str, relative_paths: List[str], source: str = "working-tree"
+) -> Optional[str]:
     """
     Hash the contents of specific files/directories within a component.
     Used for boundary (API) fingerprints where only certain paths matter.
     """
-    content_parts = []
+    content_parts: List[bytes] = []
+    file_count = 0
     for rel in sorted(relative_paths):
+        rel = rel.strip()
+        if source == "head":
+            base = _to_posix(str(Path(component_path) / rel))
+            head_entries = _head_entries_for_path(repo_root, base)
+            for entry in head_entries:
+                child_rel = _to_posix(str(Path(entry).relative_to(component_path)))
+                content_parts.append(f"file:{child_rel}\n".encode("utf-8"))
+                file_count += 1
+                _enforce_hash_guardrails(repo_root / entry, file_count)
+                content = _read_path_content(repo_root, repo_root / entry, source)
+                _enforce_content_size(content, child_rel)
+                content_parts.append(content)
+            continue
+
         full = repo_root / component_path / rel
         if full.is_file():
-            content_parts.append(f"file:{rel}\n")
-            content_parts.append(_read_path_content(repo_root, full, source))
+            norm_rel = _to_posix(rel)
+            content_parts.append(f"file:{norm_rel}\n".encode("utf-8"))
+            file_count += 1
+            _enforce_hash_guardrails(full, file_count)
+            content = _read_path_content(repo_root, full, source)
+            _enforce_content_size(content, norm_rel)
+            content_parts.append(content)
         elif full.is_dir():
             for child in sorted(full.rglob("*")):
                 if child.is_file() and not _is_ignored(child):
-                    child_rel = str(child.relative_to(repo_root / component_path))
-                    content_parts.append(f"file:{child_rel}\n")
-                    content_parts.append(_read_path_content(repo_root, child, source))
+                    child_rel = _to_posix(str(child.relative_to(repo_root / component_path)))
+                    content_parts.append(f"file:{child_rel}\n".encode("utf-8"))
+                    file_count += 1
+                    _enforce_hash_guardrails(child, file_count)
+                    content = _read_path_content(repo_root, child, source)
+                    _enforce_content_size(content, child_rel)
+                    content_parts.append(content)
     if not content_parts:
         return None
-    return sha256_hex("".join(content_parts))
+    return hashlib.sha256(b"".join(content_parts)).hexdigest()
 
 
-def _read_path_content(repo_root: Path, full_path: Path, source: str) -> str:
-    rel = str(full_path.relative_to(repo_root))
+def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
+    rel = _to_posix(str(full_path.relative_to(repo_root)))
     if source == "index":
-        try:
-            result = _git_run(repo_root, ["show", f":{rel}"])
-            return result.stdout
-        except subprocess.CalledProcessError:
-            return full_path.read_text(errors="replace")
+        result = _git_run(repo_root, ["show", f":{rel}"])
+        return result.stdout.encode("utf-8")
     if source == "head":
-        try:
-            result = _git_run(repo_root, ["show", f"HEAD:{rel}"])
-            return result.stdout
-        except subprocess.CalledProcessError:
-            return full_path.read_text(errors="replace")
-    return full_path.read_text(errors="replace")
+        result = _git_run(repo_root, ["show", f"HEAD:{rel}"])
+        return result.stdout.encode("utf-8")
+    return full_path.read_bytes()
 
 
-def git_latest_tag(prefix: str) -> Optional[str]:
-    """Find the latest git tag matching a prefix, extract the version part."""
+def git_latest_tag(repo_root: Path, prefix: str) -> Optional[str]:
+    """Find the latest reachable git tag matching a prefix, extract version part."""
     try:
-        result = subprocess.run(
-            ["git", "tag", "--list", f"{prefix}*", "--sort=-v:refname"],
-            capture_output=True, text=True, check=True,
-        )
-        tags = result.stdout.strip().split("\n")
-        if tags and tags[0]:
-            return tags[0][len(prefix):]
-        return None
+        # Prefer reachable tags from current HEAD to avoid unrelated branch tags.
+        result = _git_run(repo_root, ["describe", "--tags", "--match", f"{prefix}*", "--abbrev=0"])
+        tag = result.stdout.strip()
+        return tag[len(prefix):] if tag.startswith(prefix) else None
     except subprocess.CalledProcessError:
-        return None
+        try:
+            # Fallback for repos where describe cannot resolve (e.g. shallow/no reachable matches).
+            result = _git_run(repo_root, ["tag", "--list", f"{prefix}*", "--sort=-v:refname"])
+            tags = [t for t in result.stdout.strip().split("\n") if t]
+            if tags:
+                return tags[0][len(prefix):]
+            return None
+        except subprocess.CalledProcessError:
+            return None
 
 
 def _is_ignored(path: Path) -> bool:
@@ -186,137 +269,12 @@ def _is_ignored(path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Version extraction
-# ---------------------------------------------------------------------------
-
-def extract_version(repo_root: Path, component_path: str, version_source: Optional[dict]) -> Optional[str]:
-    """Extract the current version string from whatever source is configured."""
-    if version_source is None:
-        return None
-
-    if "git_tag_prefix" in version_source:
-        return git_latest_tag(version_source["git_tag_prefix"])
-
-    file_rel = version_source.get("file")
-    field_path = version_source.get("field")
-    if not file_rel or not field_path:
-        return None
-
-    full_path = repo_root / component_path / file_rel
-    if not full_path.exists():
-        return None
-
-    if file_rel.endswith(".json"):
-        return _extract_json_field(full_path, field_path)
-    elif file_rel.endswith(".toml"):
-        return _extract_toml_field(full_path, field_path)
-    elif file_rel.endswith(".yaml") or file_rel.endswith(".yml"):
-        return _extract_yaml_field(full_path, field_path)
-    return None
-
-
-def _extract_json_field(path: Path, field_path: str) -> Optional[str]:
-    try:
-        data = json.loads(path.read_text())
-        for key in field_path.split("."):
-            data = data[key]
-        return str(data)
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return None
-
-
-def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
-    """Minimal TOML field extraction — no external deps.
-    Handles [section] headers and key = "value" lines.
-    Supports dotted field paths like 'project.version'.
-    """
-    text = path.read_text()
-    keys = field_path.split(".")
-    current_section = ""
-
-    if len(keys) == 2:
-        target_section = keys[0]
-        target_key = keys[1]
-    elif len(keys) == 1:
-        target_section = ""
-        target_key = keys[0]
-    else:
-        return None
-
-    for line in text.splitlines():
-        line = line.strip()
-        section_match = re.match(r"^\[([^\]]+)\]", line)
-        if section_match:
-            current_section = section_match.group(1).strip()
-            continue
-        if current_section == target_section:
-            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*"([^"]*)"', line)
-            if kv_match and kv_match.group(1) == target_key:
-                return kv_match.group(2)
-    return None
-
-
-def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
-    """Minimal YAML field extraction for simple top-level dotted paths.
-    Handles 'info.version' style paths in OpenAPI specs.
-    """
-    text = path.read_text()
-    keys = field_path.split(".")
-    indent_stack = []
-    current_path: List[str] = []
-
-    for line in text.splitlines():
-        if not line.strip() or line.strip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip())
-        stripped = line.strip()
-
-        # Pop path elements when indent decreases
-        while indent_stack and indent <= indent_stack[-1]:
-            indent_stack.pop()
-            if current_path:
-                current_path.pop()
-
-        kv_match = re.match(r"^([\w.-]+)\s*:\s*(.+)$", stripped)
-        if kv_match:
-            key = kv_match.group(1)
-            value = kv_match.group(2).strip().strip("'\"")
-            test_path = current_path + [key]
-            if test_path == keys:
-                return value
-        else:
-            section_match = re.match(r"^([\w.-]+)\s*:\s*$", stripped)
-            if section_match:
-                current_path.append(section_match.group(1))
-                indent_stack.append(indent)
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# SemVer parsing
-# ---------------------------------------------------------------------------
-
-def parse_semver(version: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Parse a semver string into (major, major.minor, full).
-    Returns (compat_family, api_surface, exact_version).
-    """
-    if not version:
-        return (None, None, None)
-    match = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?", version)
-    if not match:
-        return (None, None, version)
-    major = match.group(1)
-    minor = match.group(2)
-    patch = match.group(3) or "0"
-    return (major, f"{major}.{minor}", f"{major}.{minor}.{patch}")
-
-
-# ---------------------------------------------------------------------------
 # Lockfile generation
 # ---------------------------------------------------------------------------
 
-def generate_lockfile(config: dict, repo_root: Path, source: str = "head", strict: bool = True) -> dict:
+def generate_lockfile(
+    config: dict, repo_root: Path, source: str = "head", strict: bool = True, deterministic: bool = False
+) -> dict:
     """Generate the full lockfile from config + repo state."""
     components_config = config["components"]
     slices_config = config.get("slices", {})
@@ -325,20 +283,26 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
     lockfile = {
         "schema": "boundary-lock/v1",
         "project": config.get("project", "unknown"),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "components": {},
         "slices": {},
     }
+    if not deterministic:
+        lockfile["generated_at"] = datetime.now(timezone.utc).isoformat()
 
     # --- Components ---
     for name, comp in components_config.items():
         comp_path = comp["path"]
-        version = extract_version(repo_root, comp_path, comp.get("version_source"))
+        version = extract_version(repo_root, comp_path, comp.get("version_source"), git_latest_tag)
         compat, api_ver, exact_ver = parse_semver(version)
         compat_mode = defaults.get("compat_mode", "major")
 
         # Exact fingerprint: git tree hash of the whole component directory
-        exact_digest = git_tree_hash(repo_root, comp_path, source=source)
+        exact_errors: List[str] = []
+        try:
+            exact_digest = source_tree_digest(repo_root, comp_path, source=source)
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            exact_digest = None
+            exact_errors.append(f"Exact digest failed: {exc}")
 
         # API fingerprint: hash only the boundary paths (if any)
         boundary = comp.get("boundary", {})
@@ -348,8 +312,13 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         boundary_errors: List[str] = []
         boundary_provider = boundary_provider_name(boundary)
         if boundary_paths:
-            api_digest = git_hash_files(repo_root, comp_path, boundary_paths, source=source)
-            if api_digest is None:
+            try:
+                api_digest = boundary_paths_digest(repo_root, comp_path, boundary_paths, source=source)
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                api_digest = None
+                boundary_errors.append(f"Boundary digest failed: {exc}")
+                boundary_status = "error"
+            if api_digest is None and not boundary_errors:
                 boundary_status = "error"
                 boundary_errors.append("Declared boundary paths produced no digest")
         else:
@@ -381,7 +350,6 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
             "fingerprints": {
                 "exact": exact_digest,
                 "boundary": api_digest,
-                "api": api_digest,  # Deprecated alias; kept for backward compatibility.
                 "compat": compat_digest,
             },
             "semver": {
@@ -392,13 +360,15 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
         }
         if boundary_errors:
             entry["boundary_errors"] = boundary_errors
+        if exact_errors:
+            entry["exact_errors"] = exact_errors
 
         # Flag vendored copies
         if "vendored_copies" in comp:
             entry["vendored_copies"] = comp["vendored_copies"]
             # Check if vendored copies are in sync
             for vc in comp["vendored_copies"]:
-                vc_hash = git_tree_hash(repo_root, vc.rstrip("/"), source=source)
+                vc_hash = source_tree_digest(repo_root, vc.rstrip("/"), source=source)
                 entry.setdefault("vendored_digests", {})[vc] = vc_hash
                 if vc_hash != exact_digest:
                     entry.setdefault("warnings", []).append(
@@ -409,8 +379,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
 
     # --- Slices ---
     for slice_name, slice_def in slices_config.items():
-        mode = slice_def.get("mode", "exact")  # exact | boundary | api | compat
-        normalized_mode = "boundary" if mode == "api" else mode
+        mode = slice_def.get("mode", "exact")  # exact | boundary | compat
         component_names = slice_def["components"]
 
         # Collect the relevant digest for each component in the slice
@@ -421,13 +390,13 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
                 digest_parts[cname] = None
                 continue
             fp = comp_entry["fingerprints"]
-            if normalized_mode == "exact":
+            if mode == "exact":
                 digest_parts[cname] = fp.get("exact")
-            elif normalized_mode == "boundary":
+            elif mode == "boundary":
                 if fp.get("boundary") is None and strict:
                     raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
                 digest_parts[cname] = fp.get("boundary")
-            elif normalized_mode == "compat":
+            elif mode == "compat":
                 if fp.get("compat") is None and strict:
                     raise ValueError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
                 digest_parts[cname] = fp.get("compat")
@@ -439,7 +408,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
 
         lockfile["slices"][slice_name] = {
             "description": slice_def.get("description", ""),
-            "mode": normalized_mode,
+            "mode": mode,
             "components": sorted(component_names),
             "fingerprint": slice_hash,
             "component_digests": digest_parts,
@@ -506,7 +475,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if required_key not in config:
             errors.append(f"Missing required top-level field: {required_key}")
 
-    supported_modes = {"exact", "api", "boundary", "compat"}
+    supported_modes = {"exact", "boundary", "compat"}
     compat_mode = config.get("defaults", {}).get("compat_mode", "major")
     if compat_mode not in {"major", "semver_major", "semver_major_minor"}:
         errors.append(f"Unsupported defaults.compat_mode: {compat_mode}")
@@ -567,6 +536,13 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             errors.append(f"Component '{name}' has service-definition boundary with empty paths")
         for rel in paths:
             full = repo_root / comp["path"] / rel
+            component_root = repo_root / comp["path"]
+            if not _is_within(component_root, full):
+                errors.append(f"Component '{name}' boundary path escapes component root: {rel}")
+                continue
+            if not _is_within(repo_root, full):
+                errors.append(f"Component '{name}' boundary path escapes repository root: {rel}")
+                continue
             if not full.exists():
                 errors.append(f"Component '{name}' boundary path missing: {rel}")
         vendored = comp.get("vendored_copies")
@@ -588,7 +564,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             if cname not in components:
                 errors.append(f"Slice '{sname}' references unknown component: {cname}")
                 continue
-            if mode in {"api", "boundary"}:
+            if mode == "boundary":
                 kind = boundary_provider_name(components[cname].get("boundary", {}))
                 paths = components[cname].get("boundary", {}).get("paths", [])
                 if kind in {"leaf", "implicit"}:
@@ -670,7 +646,7 @@ def _summarize_change(changes: dict) -> str:
     if facets == ["exact"]:
         return "implementation-only change (API stable)"
     elif "boundary" in facets and "compat" not in facets:
-        return "API surface changed (compatible)"
+        return "declared boundary changed (compatibility unchanged)"
     elif "compat" in facets:
         return "BREAKING: compatibility family changed"
     return "changed: " + ", ".join(facets)
@@ -679,11 +655,46 @@ def _summarize_change(changes: dict) -> str:
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
+LOCKFILE_SCHEMA = "boundary-lock/v1"
+
+
+def _lockfile_schema_issues(lockfile: dict) -> List[str]:
+    schema = lockfile.get("schema")
+    if schema is None:
+        return [f"LOCKFILE schema missing (expected {LOCKFILE_SCHEMA})"]
+    if schema != LOCKFILE_SCHEMA:
+        return [f"LOCKFILE schema unsupported: {schema} (expected {LOCKFILE_SCHEMA})"]
+    return []
+
+
+def _lockfile_structure_issues(lockfile: dict) -> List[str]:
+    issues: List[str] = []
+    if not isinstance(lockfile.get("components"), dict):
+        issues.append("LOCKFILE malformed: components must be an object")
+        return issues
+    if not isinstance(lockfile.get("slices"), dict):
+        issues.append("LOCKFILE malformed: slices must be an object")
+    for name, comp in lockfile.get("components", {}).items():
+        if not isinstance(comp, dict):
+            issues.append(f"LOCKFILE malformed: component '{name}' must be an object")
+            continue
+        fps = comp.get("fingerprints")
+        if not isinstance(fps, dict):
+            issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints object")
+            continue
+        for required in ("exact", "boundary", "compat"):
+            if required not in fps:
+                issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints.{required}")
+    return issues
+
 
 def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str = "head") -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches."""
     current = generate_lockfile(config, repo_root, source=source)
-    issues = []
+    issues = _lockfile_schema_issues(lockfile)
+    issues.extend(_lockfile_structure_issues(lockfile))
+    if issues:
+        return issues
 
     for name, current_comp in current["components"].items():
         locked_comp = lockfile.get("components", {}).get(name)
@@ -692,7 +703,8 @@ def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str =
             continue
         for facet in ("exact", "boundary", "compat"):
             cv = current_comp["fingerprints"].get(facet)
-            lv = locked_comp["fingerprints"].get(facet)
+            locked_fps = locked_comp.get("fingerprints", {})
+            lv = locked_fps.get(facet)
             if cv != lv:
                 issues.append(
                     f"MISMATCH {name}.{facet}: lockfile={_short(lv)} current={_short(cv)}"
@@ -807,6 +819,15 @@ def print_status(lockfile: dict) -> None:
         print(f"    {sname} [{mode}] ({count} components) = {fp}")
 
 
+def _print_json(data: Any) -> None:
+    print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def _log(msg: str, quiet: bool = False) -> None:
+    if not quiet:
+        print(msg)
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -817,6 +838,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    verbosity = parser.add_mutually_exclusive_group()
+    verbosity.add_argument("--quiet", action="store_true", help="Reduce non-error human-readable output")
+    verbosity.add_argument("--verbose", action="store_true", help="Print additional progress diagnostics")
     sub = parser.add_subparsers(dest="command")
 
     # generate
@@ -825,17 +849,22 @@ def main():
     gen.add_argument("--out", default="boundary.lock.json", help="Output lockfile path")
     gen.add_argument("--source", choices=["head", "index", "working-tree"], default="head", help="Fingerprint source")
     gen.add_argument("--allow-partial", action="store_true", help="Allow missing boundary/compat digests in slices")
+    gen.add_argument("--deterministic", action="store_true", help="Omit generated_at for idempotent lockfile output")
+    gen.add_argument("--dry-run", action="store_true", help="Compute lockfile and print status without writing output")
+    gen.add_argument("--json", action="store_true", help="Print JSON output")
 
     # verify
     ver = sub.add_parser("verify", help="Check lockfile matches current repo state")
     ver.add_argument("--config", default="boundary.config.json")
     ver.add_argument("--lock", default="boundary.lock.json")
     ver.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
+    ver.add_argument("--json", action="store_true", help="Print JSON output")
 
     # diff
     dif = sub.add_parser("diff", help="Diff two lockfiles")
     dif.add_argument("old", help="Old lockfile")
     dif.add_argument("new", help="New lockfile")
+    dif.add_argument("--json", action="store_true", help="Print JSON output")
 
     # slice
     sl = sub.add_parser("slice", help="Show fingerprint for a specific slice")
@@ -851,13 +880,15 @@ def main():
 
     # init
     init = sub.add_parser("init", help="Create a starter boundary.config.json")
-    init.add_argument("--config", default="boundary.config.json")
+    init.add_argument("--out", default="boundary.config.json", help="Output config file path")
+    init.add_argument("--force", action="store_true", help="Overwrite existing file")
 
     # status
     st = sub.add_parser("status", help="Show lockfile summary and warnings")
     st.add_argument("--config", default="boundary.config.json")
     st.add_argument("--lock", default="boundary.lock.json")
     st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
+    st.add_argument("--json", action="store_true", help="Print JSON output")
 
     args = parser.parse_args()
 
@@ -877,29 +908,53 @@ def main():
             print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
         config = json.loads(config_path.read_text())
-        lockfile = generate_lockfile(config, repo_root, source=args.source, strict=(not args.allow_partial))
+        try:
+            lockfile = generate_lockfile(
+                config, repo_root, source=args.source, strict=(not args.allow_partial), deterministic=args.deterministic
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            print("Run: boundver validate-config", file=sys.stderr)
+            sys.exit(1)
         out_path = repo_root / args.out
-        out_path.write_text(json.dumps(lockfile, indent=2) + "\n")
-        print(f"Generated {out_path}")
-        print_status(lockfile)
+        if args.dry_run:
+            _log(f"Dry run: lockfile not written ({out_path})", quiet=args.quiet)
+        else:
+            out_path.write_text(json.dumps(lockfile, indent=2) + "\n")
+            _log(f"Generated {out_path}", quiet=args.quiet)
+        if args.verbose and not args.quiet:
+            print(f"Generation source={args.source} deterministic={args.deterministic} strict={not args.allow_partial}")
+        if args.json:
+            _print_json(lockfile)
+        elif not args.quiet:
+            print_status(lockfile)
 
     elif args.command == "verify":
         config = json.loads((repo_root / args.config).read_text())
         lockfile = json.loads((repo_root / args.lock).read_text())
         issues = verify_lockfile(config, lockfile, repo_root, source=args.source)
+        if args.json:
+            _print_json({"ok": len(issues) == 0, "issues": issues})
         if issues:
-            print(f"LOCKFILE OUT OF DATE ({len(issues)} issues):\n")
-            for issue in issues:
-                print(f"  {issue}")
+            if not args.json and not args.quiet:
+                print(f"LOCKFILE OUT OF DATE ({len(issues)} issues):\n")
+                for issue in issues:
+                    print(f"  {issue}")
             sys.exit(1)
         else:
-            print("Lockfile is up to date.")
+            if args.verbose and not args.quiet:
+                print(f"Verified source={args.source} with 0 issues.")
+            elif not args.json and not args.quiet:
+                print("Lockfile is up to date.")
 
     elif args.command == "diff":
         old = json.loads(Path(args.old).read_text())
         new = json.loads(Path(args.new).read_text())
         result = diff_lockfiles(old, new)
-        print_diff(result)
+        if args.json:
+            _print_json(result)
+        else:
+            print_diff(result)
 
     elif args.command == "slice":
         lockfile = json.loads((repo_root / args.lock).read_text())
@@ -933,11 +988,12 @@ def main():
         print("Config is valid.")
 
     elif args.command == "init":
-        config_path = repo_root / args.config
-        if config_path.exists():
+        config_path = repo_root / args.out
+        if config_path.exists() and not args.force:
             print(f"ERROR: Config already exists: {config_path}", file=sys.stderr)
             sys.exit(1)
         starter = {
+            "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
             "project": repo_root.name,
             "defaults": {"compat_mode": "major"},
             "components": {
@@ -958,16 +1014,22 @@ def main():
         lock_path = repo_root / args.lock
         if lock_path.exists():
             lockfile = json.loads(lock_path.read_text())
-            print_status(lockfile)
+            status_payload = {"lockfile": lockfile, "issues": []}
+            if not args.json and not args.quiet:
+                print_status(lockfile)
             # Also verify if config exists
             config_path = repo_root / args.config
             if config_path.exists():
                 config = json.loads(config_path.read_text())
                 issues = verify_lockfile(config, lockfile, repo_root, source=args.source)
+                status_payload["issues"] = issues
                 if issues:
-                    print(f"\n  DRIFT DETECTED ({len(issues)} issues):")
-                    for issue in issues:
-                        print(f"    {issue}")
+                    if not args.quiet and not args.json:
+                        print(f"\n  DRIFT DETECTED ({len(issues)} issues):")
+                        for issue in issues:
+                            print(f"    {issue}")
+            if args.json:
+                _print_json(status_payload)
         else:
             print(f"No lockfile found at {lock_path}. Run 'generate' first.")
             sys.exit(1)

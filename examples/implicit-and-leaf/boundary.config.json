@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-implicit-leaf",
+  "components": {
+    "worker": {
+      "path": "examples/implicit-and-leaf/worker",
+      "boundary": {"provider": "implicit", "paths": []}
+    },
+    "leafsvc": {
+      "path": "examples/implicit-and-leaf/leafsvc",
+      "boundary": {"provider": "leaf", "paths": []}
+    }
+  },
+  "slices": {
+    "worker-exact": {"mode": "exact", "components": ["worker"]},
+    "leaf-exact": {"mode": "exact", "components": ["leafsvc"]}
+  }
+}
