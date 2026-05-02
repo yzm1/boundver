@@ -28,7 +28,6 @@ Components are grouped into **slices** — named subsets with their own stable f
 
 > **Important:** `boundary` is a **declared-boundary file fingerprint**, not a semantic API diff. Formatting, ordering, or comment-only edits in boundary artifacts can change it.
 >
-> `api` remains as a backward-compatible lockfile alias for now.
 
 Each component also reports `boundary_status` in lock output:
 - `ok`: boundary paths were declared and hashed successfully
@@ -43,6 +42,8 @@ pip install boundver
 
 # Create a starter config
 boundver init
+# Custom path / overwrite existing
+boundver init --out boundary.config.json --force
 
 # Or create manually (see Config Reference below)
 cat > boundary.config.json << 'EOF'
@@ -61,7 +62,7 @@ cat > boundary.config.json << 'EOF'
   "slices": {
     "auth-api": {
       "description": "Auth service public API",
-      "mode": "api",
+      "mode": "boundary",
       "components": ["auth-service"]
     }
   }
@@ -71,11 +72,24 @@ EOF
 # Generate the lockfile
 boundver generate
 
+# Deterministic output (omits generated_at)
+boundver generate --deterministic
+
+# Preview generation without writing boundary.lock.json
+boundver generate --dry-run
+
 # Check current status
 boundver status
 
 # Verify lockfile matches repo state
 boundver verify
+
+# JSON output for automation
+boundver verify --json
+
+# Logging controls
+boundver --quiet status
+boundver --verbose verify
 
 # Diff two lockfiles
 boundver diff old.lock.json boundary.lock.json
@@ -102,6 +116,7 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
   "project": "my-project",
   "defaults": {
     "compat_mode": "major"
@@ -125,7 +140,7 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
   "slices": {
     "slice-name": {
       "description": "Human-readable purpose",
-      "mode": "exact | boundary | api | compat",
+      "mode": "exact | boundary | compat",
       "components": ["component-a", "component-b"]
     }
   }
@@ -156,6 +171,20 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
 | `custom.example.service-definition.v1` | Example custom provider namespace |
 | `leaf` | No downstream consumers — boundary is the component itself |
 | `implicit` | No explicit boundary artifact yet (`boundary` fingerprint will be `null`) |
+
+### Provider capability matrix
+
+| Provider | Semantic parser? | Requires `paths` | Empty `paths` allowed | Output |
+|---|---:|---:|---:|---|
+| `openapi` | No (raw file digest) | Yes | No | Raw boundary digest |
+| `python-exports` | No (raw file digest) | Yes | No | Raw boundary digest |
+| `typescript-exports` | No (raw file digest) | Yes | No | Raw boundary digest |
+| `json-file` | No (raw file digest) | Yes | No | Raw boundary digest |
+| `leaf` | n/a | No | Yes | No boundary digest required |
+| `implicit` | n/a | No | Yes | `boundary_status=partial` |
+| `custom.*` | Depends on implementation | Usually | Depends | Raw digest by default |
+
+> Built-in providers are currently raw-boundary artifact hashers, not semantic API diff engines.
 
 
 ## Near-term implementation focus
@@ -217,11 +246,54 @@ fi
 - **Config/lockfile split.** Config is human-maintained (what exists). Lockfile is machine-generated (current state). Mirrors `package.json` / `package-lock.json`.
 - **Language-agnostic boundaries.** Instead of parsing ASTs, you declare which files constitute the public boundary. Works with any language or artifact format.
 
+## Examples
+
+- `examples/openapi/`
+- `examples/json-file/`
+- `examples/implicit-and-leaf/`
+- `examples/python-package/`
+- `examples/typescript-package/`
+
+## Validation dependencies
+
+- **Runtime dependencies:** none (stdlib + git only).
+- **Optional enhanced schema validation:** install `jsonschema` for stricter JSON Schema engine checks in `validate-config`.
+- **Optional enhanced YAML extraction:** install `PyYAML` for robust YAML parsing in version extraction.
+
+```bash
+pip install "boundver[schema]"
+pip install "boundver[yaml]"
+```
+
+Without `jsonschema`, boundver still runs and applies built-in semantic validation checks.
+
+## Ignore behavior for `--source=working-tree`
+
+For working-tree hashing, boundver currently uses a **built-in ignore list** (this is not `.gitignore`-aware yet):
+
+- dot-prefixed names (e.g. `.cache`, `.venv`)
+- `__pycache__`
+- `node_modules`
+- `*.pyc`
+- `dist`
+- `build`
+
+For `--source=head` and `--source=index`, content and path enumeration are Git-backed and therefore based on Git object state rather than local traversal ignores.
+
 ## Requirements
 
 - Python 3.8+
 - Git
 - No pip packages needed
+
+## Hash guardrails
+
+To avoid pathological repository scans, hashing enforces built-in guardrails:
+
+- maximum files hashed per digest: `50,000`
+- maximum size per hashed file: `50 MiB`
+
+If exceeded, boundver records explicit digest errors on affected components.
 
 ## License
 

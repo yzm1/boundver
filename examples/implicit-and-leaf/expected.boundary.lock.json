@@ -1,0 +1,65 @@
+{
+  "schema": "boundary-lock/v1",
+  "project": "example-implicit-leaf",
+  "components": {
+    "worker": {
+      "version": null,
+      "path": "examples/implicit-and-leaf/worker",
+      "boundary_provider": "implicit",
+      "boundary_status": "partial",
+      "fingerprints": {
+        "exact": "4ead1526ad5ee4087940e33712e6006cea6967a13ec58060041bf95e3383aeca",
+        "boundary": null,
+        "compat": null
+      },
+      "semver": {
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
+      },
+      "boundary_errors": [
+        "No boundary paths declared for implicit boundary"
+      ]
+    },
+    "leafsvc": {
+      "version": null,
+      "path": "examples/implicit-and-leaf/leafsvc",
+      "boundary_provider": "leaf",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "3c3a7b65bc88a63285a90cf5c612b589cc5c0d1327023a40daeb1ff8783f4fa5",
+        "boundary": null,
+        "compat": null
+      },
+      "semver": {
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
+      }
+    }
+  },
+  "slices": {
+    "worker-exact": {
+      "description": "",
+      "mode": "exact",
+      "components": [
+        "worker"
+      ],
+      "fingerprint": "c6eef65d8d3d69e4d2ac0fae54e949a13ad88793ca0bb6f9b6083d557928cdc7",
+      "component_digests": {
+        "worker": "4ead1526ad5ee4087940e33712e6006cea6967a13ec58060041bf95e3383aeca"
+      }
+    },
+    "leaf-exact": {
+      "description": "",
+      "mode": "exact",
+      "components": [
+        "leafsvc"
+      ],
+      "fingerprint": "48eac8ad3f0355cb4dda4a6225eb1d7919342231c1d188504d23bede7e218d29",
+      "component_digests": {
+        "leafsvc": "3c3a7b65bc88a63285a90cf5c612b589cc5c0d1327023a40daeb1ff8783f4fa5"
+      }
+    }
+  }
+}

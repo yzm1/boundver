@@ -1,0 +1,35 @@
+{
+  "schema": "boundary-lock/v1",
+  "project": "example-openapi",
+  "components": {
+    "svc": {
+      "version": "1.2.3",
+      "path": "examples/openapi/service",
+      "boundary_provider": "openapi",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "7822e6e64efbe27b028201aeb820ed8512fd02f7499c31bac0aba5e84da638d6",
+        "boundary": "c24922524d395fb6cb71f3d96fd39b5c584cc93d058b2a31da943800573c57e9",
+        "compat": "2b76e797e89bf0561229aa6249cdc899acef599712c928f7824203cbc93d644d"
+      },
+      "semver": {
+        "compat_family": "1",
+        "api_surface": "1.2",
+        "exact_version": "1.2.3"
+      }
+    }
+  },
+  "slices": {
+    "svc-boundary": {
+      "description": "",
+      "mode": "boundary",
+      "components": [
+        "svc"
+      ],
+      "fingerprint": "9db5c15b34fbdf5a04324a234c6e3ad21ba327be5fc40ab0e1f8ae6d19378a87",
+      "component_digests": {
+        "svc": "c24922524d395fb6cb71f3d96fd39b5c584cc93d058b2a31da943800573c57e9"
+      }
+    }
+  }
+}

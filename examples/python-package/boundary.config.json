@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-python-package",
+  "components": {
+    "pkg": {
+      "path": "examples/python-package/pkg",
+      "version_source": {"file": "../pyproject.toml", "field": "project.version"},
+      "boundary": {"provider": "python-exports", "paths": ["__init__.py"]}
+    }
+  },
+  "slices": {
+    "pkg-boundary": {"mode": "boundary", "components": ["pkg"]}
+  }
+}

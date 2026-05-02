@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-json-file",
+  "components": {
+    "svc": {
+      "path": "examples/json-file/service",
+      "boundary": {"provider": "json-file", "paths": ["boundary.json"]}
+    }
+  },
+  "slices": {
+    "svc-boundary": {"mode": "boundary", "components": ["svc"]}
+  }
+}

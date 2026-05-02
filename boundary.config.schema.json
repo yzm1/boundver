@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/boundver/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
   "title": "boundver config",
   "type": "object",
   "required": ["project", "components", "slices"],
@@ -58,7 +58,7 @@
         "required": ["components"],
         "properties": {
           "description": { "type": "string" },
-          "mode": { "type": "string", "enum": ["exact", "api", "compat"] },
+          "mode": { "type": "string", "enum": ["exact", "boundary", "compat"] },
           "components": {
             "type": "array",
             "items": { "type": "string" }
