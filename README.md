@@ -21,17 +21,19 @@ Each component gets three fingerprints:
 | Fingerprint | Question it answers | What it hashes |
 |---|---|---|
 | `exact` | Did anything change? | Canonical SHA-256 digest of component file paths + file bytes |
-| `api` | Did the declared boundary files change? | Hash of only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
+| `boundary` | Did the declared boundary files change? | Hash of only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
 | `compat` | Is it still compatible? | Derived from SemVer major version |
 
 Components are grouped into **slices** — named subsets with their own stable fingerprints. Adding an unrelated component changes the full-project hash but leaves existing slice fingerprints untouched.
 
-> **Important:** `api` is currently a **declared-boundary file fingerprint**, not a semantic API diff. Formatting, ordering, or comment-only edits in boundary artifacts can change it.
+> **Important:** `boundary` is a **declared-boundary file fingerprint**, not a semantic API diff. Formatting, ordering, or comment-only edits in boundary artifacts can change it.
+>
+> `api` remains as a backward-compatible lockfile alias for now.
 
 Each component also reports `boundary_status` in lock output:
 - `ok`: boundary paths were declared and hashed successfully
-- `partial`: boundary kind is `implicit` and no boundary paths are declared (API fingerprint is `null`)
-- `error`: explicit boundary kind has no paths, or declared paths produced no API digest
+- `partial`: boundary provider is `implicit` and no boundary paths are declared (API fingerprint is `null`)
+- `error`: explicit boundary provider has no paths, or declared paths produced no API digest
 
 ## Quick start
 
@@ -39,7 +41,10 @@ Each component also reports `boundary_status` in lock output:
 # Install
 pip install boundver
 
-# Create a config (see Config Reference below)
+# Create a starter config
+boundver init
+
+# Or create manually (see Config Reference below)
 cat > boundary.config.json << 'EOF'
 {
   "project": "my-project",
@@ -81,7 +86,7 @@ boundver slice auth-api
 
 ## Behavior matrix
 
-| Event | exact | api | compat |
+| Event | exact | boundary | compat |
 |---|---|---|---|
 | Bug fix (no API change) | ✓ changes | unchanged | unchanged |
 | New API endpoint added | ✓ changes | ✓ changes | unchanged |
@@ -120,7 +125,7 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
   "slices": {
     "slice-name": {
       "description": "Human-readable purpose",
-      "mode": "exact | api | compat",
+      "mode": "exact | boundary | api | compat",
       "components": ["component-a", "component-b"]
     }
   }
@@ -142,15 +147,15 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
 
 ### Boundary providers
 
-| Kind | Meaning |
+| Provider | Meaning |
 |---|---|
 | `openapi` | OpenAPI/Swagger spec defines the API surface |
 | `python-exports` | `__init__.py` or `__all__` exports define the boundary |
 | `typescript-exports` | `.d.ts` or `index.ts` exports define the boundary |
-| `service-definition` | A service definition file (JSON/YAML) defines the contract |
-| `sam-routes` | AWS SAM template route definitions |
+| `json-file` | Generic JSON boundary artifact defines the contract |
+| `custom.example.service-definition.v1` | Example custom provider namespace |
 | `leaf` | No downstream consumers — boundary is the component itself |
-| `implicit` | No explicit boundary artifact yet (`api` fingerprint will be `null`) |
+| `implicit` | No explicit boundary artifact yet (`boundary` fingerprint will be `null`) |
 
 
 ## Near-term implementation focus

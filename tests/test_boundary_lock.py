@@ -40,6 +40,19 @@ class BoundaryLockTests(unittest.TestCase):
         errs = boundary_lock.validate_config(cfg, Path.cwd())
         self.assertTrue(any("api mode cannot include" in e for e in errs))
 
+    def test_validate_config_boundary_slice_leaf_component(self):
+        cfg = {
+            "components": {
+                "x": {
+                    "path": "service/x",
+                    "boundary": {"provider": "leaf", "paths": []},
+                }
+            },
+            "slices": {"s1": {"mode": "boundary", "components": ["x"]}},
+        }
+        errs = boundary_lock.validate_config(cfg, Path.cwd())
+        self.assertTrue(any("boundary mode cannot include" in e for e in errs))
+
     def test_validate_config_accepts_boundary_provider_key(self):
         cfg = {
             "components": {
@@ -83,6 +96,68 @@ class BoundaryLockTests(unittest.TestCase):
         errs = boundary_lock.validate_config(cfg, Path.cwd())
         self.assertTrue(any("missing required field: boundary.provider" in e for e in errs))
 
+    def test_validate_config_rejects_invalid_boundary_paths_type(self):
+        cfg = {
+            "project": "x",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {"provider": "openapi", "paths": "api.yaml"},
+                }
+            },
+            "slices": {},
+        }
+        errs = boundary_lock.validate_config(cfg, Path.cwd())
+        self.assertTrue(any("boundary.paths' must be an array of strings" in e for e in errs))
+
+    def test_validate_config_rejects_invalid_slice_components_type(self):
+        cfg = {
+            "project": "x",
+            "components": {
+                "svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": []}}
+            },
+            "slices": {"s1": {"mode": "exact", "components": "svc"}},
+        }
+        errs = boundary_lock.validate_config(cfg, Path.cwd())
+        self.assertTrue(any("field 'components' must be an array of strings" in e for e in errs))
+
+    def test_schema_engine_errors_returns_empty_without_schema(self):
+        errs = boundary_lock._schema_engine_errors({"project": "x"}, None)
+        self.assertEqual(errs, [])
+
+    def test_validate_config_includes_schema_engine_errors(self):
+        original = boundary_lock._schema_engine_errors
+        try:
+            boundary_lock._schema_engine_errors = lambda cfg, schema: ["Schema validation error at <root>: boom"]
+            cfg = {"project": "x", "components": {}, "slices": {}}
+            errs = boundary_lock.validate_config(cfg, Path.cwd())
+            self.assertTrue(any("Schema validation error at <root>: boom" in e for e in errs))
+        finally:
+            boundary_lock._schema_engine_errors = original
+
+    def test_validate_config_rejects_duplicate_component_paths(self):
+        cfg = {
+            "project": "x",
+            "components": {
+                "a": {"path": "svc/a", "boundary": {"provider": "openapi", "paths": []}},
+                "b": {"path": "svc/a", "boundary": {"provider": "openapi", "paths": []}},
+            },
+            "slices": {},
+        }
+        errs = boundary_lock.validate_config(cfg, Path.cwd())
+        self.assertTrue(any("Duplicate component path" in e for e in errs))
+
+    def test_validate_config_rejects_unknown_provider_without_custom_namespace(self):
+        cfg = {
+            "project": "x",
+            "components": {
+                "a": {"path": "svc/a", "boundary": {"provider": "my-provider", "paths": []}},
+            },
+            "slices": {},
+        }
+        errs = boundary_lock.validate_config(cfg, Path.cwd())
+        self.assertTrue(any("unsupported boundary.provider" in e for e in errs))
+
     def test_generate_lockfile_marks_partial_when_no_boundary_paths(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -124,6 +199,26 @@ class BoundaryLockTests(unittest.TestCase):
             entry = lock["components"]["svc"]
             self.assertEqual(entry["boundary_status"], "ok")
             self.assertIsNotNone(entry["fingerprints"]["api"])
+            self.assertEqual(entry["fingerprints"]["boundary"], entry["fingerprints"]["api"])
+
+    def test_generate_lockfile_normalizes_api_slice_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            comp_dir = root / "svc"
+            comp_dir.mkdir(parents=True)
+            (comp_dir / "api.yaml").write_text("openapi: 3.0.0")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {"s1": {"mode": "api", "components": ["svc"]}},
+            }
+            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            self.assertEqual(lock["slices"]["s1"]["mode"], "boundary")
 
     def test_generate_lockfile_marks_error_for_explicit_kind_without_paths(self):
         with tempfile.TemporaryDirectory() as td:
@@ -145,7 +240,7 @@ class BoundaryLockTests(unittest.TestCase):
             entry = lock["components"]["svc"]
             self.assertEqual(entry["boundary_status"], "error")
             self.assertIn(
-                "No boundary paths declared for explicit boundary kind",
+                "No boundary paths declared for explicit boundary provider",
                 entry.get("boundary_errors", []),
             )
 

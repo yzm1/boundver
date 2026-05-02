@@ -48,7 +48,7 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
   - empty `paths` where a provider requires source artifacts
   - configured boundary path missing on disk
   - API slices containing components/boundaries with no API fingerprint
-- [x] Remove silent fallback from `api`/`compat` slice selection to `exact`.
+- [x] Remove silent fallback from `boundary`/`compat` slice selection to `exact`.
 - [x] Add explicit fingerprint source selection and document defaults:
   - `--source=head`
   - `--source=index`
@@ -71,16 +71,17 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 - [ ] Edge case tests:
   - Component with no version source
   - Component with missing/unavailable boundary source
-  - Component with `implicit` boundary (api fingerprint = null)
+  - Component with `implicit` boundary (`boundary` fingerprint = null)
   - Empty slices
   - Vendored copy drift detection
   - Non-existent paths in config
   - Git repo with no commits
-- [ ] CI pipeline (GitHub Actions): lint, type-check, test on Python 3.8–3.12
+- [ ] CI pipeline (GitHub Actions): lint, type-check, test on Python 3.8–3.12 (deferred until v1.0.0 cost controls are in place)
+  - CI re-enable runbook: `docs/CI_REENABLE_PLAN.md`.
 
 ## Phase 4: CLI polish
 
-- [ ] Add `boundver init` command — interactive config scaffolding
+- [x] Add `boundver init` command — starter config scaffolding (non-interactive)
 - [ ] Add `--format json|text|table` output option for all commands
 - [ ] Add `--quiet` / `--verbose` flags
 - [ ] Add `--exit-code` option for `verify` (already exits 1 on mismatch — document it)
@@ -90,8 +91,8 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 
 ## Phase 5: Config schema & validation
 
-- [ ] JSON Schema for `boundary.config.json` — publish alongside the tool
-- [ ] Validate config on load with clear error messages:
+- [x] JSON Schema for `boundary.config.json` — publish alongside the tool
+- [x] Validate config on load with clear error messages:
   - Missing required fields
   - Unknown component references in slices
   - Duplicate component paths
@@ -142,7 +143,7 @@ Immediate execution focus: fix correctness gaps (validation/fallback/source sele
 Completed in current implementation:
 
 1. ✅ Implemented `validate-config`/`check-config` and strict error cases in Phase 2.
-2. ✅ Removed `api`/`compat` silent fallback and enforced explicit digest selection (with `--allow-partial` escape hatch).
+2. ✅ Removed `boundary`/`compat` silent fallback and enforced explicit digest selection (with `--allow-partial` escape hatch).
 3. ✅ Added and documented `--source=head|index|working-tree` and wired it into generate/verify hashing.
 4. ✅ Added `compat_mode` handling (`major`/`semver_major`/`semver_major_minor`) in compatibility digest computation.
 
@@ -151,3 +152,10 @@ Next work to execute:
 1. Add packaging smoke checks in CI to validate install/run from built artifacts.
 2. Expand tests for remaining portability constraints and edge cases.
 3. Continue docs/examples cleanup toward non-proprietary/public provider baselines by default.
+
+
+## Conflicts and decisions
+
+- **CI activation vs cost control:** automated CI remains disabled until v1.0.0 per cost constraints; re-enable is gated by `docs/CI_REENABLE_PLAN.md`.
+- **Schema strictness vs portability:** runtime now uses optional `jsonschema` engine checks when available, but keeps stdlib hand-rolled validation as a fallback to avoid mandatory dependencies.
+- **Terminology migration safety:** `boundary` is primary; `api` remains a compatibility alias to avoid breaking existing lockfile consumers.

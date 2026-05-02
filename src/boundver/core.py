@@ -4,7 +4,7 @@ boundary-lock: Semantic version manifest with faceted fingerprints.
 
 Generates a lockfile where each component has:
   - exact fingerprint  (did the implementation change?)
-  - api fingerprint    (did the public boundary change?)
+  - boundary fingerprint (did the public boundary change?)
   - compat fingerprint (did the compatibility family change?)
 
 Slices group components and produce their own stable fingerprints.
@@ -360,7 +360,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
                 boundary_status = "ok"
             else:
                 boundary_status = "error"
-                boundary_errors.append("No boundary paths declared for explicit boundary kind")
+                boundary_errors.append("No boundary paths declared for explicit boundary provider")
 
         # Compatibility fingerprint: derived from semver major (or major.minor)
         compat_digest = None
@@ -380,7 +380,8 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
             "boundary_status": boundary_status,
             "fingerprints": {
                 "exact": exact_digest,
-                "api": api_digest,
+                "boundary": api_digest,
+                "api": api_digest,  # Deprecated alias; kept for backward compatibility.
                 "compat": compat_digest,
             },
             "semver": {
@@ -408,7 +409,8 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
 
     # --- Slices ---
     for slice_name, slice_def in slices_config.items():
-        mode = slice_def.get("mode", "exact")  # exact | api | compat
+        mode = slice_def.get("mode", "exact")  # exact | boundary | api | compat
+        normalized_mode = "boundary" if mode == "api" else mode
         component_names = slice_def["components"]
 
         # Collect the relevant digest for each component in the slice
@@ -419,13 +421,13 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
                 digest_parts[cname] = None
                 continue
             fp = comp_entry["fingerprints"]
-            if mode == "exact":
+            if normalized_mode == "exact":
                 digest_parts[cname] = fp.get("exact")
-            elif mode == "api":
-                if fp.get("api") is None and strict:
-                    raise ValueError(f"Slice '{slice_name}' requires api digest for component '{cname}'")
-                digest_parts[cname] = fp.get("api")
-            elif mode == "compat":
+            elif normalized_mode == "boundary":
+                if fp.get("boundary") is None and strict:
+                    raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
+                digest_parts[cname] = fp.get("boundary")
+            elif normalized_mode == "compat":
                 if fp.get("compat") is None and strict:
                     raise ValueError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
                 digest_parts[cname] = fp.get("compat")
@@ -437,7 +439,7 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
 
         lockfile["slices"][slice_name] = {
             "description": slice_def.get("description", ""),
-            "mode": mode,
+            "mode": normalized_mode,
             "components": sorted(component_names),
             "fingerprint": slice_hash,
             "component_digests": digest_parts,
@@ -446,16 +448,65 @@ def generate_lockfile(config: dict, repo_root: Path, source: str = "head", stric
     return lockfile
 
 
+
+
+def _load_config_schema(repo_root: Path) -> Optional[dict]:
+    schema_path = repo_root / "boundary.config.schema.json"
+    if not schema_path.exists():
+        return None
+    try:
+        return json.loads(schema_path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
+def _schema_required_fields(schema: Optional[dict]) -> List[str]:
+    if not schema:
+        return ["project", "components", "slices"]
+    required = schema.get("required", [])
+    return [k for k in required if isinstance(k, str)] or ["project", "components", "slices"]
+
+
+def _is_str_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
+    """
+    Optional strict JSON Schema validation.
+    If jsonschema is unavailable, return no engine errors and rely on hand-rolled checks.
+    """
+    if not schema:
+        return []
+    try:
+        import jsonschema  # type: ignore
+    except ImportError:
+        return []
+
+    try:
+        validator = jsonschema.Draft202012Validator(schema)
+    except Exception as exc:  # pragma: no cover - defensive path
+        return [f"Schema validator initialization failed: {exc}"]
+
+    errors: List[str] = []
+    for err in validator.iter_errors(config):
+        path = ".".join(str(p) for p in err.path) or "<root>"
+        errors.append(f"Schema validation error at {path}: {err.message}")
+    return sorted(errors)
+
+
 def validate_config(config: dict, repo_root: Path) -> List[str]:
     errors: List[str] = []
     if not isinstance(config, dict):
         return ["Config root must be a JSON object"]
 
-    for required_key in ("project", "components", "slices"):
+    schema = _load_config_schema(repo_root)
+    errors.extend(_schema_engine_errors(config, schema))
+    for required_key in _schema_required_fields(schema):
         if required_key not in config:
             errors.append(f"Missing required top-level field: {required_key}")
 
-    supported_modes = {"exact", "api", "compat"}
+    supported_modes = {"exact", "api", "boundary", "compat"}
     compat_mode = config.get("defaults", {}).get("compat_mode", "major")
     if compat_mode not in {"major", "semver_major", "semver_major_minor"}:
         errors.append(f"Unsupported defaults.compat_mode: {compat_mode}")
@@ -469,10 +520,27 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         errors.append("Field 'slices' must be an object")
         slices = {}
 
+    seen_component_paths: Dict[str, str] = {}
+    known_providers = {"openapi", "python-exports", "typescript-exports", "json-file", "leaf", "implicit"}
+
     for name, comp in components.items():
+        if not isinstance(comp, dict):
+            errors.append(f"Component '{name}' must be an object")
+            continue
         if "path" not in comp:
             errors.append(f"Component '{name}' missing required field: path")
             continue
+        if not isinstance(comp["path"], str) or not comp["path"].strip():
+            errors.append(f"Component '{name}' field 'path' must be a non-empty string")
+        else:
+            normalized_path = comp["path"].rstrip("/")
+            if normalized_path in seen_component_paths:
+                other = seen_component_paths[normalized_path]
+                errors.append(
+                    f"Duplicate component path '{normalized_path}' used by '{other}' and '{name}'"
+                )
+            else:
+                seen_component_paths[normalized_path] = name
         boundary = comp.get("boundary", {})
         if not isinstance(boundary, dict):
             errors.append(f"Component '{name}' boundary must be an object")
@@ -483,30 +551,50 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             )
         if "provider" not in boundary:
             errors.append(f"Component '{name}' missing required field: boundary.provider")
+        elif not isinstance(boundary["provider"], str) or not boundary["provider"].strip():
+            errors.append(f"Component '{name}' field 'boundary.provider' must be a non-empty string")
+        elif boundary["provider"] not in known_providers and not boundary["provider"].startswith("custom."):
+            errors.append(
+                f"Component '{name}' has unsupported boundary.provider '{boundary['provider']}' "
+                "(use a known provider or custom.* namespace)"
+            )
         kind = boundary_provider_name(boundary)
         paths = boundary.get("paths", [])
+        if "paths" in boundary and not _is_str_list(paths):
+            errors.append(f"Component '{name}' field 'boundary.paths' must be an array of strings")
+            paths = []
         if kind == "service-definition" and not paths:
             errors.append(f"Component '{name}' has service-definition boundary with empty paths")
         for rel in paths:
             full = repo_root / comp["path"] / rel
             if not full.exists():
                 errors.append(f"Component '{name}' boundary path missing: {rel}")
+        vendored = comp.get("vendored_copies")
+        if vendored is not None and not _is_str_list(vendored):
+            errors.append(f"Component '{name}' field 'vendored_copies' must be an array of strings")
 
     for sname, sdef in slices.items():
+        if not isinstance(sdef, dict):
+            errors.append(f"Slice '{sname}' must be an object")
+            continue
         mode = sdef.get("mode", "exact")
         if mode not in supported_modes:
             errors.append(f"Slice '{sname}' has unknown mode: {mode}")
-        for cname in sdef.get("components", []):
+        slice_components = sdef.get("components", [])
+        if not _is_str_list(slice_components):
+            errors.append(f"Slice '{sname}' field 'components' must be an array of strings")
+            continue
+        for cname in slice_components:
             if cname not in components:
                 errors.append(f"Slice '{sname}' references unknown component: {cname}")
                 continue
-            if mode == "api":
+            if mode in {"api", "boundary"}:
                 kind = boundary_provider_name(components[cname].get("boundary", {}))
                 paths = components[cname].get("boundary", {}).get("paths", [])
                 if kind in {"leaf", "implicit"}:
-                    errors.append(f"Slice '{sname}' in api mode cannot include '{cname}' ({kind})")
+                    errors.append(f"Slice '{sname}' in {mode} mode cannot include '{cname}' ({kind})")
                 if not paths:
-                    errors.append(f"Slice '{sname}' in api mode includes '{cname}' with no boundary paths")
+                    errors.append(f"Slice '{sname}' in {mode} mode includes '{cname}' with no boundary paths")
 
     return errors
 
@@ -541,7 +629,7 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
             old_fp = old_comps[name].get("fingerprints", {})
             new_fp = new_comps[name].get("fingerprints", {})
             changes = {}
-            for facet in ("exact", "api", "compat"):
+            for facet in ("exact", "boundary", "compat"):
                 ov = old_fp.get(facet)
                 nv = new_fp.get(facet)
                 if ov != nv:
@@ -581,7 +669,7 @@ def _summarize_change(changes: dict) -> str:
     facets = list(changes.keys())
     if facets == ["exact"]:
         return "implementation-only change (API stable)"
-    elif "api" in facets and "compat" not in facets:
+    elif "boundary" in facets and "compat" not in facets:
         return "API surface changed (compatible)"
     elif "compat" in facets:
         return "BREAKING: compatibility family changed"
@@ -602,7 +690,7 @@ def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str =
         if locked_comp is None:
             issues.append(f"NEW component not in lockfile: {name}")
             continue
-        for facet in ("exact", "api", "compat"):
+        for facet in ("exact", "boundary", "compat"):
             cv = current_comp["fingerprints"].get(facet)
             lv = locked_comp["fingerprints"].get(facet)
             if cv != lv:
@@ -736,7 +824,7 @@ def main():
     gen.add_argument("--config", default="boundary.config.json", help="Config file path")
     gen.add_argument("--out", default="boundary.lock.json", help="Output lockfile path")
     gen.add_argument("--source", choices=["head", "index", "working-tree"], default="head", help="Fingerprint source")
-    gen.add_argument("--allow-partial", action="store_true", help="Allow missing api/compat digests in slices")
+    gen.add_argument("--allow-partial", action="store_true", help="Allow missing boundary/compat digests in slices")
 
     # verify
     ver = sub.add_parser("verify", help="Check lockfile matches current repo state")
@@ -760,6 +848,10 @@ def main():
 
     cc = sub.add_parser("check-config", help="Alias for validate-config")
     cc.add_argument("--config", default="boundary.config.json")
+
+    # init
+    init = sub.add_parser("init", help="Create a starter boundary.config.json")
+    init.add_argument("--config", default="boundary.config.json")
 
     # status
     st = sub.add_parser("status", help="Show lockfile summary and warnings")
@@ -839,6 +931,28 @@ def main():
                 print(f"  - {err}")
             sys.exit(1)
         print("Config is valid.")
+
+    elif args.command == "init":
+        config_path = repo_root / args.config
+        if config_path.exists():
+            print(f"ERROR: Config already exists: {config_path}", file=sys.stderr)
+            sys.exit(1)
+        starter = {
+            "project": repo_root.name,
+            "defaults": {"compat_mode": "major"},
+            "components": {
+                "example-component": {
+                    "path": "src",
+                    "version_source": None,
+                    "boundary": {"provider": "implicit", "paths": []},
+                }
+            },
+            "slices": {
+                "default": {"description": "Default exact slice", "mode": "exact", "components": ["example-component"]}
+            },
+        }
+        config_path.write_text(json.dumps(starter, indent=2) + "\n")
+        print(f"Created starter config: {config_path}")
 
     elif args.command == "status":
         lock_path = repo_root / args.lock
