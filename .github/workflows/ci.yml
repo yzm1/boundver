@@ -1,4 +1,4 @@
-name: CI (disabled until v1.0)
+name: CI (disabled until v1.0.0)
 
 on:
   workflow_dispatch:
@@ -9,5 +9,6 @@ jobs:
     steps:
       - name: CI disabled notice
         run: |
-          echo "CI is intentionally disabled until v1.0 to control costs during rapid multi-agent development."
-          echo "Re-enable push/pull_request matrix testing once the project reaches v1.0."
+          echo "CI is intentionally disabled until v1.0.0."
+          echo "Reason: runaway GitHub Actions costs during rapid development."
+          echo "Restore automated push/pull_request triggers once development cadence and costs are stable."
