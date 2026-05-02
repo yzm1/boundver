@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import os
 import json
+import io
+from contextlib import redirect_stdout
 
 import boundver.core as boundary_lock
 import boundver
@@ -208,6 +210,158 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertEqual(entry["boundary_status"], "partial")
             self.assertIn("No boundary paths declared for implicit boundary", entry.get("boundary_errors", []))
 
+    def test_explain_component_changes_reports_boundary_relevant_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            comp = root / "svc"
+            comp.mkdir(parents=True)
+            (comp / "openapi.yaml").write_text("openapi: 3.0.0\n")
+            (comp / "impl.py").write_text("print('ok')\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True, text=True)
+
+            (comp / "openapi.yaml").write_text("openapi: 3.1.0\n")
+            (comp / "impl.py").write_text("print('changed')\n")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["openapi.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = boundary_lock.explain_component_changes(cfg, root, "svc")
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("Changed files (2):", text)
+            self.assertIn("svc/openapi.yaml", text)
+            self.assertIn("Boundary-relevant changed files (1):", text)
+
+    def test_explain_component_changes_unknown_component(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg = {"project": "p", "components": {}, "slices": {}}
+            rc = boundary_lock.explain_component_changes(cfg, root, "missing")
+            self.assertEqual(rc, 2)
+
+    def test_verify_lockfile_components_filter_scopes_mismatches(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            a_dir = root / "a"
+            b_dir = root / "b"
+            a_dir.mkdir(parents=True)
+            b_dir.mkdir(parents=True)
+            (a_dir / "api.yaml").write_text("v1")
+            (b_dir / "api.yaml").write_text("v1")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "a": {"path": "a", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}},
+                    "b": {"path": "b", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}},
+                },
+                "slices": {},
+            }
+            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree", deterministic=True)
+            (b_dir / "api.yaml").write_text("v2")
+
+            issues_all = boundary_lock.verify_lockfile(cfg, lock, root, source="working-tree")
+            self.assertTrue(any(i.startswith("MISMATCH b.") for i in issues_all), issues_all)
+
+            issues_a_only = boundary_lock.verify_lockfile(
+                cfg, lock, root, source="working-tree", components_filter=["a"]
+            )
+            self.assertEqual(issues_a_only, [])
+
+    def test_generate_lockfile_for_components_updates_only_selected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            a_dir = root / "a"
+            b_dir = root / "b"
+            a_dir.mkdir(parents=True)
+            b_dir.mkdir(parents=True)
+            (a_dir / "api.yaml").write_text("a-v1")
+            (b_dir / "api.yaml").write_text("b-v1")
+            cfg = {
+                "project": "p",
+                "components": {
+                    "a": {"path": "a", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}},
+                    "b": {"path": "b", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}},
+                },
+                "slices": {
+                    "only-a": {"mode": "boundary", "components": ["a"]},
+                    "only-b": {"mode": "boundary", "components": ["b"]},
+                },
+            }
+            out = root / "boundary.lock.json"
+            full = boundary_lock.generate_lockfile(cfg, root, source="working-tree", deterministic=True)
+            out.write_text(json.dumps(full, indent=2))
+            old_b_exact = full["components"]["b"]["fingerprints"]["exact"]
+            old_b_slice = full["slices"]["only-b"]["fingerprint"]
+
+            (a_dir / "api.yaml").write_text("a-v2")
+            partial = boundary_lock.generate_lockfile_for_components(
+                cfg, root, selected_components=["a"], out_path=out, source="working-tree", deterministic=True
+            )
+
+            self.assertNotEqual(
+                partial["components"]["a"]["fingerprints"]["exact"],
+                full["components"]["a"]["fingerprints"]["exact"],
+            )
+            self.assertEqual(partial["components"]["b"]["fingerprints"]["exact"], old_b_exact)
+            self.assertEqual(partial["slices"]["only-b"]["fingerprint"], old_b_slice)
+
+    def test_discover_components_finds_common_manifests(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "services" / "auth").mkdir(parents=True)
+            (root / "libs" / "core").mkdir(parents=True)
+            (root / "services" / "auth" / "package.json").write_text('{"version":"1.0.0"}')
+            (root / "libs" / "core" / "pyproject.toml").write_text("[project]\nversion='0.1.0'\n")
+            comps = boundary_lock.discover_components(root)
+            self.assertIn("auth", comps)
+            self.assertIn("core", comps)
+            self.assertEqual(comps["auth"]["path"], "services/auth")
+            self.assertEqual(comps["core"]["path"], "libs/core")
+
+    def test_init_discover_creates_config_with_discovered_components(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            (root / "svc").mkdir(parents=True)
+            (root / "svc" / "go.mod").write_text("module example.com/svc\n")
+            proc = self._run_cli(root, "init", "--discover")
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            cfg = json.loads((root / "boundary.config.json").read_text())
+            self.assertIn("svc", cfg["components"])
+            self.assertEqual(cfg["slices"]["default"]["components"], ["svc"])
+
+    def test_changed_components_since_ref_detects_modified_component_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / "a" / "x.txt").write_text("a1")
+            (root / "b" / "y.txt").write_text("b1")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True, text=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "a": {"path": "a", "boundary": {"provider": "implicit", "paths": []}},
+                    "b": {"path": "b", "boundary": {"provider": "implicit", "paths": []}},
+                },
+                "slices": {},
+            }
+            (root / "b" / "y.txt").write_text("b2")
+            changed = boundary_lock.changed_components_since_ref(cfg, root, "HEAD")
+            self.assertEqual(changed, ["b"])
+
     def test_generate_lockfile_deterministic_omits_generated_at(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -268,6 +422,17 @@ class BoundaryLockTests(unittest.TestCase):
             }
             lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
             self.assertEqual(lock["slices"]["s1"]["mode"], "boundary")
+
+    def test_boundary_digest_deduplicates_overlapping_paths(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            comp = root / "svc"
+            comp.mkdir(parents=True)
+            (comp / "api").mkdir()
+            (comp / "api" / "openapi.yaml").write_text("openapi: 3.0.0\n")
+            d1 = boundary_lock.boundary_paths_digest(root, "svc", ["api"], source="working-tree")
+            d2 = boundary_lock.boundary_paths_digest(root, "svc", ["api", "api/openapi.yaml"], source="working-tree")
+            self.assertEqual(d1, d2)
 
     def test_schema_accepts_boundary_slice_mode(self):
         with tempfile.TemporaryDirectory() as td:
@@ -838,6 +1003,37 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertNotEqual(before["exact"], after["exact"])
             self.assertNotEqual(before["boundary"], after["boundary"])
             self.assertEqual(before["compat"], after["compat"])
+
+    def test_symlink_content_matches_between_head_and_working_tree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            comp = root / "svc"
+            comp.mkdir(parents=True)
+            target = comp / "target.txt"
+            target.write_text("payload\n")
+            link = comp / "link.txt"
+            try:
+                os.symlink("target.txt", link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlink not supported in this environment")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "symlink"], cwd=root, check=True, capture_output=True, text=True)
+            cfg = {
+                "project": "p",
+                "components": {"svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["link.txt"]}}},
+                "slices": {},
+            }
+            head_lock = boundary_lock.generate_lockfile(cfg, root, source="head", deterministic=True)
+            wt_lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree", deterministic=True)
+            self.assertEqual(
+                head_lock["components"]["svc"]["fingerprints"]["exact"],
+                wt_lock["components"]["svc"]["fingerprints"]["exact"],
+            )
+            self.assertEqual(
+                head_lock["components"]["svc"]["fingerprints"]["boundary"],
+                wt_lock["components"]["svc"]["fingerprints"]["boundary"],
+            )
 
     def test_major_version_bump_updates_compat(self):
         with tempfile.TemporaryDirectory() as td:
