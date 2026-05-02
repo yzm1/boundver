@@ -14,6 +14,8 @@ In a repository with many components and layered dependencies, you need differen
 
 Traditional version managers require humans to answer these questions via commit messages or changelogs. boundver derives the answers from repo state — deterministically, automatically, and with no runtime dependencies beyond Git and Python 3.8+.
 
+For tool-selection guidance and scope boundaries, see `docs/WHY_BOUNDVER.md`.
+
 ## How it works
 
 Each component gets three fingerprints:
@@ -42,6 +44,8 @@ pip install boundver
 
 # Create a starter config
 boundver init
+# Or auto-discover components from common manifests
+boundver init --discover
 # Custom path / overwrite existing
 boundver init --out boundary.config.json --force
 
@@ -72,6 +76,9 @@ EOF
 # Generate the lockfile
 boundver generate
 
+# Regenerate only selected components (and affected slices)
+boundver generate --components auth-service,billing-service
+
 # Deterministic output (omits generated_at)
 boundver generate --deterministic
 
@@ -83,6 +90,12 @@ boundver status
 
 # Verify lockfile matches repo state
 boundver verify
+
+# Verify only selected components
+boundver verify --components auth-service,billing-service
+
+# Verify only components changed since main
+boundver verify --changed-from origin/main
 
 # JSON output for automation
 boundver verify --json
@@ -96,6 +109,9 @@ boundver diff old.lock.json boundary.lock.json
 
 # Inspect a specific slice
 boundver slice auth-api
+
+# Preview discovered components
+boundver discover --json
 ```
 
 ## Behavior matrix
@@ -199,7 +215,31 @@ Short term deliverables: `validate-config`, strict digest selection, explicit so
 
 ## CI integration
 
+For lockfile merge conflict handling, see `docs/LOCKFILE_MERGE.md`.
+
 ### GitHub Actions — PR verification
+
+#### Option A: use bundled composite action
+
+```yaml
+name: Boundary check
+on: [pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/boundver
+        with:
+          config: boundary.config.json
+          lock: boundary.lock.json
+          source: head
+          show-diff-on-failure: "true"
+```
+
+#### Option B: explicit steps
 
 ```yaml
 name: Boundary check
@@ -238,6 +278,13 @@ if [ "$NEW_FP" != "$CACHED_FP" ]; then
 fi
 ```
 
+### Shell verifier (portability proof)
+
+```bash
+# Verifies exact/boundary fingerprints against HEAD using git + jq + sha256sum
+scripts/boundver-verify.sh boundary.config.json boundary.lock.json
+```
+
 ## Design decisions
 
 - **No external dependencies.** Only Git and Python stdlib. Runs anywhere Python 3.8+ and Git are available.
@@ -267,18 +314,16 @@ pip install "boundver[yaml]"
 
 Without `jsonschema`, boundver still runs and applies built-in semantic validation checks.
 
+## Release
+
+- PyPI publish workflow: `.github/workflows/publish.yml`
+- Trigger: push a version tag matching `v*` (for example `v0.3.0`)
+
 ## Ignore behavior for `--source=working-tree`
 
-For working-tree hashing, boundver currently uses a **built-in ignore list** (this is not `.gitignore`-aware yet):
-
-- dot-prefixed names (e.g. `.cache`, `.venv`)
-- `__pycache__`
-- `node_modules`
-- `*.pyc`
-- `dist`
-- `build`
-
-For `--source=head` and `--source=index`, content and path enumeration are Git-backed and therefore based on Git object state rather than local traversal ignores.
+`--source=working-tree` prefers Git-backed tracked-file enumeration (`git ls-files`) when available.
+In non-git fallback contexts, local file traversal is used.
+Symlinks are hashed as link-target text (not dereferenced bytes) for cross-source consistency.
 
 ## Requirements
 

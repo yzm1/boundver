@@ -110,32 +110,12 @@ def _is_within(base: Path, candidate: Path) -> bool:
 
 def source_tree_digest(repo_root: Path, path: str, source: str = "head") -> Optional[str]:
     """Canonical SHA-256 digest for a path from HEAD, index, or working tree."""
-    target = repo_root / path
     content_parts: List[bytes] = []
     file_count = 0
 
-    if source == "head":
-        files = list_head_files(repo_root, path)
-        for rel in files:
-            posix_rel = _to_posix(rel)
-            content_parts.append(f"file:{posix_rel}\n".encode("utf-8"))
-            file_count += 1
-            _enforce_hash_guardrails(repo_root / rel, file_count)
-            content = _read_path_content(repo_root, repo_root / rel, source)
-            _enforce_content_size(content, posix_rel)
-            content_parts.append(content)
-        return hashlib.sha256(b"".join(content_parts)).hexdigest() if content_parts else None
-
-    if not target.exists():
+    files = _list_files_for_source(repo_root, path, source)
+    if not files:
         return None
-    if target.is_file():
-        files = [_to_posix(str(target.relative_to(repo_root)))]
-    else:
-        files = [
-            _to_posix(str(f.relative_to(repo_root)))
-            for f in sorted(target.rglob("*"))
-            if f.is_file() and not _is_ignored(f)
-        ]
 
     for rel in files:
         content_parts.append(f"file:{rel}\n".encode("utf-8"))
@@ -178,6 +158,36 @@ def _head_entries_for_path(repo_root: Path, base_path: str) -> List[str]:
     return []
 
 
+def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> List[str]:
+    if source == "head":
+        return list_head_files(repo_root, repo_rel_path)
+    args = ["ls-files"]
+    if source == "index":
+        args.append("--cached")
+    args.extend(["--", repo_rel_path])
+    try:
+        result = _git_run(repo_root, args)
+    except subprocess.CalledProcessError:
+        result_files: List[str] = []
+    else:
+        result_files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+
+    if result_files:
+        return result_files
+
+    # Fallback for non-git test/runtime environments: local filesystem enumeration.
+    target = repo_root / repo_rel_path
+    if not target.exists():
+        return []
+    if target.is_file():
+        return [_to_posix(str(target.relative_to(repo_root)))]
+    return [
+        _to_posix(str(f.relative_to(repo_root)))
+        for f in sorted(target.rglob("*"))
+        if f.is_file() and not _is_ignored(f)
+    ]
+
+
 def boundary_paths_digest(
     repo_root: Path, component_path: str, relative_paths: List[str], source: str = "working-tree"
 ) -> Optional[str]:
@@ -187,40 +197,24 @@ def boundary_paths_digest(
     """
     content_parts: List[bytes] = []
     file_count = 0
+    seen_entries = set()
     for rel in sorted(relative_paths):
         rel = rel.strip()
-        if source == "head":
-            base = _to_posix(str(Path(component_path) / rel))
-            head_entries = _head_entries_for_path(repo_root, base)
-            for entry in head_entries:
-                child_rel = _to_posix(str(Path(entry).relative_to(component_path)))
-                content_parts.append(f"file:{child_rel}\n".encode("utf-8"))
-                file_count += 1
-                _enforce_hash_guardrails(repo_root / entry, file_count)
-                content = _read_path_content(repo_root, repo_root / entry, source)
-                _enforce_content_size(content, child_rel)
-                content_parts.append(content)
-            continue
-
-        full = repo_root / component_path / rel
-        if full.is_file():
-            norm_rel = _to_posix(rel)
-            content_parts.append(f"file:{norm_rel}\n".encode("utf-8"))
+        base = _to_posix(str(Path(component_path) / rel))
+        entries = _list_files_for_source(repo_root, base, source)
+        if source == "head" and not entries:
+            entries = _head_entries_for_path(repo_root, base)
+        for entry in entries:
+            if entry in seen_entries:
+                continue
+            seen_entries.add(entry)
+            child_rel = _to_posix(str(Path(entry).relative_to(component_path)))
+            content_parts.append(f"file:{child_rel}\n".encode("utf-8"))
             file_count += 1
-            _enforce_hash_guardrails(full, file_count)
-            content = _read_path_content(repo_root, full, source)
-            _enforce_content_size(content, norm_rel)
+            _enforce_hash_guardrails(repo_root / entry, file_count)
+            content = _read_path_content(repo_root, repo_root / entry, source)
+            _enforce_content_size(content, child_rel)
             content_parts.append(content)
-        elif full.is_dir():
-            for child in sorted(full.rglob("*")):
-                if child.is_file() and not _is_ignored(child):
-                    child_rel = _to_posix(str(child.relative_to(repo_root / component_path)))
-                    content_parts.append(f"file:{child_rel}\n".encode("utf-8"))
-                    file_count += 1
-                    _enforce_hash_guardrails(child, file_count)
-                    content = _read_path_content(repo_root, child, source)
-                    _enforce_content_size(content, child_rel)
-                    content_parts.append(content)
     if not content_parts:
         return None
     return hashlib.sha256(b"".join(content_parts)).hexdigest()
@@ -234,6 +228,9 @@ def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
     if source == "head":
         result = _git_run(repo_root, ["show", f"HEAD:{rel}"])
         return result.stdout.encode("utf-8")
+    if full_path.is_symlink():
+        # Hash symlink link-target text (matches what Git stores for symlink blobs).
+        return os.readlink(full_path).encode("utf-8")
     return full_path.read_bytes()
 
 
@@ -415,6 +412,96 @@ def generate_lockfile(
         }
 
     return lockfile
+
+
+def _recompute_slice_entry(
+    slice_name: str,
+    slice_def: dict,
+    components_map: Dict[str, dict],
+    strict: bool = True,
+) -> dict:
+    mode = slice_def.get("mode", "exact")
+    component_names = slice_def["components"]
+    digest_parts: Dict[str, Optional[str]] = {}
+    for cname in sorted(component_names):
+        comp_entry = components_map.get(cname)
+        if comp_entry is None:
+            digest_parts[cname] = None
+            continue
+        fp = comp_entry.get("fingerprints", {})
+        if mode == "exact":
+            digest_parts[cname] = fp.get("exact")
+        elif mode == "boundary":
+            if fp.get("boundary") is None and strict:
+                raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
+            digest_parts[cname] = fp.get("boundary")
+        elif mode == "compat":
+            if fp.get("compat") is None and strict:
+                raise ValueError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
+            digest_parts[cname] = fp.get("compat")
+        else:
+            raise ValueError(f"Unknown slice mode: {mode}")
+    return {
+        "description": slice_def.get("description", ""),
+        "mode": mode,
+        "components": sorted(component_names),
+        "fingerprint": sha256_hex(canonical_json(digest_parts)),
+        "component_digests": digest_parts,
+    }
+
+
+def generate_lockfile_for_components(
+    config: dict,
+    repo_root: Path,
+    selected_components: List[str],
+    out_path: Path,
+    source: str = "head",
+    strict: bool = True,
+    deterministic: bool = False,
+) -> dict:
+    """Generate/update lockfile only for selected components and impacted slices."""
+    selected = sorted(set(selected_components))
+    components_cfg = config.get("components", {})
+    missing = [n for n in selected if n not in components_cfg]
+    if missing:
+        raise ValueError(f"Unknown component(s): {', '.join(missing)}")
+
+    subset_config = dict(config)
+    subset_config["components"] = {n: components_cfg[n] for n in selected}
+    subset_config["slices"] = {}
+    subset_lock = generate_lockfile(
+        subset_config, repo_root, source=source, strict=strict, deterministic=deterministic
+    )
+
+    if out_path.exists():
+        merged = json.loads(out_path.read_text())
+    else:
+        merged = {
+            "schema": "boundary-lock/v1",
+            "project": config.get("project", "unknown"),
+            "components": {},
+            "slices": {},
+        }
+    if not deterministic:
+        merged["generated_at"] = datetime.now(timezone.utc).isoformat()
+    elif "generated_at" in merged:
+        del merged["generated_at"]
+    merged["schema"] = "boundary-lock/v1"
+    merged["project"] = config.get("project", "unknown")
+    merged.setdefault("components", {})
+    merged.setdefault("slices", {})
+
+    for name in selected:
+        merged["components"][name] = subset_lock["components"][name]
+
+    for sname, sdef in config.get("slices", {}).items():
+        slice_components = sdef.get("components", [])
+        if any(c in selected for c in slice_components):
+            merged["slices"][sname] = _recompute_slice_entry(
+                sname, sdef, merged["components"], strict=strict
+            )
+
+    return merged
 
 
 
@@ -688,7 +775,13 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
     return issues
 
 
-def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str = "head") -> List[str]:
+def verify_lockfile(
+    config: dict,
+    lockfile: dict,
+    repo_root: Path,
+    source: str = "head",
+    components_filter: Optional[List[str]] = None,
+) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches."""
     current = generate_lockfile(config, repo_root, source=source)
     issues = _lockfile_schema_issues(lockfile)
@@ -696,7 +789,12 @@ def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str =
     if issues:
         return issues
 
+    selected = set(components_filter or [])
+    use_filter = len(selected) > 0
+
     for name, current_comp in current["components"].items():
+        if use_filter and name not in selected:
+            continue
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
             issues.append(f"NEW component not in lockfile: {name}")
@@ -711,11 +809,15 @@ def verify_lockfile(config: dict, lockfile: dict, repo_root: Path, source: str =
                 )
 
     for name in lockfile.get("components", {}):
+        if use_filter and name not in selected:
+            continue
         if name not in current["components"]:
             issues.append(f"REMOVED component still in lockfile: {name}")
 
     # Check for vendored copy drift
     for name, comp in current["components"].items():
+        if use_filter and name not in selected:
+            continue
         for warning in comp.get("warnings", []):
             issues.append(f"VENDORED DRIFT {name}: {warning}")
 
@@ -819,6 +921,81 @@ def print_status(lockfile: dict) -> None:
         print(f"    {sname} [{mode}] ({count} components) = {fp}")
 
 
+def explain_component_changes(config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD") -> int:
+    """Explain changed tracked files for one component and its boundary subset."""
+    comp = config.get("components", {}).get(component_name)
+    if not comp:
+        print(f"ERROR: unknown component '{component_name}'", file=sys.stderr)
+        known = sorted(config.get("components", {}).keys())
+        if known:
+            print(f"Known components: {', '.join(known)}", file=sys.stderr)
+        return 2
+
+    component_path = str(comp.get("path", "")).rstrip("/")
+    boundary = comp.get("boundary", {})
+    boundary_paths = boundary.get("paths", []) if isinstance(boundary, dict) else []
+
+    try:
+        diff = _git_run(repo_root, ["diff", "--name-status", base_ref, "--", component_path])
+    except subprocess.CalledProcessError as exc:
+        print(f"ERROR: failed to diff '{component_name}' against {base_ref}: {exc}", file=sys.stderr)
+        return 2
+
+    changed: List[Tuple[str, str]] = []
+    for line in diff.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2:
+            continue
+        changed.append((parts[0].strip(), _to_posix(parts[1].strip())))
+
+    print(f"Component: {component_name}")
+    print(f"Path: {component_path}")
+    print(f"Base ref: {base_ref}")
+
+    if not changed:
+        print("\nNo tracked file changes detected for this component path.")
+        return 0
+
+    print(f"\nChanged files ({len(changed)}):")
+    for status, rel in changed:
+        print(f"  {status:>2}  {rel}")
+
+    if not boundary_paths:
+        print("\nBoundary paths: none declared")
+        return 0
+
+    component_prefix = f"{_to_posix(component_path)}/"
+    normalized_boundary_paths = []
+    for p in boundary_paths:
+        rp = _to_posix(str(p).strip().rstrip("/"))
+        if rp:
+            normalized_boundary_paths.append(rp)
+
+    boundary_changed: List[Tuple[str, str]] = []
+    for status, rel in changed:
+        component_relative = rel
+        if component_relative.startswith(component_prefix):
+            component_relative = component_relative[len(component_prefix):]
+        for bp in normalized_boundary_paths:
+            if component_relative == bp or component_relative.startswith(f"{bp}/"):
+                boundary_changed.append((status, rel))
+                break
+
+    print(f"\nBoundary provider: {boundary_provider_name(boundary)}")
+    print("Boundary paths:")
+    for bp in normalized_boundary_paths:
+        print(f"  - {bp}")
+
+    if boundary_changed:
+        print(f"\nBoundary-relevant changed files ({len(boundary_changed)}):")
+        for status, rel in boundary_changed:
+            print(f"  {status:>2}  {rel}")
+    else:
+        print("\nBoundary-relevant changed files: none")
+
+    return 0
+
+
 def _print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=True))
 
@@ -826,6 +1003,56 @@ def _print_json(data: Any) -> None:
 def _log(msg: str, quiet: bool = False) -> None:
     if not quiet:
         print(msg)
+
+
+def _parse_components_arg(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    return sorted(set(names))
+
+
+def discover_components(repo_root: Path) -> Dict[str, dict]:
+    """Best-effort component discovery from common manifest files."""
+    manifests = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
+    found: Dict[str, dict] = {}
+    for manifest in manifests:
+        for mf in sorted(repo_root.rglob(manifest)):
+            if ".git" in mf.parts:
+                continue
+            rel_dir = mf.parent.relative_to(repo_root)
+            if str(rel_dir) == ".":
+                continue
+            comp_name = rel_dir.name
+            base_name = comp_name
+            idx = 2
+            while comp_name in found:
+                comp_name = f"{base_name}-{idx}"
+                idx += 1
+            found[comp_name] = {
+                "path": _to_posix(str(rel_dir)),
+                "version_source": {"file": _to_posix(str(mf.relative_to(repo_root))), "field": "version"},
+                "boundary": {"provider": "implicit", "paths": []},
+            }
+    return found
+
+
+def changed_components_since_ref(config: dict, repo_root: Path, base_ref: str) -> List[str]:
+    """Return component names with tracked changes since `base_ref`."""
+    try:
+        result = _git_run(repo_root, ["diff", "--name-only", base_ref, "--"])
+    except subprocess.CalledProcessError:
+        return []
+    changed_files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+    changed: List[str] = []
+    for cname, comp in config.get("components", {}).items():
+        cpath = _to_posix(str(comp.get("path", "")).rstrip("/"))
+        if not cpath:
+            continue
+        prefix = f"{cpath}/"
+        if any(f == cpath or f.startswith(prefix) for f in changed_files):
+            changed.append(cname)
+    return sorted(changed)
 
 
 # ---------------------------------------------------------------------------
@@ -851,6 +1078,7 @@ def main():
     gen.add_argument("--allow-partial", action="store_true", help="Allow missing boundary/compat digests in slices")
     gen.add_argument("--deterministic", action="store_true", help="Omit generated_at for idempotent lockfile output")
     gen.add_argument("--dry-run", action="store_true", help="Compute lockfile and print status without writing output")
+    gen.add_argument("--components", default="", help="Comma-separated component names to regenerate")
     gen.add_argument("--json", action="store_true", help="Print JSON output")
 
     # verify
@@ -858,6 +1086,8 @@ def main():
     ver.add_argument("--config", default="boundary.config.json")
     ver.add_argument("--lock", default="boundary.lock.json")
     ver.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
+    ver.add_argument("--components", default="", help="Comma-separated component names to verify")
+    ver.add_argument("--changed-from", default="", help="Auto-select changed components since git ref")
     ver.add_argument("--json", action="store_true", help="Print JSON output")
 
     # diff
@@ -882,6 +1112,7 @@ def main():
     init = sub.add_parser("init", help="Create a starter boundary.config.json")
     init.add_argument("--out", default="boundary.config.json", help="Output config file path")
     init.add_argument("--force", action="store_true", help="Overwrite existing file")
+    init.add_argument("--discover", action="store_true", help="Auto-discover components from common manifests")
 
     # status
     st = sub.add_parser("status", help="Show lockfile summary and warnings")
@@ -889,6 +1120,15 @@ def main():
     st.add_argument("--lock", default="boundary.lock.json")
     st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
     st.add_argument("--json", action="store_true", help="Print JSON output")
+
+    # explain
+    ex = sub.add_parser("explain", help="Explain changed files for a component")
+    ex.add_argument("component", help="Component name from config")
+    ex.add_argument("--config", default="boundary.config.json")
+    ex.add_argument("--base-ref", default="HEAD", help="Git ref to diff against (default: HEAD)")
+
+    disc = sub.add_parser("discover", help="Print discovered components as JSON")
+    disc.add_argument("--json", action="store_true", help="Print JSON output")
 
     args = parser.parse_args()
 
@@ -908,10 +1148,22 @@ def main():
             print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
         config = json.loads(config_path.read_text())
+        components_filter = _parse_components_arg(args.components)
         try:
-            lockfile = generate_lockfile(
-                config, repo_root, source=args.source, strict=(not args.allow_partial), deterministic=args.deterministic
-            )
+            if components_filter:
+                lockfile = generate_lockfile_for_components(
+                    config,
+                    repo_root,
+                    selected_components=components_filter,
+                    out_path=repo_root / args.out,
+                    source=args.source,
+                    strict=(not args.allow_partial),
+                    deterministic=args.deterministic,
+                )
+            else:
+                lockfile = generate_lockfile(
+                    config, repo_root, source=args.source, strict=(not args.allow_partial), deterministic=args.deterministic
+                )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             print("Run: boundver validate-config", file=sys.stderr)
@@ -932,9 +1184,23 @@ def main():
     elif args.command == "verify":
         config = json.loads((repo_root / args.config).read_text())
         lockfile = json.loads((repo_root / args.lock).read_text())
-        issues = verify_lockfile(config, lockfile, repo_root, source=args.source)
+        components_filter = _parse_components_arg(args.components)
+        if args.changed_from:
+            auto = changed_components_since_ref(config, repo_root, args.changed_from)
+            if components_filter:
+                auto_set = set(auto)
+                components_filter = [c for c in components_filter if c in auto_set]
+            else:
+                components_filter = auto
+        unknown = [n for n in components_filter if n not in config.get("components", {})]
+        if unknown:
+            print(f"ERROR: unknown --components entries: {', '.join(unknown)}", file=sys.stderr)
+            sys.exit(2)
+        issues = verify_lockfile(
+            config, lockfile, repo_root, source=args.source, components_filter=components_filter
+        )
         if args.json:
-            _print_json({"ok": len(issues) == 0, "issues": issues})
+            _print_json({"ok": len(issues) == 0, "issues": issues, "components_filter": components_filter})
         if issues:
             if not args.json and not args.quiet:
                 print(f"LOCKFILE OUT OF DATE ({len(issues)} issues):\n")
@@ -992,11 +1258,12 @@ def main():
         if config_path.exists() and not args.force:
             print(f"ERROR: Config already exists: {config_path}", file=sys.stderr)
             sys.exit(1)
+        discovered = discover_components(repo_root) if args.discover else {}
         starter = {
             "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
             "project": repo_root.name,
             "defaults": {"compat_mode": "major"},
-            "components": {
+            "components": discovered or {
                 "example-component": {
                     "path": "src",
                     "version_source": None,
@@ -1004,11 +1271,25 @@ def main():
                 }
             },
             "slices": {
-                "default": {"description": "Default exact slice", "mode": "exact", "components": ["example-component"]}
+                "default": {
+                    "description": "Default exact slice",
+                    "mode": "exact",
+                    "components": sorted((discovered or {"example-component": {}}).keys()),
+                }
             },
         }
         config_path.write_text(json.dumps(starter, indent=2) + "\n")
         print(f"Created starter config: {config_path}")
+
+    elif args.command == "discover":
+        discovered = discover_components(repo_root)
+        payload = {"count": len(discovered), "components": discovered}
+        if args.json:
+            _print_json(payload)
+        else:
+            print(f"Discovered {len(discovered)} components:")
+            for name, comp in discovered.items():
+                print(f"  - {name}: {comp['path']}")
 
     elif args.command == "status":
         lock_path = repo_root / args.lock
@@ -1033,6 +1314,12 @@ def main():
         else:
             print(f"No lockfile found at {lock_path}. Run 'generate' first.")
             sys.exit(1)
+
+    elif args.command == "explain":
+        config = json.loads((repo_root / args.config).read_text())
+        rc = explain_component_changes(config, repo_root, args.component, base_ref=args.base_ref)
+        if rc != 0:
+            sys.exit(rc)
 
 
 if __name__ == "__main__":

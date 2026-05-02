@@ -1,0 +1,64 @@
+name: "boundver verify"
+description: "Zero-setup boundver verification with optional diff-on-failure"
+inputs:
+  config:
+    description: "Path to boundary config"
+    required: false
+    default: "boundary.config.json"
+  lock:
+    description: "Path to lockfile"
+    required: false
+    default: "boundary.lock.json"
+  source:
+    description: "Fingerprint source mode"
+    required: false
+    default: "head"
+  components:
+    description: "Optional comma-separated component subset"
+    required: false
+    default: ""
+  python-version:
+    description: "Python version used by action"
+    required: false
+    default: "3.12"
+  show-diff-on-failure:
+    description: "Generate and print lockfile diff on verify failure"
+    required: false
+    default: "true"
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install boundver
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install .
+
+    - name: Verify lockfile
+      shell: bash
+      run: |
+        set -euo pipefail
+        EXTRA_ARGS=()
+        if [ -n "${{ inputs.components }}" ]; then
+          EXTRA_ARGS+=(--components "${{ inputs.components }}")
+        fi
+        boundver verify \
+          --config "${{ inputs.config }}" \
+          --lock "${{ inputs.lock }}" \
+          --source "${{ inputs.source }}" \
+          "${EXTRA_ARGS[@]}"
+
+    - name: Diff on failure
+      if: ${{ failure() && inputs.show-diff-on-failure == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        boundver generate --config "${{ inputs.config }}" --out /tmp/boundary.lock.new.json --source "${{ inputs.source }}" || true
+        if [ -f "/tmp/boundary.lock.new.json" ]; then
+          boundver diff "${{ inputs.lock }}" /tmp/boundary.lock.new.json || true
+        fi

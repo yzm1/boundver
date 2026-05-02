@@ -46,6 +46,23 @@ This plan consolidates the two latest review passes into one prioritized, issue-
 - ✅ Completed: **P3.25+** machine-readable JSON output added for generate/verify/diff/status command flows.
 - ✅ Completed: **P3.26+** added CLI logging controls (`--quiet`, `--verbose`).
 - ✅ Completed: **P3.30** added large-repo hash guardrails (max files + max file size) with explicit component errors.
+- ✅ Completed: **Spec-first milestone** added `spec/boundary.lock.schema.json`.
+- ✅ Completed: **Spec-first milestone** added `spec/HASHING.md` determinism contract.
+- ✅ Completed: **Spec-first milestone** added `spec/spec.md` overview and v1 terminology contract.
+- ✅ Completed: **P2.23 (partial+)** removed stale legacy `boundary-lockfile.md`.
+- ✅ Completed: **P2 item from reviews** added `docs/WHY_BOUNDVER.md` tool-selection decision guide.
+- ✅ Completed: **P2.11 (initial)** added `explain` command to surface component and boundary-relevant changed files.
+- ✅ Completed: **P2.13 (partial)** verify now supports component-scoped checks via `--components`.
+- ✅ Completed: **P2.13 (partial+)** generate now supports component-scoped refresh via `--components`.
+- ✅ Completed: **P2.10 (initial)** documented lockfile merge resolution + added merge-driver regeneration script.
+- ✅ Completed: **P2.14 (initial)** added manifest-based discovery via `discover` and `init --discover`.
+- ✅ Completed: **P1.5 (initial)** added composite GitHub Action for verify + optional diff-on-failure.
+- ✅ Completed: **P3.30/PyPI path** added tag-triggered PyPI publish workflow (`publish.yml`).
+- ✅ Completed: **P1.7 from impl list** added shell-based HEAD verifier (`scripts/boundver-verify.sh`).
+- ✅ Completed: **P0.4 (partial+)** working-tree/index path enumeration now uses git-native tracked-file listing.
+- ✅ Completed: **P2.12 (partial)** boundary digest computation now de-duplicates overlapping path expansions.
+- ✅ Completed: **P2.15 (initial)** verify now supports auto-scoping by changed files via `--changed-from`.
+- ✅ Completed: **P0.4 (partial++)** symlink hashing now uses link-target text for cross-source parity.
 - ✅ Completed: **Core split (partial)** extracted version parsing/extraction into `src/boundver/versions.py`.
 - ✅ Completed: **Hidden failure-mode fix** verify now short-circuits on malformed lockfile structure issues to avoid secondary crashes.
 - ✅ Completed: **Hidden failure-mode fix** `versions.extract_version` now safely handles git-tag sources when resolver is unavailable.

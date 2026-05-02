@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
+  "title": "boundver lockfile schema",
+  "type": "object",
+  "required": ["schema", "project", "components", "slices"],
+  "properties": {
+    "schema": {"const": "boundary-lock/v1"},
+    "project": {"type": "string"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "components": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["version", "path", "boundary_provider", "boundary_status", "fingerprints", "semver"],
+        "properties": {
+          "version": {"type": "string"},
+          "path": {"type": "string"},
+          "boundary_provider": {"type": "string"},
+          "boundary_status": {"type": "string", "enum": ["ok", "partial", "error"]},
+          "fingerprints": {
+            "type": "object",
+            "required": ["exact", "boundary", "compat"],
+            "properties": {
+              "exact": {"type": ["string", "null"]},
+              "boundary": {"type": ["string", "null"]},
+              "compat": {"type": ["string", "null"]}
+            },
+            "additionalProperties": false
+          },
+          "semver": {
+            "type": "object",
+            "required": ["compat_family", "api_surface", "exact_version"],
+            "properties": {
+              "compat_family": {"type": ["integer", "null"]},
+              "api_surface": {"type": ["string", "null"]},
+              "exact_version": {"type": "string"}
+            },
+            "additionalProperties": false
+          },
+          "boundary_errors": {"type": "array", "items": {"type": "string"}},
+          "exact_errors": {"type": "array", "items": {"type": "string"}},
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "vendored_copies": {"type": "array", "items": {"type": "string"}},
+          "vendored_digests": {"type": "object", "additionalProperties": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "slices": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["description", "mode", "components", "fingerprint", "component_digests"],
+        "properties": {
+          "description": {"type": "string"},
+          "mode": {"type": "string", "enum": ["exact", "boundary", "compat"]},
+          "components": {"type": "array", "items": {"type": "string"}},
+          "fingerprint": {"type": "string"},
+          "component_digests": {
+            "type": "object",
+            "additionalProperties": {"type": ["string", "null"]}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
