@@ -7,7 +7,7 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
     """Produce a human-readable diff between two lockfiles."""
     result: Dict[str, dict] = {
         "components": {"added": [], "removed": [], "changed": [], "unchanged": []},
-        "slices": {"changed": [], "unchanged": []},
+        "slices": {"added": [], "removed": [], "changed": [], "unchanged": []},
     }
 
     old_comps = old.get("components", {})
@@ -50,16 +50,27 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
     old_slices = old.get("slices", {})
     new_slices = new.get("slices", {})
     for sname in sorted(set(old_slices.keys()) | set(new_slices.keys())):
-        old_fp = old_slices.get(sname, {}).get("fingerprint")
-        new_fp = new_slices.get(sname, {}).get("fingerprint")
-        if old_fp != new_fp:
-            result["slices"]["changed"].append({
+        if sname not in old_slices:
+            result["slices"]["added"].append({
                 "name": sname,
-                "old": old_fp,
-                "new": new_fp,
+                "fingerprint": new_slices[sname].get("fingerprint"),
+            })
+        elif sname not in new_slices:
+            result["slices"]["removed"].append({
+                "name": sname,
+                "fingerprint": old_slices[sname].get("fingerprint"),
             })
         else:
-            result["slices"]["unchanged"].append(sname)
+            old_fp = old_slices[sname].get("fingerprint")
+            new_fp = new_slices[sname].get("fingerprint")
+            if old_fp != new_fp:
+                result["slices"]["changed"].append({
+                    "name": sname,
+                    "old": old_fp,
+                    "new": new_fp,
+                })
+            else:
+                result["slices"]["unchanged"].append(sname)
 
     return result
 

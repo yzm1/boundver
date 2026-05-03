@@ -1,0 +1,48 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v1",
+  "project": "example-behavior",
+  "components": {
+    "payment-svc": {
+      "version": "2.1.0",
+      "path": "examples/behavior/service",
+      "boundary_provider": "openapi",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "8ec50d3ee3220130fe624a51e69e50b5a91d7d3e9ae7d7ec5af0a7531c7fcbe6",
+        "behavior": "088402eb53f284046ec8116988673f0e68c67ea8338a40ed65b3a13d824fd401",
+        "boundary": "6f10dcca6f288ecc437f05ec3482891eb8103c54ba5301e138a5701778817900",
+        "compat": "85e5cd77fa1a3e08ce7e859a1326c924c6b43db9d3dfdda278f92c3d33fa43a0"
+      },
+      "semver": {
+        "compat_family": "2",
+        "api_surface": "2.1",
+        "exact_version": "2.1.0"
+      }
+    }
+  },
+  "slices": {
+    "payment-boundary": {
+      "description": "",
+      "mode": "boundary",
+      "components": [
+        "payment-svc"
+      ],
+      "fingerprint": "50bb9a59b2d41c1f3dbbd976189fea30aebb7461240b527fd211aa0e93f28aa0",
+      "component_digests": {
+        "payment-svc": "6f10dcca6f288ecc437f05ec3482891eb8103c54ba5301e138a5701778817900"
+      }
+    },
+    "payment-behavior": {
+      "description": "",
+      "mode": "behavior",
+      "components": [
+        "payment-svc"
+      ],
+      "fingerprint": "7aa0f63f1ba5b3ac13c1109663ae1f3a1d88e24cb7362d27b7dd420e0615d0d0",
+      "component_digests": {
+        "payment-svc": "088402eb53f284046ec8116988673f0e68c67ea8338a40ed65b3a13d824fd401"
+      }
+    }
+  }
+}

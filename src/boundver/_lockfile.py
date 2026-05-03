@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 from ._git import _git_cat_blob, _list_files_for_source, _to_posix, git_latest_tag
 from ._hashing import (
+    MAX_HASH_FILE_BYTES,
     _content_only_digest,
     _enforce_content_size,
     _short,
@@ -51,11 +52,17 @@ def generate_lockfile(
         elif source == "index":
             return _git_cat_blob(repo_root, f":{repo_rel}")
         else:
-            return (repo_root / repo_rel).read_bytes()
+            fpath = repo_root / repo_rel
+            size = fpath.stat().st_size
+            if size > MAX_HASH_FILE_BYTES:
+                raise ValueError(
+                    f"Version source file too large ({size} bytes): {repo_rel}"
+                )
+            return fpath.read_bytes()
 
     # --- Components ---
     for name, comp in components_config.items():
-        comp_path = comp["path"]
+        comp_path = comp["path"].rstrip("/")
         version = extract_version(
             repo_root, comp_path, comp.get("version_source"), git_latest_tag,
             read_file_fn=_version_read_file,
@@ -70,6 +77,15 @@ def generate_lockfile(
         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
             exact_digest = None
             exact_errors.append(f"Exact digest failed: {exc}")
+
+        if exact_digest is None and not exact_errors:
+            if source in ("head", "index"):
+                exact_errors.append(
+                    f"No files found for '{comp_path}' at {source.upper()}. "
+                    f"Have you committed this path? Try --source working-tree"
+                )
+            else:
+                exact_errors.append(f"No files found for '{comp_path}' on disk")
 
         def _make_read_file(src: str):
             def _read(repo_rel: str) -> bytes:
@@ -131,8 +147,9 @@ def generate_lockfile(
             )
             try:
                 behavior_digest, _bstatus, _berrs = compute_boundary(behavior_provider, behavior_ctx)
-            except (OSError, subprocess.CalledProcessError, ValueError):
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
                 behavior_digest = None
+                boundary_errors.append(f"behavior computation failed: {exc}")
 
         # Compatibility fingerprint: derived from semver major (or major.minor)
         compat_digest = None
@@ -149,6 +166,7 @@ def generate_lockfile(
             "version": version,
             "path": comp_path,
             "boundary_provider": boundary_provider,
+            "boundary_provider_version": getattr(provider, "version", "1") if provider else None,
             "boundary_status": boundary_status,
             "fingerprints": {
                 "exact": exact_digest,
@@ -184,42 +202,9 @@ def generate_lockfile(
 
     # --- Slices ---
     for slice_name, slice_def in slices_config.items():
-        mode = slice_def.get("mode", "exact")
-        component_names = slice_def["components"]
-
-        digest_parts: Dict[str, Optional[str]] = {}
-        for cname in sorted(component_names):
-            comp_entry = lockfile["components"].get(cname)
-            if comp_entry is None:
-                digest_parts[cname] = None
-                continue
-            fp = comp_entry["fingerprints"]
-            if mode == "exact":
-                digest_parts[cname] = fp.get("exact")
-            elif mode == "behavior":
-                if fp.get("behavior") is None and strict:
-                    raise ValueError(f"Slice '{slice_name}' requires behavior digest for component '{cname}'")
-                digest_parts[cname] = fp.get("behavior")
-            elif mode == "boundary":
-                if fp.get("boundary") is None and strict:
-                    raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
-                digest_parts[cname] = fp.get("boundary")
-            elif mode == "compat":
-                if fp.get("compat") is None and strict:
-                    raise ValueError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
-                digest_parts[cname] = fp.get("compat")
-            else:
-                raise ValueError(f"Unknown slice mode: {mode}")
-
-        slice_hash = sha256_hex(canonical_json(digest_parts))
-
-        lockfile["slices"][slice_name] = {
-            "description": slice_def.get("description", ""),
-            "mode": mode,
-            "components": sorted(component_names),
-            "fingerprint": slice_hash,
-            "component_digests": digest_parts,
-        }
+        lockfile["slices"][slice_name] = _recompute_slice_entry(
+            slice_name, slice_def, lockfile["components"], strict=strict
+        )
 
     return lockfile
 
@@ -289,7 +274,12 @@ def generate_lockfile_for_components(
     )
 
     if out_path.exists():
-        merged = json.loads(out_path.read_text())
+        try:
+            merged = json.loads(out_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Existing lockfile at {out_path} is not valid JSON: {exc}"
+            ) from exc
     else:
         merged = {
             "$schema": LOCKFILE_SCHEMA_URL,
@@ -362,10 +352,11 @@ def verify_lockfile(
         all_components = config.get("components", {})
         filtered_config["components"] = {n: all_components[n] for n in components_filter if n in all_components}
         filtered_config["slices"] = {}
-        current = generate_lockfile(filtered_config, repo_root, source=source,
+        current = generate_lockfile(filtered_config, repo_root, source=source, strict=False,
                                     allow_custom_providers=allow_custom_providers)
     else:
-        current = generate_lockfile(config, repo_root, source=source, allow_custom_providers=allow_custom_providers)
+        current = generate_lockfile(config, repo_root, source=source, strict=False,
+                                    allow_custom_providers=allow_custom_providers)
     issues = _lockfile_schema_issues(lockfile)
     issues.extend(_lockfile_structure_issues(lockfile))
     if issues:

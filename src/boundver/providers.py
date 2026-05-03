@@ -95,6 +95,7 @@ class BoundaryProvider(Protocol):
     """Interface every provider must satisfy."""
 
     name: str  # Stable identifier — must match boundary.provider in config.
+    version: str  # Bump when hashing algorithm changes for this provider.
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         """Return the normalised content to be hashed.
@@ -176,6 +177,7 @@ class PathHashProvider:
     """
 
     name: str = ""  # overridden by subclasses / instances
+    version: str = "1"  # Bump when the hashing algorithm changes
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -229,6 +231,9 @@ class PathHashProvider:
                 status="error",
                 errors=["Declared boundary paths produced no digest"],
             )
+        # Sort all entries by label for deterministic digest regardless of
+        # pattern declaration order in config.
+        ordered.sort(key=lambda entry: entry[0])
         return ResolvedBoundary(entries=ordered)
 
     def validate_config(
@@ -276,6 +281,7 @@ class ImplicitProvider:
     """
 
     name = "implicit"
+    version = "1"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -316,6 +322,7 @@ class LeafProvider:
     """
 
     name = "leaf"
+    version = "1"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         return ResolvedBoundary(entries=[], status="ok")
@@ -422,6 +429,7 @@ class JsonCanonicalProvider:
     """
 
     name = "json-canonical"
+    version = "1"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -433,6 +441,11 @@ class JsonCanonicalProvider:
         entries: List[tuple] = []
         for rel in sorted(paths):
             rel = rel.strip()
+            if _is_glob(rel):
+                return ResolvedBoundary(
+                    status="error",
+                    errors=[f"Glob patterns not supported by json-canonical provider: {rel}"],
+                )
             full_base = f"{ctx.component_path}/{rel}".lstrip("/")
             for repo_rel in sorted(ctx.list_files(full_base)):
                 raw = ctx.read_file(repo_rel)
@@ -503,6 +516,7 @@ class OpenApiCanonicalProvider:
     """
 
     name = "openapi-canonical"
+    version = "1"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -514,6 +528,11 @@ class OpenApiCanonicalProvider:
         entries: List[tuple] = []
         for rel in sorted(paths):
             rel = rel.strip()
+            if _is_glob(rel):
+                return ResolvedBoundary(
+                    status="error",
+                    errors=[f"Glob patterns not supported by openapi-canonical provider: {rel}"],
+                )
             full_base = f"{ctx.component_path}/{rel}".lstrip("/")
             for repo_rel in sorted(ctx.list_files(full_base)):
                 raw = ctx.read_file(repo_rel)
@@ -594,6 +613,18 @@ def _register_builtins() -> None:
 
 
 _register_builtins()
+
+# Aliases: raw-hash providers get explicit "-raw" names for clarity.
+# Users can write "openapi-raw" or "openapi" interchangeably.
+_ALIASES = {
+    "openapi-raw": "openapi",
+    "json-file-raw": "json-file",
+    "python-exports-raw": "python-exports",
+    "typescript-exports-raw": "typescript-exports",
+}
+for _alias, _target in _ALIASES.items():
+    if _target in _REGISTRY:
+        _REGISTRY[_alias] = _REGISTRY[_target]
 
 
 # ---------------------------------------------------------------------------

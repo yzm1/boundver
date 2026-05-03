@@ -7,6 +7,7 @@
       "version": "1.2.3",
       "path": "examples/openapi/service",
       "boundary_provider": "openapi",
+      "boundary_provider_version": "1",
       "boundary_status": "ok",
       "fingerprints": {
         "exact": "7822e6e64efbe27b028201aeb820ed8512fd02f7499c31bac0aba5e84da638d6",

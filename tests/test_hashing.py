@@ -720,7 +720,7 @@ class GitHelpersTests(unittest.TestCase):
         return root
 
     def test_load_gitignore_skips_comments_blank_negation(self):
-        from boundver._git import _load_gitignore_patterns
+        from boundver._git import _load_gitignore_patterns, _matches_gitignore
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / ".gitignore").write_text(
@@ -728,11 +728,13 @@ class GitHelpersTests(unittest.TestCase):
             )
             patterns = _load_gitignore_patterns(root)
             self.assertIsNotNone(patterns)
-            self.assertNotIn("# comment", patterns)
-            self.assertNotIn("", patterns)
-            self.assertNotIn("!negated.txt", patterns)
-            self.assertIn("*.log", patterns)
-            self.assertIn("build", patterns)  # trailing / stripped
+            # *.log should be matched
+            self.assertTrue(_matches_gitignore("foo/x.log", patterns))
+            # build/ should be matched (trailing / stripped)
+            self.assertTrue(_matches_gitignore("build/out.js", patterns))
+            # Negation: negated.txt should NOT be ignored
+            # (negation undoes a previous match — but there's no rule that matches it first)
+            self.assertFalse(_matches_gitignore("negated.txt", patterns))
 
     def test_load_gitignore_returns_none_when_absent(self):
         from boundver._git import _load_gitignore_patterns
@@ -741,25 +743,36 @@ class GitHelpersTests(unittest.TestCase):
             self.assertIsNone(result)
 
     def test_matches_gitignore_slash_prefix(self):
-        from boundver._git import _matches_gitignore
+        from boundver._git import _matches_gitignore, _GitignoreRules
         # Pattern with "/" matches as directory prefix
-        self.assertTrue(_matches_gitignore("vendor/lib/a.py", ["vendor/lib"]))
+        rules = _GitignoreRules()
+        rules.add("vendor/lib")
+        self.assertTrue(_matches_gitignore("vendor/lib/a.py", rules))
 
     def test_matches_gitignore_slash_exact(self):
-        from boundver._git import _matches_gitignore
-        self.assertTrue(_matches_gitignore("dist", ["dist"]))
+        from boundver._git import _matches_gitignore, _GitignoreRules
+        rules = _GitignoreRules()
+        rules.add("dist")
+        self.assertTrue(_matches_gitignore("dist", rules))
 
     def test_matches_gitignore_slash_glob(self):
-        from boundver._git import _matches_gitignore
-        self.assertTrue(_matches_gitignore("src/foo/bar.py", ["src/*/bar.py"]))
+        from boundver._git import _matches_gitignore, _GitignoreRules
+        rules = _GitignoreRules()
+        rules.add("src/*/bar.py")
+        self.assertTrue(_matches_gitignore("src/foo/bar.py", rules))
 
     def test_matches_gitignore_no_slash_component(self):
-        from boundver._git import _matches_gitignore
-        self.assertTrue(_matches_gitignore("deep/path/skip.log", ["*.log"]))
+        from boundver._git import _matches_gitignore, _GitignoreRules
+        rules = _GitignoreRules()
+        rules.add("*.log")
+        self.assertTrue(_matches_gitignore("deep/path/skip.log", rules))
 
     def test_matches_gitignore_no_match(self):
-        from boundver._git import _matches_gitignore
-        self.assertFalse(_matches_gitignore("src/main.py", ["*.log", "vendor"]))
+        from boundver._git import _matches_gitignore, _GitignoreRules
+        rules = _GitignoreRules()
+        rules.add("*.log")
+        rules.add("vendor")
+        self.assertFalse(_matches_gitignore("src/main.py", rules))
 
     def test_list_files_for_source_filesystem_fallback_single_file(self):
         """_list_files_for_source falls back to filesystem when git ls-files is empty."""

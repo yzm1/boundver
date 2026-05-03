@@ -1,0 +1,25 @@
+openapi: "3.0.3"
+info:
+  title: Payment Service
+  version: "2.1.0"
+paths:
+  /payments:
+    post:
+      summary: Create a payment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentRequest"
+      responses:
+        "201":
+          description: Payment created
+components:
+  schemas:
+    PaymentRequest:
+      type: object
+      properties:
+        amount:
+          type: number
+        currency:
+          type: string

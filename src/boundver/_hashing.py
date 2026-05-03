@@ -66,8 +66,18 @@ def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
         return _git_cat_blob(repo_root, f"HEAD:{rel}")
     if full_path.is_symlink():
         # Hash symlink link-target text (matches what Git stores for symlink blobs).
-        return os.readlink(full_path).encode("utf-8")
-    raw = full_path.read_bytes()
+        try:
+            target = os.readlink(full_path)
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot read symlink at {full_path.relative_to(repo_root)}: {exc}"
+            ) from exc
+        return target.encode("utf-8") if isinstance(target, str) else target
+    try:
+        raw = full_path.read_bytes()
+    except FileNotFoundError:
+        # File was listed (e.g. by ls-files) but removed before read — treat as empty.
+        return b""
     # Normalize CRLF → LF so working-tree hashes match what git stores (git strips CR on commit).
     # This keeps fingerprints stable across platforms and git autocrlf configurations.
     if b"\r\n" in raw and b"\x00" not in raw:
@@ -77,7 +87,7 @@ def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
 
 def source_tree_digest(repo_root: Path, path: str, source: str = "head") -> Optional[str]:
     """Canonical SHA-256 digest for a path from HEAD, index, or working tree."""
-    files = _list_files_for_source(repo_root, path, source)
+    files = sorted(_list_files_for_source(repo_root, path, source))
     if not files:
         return None
     for i, rel in enumerate(files):

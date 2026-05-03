@@ -98,16 +98,16 @@ def _load_config_schema(repo_root: Path) -> Optional[dict]:
     if not schema_path.exists():
         return None
     try:
-        return json.loads(schema_path.read_text())
+        return json.loads(schema_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
 
 
 def _schema_required_fields(schema: Optional[dict]) -> List[str]:
     if not schema:
-        return ["project", "components", "slices"]
+        return ["project", "components"]
     required = schema.get("required", [])
-    return [k for k in required if isinstance(k, str)] or ["project", "components", "slices"]
+    return [k for k in required if isinstance(k, str)] or ["project", "components"]
 
 
 def _is_str_list(value: Any) -> bool:
@@ -161,11 +161,14 @@ def _expand_component_paths(
     if not component_root.exists() or not component_root.is_dir():
         return set()
 
-    all_files = [
-        _to_posix(str(path.relative_to(component_root)))
-        for path in sorted(component_root.rglob("*"))
-        if path.is_file()
-    ]
+    # Bounded enumeration to prevent runaway memory on huge directories.
+    _MAX_EXPAND_FILES = 50000
+    all_files: List[str] = []
+    for path in sorted(component_root.rglob("*")):
+        if path.is_file():
+            all_files.append(_to_posix(str(path.relative_to(component_root))))
+            if len(all_files) >= _MAX_EXPAND_FILES:
+                break
     matched: Set[str] = set()
 
     for rel in paths:
@@ -249,6 +252,8 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
     known_providers = {
         "openapi", "python-exports", "typescript-exports", "json-file", "leaf", "implicit",
         "json-canonical", "openapi-canonical",
+        # Explicit "-raw" aliases for clarity
+        "openapi-raw", "json-file-raw", "python-exports-raw", "typescript-exports-raw",
     }
 
     # Validate top-level providers list (Phase 2)
@@ -268,9 +273,20 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                         errors.append(
                             f"providers[{i}] missing required string field '{field_name}'"
                         )
-                # Track declared custom provider names for cross-reference
+                # Track declared custom provider names for cross-reference.
+                # The registered provider name is: entry["name"] if provided,
+                # otherwise defaults to "custom.{class_name}".
+                declared_name = entry.get("name", "").strip() if isinstance(entry.get("name"), str) else ""
                 cls_name = entry.get("class", "")
-                if isinstance(cls_name, str) and cls_name.strip():
+                if declared_name:
+                    if not declared_name.startswith("custom."):
+                        errors.append(
+                            f"providers[{i}] field 'name' must start with 'custom.' "
+                            f"(got '{declared_name}')"
+                        )
+                    else:
+                        declared_custom_names.add(declared_name)
+                elif isinstance(cls_name, str) and cls_name.strip():
                     declared_custom_names.add(f"custom.{cls_name.strip()}")
 
     for name, comp in components.items():
@@ -285,6 +301,14 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             errors.append(f"Component '{name}' field 'path' must be a non-empty string")
         else:
             normalized_path = component_path.rstrip("/")
+            if ".." in normalized_path.replace("\\", "/").split("/"):
+                errors.append(
+                    f"Component '{name}' path must not contain '..': {normalized_path}"
+                )
+            elif Path(normalized_path).is_absolute():
+                errors.append(
+                    f"Component '{name}' path must be relative: {normalized_path}"
+                )
             if normalized_path in seen_component_paths:
                 other = seen_component_paths[normalized_path]
                 errors.append(
@@ -464,6 +488,7 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
     """Best-effort component discovery from common manifest files."""
     manifests = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
     _ignored_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+    _MAX_DISCOVER = 1000  # Cap discovered components to prevent runaway on huge monorepos
     found: Dict[str, dict] = {}
     for manifest in manifests:
         for mf in sorted(repo_root.rglob(manifest)):
@@ -484,6 +509,8 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
                 "version_source": {"file": mf.name, "field": "version"},
                 "boundary": {"provider": provider, "paths": paths},
             }
+            if len(found) >= _MAX_DISCOVER:
+                return found
     return found
 
 

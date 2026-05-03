@@ -12,14 +12,21 @@
       },
       "boundary": {
         "provider": "python-exports",
-        "paths": ["cli.py", "__init__.py"]
+        "paths": [
+          "cli.py",
+          "__init__.py"
+        ]
       }
     },
     "spec": {
       "path": "spec",
       "boundary": {
         "provider": "json-file",
-        "paths": ["boundary.lock.schema.json", "HASHING.md", "spec.md"]
+        "paths": [
+          "boundary.lock.schema.json",
+          "HASHING.md",
+          "spec.md"
+        ]
       }
     }
   },
@@ -27,17 +34,24 @@
     "cli-api": {
       "description": "CLI interface and public API surface",
       "mode": "boundary",
-      "components": ["boundver"]
+      "components": [
+        "boundver"
+      ]
     },
     "spec": {
       "description": "Spec documents and schemas",
       "mode": "exact",
-      "components": ["spec"]
+      "components": [
+        "spec"
+      ]
     },
     "all": {
       "description": "Full implementation fingerprint",
       "mode": "exact",
-      "components": ["boundver", "spec"]
+      "components": [
+        "boundver",
+        "spec"
+      ]
     }
   }
 }

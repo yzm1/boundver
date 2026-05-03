@@ -56,6 +56,9 @@ def extract_version(
     field_path = version_source.get("field")
     if not file_rel or not field_path:
         return None
+    # Reject path traversal in version_source.file
+    if ".." in file_rel.replace("\\", "/").split("/"):
+        return None
     repo_rel = f"{component_path}/{file_rel}"
     if read_file_fn is not None:
         try:
@@ -65,7 +68,19 @@ def extract_version(
         return _extract_field_from_bytes(raw, file_rel, field_path)
     # Fallback: read from disk
     full_path = repo_root / component_path / file_rel
+    # Verify resolved path stays within repository
+    try:
+        full_path.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return None
     if not full_path.exists():
+        return None
+    # Reject oversized version-source files (10 MiB cap).
+    _MAX_VERSION_FILE = 10 * 1024 * 1024
+    try:
+        if full_path.stat().st_size > _MAX_VERSION_FILE:
+            return None
+    except OSError:
         return None
     if file_rel.endswith('.json'):
         return _extract_json_field(full_path, field_path)
@@ -106,6 +121,8 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
     if tomllib is not None:
         try:
             data = tomllib.loads(text)
+        except (MemoryError, RecursionError):
+            raise
         except Exception:
             return None
         current: Any = data
@@ -132,7 +149,12 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
         if current_section == target_section:
             kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
             if kv_match and kv_match.group(1) == target_key:
-                return kv_match.group(2) or kv_match.group(3) or kv_match.group(4)
+                # Check groups explicitly — empty string is a valid value
+                if kv_match.group(2) is not None:
+                    return kv_match.group(2)
+                if kv_match.group(3) is not None:
+                    return kv_match.group(3)
+                return kv_match.group(4)
     return None
 
 
@@ -141,6 +163,8 @@ def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
     if yaml is not None:
         try:
             data = yaml.safe_load(text)
+        except (MemoryError, RecursionError):
+            raise
         except Exception:
             return None  # Real parser failed — don't fall back to regex; be authoritative
         current: Any = data
@@ -188,7 +212,7 @@ def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
 
 def _extract_json_field(path: Path, field_path: str) -> Optional[str]:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         for key in field_path.split('.'):
             data = data[key]
         return str(data)
@@ -197,11 +221,13 @@ def _extract_json_field(path: Path, field_path: str) -> Optional[str]:
 
 
 def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     keys = field_path.split('.')
     if tomllib is not None:
         try:
             data = tomllib.loads(text)
+        except (MemoryError, RecursionError):
+            raise
         except Exception:
             return None
         current: Any = data
@@ -229,16 +255,23 @@ def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
         if current_section == target_section:
             kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
             if kv_match and kv_match.group(1) == target_key:
-                return kv_match.group(2) or kv_match.group(3) or kv_match.group(4)
+                # Check groups explicitly — empty string is a valid value
+                if kv_match.group(2) is not None:
+                    return kv_match.group(2)
+                if kv_match.group(3) is not None:
+                    return kv_match.group(3)
+                return kv_match.group(4)
     return None
 
 
 def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     keys = field_path.split('.')
     if yaml is not None:
         try:
             data = yaml.safe_load(text)
+        except (MemoryError, RecursionError):
+            raise
         except Exception:
             return None  # Real parser failed — don't fall back to regex; be authoritative
         current: Any = data

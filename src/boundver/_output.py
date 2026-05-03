@@ -62,6 +62,14 @@ def print_diff(diff: dict) -> None:
         print(f"\n  UNCHANGED: {len(comps['unchanged'])} components")
 
     slices = diff["slices"]
+    if slices.get("added"):
+        print("\n  SLICES ADDED:")
+        for s in slices["added"]:
+            print(_green(f"    + {s['name']}"))
+    if slices.get("removed"):
+        print("\n  SLICES REMOVED:")
+        for s in slices["removed"]:
+            print(_red(f"    - {s['name']}"))
     if slices["changed"]:
         print("\n  SLICES CHANGED:")
         for s in slices["changed"]:
@@ -122,6 +130,9 @@ def print_status(lockfile: dict) -> None:
 
 def explain_component_changes(config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head") -> int:
     """Explain changed tracked files for one component and its boundary subset."""
+    if base_ref.lstrip().startswith("-"):
+        print(f"ERROR: invalid base ref: {base_ref!r}", file=sys.stderr)
+        return 2
     comp = config.get("components", {}).get(component_name)
     if not comp:
         print(f"ERROR: unknown component '{component_name}'", file=sys.stderr)
@@ -163,10 +174,12 @@ def explain_component_changes(config: dict, repo_root: Path, component_name: str
 
     changed: List[Tuple[str, str]] = []
     for line in diff.stdout.splitlines():
-        parts = line.split("\t", 1)
-        if len(parts) != 2:
+        parts = line.split("\t")
+        if len(parts) < 2:
             continue
-        changed.append((parts[0].strip(), _to_posix(parts[1].strip())))
+        # Renames/copies have 3 fields: status\told\tnew — use the new name
+        filepath = parts[-1]
+        changed.append((parts[0].strip(), _to_posix(filepath.strip())))
 
     print(f"Component: {component_name}")
     print(f"Path: {component_path}")
@@ -239,6 +252,7 @@ def why_component(
     repo_root: Path,
     component_name: str,
     source: str = "head",
+    allow_custom_providers: bool = False,
 ) -> int:
     """Explain why a component's lockfile entry is out of date.
 
@@ -270,7 +284,8 @@ def why_component(
     subset_config["components"] = {component_name: comp_cfg}
     subset_config["slices"] = {}
     try:
-        current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False)
+        current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False,
+                                            allow_custom_providers=allow_custom_providers)
     except Exception as exc:
         print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
         return 2
@@ -321,9 +336,18 @@ def why_component(
             diff = _git_run(repo_root, ["diff", "HEAD", "--name-status", "--", comp_path])
             staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
             for line in (diff.stdout + staged.stdout).splitlines():
-                parts = line.split("\t", 1)
-                if len(parts) == 2:
-                    changed_files.append((parts[0].strip(), _to_posix(parts[1].strip())))
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
+        except subprocess.CalledProcessError:
+            pass
+    elif source == "index":
+        try:
+            staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
+            for line in staged.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
         except subprocess.CalledProcessError:
             pass
 
@@ -334,6 +358,10 @@ def why_component(
             if rel not in seen:
                 seen.add(rel)
                 print(f"  {status:>2}  {rel}")
+    elif source == "index":
+        print(f"\nNo staged changes under {comp_path}.")
+        print(f"Drift is from changes staged after the lockfile was last generated.")
+        print(f"  Tip: run `git diff --cached --name-only -- {comp_path}` to check staged files.")
     else:
         print(f"\nNo uncommitted changes under {comp_path}.")
         print(f"Drift is from commits made after the lockfile was last generated.")

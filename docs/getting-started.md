@@ -65,6 +65,9 @@ Create `boundary.config.json` at the repository root:
       "boundary": {
         "provider": "openapi",
         "paths": ["openapi.yaml"]
+      },
+      "behavior": {
+        "paths": ["openapi.yaml", "config/*.json"]
       }
     }
   },
@@ -77,6 +80,18 @@ Create `boundary.config.json` at the repository root:
   }
 }
 ```
+
+### Adding behavior tracking
+
+The `behavior` key declares files whose content affects your component's observable behavior — configuration, feature flags, routing rules, middleware, etc. It should be a **superset** of `boundary.paths`:
+
+```json
+"behavior": {
+  "paths": ["openapi.yaml", "config/*.json", "middleware.py"]
+}
+```
+
+When behavior paths change but boundary paths don't, boundver classifies it as a behavioral change — the API shape is stable but runtime behavior shifted. This gives reviewers a clear signal to check for regressions without triggering a full breaking-change workflow.
 
 ## 3. Validate the config
 
@@ -129,7 +144,7 @@ Sample output:
 boundver verify
 ```
 
-`Lockfile is up to date.` means the current repo state matches what was recorded. If something drifted, you'll see which component and which fingerprint facet (`exact`, `boundary`, or `compat`) changed.
+`Lockfile is up to date.` means the current repo state matches what was recorded. If something drifted, you'll see which component and which fingerprint facet (`exact`, `behavior`, `boundary`, or `compat`) changed.
 
 ## 6. Commit and push
 

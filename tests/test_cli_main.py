@@ -41,9 +41,9 @@ def _run_main(*args: str, repo_root: Path = None) -> tuple[int, str, str]:
 
 class MainNoCommandTests(unittest.TestCase):
     def test_no_command_exits_1(self):
-        """main() with no subcommand exits 1 and prints help."""
+        """main() with no subcommand exits 2 (usage error) and prints help."""
         code, out, _ = _run_main()
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("usage", out.lower())
 
 
@@ -72,10 +72,10 @@ class MainCompletionsTests(unittest.TestCase):
 
 class MainNotGitRepoTests(unittest.TestCase):
     def test_non_git_repo_exits_1(self):
-        """main() exits 1 with message when not in a git repo."""
+        """main() exits 2 with message when not in a git repo."""
         with patch("boundver.core.git_root", side_effect=subprocess.CalledProcessError(128, "git")):
             code, _, err = _run_main("generate")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("git", err.lower())
 
 
@@ -101,7 +101,7 @@ class MainGenerateTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             code, _, err = _run_main("generate", "--config", "missing.json", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("not found", err)
 
     def test_generate_writes_lockfile(self):
@@ -196,7 +196,7 @@ class MainGenerateTests(unittest.TestCase):
             (root / "svc").mkdir()
             (root / "svc" / "a.py").write_text("x=1\n")
             code, _, err = _run_main("generate", "--source", "working-tree", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
     def test_generate_bad_config_json_exits_1(self):
@@ -206,7 +206,7 @@ class MainGenerateTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{not valid json}")
             code, _, err = _run_main("generate", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
 
@@ -224,7 +224,7 @@ class MainValidateConfigErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad}")
             code, _, err = _run_main("validate-config", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
     def test_check_config_bad_json_exits_1(self):
@@ -233,7 +233,7 @@ class MainValidateConfigErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad}")
             code, _, err = _run_main("check-config", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
 
@@ -521,7 +521,7 @@ class MainValidateConfigTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             code, _, err = _run_main("validate-config", "--config", "missing.json", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("not found", err)
 
     def test_validate_config_warns_when_behavior_does_not_cover_boundary(self):
@@ -573,7 +573,7 @@ class MainInitTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{}")
             code, _, err = _run_main("init", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("already exists", err)
 
     def test_init_force_overwrites(self):
@@ -650,7 +650,7 @@ class MainStatusTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             code, _, _ = _run_main("status", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
 
     def test_status_with_lockfile(self):
         with tempfile.TemporaryDirectory() as td:
@@ -881,7 +881,7 @@ class MainMigrateLockTests(unittest.TestCase):
     def test_migrate_lock_missing_file_exits_1(self):
         with tempfile.TemporaryDirectory() as td:
             code, _, err = _run_main("migrate-lock", "--lock", str(Path(td) / "nope.json"))
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("error", err.lower())
 
     def test_migrate_lock_invalid_json_exits_1(self):
@@ -889,14 +889,14 @@ class MainMigrateLockTests(unittest.TestCase):
             p = Path(td) / "bad.json"
             p.write_text("{not json}")
             code, _, err = _run_main("migrate-lock", "--lock", str(p))
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
 
     def test_migrate_lock_unknown_schema_exits_1(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
             p.write_text(json.dumps({"schema": "boundary-lock/v99", "components": {}, "slices": {}}))
             code, _, err = _run_main("migrate-lock", "--lock", str(p))
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("v99", err)
 
     def test_migrate_lock_dry_run_prints_json_no_write(self):
@@ -936,7 +936,7 @@ class MainVerifyErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.lock.json").write_text("{}")
             code, _, err = _run_main("verify", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
     def test_verify_bad_config_json_exits_1(self):
@@ -946,7 +946,7 @@ class MainVerifyErrorPathTests(unittest.TestCase):
             (root / "boundary.config.json").write_text("{bad json}")
             (root / "boundary.lock.json").write_text("{}")
             code, _, err = _run_main("verify", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
 
@@ -984,7 +984,7 @@ class MainWhyErrorPathTests(unittest.TestCase):
             (root / "boundary.config.json").write_text("{bad}")
             (root / "boundary.lock.json").write_text("{}")
             code, _, err = _run_main("why", "svc", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
 
@@ -1002,7 +1002,7 @@ class MainExplainErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad}")
             code, _, err = _run_main("explain", "svc", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
 
@@ -1082,8 +1082,8 @@ class CliEntrypointTests(unittest.TestCase):
                 with patch("sys.stdout", out_buf):
                     cli_main()
             except SystemExit as e:
-                # Exits 1 because no subcommand given — that's expected.
-                self.assertEqual(int(e.code), 1)
+                # Exits 2 because no subcommand given — that's expected.
+                self.assertEqual(int(e.code), 2)
 
 
 class CoreVerifyLockfileNotFoundTests(unittest.TestCase):

@@ -1,0 +1,12 @@
+{
+  "retry_policy": {
+    "max_retries": 3,
+    "backoff_ms": 500
+  },
+  "rate_limit": {
+    "requests_per_minute": 100
+  },
+  "feature_flags": {
+    "enable_idempotency_check": true
+  }
+}

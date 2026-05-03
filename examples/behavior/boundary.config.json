@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "example-behavior",
+  "components": {
+    "payment-svc": {
+      "path": "examples/behavior/service",
+      "version_source": {"file": "version.json", "field": "version"},
+      "boundary": {"provider": "openapi", "paths": ["openapi.yaml"]},
+      "behavior": {"paths": ["openapi.yaml", "config.json"]}
+    }
+  },
+  "slices": {
+    "payment-boundary": {"mode": "boundary", "components": ["payment-svc"]},
+    "payment-behavior": {"mode": "behavior", "components": ["payment-svc"]}
+  }
+}

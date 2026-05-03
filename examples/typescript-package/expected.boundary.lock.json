@@ -4,20 +4,21 @@
   "project": "example-typescript-package",
   "components": {
     "pkg": {
-      "version": "0.3.0",
+      "version": null,
       "path": "examples/typescript-package/src",
       "boundary_provider": "typescript-exports",
+      "boundary_provider_version": "1",
       "boundary_status": "ok",
       "fingerprints": {
         "exact": "bad956d7f9651d1acb1d6898c7c2894ea93a3bbbd47fd5e214ad9407d92ee6a7",
         "behavior": null,
         "boundary": "b79d90df58aa3f22203444e990efe416f3836d5d677c3d98b89fd4e3ce2ce38e",
-        "compat": "17a65e84beb39bc4dd061dde8d339c631dfbc7f3f35e22344b27efef3cc3ece8"
+        "compat": null
       },
       "semver": {
-        "compat_family": "0",
-        "api_surface": "0.3",
-        "exact_version": "0.3.0"
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
       }
     }
   },

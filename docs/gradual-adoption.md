@@ -94,7 +94,49 @@ boundver generate --source working-tree
 
 ---
 
-## Stage 3 — Add version tracking
+## Stage 3 — Add behavior tracking
+
+**Time: 10 minutes. Value: behavioral change detection.**
+
+Declare files that affect runtime behavior but go beyond the API boundary — config files, feature flags, middleware, routing rules:
+
+```json
+"auth-service": {
+  "path": "services/auth",
+  "boundary": { "provider": "openapi", "paths": ["openapi.yaml"] },
+  "behavior": {
+    "paths": ["openapi.yaml", "config/*.json", "middleware.py"]
+  }
+}
+```
+
+`behavior.paths` should be a superset of `boundary.paths`. boundver validates this and warns if it's not.
+
+Optionally add a behavior slice:
+
+```json
+"slices": {
+  "auth-behavior": {
+    "mode": "behavior",
+    "components": ["auth-service"]
+  }
+}
+```
+
+Regenerate:
+
+```bash
+boundver generate --source working-tree
+```
+
+**What you get at Stage 3:**
+- Changes to config or middleware that don't touch the API spec are classified as "behavioral contract changed (API shape stable)."
+- Reviewers get a clear signal: something observable changed, but it's not a new endpoint or field removal.
+- The four-fingerprint containment hierarchy is now fully active: `exact ⊇ behavior ⊇ boundary`.
+
+---
+
+## Stage 4 — Add version tracking
 
 **Time: 5 minutes per component. Value: SemVer compat signals.**
 
@@ -114,14 +156,14 @@ Or from git tags:
 "version_source": { "git_tag_prefix": "auth-service-v" }
 ```
 
-**What you get at Stage 3:**
+**What you get at Stage 4:**
 - The `compat` fingerprint changes only when the major version changes.
 - Consumers can track `compat` fingerprint to know if a breaking change was declared.
 - `diff` output shows old/new versions alongside changed fingerprints.
 
 ---
 
-## Stage 4 — Expand component coverage
+## Stage 5 — Expand component coverage
 
 **Time: Incremental. Value: whole-repo visibility.**
 
@@ -140,7 +182,7 @@ Or add components manually to the existing config. You can add a new component a
 
 ---
 
-## Stage 5 — Use slice fingerprints as cache keys
+## Stage 6 — Use slice fingerprints as cache keys
 
 Once you have slices that represent stable deployment or consumer groups, use their fingerprints to drive CI decisions:
 

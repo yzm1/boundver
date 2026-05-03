@@ -67,9 +67,31 @@
     },
     "slices": {
       "type": "object",
-      "required": ["changed", "unchanged"],
+      "required": ["added", "removed", "changed", "unchanged"],
       "additionalProperties": false,
       "properties": {
+        "added": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "fingerprint": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "fingerprint": { "type": ["string", "null"] }
+            }
+          }
+        },
         "changed": {
           "type": "array",
           "items": {

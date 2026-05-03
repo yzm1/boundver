@@ -7,6 +7,7 @@
       "version": null,
       "path": "examples/implicit-and-leaf/worker",
       "boundary_provider": "implicit",
+      "boundary_provider_version": "1",
       "boundary_status": "partial",
       "fingerprints": {
         "exact": "4ead1526ad5ee4087940e33712e6006cea6967a13ec58060041bf95e3383aeca",
@@ -27,6 +28,7 @@
       "version": null,
       "path": "examples/implicit-and-leaf/leafsvc",
       "boundary_provider": "leaf",
+      "boundary_provider_version": "1",
       "boundary_status": "ok",
       "fingerprints": {
         "exact": "3c3a7b65bc88a63285a90cf5c612b589cc5c0d1327023a40daeb1ff8783f4fa5",
