@@ -196,14 +196,16 @@ def git_latest_tag(repo_root: Path, prefix: str) -> Optional[str]:
         # Prefer reachable tags from current HEAD to avoid unrelated branch tags.
         result = _git_run(repo_root, ["describe", "--tags", "--match", f"{prefix}*", "--abbrev=0"])
         tag = result.stdout.strip()
-        return tag[len(prefix):] if tag.startswith(prefix) else None
+        ver = tag[len(prefix):] if tag.startswith(prefix) else None
+        return ver or None  # Return None instead of empty string
     except subprocess.CalledProcessError:
         try:
             # Fallback for repos where describe cannot resolve (e.g. shallow/no reachable matches).
             result = _git_run(repo_root, ["tag", "--list", f"{prefix}*", "--sort=-v:refname"])
             tags = [t for t in result.stdout.strip().split("\n") if t]
             if tags:
-                return tags[0][len(prefix):]
+                ver = tags[0][len(prefix):]
+                return ver or None  # Return None instead of empty string
             return None
         except subprocess.CalledProcessError:
             return None

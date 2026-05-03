@@ -10,6 +10,7 @@
       "boundary_status": "ok",
       "fingerprints": {
         "exact": "7822e6e64efbe27b028201aeb820ed8512fd02f7499c31bac0aba5e84da638d6",
+        "behavior": null,
         "boundary": "c24922524d395fb6cb71f3d96fd39b5c584cc93d058b2a31da943800573c57e9",
         "compat": "2b76e797e89bf0561229aa6249cdc899acef599712c928f7824203cbc93d644d"
       },

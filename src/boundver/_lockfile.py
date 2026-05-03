@@ -15,7 +15,7 @@ from ._hashing import (
     sha256_hex,
     source_tree_digest,
 )
-from .providers import ProviderContext, compute_boundary, get_provider, load_custom_providers
+from .providers import PathHashProvider, ProviderContext, compute_boundary, get_provider, load_custom_providers
 from .versions import extract_version, parse_semver
 
 LOCKFILE_SCHEMA = "boundary-lock/v1"
@@ -71,6 +71,24 @@ def generate_lockfile(
             exact_digest = None
             exact_errors.append(f"Exact digest failed: {exc}")
 
+        def _make_read_file(src: str):
+            def _read(repo_rel: str) -> bytes:
+                if src == "head":
+                    data = _git_cat_blob(repo_root, f"HEAD:{repo_rel}")
+                elif src == "index":
+                    data = _git_cat_blob(repo_root, f":{repo_rel}")
+                else:
+                    full = repo_root / repo_rel
+                    data = full.read_bytes()
+                _enforce_content_size(data, repo_rel)
+                return data
+            return _read
+
+        def _make_list_files(src: str):
+            def _list(prefix: str) -> List[str]:
+                return _list_files_for_source(repo_root, prefix, src)
+            return _list
+
         # API fingerprint: resolve via registered provider
         boundary = comp.get("boundary", {})
         boundary_provider = boundary_provider_name(boundary)
@@ -82,24 +100,6 @@ def generate_lockfile(
             boundary_errors: List[str] = [f"Unknown boundary provider: {boundary_provider!r}"]
         else:
             # Build ProviderContext with git-aware callbacks
-            def _make_read_file(src: str):
-                def _read(repo_rel: str) -> bytes:
-                    if src == "head":
-                        data = _git_cat_blob(repo_root, f"HEAD:{repo_rel}")
-                    elif src == "index":
-                        data = _git_cat_blob(repo_root, f":{repo_rel}")
-                    else:
-                        full = repo_root / repo_rel
-                        data = full.read_bytes()
-                    _enforce_content_size(data, repo_rel)
-                    return data
-                return _read
-
-            def _make_list_files(src: str):
-                def _list(prefix: str) -> List[str]:
-                    return _list_files_for_source(repo_root, prefix, src)
-                return _list
-
             ctx = ProviderContext(
                 repo_root=repo_root,
                 component_path=comp_path,
@@ -114,6 +114,25 @@ def generate_lockfile(
                 api_digest = None
                 boundary_status = "error"
                 boundary_errors = [f"Boundary digest failed: {exc}"]
+
+        # Behavior fingerprint: broader contract files (superset of boundary)
+        behavior_cfg = comp.get("behavior")
+        behavior_digest = None
+        if behavior_cfg and behavior_cfg.get("paths"):
+            behavior_provider = PathHashProvider()
+            behavior_provider.name = "behavior"
+            behavior_ctx = ProviderContext(
+                repo_root=repo_root,
+                component_path=comp_path,
+                boundary_cfg=behavior_cfg,
+                source=source,
+                read_file=_make_read_file(source),
+                list_files=_make_list_files(source),
+            )
+            try:
+                behavior_digest, _bstatus, _berrs = compute_boundary(behavior_provider, behavior_ctx)
+            except (OSError, subprocess.CalledProcessError, ValueError):
+                behavior_digest = None
 
         # Compatibility fingerprint: derived from semver major (or major.minor)
         compat_digest = None
@@ -133,6 +152,7 @@ def generate_lockfile(
             "boundary_status": boundary_status,
             "fingerprints": {
                 "exact": exact_digest,
+                "behavior": behavior_digest,
                 "boundary": api_digest,
                 "compat": compat_digest,
             },
@@ -176,6 +196,10 @@ def generate_lockfile(
             fp = comp_entry["fingerprints"]
             if mode == "exact":
                 digest_parts[cname] = fp.get("exact")
+            elif mode == "behavior":
+                if fp.get("behavior") is None and strict:
+                    raise ValueError(f"Slice '{slice_name}' requires behavior digest for component '{cname}'")
+                digest_parts[cname] = fp.get("behavior")
             elif mode == "boundary":
                 if fp.get("boundary") is None and strict:
                     raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
@@ -217,6 +241,10 @@ def _recompute_slice_entry(
         fp = comp_entry.get("fingerprints", {})
         if mode == "exact":
             digest_parts[cname] = fp.get("exact")
+        elif mode == "behavior":
+            if fp.get("behavior") is None and strict:
+                raise ValueError(f"Slice '{slice_name}' requires behavior digest for component '{cname}'")
+            digest_parts[cname] = fp.get("behavior")
         elif mode == "boundary":
             if fp.get("boundary") is None and strict:
                 raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
@@ -312,7 +340,7 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
         if not isinstance(fps, dict):
             issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints object")
             continue
-        for required in ("exact", "boundary", "compat"):
+        for required in ("exact", "behavior", "boundary", "compat"):
             if required not in fps:
                 issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints.{required}")
     return issues
@@ -327,7 +355,17 @@ def verify_lockfile(
     allow_custom_providers: bool = False,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches."""
-    current = generate_lockfile(config, repo_root, source=source, allow_custom_providers=allow_custom_providers)
+    # When a filter is specified, only regenerate the selected components to avoid
+    # O(all-components) cost for targeted verification in large monorepos.
+    if components_filter:
+        filtered_config = dict(config)
+        all_components = config.get("components", {})
+        filtered_config["components"] = {n: all_components[n] for n in components_filter if n in all_components}
+        filtered_config["slices"] = {}
+        current = generate_lockfile(filtered_config, repo_root, source=source,
+                                    allow_custom_providers=allow_custom_providers)
+    else:
+        current = generate_lockfile(config, repo_root, source=source, allow_custom_providers=allow_custom_providers)
     issues = _lockfile_schema_issues(lockfile)
     issues.extend(_lockfile_structure_issues(lockfile))
     if issues:
@@ -343,7 +381,7 @@ def verify_lockfile(
         if locked_comp is None:
             issues.append(f"NEW component not in lockfile: {name}")
             continue
-        for facet in ("exact", "boundary", "compat"):
+        for facet in ("exact", "behavior", "boundary", "compat"):
             cv = current_comp["fingerprints"].get(facet)
             locked_fps = locked_comp.get("fingerprints", {})
             lv = locked_fps.get(facet)

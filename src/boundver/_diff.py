@@ -29,7 +29,7 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
             old_fp = old_comps[name].get("fingerprints", {})
             new_fp = new_comps[name].get("fingerprints", {})
             changes: Dict[str, dict] = {}
-            for facet in ("exact", "boundary", "compat"):
+            for facet in ("exact", "behavior", "boundary", "compat"):
                 ov = old_fp.get(facet)
                 nv = new_fp.get(facet)
                 if ov != nv:
@@ -68,6 +68,8 @@ def _summarize_change(changes: dict) -> str:
     facets = list(changes.keys())
     if facets == ["exact"]:
         return "implementation-only change (API stable)"
+    elif set(facets) == {"exact", "behavior"}:
+        return "behavioral contract changed (API shape stable)"
     elif "boundary" in facets and "compat" not in facets:
         return "declared boundary changed (compatibility unchanged)"
     elif "compat" in facets:

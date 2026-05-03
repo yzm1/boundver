@@ -66,6 +66,17 @@
             },
             "additionalProperties": true
           },
+          "behavior": {
+            "type": "object",
+            "description": "Behavioral contract paths — a superset of boundary that includes config, migrations, contract tests, etc.",
+            "properties": {
+              "paths": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": false
+          },
           "vendored_copies": {
             "type": "array",
             "items": { "type": "string" }
@@ -81,7 +92,7 @@
         "required": ["components"],
         "properties": {
           "description": { "type": "string" },
-          "mode": { "type": "string", "enum": ["exact", "boundary", "compat"] },
+          "mode": { "type": "string", "enum": ["exact", "behavior", "boundary", "compat"] },
           "components": {
             "type": "array",
             "items": { "type": "string" }

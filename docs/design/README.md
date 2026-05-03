@@ -9,3 +9,4 @@ This folder contains one design document per active workstream:
 5. `05-custom-boundary-extension.md` (how to extend with custom boundaries)
 6. `06-config-schema-validation.md`
 7. `07-provider-architecture.md` (real provider protocol: resolve/validate_config/explain_diff, registry, migration plan)
+8. `08-behavior-tier.md` (fourth fingerprint tier for behavioral contract changes, limitations, test-output provider)

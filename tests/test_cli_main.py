@@ -524,6 +524,33 @@ class MainValidateConfigTests(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("not found", err)
 
+    def test_validate_config_warns_when_behavior_does_not_cover_boundary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+            (root / "svc" / "config.json").write_text('{"timeout": 30}\n')
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+
+            code, out, _ = _run_main("validate-config", repo_root=root)
+
+            self.assertEqual(code, 0)
+            self.assertIn("WARNINGS", out)
+            self.assertIn("api.yaml", out)
+            self.assertIn("valid", out.lower())
+
 
 class MainInitTests(unittest.TestCase):
     def _init_git_repo(self, root: Path) -> None:
@@ -1161,6 +1188,158 @@ class CoreSliceLockfileNotFoundTests(unittest.TestCase):
             code, _, err = _run_main("slice", "myslice", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
+
+
+class MainBehaviorTierCLITests(unittest.TestCase):
+    """CLI integration tests for the behavior tier."""
+
+    def _init_git_repo(self, root: Path) -> None:
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+
+    def _setup(self, root: Path) -> None:
+        (root / "svc").mkdir()
+        (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+        (root / "svc" / "config.json").write_text('{"timeout": 30}\n')
+        cfg = {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    "behavior": {"paths": ["api.yaml", "config.json"]},
+                }
+            },
+            "slices": {
+                "behavior-slice": {"mode": "behavior", "components": ["svc"]},
+            },
+        }
+        (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+
+    def test_generate_json_includes_behavior_fingerprint(self):
+        """generate --format json output includes behavior in fingerprints."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            code, out, err = _run_main(
+                "--quiet", "generate", "--source", "working-tree", "--format", "json", repo_root=root
+            )
+            self.assertEqual(code, 0, err)
+            payload = json.loads(out)
+            fp = payload["components"]["svc"]["fingerprints"]
+            self.assertIn("behavior", fp)
+            self.assertIsNotNone(fp["behavior"])
+            self.assertEqual(len(fp["behavior"]), 64)
+
+    def test_verify_detects_behavior_drift_via_cli(self):
+        """verify exits 1 when behavior fingerprint drifts."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            code, _, err = _run_main("generate", "--source", "working-tree", repo_root=root)
+            self.assertEqual(code, 0, err)
+            # Change behavior-relevant file
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            code, out, _ = _run_main("verify", "--source", "working-tree", repo_root=root)
+            self.assertEqual(code, 1)
+
+    def test_verify_json_reports_behavior_mismatch(self):
+        """verify --format json reports behavior mismatch in issues."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            code, out, _ = _run_main(
+                "verify", "--source", "working-tree", "--format", "json", repo_root=root
+            )
+            self.assertEqual(code, 1)
+            payload = json.loads(out)
+            behavior_issues = [i for i in payload["issues"] if "behavior" in i]
+            self.assertGreater(len(behavior_issues), 0)
+
+    def test_behavior_slice_in_generated_lockfile(self):
+        """behavior slice appears in generated lockfile with correct mode."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            code, out, err = _run_main(
+                "--quiet", "generate", "--source", "working-tree", "--format", "json", repo_root=root
+            )
+            self.assertEqual(code, 0, err)
+            payload = json.loads(out)
+            s = payload["slices"]["behavior-slice"]
+            self.assertEqual(s["mode"], "behavior")
+            self.assertIsNotNone(s["fingerprint"])
+
+    def test_diff_shows_behavioral_change(self):
+        """diff between two lockfiles with behavior change shows correct summary."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            # Generate first lockfile
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            lock1 = Path(td) / "lock1.json"
+            lock1.write_text((root / "boundary.lock.json").read_text())
+            # Change config (behavior-relevant, not boundary-relevant)
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            lock2 = root / "boundary.lock.json"
+            code, out, _ = _run_main("diff", str(lock1), str(lock2), "--format", "json")
+            self.assertEqual(code, 0)
+            payload = json.loads(out)
+            changed = payload["components"]["changed"]
+            self.assertEqual(len(changed), 1)
+            self.assertIn("behavior", changed[0]["changed_facets"])
+            self.assertNotIn("boundary", changed[0]["changed_facets"])
+
+    def test_why_reports_behavior_drift(self):
+        """why command reports behavior drift when config changes."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            code, out, _ = _run_main("why", "svc", "--source", "working-tree", repo_root=root)
+            self.assertEqual(code, 1)
+            self.assertIn("behavior", out.lower())
+            self.assertIn("behavioral", out.lower())
+
+    def test_generate_components_filter_with_behavior(self):
+        """generate --components works correctly with behavior configured."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            # Full generate first
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            # Partial regenerate
+            code, _, err = _run_main(
+                "generate", "--source", "working-tree", "--components", "svc", repo_root=root
+            )
+            self.assertEqual(code, 0, err)
+            lock = json.loads((root / "boundary.lock.json").read_text())
+            self.assertIsNotNone(lock["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_status_shows_behavior_drift_in_issues(self):
+        """status with drift shows behavior mismatch in DRIFT section."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            code, out, _ = _run_main("status", "--source", "working-tree", repo_root=root)
+            self.assertEqual(code, 0)
+            self.assertIn("DRIFT", out)
 
 
 if __name__ == "__main__":

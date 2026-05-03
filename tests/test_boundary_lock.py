@@ -111,6 +111,77 @@ class BoundaryLockTests(unittest.TestCase):
         errs = boundary_lock.validate_config(cfg, Path.cwd())
         self.assertTrue(any("boundary.paths' must be an array of strings" in e for e in errs))
 
+    def test_validate_config_rejects_invalid_behavior_paths_without_schema_engine(self):
+        import boundver._config as _config_mod
+
+        cfg = {
+            "project": "x",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {"provider": "openapi", "paths": []},
+                    "behavior": {"paths": "config.json"},
+                }
+            },
+            "slices": {},
+        }
+
+        original = _config_mod._schema_engine_errors
+        try:
+            _config_mod._schema_engine_errors = lambda cfg, schema: []
+            errs = boundary_lock.validate_config(cfg, Path.cwd())
+        finally:
+            _config_mod._schema_engine_errors = original
+
+        self.assertTrue(any("behavior.paths' must be an array of strings" in e for e in errs), errs)
+
+    def test_validate_config_invalid_path_type_does_not_crash_without_schema_engine(self):
+        import boundver._config as _config_mod
+
+        cfg = {
+            "project": "x",
+            "components": {
+                "svc": {
+                    "path": 123,
+                    "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    "behavior": {"paths": ["config.json"]},
+                }
+            },
+            "slices": {},
+        }
+
+        original = _config_mod._schema_engine_errors
+        try:
+            _config_mod._schema_engine_errors = lambda cfg, schema: []
+            errs = boundary_lock.validate_config(cfg, Path.cwd())
+        finally:
+            _config_mod._schema_engine_errors = original
+
+        self.assertTrue(any("field 'path' must be a non-empty string" in e for e in errs), errs)
+
+    def test_config_warnings_flags_behavior_not_covering_boundary(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "svc").mkdir()
+            (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+            (root / "svc" / "config.json").write_text('{"timeout": 30}\n')
+            cfg = {
+                "project": "x",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+
+            warnings = boundary_lock.config_warnings(cfg, root)
+
+            self.assertTrue(any("behavior.paths does not currently cover boundary files" in w for w in warnings), warnings)
+            self.assertTrue(any("api.yaml" in w for w in warnings), warnings)
+
     def test_validate_config_rejects_invalid_slice_components_type(self):
         cfg = {
             "project": "x",

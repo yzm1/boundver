@@ -3,9 +3,10 @@
 boundary-lock: Semantic version manifest with faceted fingerprints.
 
 Generates a lockfile where each component has:
-  - exact fingerprint  (did the implementation change?)
-  - boundary fingerprint (did the public boundary change?)
-  - compat fingerprint (did the compatibility family change?)
+    - exact fingerprint     (did anything change?)
+    - behavior fingerprint  (did the behavioral contract change?)
+    - boundary fingerprint  (did the public boundary change?)
+    - compat fingerprint    (did the compatibility family change?)
 
 Slices group components and produce their own stable fingerprints.
 Adding an unrelated component does NOT change existing slice fingerprints.
@@ -59,6 +60,7 @@ from ._hashing import (
     source_tree_digest,
 )
 from ._config import (
+    config_warnings,
     _is_str_list,
     _load_config_schema,
     _schema_engine_errors,
@@ -198,6 +200,8 @@ def main():
     st.add_argument("--lock", default="boundary.lock.json")
     st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
     st.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    st.add_argument("--strict", action="store_true",
+                    help="Exit non-zero if any drift or warnings are detected (useful for CI)")
     st.add_argument(
         "--allow-custom-providers", action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
@@ -216,7 +220,7 @@ def main():
         help="Explain why a component's lockfile is out of date",
         description=(
             "Compare current fingerprints against the lockfile and explain what changed.\n\n"
-            "Shows which facets (exact/boundary/compat) drifted, what type of change\n"
+            "Shows which facets (exact/behavior/boundary/compat) drifted, what type of change\n"
             "it is, and which files are responsible.\n\n"
             "Exit codes:\n"
             "  0  Component is up to date\n"
@@ -311,6 +315,31 @@ def main():
                 _log("Already at current schema, no changes written.")
             else:
                 _log(f"Migrated {lock_path} → schema {migrated['schema']}")
+        return
+
+    # diff compares two lockfiles and doesn't need a git repo.
+    if args.command == "diff":
+        for label, fpath in (("old", args.old), ("new", args.new)):
+            if ".." in Path(fpath).parts:
+                print(
+                    f"ERROR: {label} lockfile path '{fpath}' contains '..' traversal",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            if not Path(fpath).exists():
+                print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
+                sys.exit(2)
+        try:
+            old = json.loads(Path(args.old).read_text())
+            new = json.loads(Path(args.new).read_text())
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: Failed to parse lockfile: {exc}", file=sys.stderr)
+            sys.exit(2)
+        result = diff_lockfiles(old, new)
+        if args.format == "json":
+            _print_json(result)
+        else:
+            print_diff(result)
         return
 
     try:
@@ -416,23 +445,6 @@ def main():
             elif args.format != "json" and not args.quiet:
                 print(_green("Lockfile is up to date."))
 
-    elif args.command == "diff":
-        for label, fpath in (("old", args.old), ("new", args.new)):
-            if not Path(fpath).exists():
-                print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
-                sys.exit(2)
-        try:
-            old = json.loads(Path(args.old).read_text())
-            new = json.loads(Path(args.new).read_text())
-        except json.JSONDecodeError as exc:
-            print(f"ERROR: Failed to parse lockfile: {exc}", file=sys.stderr)
-            sys.exit(2)
-        result = diff_lockfiles(old, new)
-        if args.format == "json":
-            _print_json(result)
-        else:
-            print_diff(result)
-
     elif args.command == "slice":
         lock_path = repo_root / args.lock
         if not lock_path.exists():
@@ -465,11 +477,16 @@ def main():
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
         errors = validate_config(config, repo_root)
+        warnings = config_warnings(config, repo_root)
         if errors:
             print(_red(f"CONFIG INVALID ({len(errors)} issues):"))
             for err in errors:
                 print(f"  - {err}")
             sys.exit(1)
+        if warnings:
+            print(_yellow(f"CONFIG WARNINGS ({len(warnings)}):"))
+            for warning in warnings:
+                print(f"  - {warning}")
         print(_green("Config is valid."))
 
     elif args.command == "init":
@@ -518,9 +535,18 @@ def main():
             except json.JSONDecodeError as exc:
                 print(f"ERROR: Lockfile is not valid JSON: {exc}", file=sys.stderr)
                 sys.exit(2)
-            status_payload = {"lockfile": lockfile, "issues": []}
+            status_payload = {"lockfile": lockfile, "issues": [], "warnings": []}
             if args.format != "json" and not args.quiet:
                 print_status(lockfile)
+            # Collect component warnings
+            has_warnings = False
+            for name, comp in lockfile.get("components", {}).items():
+                for w in comp.get("warnings", []):
+                    status_payload["warnings"].append(f"{name}: {w}")
+                    has_warnings = True
+                for e in comp.get("boundary_errors", []):
+                    status_payload["warnings"].append(f"{name}: boundary {comp.get('boundary_status', 'unknown')} - {e}")
+                    has_warnings = True
             # Also verify if config exists
             config_path = find_config_file(repo_root, args.config)
             if config_path.exists():
@@ -541,6 +567,9 @@ def main():
                                 print(f"    {issue}")
             if args.format == "json":
                 _print_json(status_payload)
+            # --strict: exit non-zero if any drift or warnings
+            if getattr(args, "strict", False) and (status_payload["issues"] or has_warnings):
+                sys.exit(1)
         else:
             print(f"No lockfile found at {lock_path}. Run 'generate' first.")
             sys.exit(1)

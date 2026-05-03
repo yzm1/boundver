@@ -1739,6 +1739,941 @@ class GitLatestTagFallbackTests(unittest.TestCase):
             self.assertIsNone(version)
 
 
+# ===========================================================================
+# Behavior tier tests
+# ===========================================================================
+
+class BehaviorTierGenerationTests(unittest.TestCase):
+    """Tests for the behavior fingerprint tier in lockfile generation."""
+
+    def _make_repo(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "svc").mkdir()
+        (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+        (root / "svc" / "config").mkdir()
+        (root / "svc" / "config" / "defaults.json").write_text('{"timeout": 30}\n')
+        (root / "svc" / "migrations").mkdir()
+        (root / "svc" / "migrations" / "001.sql").write_text("CREATE TABLE t;\n")
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+    def test_behavior_null_when_not_configured(self):
+        """behavior fingerprint is null when component has no behavior config."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_generation_survives_unknown_boundary_provider(self):
+        """behavior hashing still works when boundary provider is unknown."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "does-not-exist", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config/defaults.json"]},
+                    }
+                },
+                "slices": {},
+            }
+
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+
+            self.assertEqual(lockfile["components"]["svc"]["boundary_status"], "error")
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["boundary"])
+            self.assertIsNotNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_populated_when_configured(self):
+        """behavior fingerprint is a hex string when behavior.paths is declared."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config/defaults.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+            fp = lockfile["components"]["svc"]["fingerprints"]["behavior"]
+            self.assertIsNotNone(fp)
+            self.assertEqual(len(fp), 64)  # SHA-256 hex
+
+    def test_behavior_changes_when_config_file_changes(self):
+        """behavior fingerprint changes when a declared behavior file changes."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config/defaults.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+            fp1 = lock1["components"]["svc"]["fingerprints"]
+
+            # Change config file (behavior-relevant, not boundary-relevant)
+            (root / "svc" / "config" / "defaults.json").write_text('{"timeout": 10}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "change config"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            fp2 = lock2["components"]["svc"]["fingerprints"]
+
+            # exact should change (file changed)
+            self.assertNotEqual(fp1["exact"], fp2["exact"])
+            # behavior should change (config/defaults.json is in behavior paths)
+            self.assertNotEqual(fp1["behavior"], fp2["behavior"])
+            # boundary should NOT change (api.yaml didn't change)
+            self.assertEqual(fp1["boundary"], fp2["boundary"])
+
+    def test_behavior_stable_on_internal_change(self):
+        """behavior fingerprint is stable when only internal files change."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config/defaults.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+            fp1 = lock1["components"]["svc"]["fingerprints"]
+
+            # Change only implementation file
+            (root / "svc" / "main.py").write_text("x=2\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "refactor"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            fp2 = lock2["components"]["svc"]["fingerprints"]
+
+            self.assertNotEqual(fp1["exact"], fp2["exact"])
+            self.assertEqual(fp1["behavior"], fp2["behavior"])
+            self.assertEqual(fp1["boundary"], fp2["boundary"])
+
+    def test_behavior_includes_migrations(self):
+        """behavior fingerprint catches migration file additions."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "migrations/"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+            fp1 = lock1["components"]["svc"]["fingerprints"]["behavior"]
+
+            # Add a new migration
+            (root / "svc" / "migrations" / "002.sql").write_text("ALTER TABLE t ADD col INT;\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "add migration"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            fp2 = lock2["components"]["svc"]["fingerprints"]["behavior"]
+
+            self.assertNotEqual(fp1, fp2)
+
+    def test_behavior_empty_paths_gives_null(self):
+        """behavior with empty paths list results in null fingerprint."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": []},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_working_tree_source(self):
+        """behavior fingerprint works with working-tree source."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config/defaults.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="working-tree")
+            fp = lockfile["components"]["svc"]["fingerprints"]["behavior"]
+            self.assertIsNotNone(fp)
+            self.assertEqual(len(fp), 64)
+
+
+class BehaviorTierSliceTests(unittest.TestCase):
+    """Tests for behavior slice mode."""
+
+    def _make_repo(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "svc").mkdir()
+        (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+        (root / "svc" / "config.json").write_text('{"k": "v"}\n')
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+    def test_behavior_slice_uses_behavior_digest(self):
+        """Slice with mode=behavior uses behavior fingerprint for its hash."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {
+                    "exact-slice": {"mode": "exact", "components": ["svc"]},
+                    "behavior-slice": {"mode": "behavior", "components": ["svc"]},
+                    "boundary-slice": {"mode": "boundary", "components": ["svc"]},
+                },
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+            exact_fp = lockfile["slices"]["exact-slice"]["fingerprint"]
+            behavior_fp = lockfile["slices"]["behavior-slice"]["fingerprint"]
+            boundary_fp = lockfile["slices"]["boundary-slice"]["fingerprint"]
+            # All three slices should have different fingerprints
+            self.assertNotEqual(exact_fp, behavior_fp)
+            self.assertNotEqual(behavior_fp, boundary_fp)
+            self.assertNotEqual(exact_fp, boundary_fp)
+
+    def test_behavior_slice_stable_on_internal_change(self):
+        """behavior slice is stable when only internal files change."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {
+                    "behavior-slice": {"mode": "behavior", "components": ["svc"]},
+                },
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+
+            (root / "svc" / "main.py").write_text("x=2\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "refactor"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            self.assertEqual(
+                lock1["slices"]["behavior-slice"]["fingerprint"],
+                lock2["slices"]["behavior-slice"]["fingerprint"],
+            )
+
+    def test_behavior_slice_changes_on_config_change(self):
+        """behavior slice changes when behavior-relevant file changes."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {
+                    "behavior-slice": {"mode": "behavior", "components": ["svc"]},
+                },
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+
+            (root / "svc" / "config.json").write_text('{"k": "v2"}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "config change"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            self.assertNotEqual(
+                lock1["slices"]["behavior-slice"]["fingerprint"],
+                lock2["slices"]["behavior-slice"]["fingerprint"],
+            )
+
+    def test_behavior_slice_strict_raises_when_behavior_null(self):
+        """Slice with mode=behavior and strict=True raises when behavior is null."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        # No behavior config → behavior will be null
+                    }
+                },
+                "slices": {
+                    "s1": {"mode": "behavior", "components": ["svc"]}
+                },
+            }
+            with self.assertRaises(ValueError) as cm:
+                core.generate_lockfile(cfg, root, source="head", strict=True)
+            self.assertIn("behavior", str(cm.exception).lower())
+
+    def test_behavior_slice_non_strict_allows_null(self):
+        """Slice with mode=behavior and strict=False allows null behavior digest."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {
+                    "s1": {"mode": "behavior", "components": ["svc"]}
+                },
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["slices"]["s1"]["component_digests"]["svc"])
+
+
+class BehaviorTierVerifyTests(unittest.TestCase):
+    """Tests for behavior fingerprint in verify."""
+
+    def _make_repo(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "svc").mkdir()
+        (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+        (root / "svc" / "config.json").write_text('{"timeout": 30}\n')
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+    def test_verify_detects_behavior_drift(self):
+        """verify reports mismatch when behavior fingerprint drifts."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+
+            # Change behavior-relevant file
+            (root / "svc" / "config.json").write_text('{"timeout": 5}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "change timeout"], cwd=root, check=True, capture_output=True)
+
+            issues = core.verify_lockfile(cfg, lockfile, root, source="head")
+            behavior_issues = [i for i in issues if "behavior" in i]
+            self.assertTrue(len(behavior_issues) > 0)
+            # boundary should NOT be flagged
+            boundary_issues = [i for i in issues if "boundary" in i.lower() and "behavior" not in i]
+            self.assertEqual(len(boundary_issues), 0)
+
+    def test_verify_passes_when_behavior_unchanged(self):
+        """verify passes when only internal files change and behavior is stable."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            # Generate lockfile after changing only internal file
+            (root / "svc" / "main.py").write_text("x=2\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "refactor"], cwd=root, check=True, capture_output=True)
+            lockfile = core.generate_lockfile(cfg, root, source="head")
+
+            # Verify immediately — should pass
+            issues = core.verify_lockfile(cfg, lockfile, root, source="head")
+            self.assertEqual(issues, [])
+
+
+class BehaviorTierDiffTests(unittest.TestCase):
+    """Tests for behavior-aware diff summaries."""
+
+    def test_behavior_only_change_summary(self):
+        """diff_lockfiles labels exact+behavior as behavioral contract change."""
+        old = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "1.0.0",
+                    "fingerprints": {"exact": "aaa", "behavior": "bbb", "boundary": "ccc", "compat": "ddd"},
+                }
+            },
+            "slices": {},
+        }
+        new = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "1.0.0",
+                    "fingerprints": {"exact": "aaa2", "behavior": "bbb2", "boundary": "ccc", "compat": "ddd"},
+                }
+            },
+            "slices": {},
+        }
+        result = core.diff_lockfiles(old, new)
+        changed = result["components"]["changed"]
+        self.assertEqual(len(changed), 1)
+        self.assertIn("behavioral", changed[0]["summary"].lower())
+        self.assertIn("stable", changed[0]["summary"].lower())
+
+    def test_exact_only_still_impl_only(self):
+        """diff with only exact changed still says implementation-only."""
+        old = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "1.0.0",
+                    "fingerprints": {"exact": "aaa", "behavior": "bbb", "boundary": "ccc", "compat": "ddd"},
+                }
+            },
+            "slices": {},
+        }
+        new = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "1.0.0",
+                    "fingerprints": {"exact": "aaa2", "behavior": "bbb", "boundary": "ccc", "compat": "ddd"},
+                }
+            },
+            "slices": {},
+        }
+        result = core.diff_lockfiles(old, new)
+        changed = result["components"]["changed"]
+        self.assertEqual(len(changed), 1)
+        self.assertIn("implementation", changed[0]["summary"].lower())
+
+    def test_all_four_changed_is_breaking(self):
+        """diff with all four facets changed is BREAKING."""
+        old = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "1.0.0",
+                    "fingerprints": {"exact": "a", "behavior": "b", "boundary": "c", "compat": "d"},
+                }
+            },
+            "slices": {},
+        }
+        new = {
+            "schema": "boundary-lock/v1",
+            "components": {
+                "svc": {
+                    "version": "2.0.0",
+                    "fingerprints": {"exact": "a2", "behavior": "b2", "boundary": "c2", "compat": "d2"},
+                }
+            },
+            "slices": {},
+        }
+        result = core.diff_lockfiles(old, new)
+        changed = result["components"]["changed"]
+        self.assertIn("BREAKING", changed[0]["summary"])
+
+
+class BehaviorTierContainmentTests(unittest.TestCase):
+    """Tests verifying the containment hierarchy: exact ⊇ behavior ⊇ boundary."""
+
+    def _make_repo(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "svc").mkdir()
+        (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
+        (root / "svc" / "config.json").write_text('{"k": 1}\n')
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+    def test_boundary_change_implies_behavior_change(self):
+        """When boundary file changes, behavior also changes (superset property)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+
+            # Change boundary file
+            (root / "svc" / "api.yaml").write_text("openapi: 3.1\npaths: {}\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "api change"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            fp1 = lock1["components"]["svc"]["fingerprints"]
+            fp2 = lock2["components"]["svc"]["fingerprints"]
+
+            # boundary changed → behavior MUST also change (api.yaml is in both)
+            self.assertNotEqual(fp1["boundary"], fp2["boundary"])
+            self.assertNotEqual(fp1["behavior"], fp2["behavior"])
+            self.assertNotEqual(fp1["exact"], fp2["exact"])
+
+    def test_behavior_change_does_not_imply_boundary_change(self):
+        """Behavior can change without boundary changing."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._make_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            lock1 = core.generate_lockfile(cfg, root, source="head")
+
+            # Change only config (in behavior, not in boundary)
+            (root / "svc" / "config.json").write_text('{"k": 2}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "config"], cwd=root, check=True, capture_output=True)
+
+            lock2 = core.generate_lockfile(cfg, root, source="head")
+            fp1 = lock1["components"]["svc"]["fingerprints"]
+            fp2 = lock2["components"]["svc"]["fingerprints"]
+
+            self.assertNotEqual(fp1["behavior"], fp2["behavior"])
+            self.assertEqual(fp1["boundary"], fp2["boundary"])
+
+
+class BehaviorTierConfigValidationTests(unittest.TestCase):
+    """Tests for config validation with behavior slice mode."""
+
+    def test_behavior_is_valid_slice_mode(self):
+        """Config with mode=behavior passes validation."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "api.yaml").write_text("x\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {
+                    "s": {"mode": "behavior", "components": ["svc"]}
+                },
+            }
+            errors = core.validate_config(cfg, root)
+            mode_errors = [e for e in errors if "mode" in e.lower()]
+            self.assertEqual(mode_errors, [])
+
+
+class BehaviorDigestErrorPathTests(unittest.TestCase):
+    """Tests for behavior digest computation failure paths (_lockfile.py lines 134-135)."""
+
+    def test_behavior_digest_null_when_path_missing(self):
+        """behavior.paths referencing non-existent files → digest is null (error swallowed)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit"},
+                        "behavior": {"paths": ["nonexistent.json"]},
+                    }
+                },
+                "slices": {},
+            }
+            # Should not crash — behavior digest should be null
+            lockfile = core.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_digest_null_with_only_missing_globs(self):
+        """Glob patterns that match nothing produce null behavior digest."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit"},
+                        "behavior": {"paths": ["*.nonexistent"]},
+                    }
+                },
+                "slices": {},
+            }
+            lockfile = core.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_digest_null_on_subprocess_error(self):
+        """CalledProcessError during behavior resolve → digest is null (except path)."""
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "svc" / "api.yaml").write_text("api\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            from boundver import _lockfile
+            original_fn = _lockfile.compute_boundary
+
+            def _raising_compute(provider, ctx):
+                if provider.name == "behavior":
+                    raise subprocess.CalledProcessError(128, "git")
+                return original_fn(provider, ctx)
+
+            with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
+                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+            # The boundary fingerprint should still work (only behavior raises)
+            self.assertIsNotNone(lockfile["components"]["svc"]["fingerprints"]["boundary"])
+
+    def test_behavior_digest_null_on_oserror(self):
+        """OSError during behavior resolve → digest is null (except path)."""
+        from unittest.mock import patch
+        from boundver import _lockfile
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "svc" / "api.yaml").write_text("api\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit"},
+                        "behavior": {"paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            original_fn = _lockfile.compute_boundary
+
+            def _raising_compute(provider, ctx):
+                if provider.name == "behavior":
+                    raise OSError("disk error")
+                return original_fn(provider, ctx)
+
+            with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
+                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+    def test_behavior_digest_null_on_value_error(self):
+        """ValueError during behavior resolve → digest is null (except path)."""
+        from unittest.mock import patch
+        from boundver import _lockfile
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "svc" / "api.yaml").write_text("api\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit"},
+                        "behavior": {"paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
+            original_fn = _lockfile.compute_boundary
+
+            def _raising_compute(provider, ctx):
+                if provider.name == "behavior":
+                    raise ValueError("bad config")
+                return original_fn(provider, ctx)
+
+            with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
+                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
+            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+
+
+class BehaviorRecomputeSliceTests(unittest.TestCase):
+    """Tests for _recompute_slice_entry with behavior mode."""
+
+    def test_recompute_slice_entry_behavior_mode(self):
+        """_recompute_slice_entry handles behavior mode correctly."""
+        comp = {"fingerprints": {"exact": "aaa", "behavior": "bbb", "boundary": "ccc", "compat": "ddd"}}
+        result = core._recompute_slice_entry(
+            "s1",
+            {"mode": "behavior", "components": ["svc"]},
+            {"svc": comp},
+            strict=False,
+        )
+        self.assertEqual(result["component_digests"]["svc"], "bbb")
+        self.assertEqual(result["mode"], "behavior")
+
+    def test_recompute_slice_entry_behavior_null_strict_raises(self):
+        """_recompute_slice_entry raises for behavior=None in strict mode."""
+        comp = {"fingerprints": {"exact": "aaa", "behavior": None, "boundary": "ccc", "compat": "ddd"}}
+        with self.assertRaises(ValueError) as cm:
+            core._recompute_slice_entry(
+                "s1",
+                {"mode": "behavior", "components": ["svc"]},
+                {"svc": comp},
+                strict=True,
+            )
+        self.assertIn("behavior", str(cm.exception).lower())
+
+    def test_recompute_slice_entry_behavior_null_non_strict_gives_null(self):
+        """_recompute_slice_entry allows None behavior in non-strict mode."""
+        comp = {"fingerprints": {"exact": "aaa", "behavior": None, "boundary": "ccc", "compat": "ddd"}}
+        result = core._recompute_slice_entry(
+            "s1",
+            {"mode": "behavior", "components": ["svc"]},
+            {"svc": comp},
+            strict=False,
+        )
+        self.assertIsNone(result["component_digests"]["svc"])
+
+
+class DiffSummaryEdgeCaseTests(unittest.TestCase):
+    """Edge cases in _summarize_change with the behavior facet."""
+
+    def test_behavior_and_boundary_without_compat(self):
+        """exact + behavior + boundary changed → boundary message, not behavioral."""
+        from boundver._diff import _summarize_change
+        changes = {"exact": {}, "behavior": {}, "boundary": {}}
+        summary = _summarize_change(changes)
+        self.assertIn("boundary", summary.lower())
+        self.assertNotIn("BREAKING", summary)
+
+    def test_all_facets_changed(self):
+        """All four facets changed → BREAKING."""
+        from boundver._diff import _summarize_change
+        changes = {"exact": {}, "behavior": {}, "boundary": {}, "compat": {}}
+        summary = _summarize_change(changes)
+        self.assertIn("BREAKING", summary)
+
+    def test_only_behavior_without_exact_fallback(self):
+        """Unusual: only behavior changed (shouldn't happen in practice) → fallback."""
+        from boundver._diff import _summarize_change
+        changes = {"behavior": {}}
+        summary = _summarize_change(changes)
+        self.assertIn("behavior", summary.lower())
+
+    def test_exact_and_compat_without_boundary(self):
+        """exact + compat → BREAKING (compat always implies breaking)."""
+        from boundver._diff import _summarize_change
+        changes = {"exact": {}, "compat": {}}
+        summary = _summarize_change(changes)
+        self.assertIn("BREAKING", summary)
+
+
+class GenerateLockfileForComponentsBehaviorTests(unittest.TestCase):
+    """Tests for generate_lockfile_for_components with behavior configured."""
+
+    def test_partial_regen_preserves_behavior_of_unchanged_component(self):
+        """When regenerating one component, other components' behavior is preserved."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "svc" / "api.yaml").write_text("api\n")
+            (root / "svc" / "config.json").write_text('{"k": 1}\n')
+            (root / "worker").mkdir()
+            (root / "worker" / "main.py").write_text("y=1\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    },
+                    "worker": {
+                        "path": "worker",
+                        "boundary": {"provider": "implicit"},
+                    },
+                },
+                "slices": {},
+            }
+            # Full generate
+            full_lock = core.generate_lockfile(cfg, root, source="head")
+            out_path = root / "boundary.lock.json"
+            out_path.write_text(json.dumps(full_lock, indent=2))
+
+            # Partial regen of only worker
+            merged = core.generate_lockfile_for_components(
+                cfg, root, selected_components=["worker"], out_path=out_path, source="head", strict=False
+            )
+            # svc behavior should be preserved from the original lockfile
+            self.assertEqual(
+                merged["components"]["svc"]["fingerprints"]["behavior"],
+                full_lock["components"]["svc"]["fingerprints"]["behavior"],
+            )
+
+    def test_partial_regen_updates_behavior_slice(self):
+        """When a component in a behavior slice is regenerated, slice is recomputed."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "svc" / "api.yaml").write_text("api\n")
+            (root / "svc" / "config.json").write_text('{"k": 1}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "behavior": {"paths": ["api.yaml", "config.json"]},
+                    },
+                },
+                "slices": {
+                    "bslice": {"mode": "behavior", "components": ["svc"]},
+                },
+            }
+            full_lock = core.generate_lockfile(cfg, root, source="head")
+            out_path = root / "boundary.lock.json"
+            out_path.write_text(json.dumps(full_lock, indent=2))
+
+            # Change behavior file and regen
+            (root / "svc" / "config.json").write_text('{"k": 2}\n')
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "cfg"], cwd=root, check=True, capture_output=True)
+
+            merged = core.generate_lockfile_for_components(
+                cfg, root, selected_components=["svc"], out_path=out_path, source="head", strict=False
+            )
+            # Behavior slice should have changed
+            self.assertNotEqual(
+                full_lock["slices"]["bslice"]["fingerprint"],
+                merged["slices"]["bslice"]["fingerprint"],
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
 

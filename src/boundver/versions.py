@@ -5,8 +5,23 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
+
+_FALLBACK_WARNED: set = set()  # Track which fallback warnings we've already emitted
+
+
+def _warn_fallback(parser_type: str) -> None:
+    """Emit a one-time stderr warning when a regex fallback parser is used."""
+    if parser_type not in _FALLBACK_WARNED:
+        _FALLBACK_WARNED.add(parser_type)
+        lib = "tomli (or Python 3.11+)" if parser_type == "toml" else "PyYAML"
+        print(
+            f"warning: using regex fallback for {parser_type} parsing "
+            f"(install {lib} for reliable results)",
+            file=sys.stderr,
+        )
 
 try:
     import tomllib  # Python 3.11+
@@ -99,7 +114,8 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
                 return None
             current = current[key]
         return str(current) if current is not None else None
-    # Fallback regex parser
+    # Fallback regex parser — tomllib unavailable
+    _warn_fallback("toml")
     current_section = ''
     if len(keys) >= 2:
         target_section = '.'.join(keys[:-1])
@@ -114,9 +130,9 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
             current_section = section_match.group(1).strip()
             continue
         if current_section == target_section:
-            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*("?)([^"]*)\2', line)
+            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
             if kv_match and kv_match.group(1) == target_key:
-                return kv_match.group(3)
+                return kv_match.group(2) or kv_match.group(3) or kv_match.group(4)
     return None
 
 
@@ -126,16 +142,15 @@ def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
         try:
             data = yaml.safe_load(text)
         except Exception:
-            data = None
+            return None  # Real parser failed — don't fall back to regex; be authoritative
         current: Any = data
         for key in keys:
             if not isinstance(current, dict) or key not in current:
-                current = None
-                break
+                return None  # Field not found — authoritative answer from real parser
             current = current[key]
-        if current is not None:
-            return str(current)
-    # Fallback regex parser
+        return str(current) if current is not None else None
+    # Fallback regex parser — PyYAML unavailable
+    _warn_fallback("yaml")
     indent_stack: list = []
     current_path: list = []
     for line in text.splitlines():
@@ -150,7 +165,16 @@ def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
         kv_match = re.match(r"^([\w.-]+)\s*:\s*(.+)$", stripped)
         if kv_match:
             key = kv_match.group(1)
-            value = kv_match.group(2).strip().strip("'\"")
+            raw_value = kv_match.group(2).strip()
+            # Strip inline comments (but not from quoted values)
+            if raw_value.startswith("'") or raw_value.startswith('"'):
+                quote = raw_value[0]
+                end = raw_value.find(quote, 1)
+                value = raw_value[1:end] if end > 0 else raw_value.strip("'\"")
+            else:
+                # Unquoted: strip inline comment
+                comment_idx = raw_value.find(' #')
+                value = raw_value[:comment_idx].rstrip() if comment_idx >= 0 else raw_value
             test_path = current_path + [key]
             if test_path == keys:
                 return value
@@ -187,6 +211,7 @@ def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
             current = current[key]
         return str(current) if current is not None else None
 
+    _warn_fallback("toml")
     current_section = ''
     if len(keys) >= 2:
         target_section = '.'.join(keys[:-1])
@@ -202,9 +227,9 @@ def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
             current_section = section_match.group(1).strip()
             continue
         if current_section == target_section:
-            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*("?)([^"]*)\2', line)
+            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
             if kv_match and kv_match.group(1) == target_key:
-                return kv_match.group(3)
+                return kv_match.group(2) or kv_match.group(3) or kv_match.group(4)
     return None
 
 
@@ -215,16 +240,15 @@ def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
         try:
             data = yaml.safe_load(text)
         except Exception:
-            data = None
+            return None  # Real parser failed — don't fall back to regex; be authoritative
         current: Any = data
         for key in keys:
             if not isinstance(current, dict) or key not in current:
-                current = None
-                break
+                return None  # Field not found — authoritative answer from real parser
             current = current[key]
-        if current is not None:
-            return str(current)
+        return str(current) if current is not None else None
 
+    _warn_fallback("yaml")
     indent_stack = []
     current_path = []
     for line in text.splitlines():
@@ -239,7 +263,14 @@ def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
         kv_match = re.match(r"^([\w.-]+)\s*:\s*(.+)$", stripped)
         if kv_match:
             key = kv_match.group(1)
-            value = kv_match.group(2).strip().strip("'\"")
+            raw_value = kv_match.group(2).strip()
+            if raw_value.startswith("'") or raw_value.startswith('"'):
+                quote = raw_value[0]
+                end = raw_value.find(quote, 1)
+                value = raw_value[1:end] if end > 0 else raw_value.strip("'\"")
+            else:
+                comment_idx = raw_value.find(' #')
+                value = raw_value[:comment_idx].rstrip() if comment_idx >= 0 else raw_value
             test_path = current_path + [key]
             if test_path == keys:
                 return value

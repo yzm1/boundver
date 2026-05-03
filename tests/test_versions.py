@@ -641,8 +641,8 @@ class ExtractYamlFromTextTests(unittest.TestCase):
         result = self._fn("version: 1.0.0\n", "version")
         self.assertEqual(result, "1.0.0")
 
-    def test_yaml_exception_falls_back_to_regex(self):
-        """yaml.safe_load raising Exception → data=None, fallback regex used (lines 128-129)."""
+    def test_yaml_exception_returns_none(self):
+        """yaml.safe_load raising Exception → return None (parse failure is authoritative)."""
         import boundver.versions as v_mod
         orig = v_mod.yaml
         # Simulate yaml module that raises on safe_load.
@@ -653,7 +653,7 @@ class ExtractYamlFromTextTests(unittest.TestCase):
         v_mod.yaml = _BadYaml()
         try:
             result = self._fn("version: 1.2.3\n", "version")
-            self.assertEqual(result, "1.2.3")
+            self.assertIsNone(result)
         finally:
             v_mod.yaml = orig
 

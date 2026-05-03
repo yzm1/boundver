@@ -21,9 +21,10 @@
           "boundary_status": {"type": "string", "enum": ["ok", "partial", "error"]},
           "fingerprints": {
             "type": "object",
-            "required": ["exact", "boundary", "compat"],
+            "required": ["exact", "behavior", "boundary", "compat"],
             "properties": {
               "exact": {"type": ["string", "null"]},
+              "behavior": {"type": ["string", "null"]},
               "boundary": {"type": ["string", "null"]},
               "compat": {"type": ["string", "null"]}
             },
@@ -55,7 +56,7 @@
         "required": ["description", "mode", "components", "fingerprint", "component_digests"],
         "properties": {
           "description": {"type": "string"},
-          "mode": {"type": "string", "enum": ["exact", "boundary", "compat"]},
+          "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
           "components": {"type": "array", "items": {"type": "string"}},
           "fingerprint": {"type": "string"},
           "component_digests": {

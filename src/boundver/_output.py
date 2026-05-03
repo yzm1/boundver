@@ -243,8 +243,8 @@ def why_component(
     """Explain why a component's lockfile entry is out of date.
 
     Compares current fingerprints against the locked values and shows:
-    - Which facets (exact/boundary/compat) changed and how
-    - What type of change it is (impl-only, boundary, breaking)
+    - Which facets (exact/behavior/boundary/compat) changed and how
+    - What type of change it is (impl-only, behavioral, boundary, breaking)
     - Files that changed under the component path (git diff against HEAD)
 
     Returns 0 if no drift, 1 if drift found, 2 on usage/config error.
@@ -281,7 +281,7 @@ def why_component(
 
     # Build diff of changed facets.
     changes: Dict[str, dict] = {}
-    for facet in ("exact", "boundary", "compat"):
+    for facet in ("exact", "behavior", "boundary", "compat"):
         lv = locked_fps.get(facet)
         cv = current_fps.get(facet)
         if lv != cv:
@@ -303,7 +303,7 @@ def why_component(
     print(_red(f"\nStatus: DRIFTED — {len(changes)} facet(s) changed"))
 
     print("\nFingerprint changes:")
-    for facet in ("exact", "boundary", "compat"):
+    for facet in ("exact", "behavior", "boundary", "compat"):
         lv = locked_fps.get(facet)
         cv = current_fps.get(facet)
         if facet in changes:

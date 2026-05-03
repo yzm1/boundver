@@ -621,12 +621,27 @@ def load_custom_providers(
             "Set \"allow_custom_providers\": true in your config or pass --allow-custom-providers."
         ]
     errors: List[str] = []
+    # Validate module names before importing anything to prevent injection via
+    # crafted config files. Only dotted Python identifiers are allowed.
+    _VALID_MODULE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+    _VALID_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     for entry in providers_list:
         module_name = entry.get("module", "")
         class_name = entry.get("class", "")
         if not module_name or not class_name:
             errors.append(
                 f"Provider entry missing required fields 'module'/'class': {entry!r}"
+            )
+            continue
+        if not _VALID_MODULE_RE.match(module_name):
+            errors.append(
+                f"Provider module name '{module_name}' is not a valid Python module path "
+                "(must be dotted identifiers like 'my_pkg.providers')"
+            )
+            continue
+        if not _VALID_IDENT_RE.match(class_name):
+            errors.append(
+                f"Provider class name '{class_name}' is not a valid Python identifier"
             )
             continue
         try:

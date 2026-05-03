@@ -7,15 +7,16 @@
 
 **Automated change-type classification for components that lack static verification.**
 
-boundver answers three questions per component — *did the implementation change?*, *did the declared boundary change?*, *is it still compatible?* — using content-addressed fingerprints derived from Git state and declared boundary files. No external dependencies. No build system required.
+boundver answers four questions per component — *did anything change?*, *did the behavioral contract change?*, *did the declared boundary change?*, *is it still compatible?* — using content-addressed fingerprints derived from Git state and declared boundary files. No external dependencies. No build system required.
 
 ## Why
 
 When a component has consumers but no compiler or type system verifying its interface — services exposing OpenAPI specs, Python libraries, config-driven systems, internal platforms — there's no machine that tells you whether a change is internal, boundary-affecting, or breaking.
 
-boundver fills that gap. It lets you **declare** what constitutes your component's boundary, then **automatically classifies every change** into one of three categories:
+boundver fills that gap. It lets you **declare** what constitutes your component's boundary, then **automatically classifies every change** into one of four categories:
 
 - **Implementation-only** — internals changed, boundary stable, consumers unaffected.
+- **Behavioral contract change** — defaults/config/migrations changed, API shape stable, consumers may need to re-verify.
 - **Boundary change** — the declared contract changed, consumers should re-verify.
 - **Compatibility break** — the compatibility family changed, deployment coordination required.
 
@@ -30,7 +31,7 @@ boundver is for any component whose boundary has consumers but **no static verif
 | **Nx / Turborepo** | JS/TS monorepos with task graphs and caching | You have a polyglot repo or can't adopt a full task runner |
 | **Bazel / Pants** | Large-scale build + dependency graph orchestration | Adoption cost exceeds value for your team size |
 | **TypeScript / Rust compiler** | Statically verified API contracts within a single language | Your entire stack is one statically-typed language |
-| **boundver** | Any language — automated change classification where no static verifier exists | You already have affected-graph + cache-key tooling that satisfies all three questions |
+| **boundver** | Any language — automated change classification where no static verifier exists | You already have affected-graph + cache-key tooling that satisfies all four questions |
 
 For full tool-selection guidance, see [docs/WHY_BOUNDVER.md](docs/WHY_BOUNDVER.md).
 
@@ -87,6 +88,9 @@ cat > boundary.config.json << 'EOF'
       "boundary": {
         "provider": "openapi",
         "paths": ["openapi.yaml"]
+      },
+      "behavior": {
+        "paths": ["openapi.yaml", "config/defaults.json"]
       }
     }
   },
@@ -140,13 +144,14 @@ boundver discover --format json
 
 ## Behavior matrix
 
-| Event | exact | boundary | compat |
-|---|---|---|---|
-| Bug fix (no API change) | ✓ changes | unchanged | unchanged |
-| New API endpoint added | ✓ changes | ✓ changes | unchanged |
-| Breaking change + major bump | ✓ changes | ✓ changes | ✓ changes |
-| Internal refactor | ✓ changes | unchanged | unchanged |
-| New unrelated component added | slice unchanged | slice unchanged | n/a |
+| Event | exact | behavior | boundary | compat |
+|---|---|---|---|---|
+| Bug fix (no API change) | ✓ changes | unchanged | unchanged | unchanged |
+| Config/default/migration change | ✓ changes | ✓ changes | unchanged | unchanged |
+| New API endpoint added | ✓ changes | ✓ changes | ✓ changes | unchanged |
+| Breaking change + major bump | ✓ changes | ✓ changes | ✓ changes | ✓ changes |
+| Internal refactor | ✓ changes | unchanged | unchanged | unchanged |
+| New unrelated component added | slice unchanged | slice unchanged | slice unchanged | n/a |
 
 ## Config reference
 
@@ -174,13 +179,16 @@ Schema file: `boundary.config.schema.json` (Draft 2020-12).
         "paths": ["openapi.yaml"],
         "note": "optional explanation"
       },
+      "behavior": {
+        "paths": ["openapi.yaml", "config/defaults.json"]
+      },
       "vendored_copies": ["path/to/vendored/copy/"]
     }
   },
   "slices": {
     "slice-name": {
       "description": "Human-readable purpose",
-      "mode": "exact | boundary | compat",
+      "mode": "exact | behavior | boundary | compat",
       "components": ["component-a", "component-b"]
     }
   }

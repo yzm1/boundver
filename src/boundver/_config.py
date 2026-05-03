@@ -3,7 +3,7 @@
 import fnmatch
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from ._git import _to_posix
 from ._hashing import _is_within, boundary_provider_name
@@ -114,6 +114,87 @@ def _is_str_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _validate_component_path_entries(
+    errors: List[str],
+    repo_root: Path,
+    component_name: str,
+    component_path: Optional[str],
+    field_name: str,
+    paths: List[str],
+) -> None:
+    """Validate a component-relative path list for boundary/behavior config."""
+    if component_path is None:
+        return
+
+    component_root = repo_root / component_path
+    for rel in paths:
+        if _is_glob(rel):
+            if ".." in rel:
+                errors.append(
+                    f"Component '{component_name}' {field_name} glob pattern must not contain '..': {rel}"
+                )
+            continue
+
+        full = component_root / rel
+        if not _is_within(component_root, full):
+            errors.append(f"Component '{component_name}' {field_name} path escapes component root: {rel}")
+            continue
+        if not _is_within(repo_root, full):
+            errors.append(f"Component '{component_name}' {field_name} path escapes repository root: {rel}")
+            continue
+        if not full.exists():
+            errors.append(
+                f"Component '{component_name}' {field_name} path not found: {component_path}/{rel}"
+                f" — ensure the file exists before running generate"
+            )
+
+
+def _expand_component_paths(
+    repo_root: Path,
+    component_path: Optional[str],
+    paths: List[str],
+) -> Set[str]:
+    if component_path is None:
+        return set()
+
+    component_root = repo_root / component_path
+    if not component_root.exists() or not component_root.is_dir():
+        return set()
+
+    all_files = [
+        _to_posix(str(path.relative_to(component_root)))
+        for path in sorted(component_root.rglob("*"))
+        if path.is_file()
+    ]
+    matched: Set[str] = set()
+
+    for rel in paths:
+        is_dir_like = rel.endswith(("/", "\\"))
+        rel_norm = _to_posix(rel).strip()
+        if rel_norm.startswith("./"):
+            rel_norm = rel_norm[2:]
+        if not rel_norm:
+            continue
+        if _is_glob(rel_norm):
+            for file_rel in all_files:
+                if fnmatch.fnmatchcase(file_rel, rel_norm):
+                    matched.add(file_rel)
+            continue
+
+        prefix = rel_norm.rstrip("/")
+        target = component_root / prefix
+        if is_dir_like or target.is_dir():
+            for file_rel in all_files:
+                if file_rel == prefix or file_rel.startswith(prefix + "/"):
+                    matched.add(file_rel)
+        else:
+            for file_rel in all_files:
+                if file_rel == prefix:
+                    matched.add(file_rel)
+
+    return matched
+
+
 def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
     """Optional strict JSON Schema validation.
 
@@ -150,7 +231,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if required_key not in config:
             errors.append(f"Missing required top-level field: {required_key}")
 
-    supported_modes = {"exact", "boundary", "compat"}
+    supported_modes = {"exact", "behavior", "boundary", "compat"}
     compat_mode = config.get("defaults", {}).get("compat_mode", "major")
     if compat_mode not in {"major", "semver_major", "semver_major_minor"}:
         errors.append(f"Unsupported defaults.compat_mode: {compat_mode}")
@@ -199,10 +280,11 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if "path" not in comp:
             errors.append(f"Component '{name}' missing required field: path")
             continue
-        if not isinstance(comp["path"], str) or not comp["path"].strip():
+        component_path = comp.get("path") if isinstance(comp.get("path"), str) and comp["path"].strip() else None
+        if component_path is None:
             errors.append(f"Component '{name}' field 'path' must be a non-empty string")
         else:
-            normalized_path = comp["path"].rstrip("/")
+            normalized_path = component_path.rstrip("/")
             if normalized_path in seen_component_paths:
                 other = seen_component_paths[normalized_path]
                 errors.append(
@@ -240,26 +322,31 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if "paths" in boundary and not _is_str_list(paths):
             errors.append(f"Component '{name}' field 'boundary.paths' must be an array of strings")
             paths = []
-        for rel in paths:
-            # Glob patterns (*, ?, [) are expanded at runtime against actual files.
-            if _is_glob(rel):
-                if ".." in rel:
-                    errors.append(
-                        f"Component '{name}' boundary glob pattern must not contain '..': {rel}"
-                    )
-                continue
-            full = repo_root / comp["path"] / rel
-            component_root = repo_root / comp["path"]
-            if not _is_within(component_root, full):
-                errors.append(f"Component '{name}' boundary path escapes component root: {rel}")
-                continue
-            if not _is_within(repo_root, full):
-                errors.append(f"Component '{name}' boundary path escapes repository root: {rel}")
-                continue
-            if not full.exists():
-                errors.append(
-                    f"Component '{name}' boundary path not found: {comp['path']}/{rel}"
-                    f" — ensure the file exists before running generate"
+        _validate_component_path_entries(
+            errors,
+            repo_root,
+            name,
+            component_path,
+            "boundary",
+            paths,
+        )
+
+        behavior = comp.get("behavior")
+        if behavior is not None:
+            if not isinstance(behavior, dict):
+                errors.append(f"Component '{name}' behavior must be an object")
+            else:
+                behavior_paths = behavior.get("paths", [])
+                if "paths" in behavior and not _is_str_list(behavior_paths):
+                    errors.append(f"Component '{name}' field 'behavior.paths' must be an array of strings")
+                    behavior_paths = []
+                _validate_component_path_entries(
+                    errors,
+                    repo_root,
+                    name,
+                    component_path,
+                    "behavior",
+                    behavior_paths,
                 )
         vendored = comp.get("vendored_copies")
         if vendored is not None and not _is_str_list(vendored):
@@ -284,11 +371,11 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                             f"Component '{name}' version_source.file has unsupported extension '{Path(vs_file).suffix}'"
                             f" — supported: {', '.join(sorted(_supported_vs_exts))}"
                         )
-                    vs_full = repo_root / comp["path"] / vs_file
-                    if not vs_full.exists():
+                    vs_full = (repo_root / component_path / vs_file) if component_path is not None else None
+                    if vs_full is not None and not vs_full.exists():
                         errors.append(
                             f"Component '{name}' version_source.file not found: '{vs_file}'"
-                            f" (looked for {comp['path']}/{vs_file})"
+                            f" (looked for {component_path}/{vs_file})"
                         )
                     if "field" not in version_source:
                         errors.append(
@@ -326,6 +413,51 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                     errors.append(f"Slice '{sname}' in {mode} mode includes '{cname}' with no boundary paths")
 
     return errors
+
+
+def config_warnings(config: dict, repo_root: Path) -> List[str]:
+    warnings: List[str] = []
+    if not isinstance(config, dict):
+        return warnings
+
+    components = config.get("components", {})
+    if not isinstance(components, dict):
+        return warnings
+
+    for name, comp in components.items():
+        if not isinstance(comp, dict):
+            continue
+        component_path = comp.get("path") if isinstance(comp.get("path"), str) and comp["path"].strip() else None
+        if component_path is None:
+            continue
+
+        boundary = comp.get("boundary", {})
+        behavior = comp.get("behavior")
+        if not isinstance(boundary, dict) or not isinstance(behavior, dict):
+            continue
+
+        boundary_paths = boundary.get("paths", [])
+        behavior_paths = behavior.get("paths", [])
+        if not _is_str_list(boundary_paths) or not _is_str_list(behavior_paths):
+            continue
+        if not boundary_paths:
+            continue
+
+        boundary_files = _expand_component_paths(repo_root, component_path, boundary_paths)
+        if not boundary_files:
+            continue
+        behavior_files = _expand_component_paths(repo_root, component_path, behavior_paths)
+        uncovered = sorted(boundary_files - behavior_files)
+        if uncovered:
+            preview = ", ".join(uncovered[:3])
+            if len(uncovered) > 3:
+                preview += f", +{len(uncovered) - 3} more"
+            warnings.append(
+                f"Component '{name}' behavior.paths does not currently cover boundary files: {preview}"
+                " — behavior should usually be a superset of boundary"
+            )
+
+    return warnings
 
 
 def discover_components(repo_root: Path) -> Dict[str, dict]:

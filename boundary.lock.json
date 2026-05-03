@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v1",
   "project": "boundver",
   "components": {
@@ -8,7 +9,8 @@
       "boundary_provider": "python-exports",
       "boundary_status": "ok",
       "fingerprints": {
-        "exact": "2237085529488ba3a32c4100e4b5b323aa2c6d424ab159288176294bc42b520e",
+        "exact": "28ec2585699ec4823aff8568615dcdeaaab634a675c3cf318c7327a01ef4a9ef",
+        "behavior": null,
         "boundary": "9ffd37eb7eafd3db1a30c562d3e63bc4efec8f478bb17a0f2a8f3e1c51db2862",
         "compat": null
       },
@@ -24,8 +26,9 @@
       "boundary_provider": "json-file",
       "boundary_status": "ok",
       "fingerprints": {
-        "exact": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231",
-        "boundary": "a4498d7dbe5f3438d70844c18371c80f8d203d3b16d6bc6028bfb3d2204bca8b",
+        "exact": "b573703461d2fad8de397bd085302935974ff3c3ef9087d31353e410f59537c8",
+        "behavior": null,
+        "boundary": "23b615d0a98a22b3a6c2d4f625b004dd02ae80ff81b35fd675250e3c3e4996ae",
         "compat": null
       },
       "semver": {
@@ -53,9 +56,9 @@
       "components": [
         "spec"
       ],
-      "fingerprint": "783ef3047f177e1de8cfc4e07df187863986c979c68ff3f959bad5c8ab483010",
+      "fingerprint": "7297a30943da98ffa81c71454ee2098cd491c90d0032bd1d889212f2b77b948d",
       "component_digests": {
-        "spec": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231"
+        "spec": "b573703461d2fad8de397bd085302935974ff3c3ef9087d31353e410f59537c8"
       }
     },
     "all": {
@@ -65,10 +68,10 @@
         "boundver",
         "spec"
       ],
-      "fingerprint": "3640c048aea6601578223467fdf6a8680f3dac7b7c47a8d8093f5acc3b066c9b",
+      "fingerprint": "3bc32c4007f42c248a18bda13fc84e7ffd2a69872555a261cbf6f1c765826b74",
       "component_digests": {
-        "boundver": "2237085529488ba3a32c4100e4b5b323aa2c6d424ab159288176294bc42b520e",
-        "spec": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231"
+        "boundver": "28ec2585699ec4823aff8568615dcdeaaab634a675c3cf318c7327a01ef4a9ef",
+        "spec": "b573703461d2fad8de397bd085302935974ff3c3ef9087d31353e410f59537c8"
       }
     }
   }
