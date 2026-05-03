@@ -1,6 +1,6 @@
 # boundver
 
-[![PyPI](https://img.shields.io/badge/pypi-0.9.0-orange)](https://pypi.org/project/boundver/)
+[![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![No runtime dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
@@ -36,18 +36,27 @@ For full tool-selection guidance, see [docs/WHY_BOUNDVER.md](docs/WHY_BOUNDVER.m
 
 ## How it works
 
-Each component gets three fingerprints:
+Each component gets four fingerprints forming a strict containment hierarchy (`exact ⊇ behavior ⊇ boundary`):
 
 | Fingerprint | Question it answers | What it hashes |
 |---|---|---|
-| `exact` | Did anything change? | Canonical SHA-256 digest of component file paths + file bytes |
-| `boundary` | Did the declared boundary files change? | Hash of only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
-| `compat` | Is it still compatible? | Derived from SemVer major version |
+| `exact` | Did anything change? | All tracked files in the component path |
+| `behavior` | Did the behavioral contract change? | Declared contract files: boundary + config + migrations + contract tests |
+| `boundary` | Did the API surface shape change? | Only the declared boundary files (e.g. `openapi.yaml`, `__init__.py`) |
+| `compat` | Is it still in the same compatibility family? | Derived from SemVer major version |
+
+This gives you four distinct change classifications:
+
+| What changed | Meaning |
+|---|---|
+| Only `exact` | Pure internal refactor — consumers unaffected |
+| `exact` + `behavior` | Behavioral contract changed (defaults, config, migrations) — API shape stable but consumers may be affected |
+| `exact` + `behavior` + `boundary` | API surface changed — consumers must re-verify |
+| All four | Breaking change — compatibility family changed |
 
 Components are grouped into **slices** — named subsets with their own stable fingerprints. Adding an unrelated component changes the full-project hash but leaves existing slice fingerprints untouched.
 
-> **Important:** `boundary` is a **declared-boundary file fingerprint**, not a semantic API diff. Formatting, ordering, or comment-only edits in boundary artifacts can change it.
->
+> **Note:** `boundary` and `behavior` are **declared-file fingerprints**, not semantic analysis. They detect changes in files you declare as contract-relevant. The `openapi-canonical` and `json-canonical` providers go further — they strip non-contract content (descriptions, comments, formatting) so only structural changes trigger the fingerprint.
 
 Each component also reports `boundary_status` in lock output:
 - `ok`: boundary paths were declared and hashed successfully
