@@ -1,6 +1,6 @@
 # Implementation Plan: boundver
 
-_Updated 2026-05-03 — 463 tests passing, 1 skipped (symlinks on Windows). Near-term, CLI polish, code health, distribution, provider Phases 1–3 complete._
+_Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near-term, CLI polish, code health, distribution, provider Phases 1–3 complete. Behavior tier implemented._
 
 ---
 
@@ -38,6 +38,7 @@ _Updated 2026-05-03 — 463 tests passing, 1 skipped (symlinks on Windows). Near
 - [x] Split `core.py` into modules: `_git.py`, `_hashing.py`, `_config.py`, `_lockfile.py`, `_diff.py`, `_output.py`, `_completions.py`. `core.py` is now a 406-line re-export shim + `main()`. All 297 tests pass.
 - [x] Batch git reads — `_git_batch_cat` implemented using `git cat-file --batch`; `source_tree_digest`, `boundary_paths_digest`, and `_content_only_digest` all use it for `head`/`index` sources, replacing O(N) subprocesses with O(1).
 - [x] Binary blob reads — `_git_cat_blob` uses binary subprocess (no text-mode CRLF conversion); `_read_path_content` for head/index uses it. Working-tree reads normalize CRLF→LF for cross-platform consistency.
+- [x] Shared utilities module — `_utils.py`: `SourceMode` enum (`head`/`index`/`working-tree`) inheriting from `str` for transparent string comparison; structured exception hierarchy (`BoundverError` → `ConfigError`, `LockfileError`, `ProviderError`, `GuardrailError`); `_is_glob`, `boundary_provider_name`, `_short` helpers migrated from scattered modules.
 
 ---
 
@@ -78,7 +79,8 @@ _Updated 2026-05-03 — 463 tests passing, 1 skipped (symlinks on Windows). Near
 - [x] **Phase 1 — Protocol + built-in wrappers** (`src/boundver/providers.py`): `ProviderContext`, `ResolvedBoundary`, `BoundaryProvider` protocol; `PathHashProvider`, `ImplicitProvider`, `LeafProvider`, `OpenApiProvider`, `JsonFileProvider`, `PythonExportsProvider`, `TypeScriptExportsProvider`; provider registry; `compute_boundary()` (only SHA-256 call for boundary digests); `generate_lockfile()` now delegates to `compute_boundary()`. Added `tests/test_providers.py` (34 tests). **Zero digest drift — 352 tests pass**.
 - [x] **Phase 2 — `options` + custom provider loading**: `boundary.options` added to config schema; `providers` top-level config key validated; `load_custom_providers()` in `providers.py`; `--allow-custom-providers` flag on `generate`/`verify`/`validate-config`/`check-config`/`status`; `BOUNDVER_ALLOW_CUSTOM_PROVIDERS` env var; `custom.*` namespace enforced; `generate_lockfile()` raises if providers declared without flag; registry isolation in tests. **463 tests pass**.
 - [x] **Phase 3 — Semantic built-ins**: `JsonCanonicalProvider` (`json-canonical`) re-serialises JSON as RFC 8785 canonical form — stable across key reordering and whitespace. `OpenApiCanonicalProvider` (`openapi-canonical`) strips `info`/`servers`/`tags` top-level blocks and recursively removes `description`, `summary`, `externalDocs`, `example`, `examples`, and `x-*` extension keys — digest stable across docs edits, changes on endpoint/parameter/schema changes. Both registered at import time; `known_providers` updated in `_config.py`. 22 new tests (14 unit + 8 integration). **438 tests pass**.
-- [ ] Semantic/canonical providers: `json-canonical`, `openapi-canonical`, TS/public API, Python/public symbol.
+- [x] **Behavior tier** — fourth fingerprint (`behavior`) forming containment hierarchy `exact ⊇ behavior ⊇ boundary`; hashes user-declared behavioral-contract files (config, migrations, contract tests); `behavior` slice mode; `config_warnings()` emits non-fatal advisory when `behavior.paths` is not a superset of `boundary.paths`; `validate-config` surfaces warnings in yellow without failing; `_diff.py` classifies `exact+behavior` changes as "behavioral contract changed (API shape stable)"; lockfile schema, config schema, spec, and examples all updated; 30+ new tests. **771 tests pass**.
+- [ ] Semantic/canonical providers: TS/public API, Python/public symbol.
 - [ ] Multi-boundary components (REST/events/CLI/schema per component).
 - [ ] Dependency/impact model: component graph, `impact`, `affected`, `why` commands.
 - [ ] Richer identity model: clarify exact/boundary/compat/api-version separation.

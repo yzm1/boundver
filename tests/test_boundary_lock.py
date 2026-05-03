@@ -830,7 +830,7 @@ class BoundaryLockTests(unittest.TestCase):
             exp_path = repo_root / "examples" / ex / "expected.boundary.lock.json"
             cfg = json.loads(cfg_path.read_text())
             generated = boundary_lock.generate_lockfile(
-                cfg, repo_root, source="working-tree", strict=False
+                cfg, repo_root, source="head", strict=False
             )
             expected = json.loads(exp_path.read_text())
             self.assertEqual(
