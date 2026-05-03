@@ -147,7 +147,7 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
             current_section = section_match.group(1).strip()
             continue
         if current_section == target_section:
-            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
+            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|(\S+))\s*(?:#.*)?$', line)
             if kv_match and kv_match.group(1) == target_key:
                 # Check groups explicitly — empty string is a valid value
                 if kv_match.group(2) is not None:
@@ -253,7 +253,7 @@ def _extract_toml_field(path: Path, field_path: str) -> Optional[str]:
             current_section = section_match.group(1).strip()
             continue
         if current_section == target_section:
-            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))', line)
+            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*(?:"([^"]*)"|' "'([^']*)'" r'|(\S+))\s*(?:#.*)?$', line)
             if kv_match and kv_match.group(1) == target_key:
                 # Check groups explicitly — empty string is a valid value
                 if kv_match.group(2) is not None:

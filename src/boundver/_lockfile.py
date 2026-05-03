@@ -1,6 +1,7 @@
 """Lockfile generation and verification for boundver."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -81,12 +82,17 @@ class _SourceAccessor:
             data = _git_cat_blob(self.repo_root, f":{repo_rel}")
         else:
             full = self.repo_root / repo_rel
-            sz = full.stat().st_size
-            if sz > MAX_HASH_FILE_BYTES:
-                raise GuardrailError(
-                    f"Hash guardrail exceeded: file too large ({sz} bytes) at {repo_rel}"
-                )
-            data = full.read_bytes()
+            if full.is_symlink():
+                # Hash symlink target string (matches git's blob storage for symlinks).
+                target = os.readlink(full)
+                data = target.encode("utf-8") if isinstance(target, str) else target
+            else:
+                sz = full.stat().st_size
+                if sz > MAX_HASH_FILE_BYTES:
+                    raise GuardrailError(
+                        f"Hash guardrail exceeded: file too large ({sz} bytes) at {repo_rel}"
+                    )
+                data = full.read_bytes()
         _enforce_content_size(data, repo_rel)
         return data
 
