@@ -47,14 +47,18 @@ jobs:
             for tc in root.iter("testcase"):
               for child in tc:
                 if child.tag in ("failure", "error"):
-                  failed.append(f"{tc.attrib.get('classname')}.{tc.attrib.get('name')}")
-                  print(f"FAIL: {tc.attrib.get('name')}", flush=True)
-                  print(child.attrib.get("message","")[:400], flush=True)
-                  print(child.text[:800] if child.text else "", flush=True)
+                  name = tc.attrib.get('name', '?')
+                  msg = child.attrib.get("message", "")[:300]
+                  body = (child.text or "")[:500]
+                  failed.append(name)
+                  print(f"::error title={name}::{msg}")
+                  print(f"FAIL: {name}", flush=True)
+                  print(msg, flush=True)
+                  print(body, flush=True)
                   print("---")
             print(f"\nTotal failures: {len(failed)}", flush=True)
           except Exception as e:
-            print(f"Could not parse XML: {e}", flush=True)
+            print(f"::error title=ParseError::Could not parse XML: {e}", flush=True)
 
       - name: Upload test results
         if: always()
