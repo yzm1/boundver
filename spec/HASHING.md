@@ -26,7 +26,8 @@ This document defines the deterministic hashing contract for `boundary-lock/v1`.
 
   `{component_name}@compat:{compat_identity}`
 
-- `slice`: SHA-256 over canonical JSON of `{component_name: selected_digest}` where `selected_digest` is chosen by slice mode (`exact`, `boundary`, `compat`).
+- `behavior`: same digest algorithm, but restricted to declared `behavior.paths` expansion. `null` when not configured.
+- `slice`: SHA-256 over canonical JSON of `{component_name: selected_digest}` where `selected_digest` is chosen by slice mode (`exact`, `behavior`, `boundary`, `compat`).
 
 ## Canonical JSON
 - UTF-8 encoded.

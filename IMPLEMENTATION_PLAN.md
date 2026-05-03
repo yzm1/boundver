@@ -67,7 +67,7 @@ _Updated 2026-05-03 — 463 tests passing, 1 skipped (symlinks on Windows). Near
 - [ ] Config includes/extends.
 - [x] Glob patterns in boundary sources — `fnmatch`-based glob support in `PathHashProvider.resolve()` and `_config.validate_config()`; `*`/`?`/`[` patterns expand against component files; `..` rejected; 10 new tests.
 - [x] Pre-commit hook integration — `.pre-commit-hooks.yaml` at repo root; `boundver-verify` and `boundver-generate` hooks; `language: python`; `always_run: true`.
-- [x] `boundver why <component>` — compares current fingerprints against the lockfile; shows which facets drifted (exact/boundary/compat), change-type classification, modified files under component path; exits 0 (up to date) / 1 (drifted) / 2 (error); shell completions updated; 8 new tests.
+- [x] `boundver why <component>` — compares current fingerprints against the lockfile; shows which facets drifted (exact/behavior/boundary/compat), change-type classification, modified files under component path; exits 0 (up to date) / 1 (drifted) / 2 (error); shell completions updated; 8 new tests.
 - [x] Support `boundary.config.yaml` / `.toml` — `find_config_file()` probes alternatives when default `.json` is absent; `load_config_file()` dispatches on extension (JSON built-in, YAML via PyYAML, TOML via `tomllib`/`tomli`); all config-loading sites in `core.py` updated; 11 new tests. **474 tests pass**.
 
 ---
