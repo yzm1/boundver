@@ -64,6 +64,33 @@ Each component also reports `boundary_status` in lock output:
 - `partial`: boundary provider is `implicit` and no boundary paths are declared (API fingerprint is `null`)
 - `error`: explicit boundary provider has no paths, or declared paths produced no API digest
 
+## What it detects (and what you do about it)
+
+When you run `boundver verify` (e.g. in a PR CI check), it compares the current repo state against `boundary.lock.json`. If fingerprints diverge, it exits non-zero and tells you which tier changed:
+
+| Detection | Meaning | Action |
+|---|---|---|
+| Only `exact` changed | Internal refactor (e.g. handler logic, comments) | Safe to merge — no consumer impact |
+| `behavior` changed | Config/defaults/migrations shifted | Consumers may be affected — review needed but not necessarily breaking |
+| `boundary` changed | API surface moved (e.g. new endpoint in OpenAPI spec, new export in `__init__.py`) | Consumers must re-verify compatibility |
+| `compat` changed | Major version bumped | Deployment coordination required |
+
+### Concrete scenarios
+
+- **Someone edits an API spec without updating the frontend** — PR CI fails `boundver verify`, reviewer sees "auth-service boundary changed" and knows to check frontend compatibility.
+
+- **Shared library adds/removes a public export** — slice fingerprint changes. Any downstream deploy pipeline keyed on that slice hash knows to rebuild.
+
+- **Service schema changes** — boundary fingerprint changes. The consuming team knows to verify their integration still works.
+
+- **Safe internal refactor** — someone rewrites a handler's internals. Only `exact` changes. Slice fingerprints are stable. CI passes. No false alarm.
+
+### The workflow in practice
+
+The lockfile commit becomes an explicit acknowledgment: *"yes, I intentionally changed this boundary."* Reviewers see the diff in `boundary.lock.json` and immediately know the blast radius without reading every file.
+
+**What it does NOT do:** It doesn't block merges automatically or run consumer tests. It's a signal — the enforcement policy (required check, Slack alert, auto-trigger downstream CI) is up to you.
+
 ## Quick start
 
 ```bash
