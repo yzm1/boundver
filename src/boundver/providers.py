@@ -405,12 +405,12 @@ def _parse_yaml_or_json(raw: bytes, path_label: str) -> Any:
         import yaml  # type: ignore
         return yaml.safe_load(text)
     except ImportError:
-        raise ValueError(
+        raise ProviderError(
             f"Cannot parse {path_label}: file is not valid JSON and PyYAML is not installed. "
             "Install PyYAML: pip install PyYAML"
         )
     except Exception as exc:
-        raise ValueError(f"YAML/JSON parse failed for {path_label}: {exc}") from exc
+        raise ProviderError(f"YAML/JSON parse failed for {path_label}: {exc}") from exc
 
 
 class JsonCanonicalProvider:
@@ -660,6 +660,7 @@ for _alias, _target in _ALIASES.items():
 def load_custom_providers(
     providers_list: list,
     allow_custom: bool,
+    registry: Optional[Dict[str, "BoundaryProvider"]] = None,
 ) -> List[str]:
     """Load and register custom providers declared in the config ``providers`` key.
 
@@ -669,6 +670,7 @@ def load_custom_providers(
     ``providers_list`` is the value of ``config.get("providers", [])``.
     ``allow_custom`` must be True (set by ``--allow-custom-providers``) before
     any custom provider is loaded; otherwise an error is returned immediately.
+    If *registry* is provided, registers into that dict instead of the global registry.
     """
     if not providers_list:
         return []
@@ -721,8 +723,9 @@ def load_custom_providers(
         if not isinstance(provider_name, str) or not provider_name.startswith("custom."):
             errors.append(
                 f"Provider '{module_name}.{class_name}' has name={provider_name!r}; "
-                "custom provider names must start with 'custom.'"
+                "custom provider names must start with 'custom.' to avoid collisions "
+                "with built-in providers (e.g. name='custom.my_format')"
             )
             continue
-        register_provider(instance)
+        register_provider(instance, registry=registry)
     return errors

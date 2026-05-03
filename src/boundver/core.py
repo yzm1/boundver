@@ -51,7 +51,6 @@ from ._hashing import (
     _content_only_digest,
     _enforce_content_size,
     _enforce_hash_guardrails,
-    _is_within,
     _read_path_content,
     canonical_json,
     sha256_hex,
@@ -64,7 +63,6 @@ from ._utils import (
     LockfileError,
     ProviderError,
     _short,
-    boundary_provider_name,
 )
 from ._config import (
     config_warnings,
@@ -99,6 +97,7 @@ from ._output import (
     _print_json,
     _red,
     _yellow,
+    analyze_explain_changes,
     explain_component_changes,
     print_diff,
     print_status,
@@ -126,6 +125,15 @@ from .versions import (
 EXIT_OK = 0
 EXIT_DRIFT = 1       # Drift/mismatch detected (lockfile out of date, config invalid)
 EXIT_USAGE = 2       # Usage/config error (missing file, parse error, unknown name)
+
+
+def _get_version() -> str:
+    """Return the installed package version."""
+    try:
+        from importlib.metadata import version as _meta_version
+        return _meta_version("boundver")
+    except Exception:
+        return "unknown"
 
 
 def _resolve_allow_custom(args, config: dict) -> bool:
@@ -258,6 +266,16 @@ def _cmd_generate(args, repo_root: Path) -> None:
         _print_json(lockfile)
     elif not args.quiet:
         print_status(lockfile)
+    # First-run hint: if source=head and all components have exact_errors,
+    # the user likely hasn't committed yet.
+    if args.source == "head" and not args.quiet and args.format != "json":
+        comps = lockfile.get("components", {})
+        if comps and all(c.get("exact_errors") for c in comps.values()):
+            print(
+                _yellow("\nHint: All components have errors at HEAD. "
+                        "If you haven't committed yet, try:\n"
+                        "  boundver generate --source working-tree")
+            )
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
@@ -299,6 +317,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         issues = verify_lockfile(
             config, lockfile, repo_root, source=args.source, components_filter=components_filter,
             allow_custom_providers=allow_custom,
+            fail_fast=getattr(args, "fail_fast", False),
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -553,13 +572,26 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {_get_version()}")
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("--quiet", action="store_true", help="Reduce non-error human-readable output")
     verbosity.add_argument("--verbose", action="store_true", help="Print additional progress diagnostics")
     sub = parser.add_subparsers(dest="command")
 
     # generate
-    gen = sub.add_parser("generate", help="Generate or update the lockfile")
+    gen = sub.add_parser(
+        "generate",
+        help="Generate or update the lockfile",
+        epilog=(
+            "Examples:\n"
+            "  boundver generate\n"
+            "  boundver generate --source working-tree\n"
+            "  boundver generate --components auth-service,billing --dry-run\n"
+            "  boundver generate --format json\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     gen.add_argument("--config", default="boundary.config.json", help="Config file path")
     gen.add_argument("--out", default="boundary.lock.json", help="Output lockfile path")
     gen.add_argument("--source", choices=["head", "index", "working-tree"], default="head", help="Fingerprint source")
@@ -569,10 +601,9 @@ def main():
     gen.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     gen.add_argument(
         "--allow-custom-providers", action="store_true",
-        help="Allow loading external provider modules declared in the config 'providers' key",
+        help="Allow loading external provider modules declared in the config 'providers' key "
+             "(or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1)",
     )
-
-    # verify
     ver = sub.add_parser(
         "verify",
         help="Check lockfile matches current repo state",
@@ -583,6 +614,13 @@ def main():
             "  1  Lockfile is out of date (fingerprint mismatches found)\n"
             "  2  Usage error (unknown component name, config missing, etc.)\n"
         ),
+        epilog=(
+            "Examples:\n"
+            "  boundver verify\n"
+            "  boundver verify --components auth-service\n"
+            "  boundver verify --changed-from main\n"
+            "  boundver verify --source working-tree --format json\n"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ver.add_argument("--config", default="boundary.config.json")
@@ -591,6 +629,8 @@ def main():
                      help="Fingerprint source to compare against locked values")
     ver.add_argument("--components", default="", help="Comma-separated component names to verify")
     ver.add_argument("--changed-from", default="", help="Auto-select changed components since git ref")
+    ver.add_argument("--fail-fast", action="store_true",
+                     help="Stop after first mismatch (faster for large repos in CI)")
     ver.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     ver.add_argument(
         "--allow-custom-providers", action="store_true",
@@ -609,7 +649,16 @@ def main():
     sl.add_argument("--lock", default="boundary.lock.json")
 
     # validate-config (and check-config alias)
-    vc = sub.add_parser("validate-config", help="Validate config for strict boundary rules")
+    vc = sub.add_parser(
+        "validate-config",
+        help="Validate config for strict boundary rules",
+        epilog=(
+            "Examples:\n"
+            "  boundver validate-config\n"
+            "  boundver validate-config --config custom-config.json\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     vc.add_argument("--config", default="boundary.config.json")
     vc.add_argument(
         "--allow-custom-providers", action="store_true",
@@ -623,7 +672,19 @@ def main():
     )
 
     # init
-    init = sub.add_parser("init", help="Create a starter boundary.config.json")
+    init = sub.add_parser(
+        "init",
+        help="Create a starter boundary.config.json",
+        epilog=(
+            "Examples:\n"
+            "  boundver init\n"
+            "  boundver init --discover  # auto-detect components from manifests\n"
+            "\n"
+            "After init, if you haven't committed yet, generate with:\n"
+            "  boundver generate --source working-tree\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     init.add_argument("--out", default="boundary.config.json", help="Output config file path")
     init.add_argument("--force", action="store_true", help="Overwrite existing file")
     init.add_argument("--discover", action="store_true", help="Auto-discover components from common manifests")
@@ -642,7 +703,17 @@ def main():
     rm.add_argument("--config", default="boundary.config.json", help="Config file path")
 
     # status
-    st = sub.add_parser("status", help="Show lockfile summary and warnings")
+    st = sub.add_parser(
+        "status",
+        help="Show lockfile summary and warnings",
+        epilog=(
+            "Examples:\n"
+            "  boundver status\n"
+            "  boundver status --format json\n"
+            "  boundver status --strict  # exit non-zero on drift (for CI)\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     st.add_argument("--config", default="boundary.config.json")
     st.add_argument("--lock", default="boundary.lock.json")
     st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
@@ -748,7 +819,16 @@ def main():
     try:
         repo_root = git_root()
     except (subprocess.CalledProcessError, OSError):
-        print("ERROR: Not inside a git repository (is git installed and on PATH?).", file=sys.stderr)
+        print(
+            "ERROR: Not inside a git repository.\n"
+            "\n"
+            "boundver requires git history to compute fingerprints.\n"
+            "Common fixes:\n"
+            "  - In CI: set fetch-depth: 0 (GitHub Actions) or GIT_DEPTH: 0 (GitLab)\n"
+            "  - In Docker: copy .git into the build context or mount it\n"
+            "  - Locally: run from within a git-initialized directory (git init)\n",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_USAGE)
 
     # Dispatch to command handlers.

@@ -630,12 +630,12 @@ class ContentOnlyDigestTests(unittest.TestCase):
 class ShortHelperTests(unittest.TestCase):
     def test_short_none_returns_none_string(self):
         """_short(None) returns 'none'."""
-        from boundver._hashing import _short
+        from boundver._utils import _short
         self.assertEqual(_short(None), "none")
 
     def test_short_long_hash_truncated(self):
         """_short truncates a hash to 12 chars + '...'."""
-        from boundver._hashing import _short
+        from boundver._utils import _short
         h = "a" * 64
         result = _short(h)
         self.assertEqual(result, "aaaaaaaaaaaa...")

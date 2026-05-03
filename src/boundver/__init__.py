@@ -1,5 +1,7 @@
 """boundver package."""
 
+from typing import List, Optional
+
 __all__ = [
     "main",
     "generate",
@@ -11,11 +13,17 @@ __all__ = [
     "LockfileError",
     "ProviderError",
     "GuardrailError",
+    "SourceMode",
+    "create_registry",
+    "analyze_component_drift",
+    "analyze_explain_changes",
 ]
 
 from importlib.metadata import PackageNotFoundError, version
 
-from ._utils import BoundverError, ConfigError, GuardrailError, LockfileError, ProviderError
+from ._utils import BoundverError, ConfigError, GuardrailError, LockfileError, ProviderError, SourceMode
+from .providers import create_registry
+from ._output import analyze_component_drift, analyze_explain_changes
 
 from .cli import main
 
@@ -72,9 +80,9 @@ def verify(
     config_path: str = "boundary.config.json",
     lock_path: str = "boundary.lock.json",
     source: str = "head",
-    components: list = None,
+    components: Optional[List[str]] = None,
     allow_custom_providers: bool = False,
-) -> list:
+) -> List[str]:
     """Verify lockfile matches current repo state.
 
     Returns a list of mismatch strings. Empty list means up to date.

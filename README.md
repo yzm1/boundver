@@ -159,6 +159,10 @@ boundver discover --format json
 
 Schema file: `boundary.config.schema.json` (Draft 2020-12).
 
+> **Config format:** boundver accepts `.json`, `.yaml`/`.yml`, and `.toml` config files.
+> When no explicit `--config` is given, it probes `boundary.config.json`, then
+> `boundary.config.yaml` / `.yml` / `.toml` in order.
+
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
@@ -318,6 +322,12 @@ fi
 # Verifies exact/boundary fingerprints against HEAD using git + jq + sha256sum
 scripts/boundver-verify.sh boundary.config.json boundary.lock.json
 ```
+
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1` | Equivalent to passing `--allow-custom-providers` on every invocation. Accepts `1`, `true`, or `yes`. |
 
 ## Exit codes
 

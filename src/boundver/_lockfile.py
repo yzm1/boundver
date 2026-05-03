@@ -3,7 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from ._git import _git_cat_blob, _list_files_for_source, _to_posix, git_latest_tag
 from ._hashing import (
@@ -14,7 +14,7 @@ from ._hashing import (
     sha256_hex,
     source_tree_digest,
 )
-from ._utils import _short, boundary_provider_name
+from ._utils import _short, boundary_provider_name, ConfigError, GuardrailError, ProviderError, SourceMode
 from .providers import PathHashProvider, ProviderContext, compute_boundary, get_provider, load_custom_providers
 from .versions import extract_version, parse_semver
 
@@ -23,7 +23,7 @@ LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/main/spec
 
 
 def generate_lockfile(
-    config: dict, repo_root: Path, source: str = "head", strict: bool = True,
+    config: dict, repo_root: Path, source: Union[str, SourceMode] = "head", strict: bool = True,
     allow_custom_providers: bool = False,
 ) -> dict:
     """Generate the full lockfile from config + repo state."""
@@ -31,7 +31,7 @@ def generate_lockfile(
         config.get("providers", []), allow_custom=allow_custom_providers
     )
     if provider_errors:
-        raise ValueError("Custom provider loading failed:\n" + "\n".join(provider_errors))
+        raise ProviderError("Custom provider loading failed:\n" + "\n".join(provider_errors))
     components_config = config["components"]
     slices_config = config.get("slices", {})
     defaults = config.get("defaults", {})
@@ -83,7 +83,7 @@ class _SourceAccessor:
             full = self.repo_root / repo_rel
             sz = full.stat().st_size
             if sz > MAX_HASH_FILE_BYTES:
-                raise ValueError(
+                raise GuardrailError(
                     f"Hash guardrail exceeded: file too large ({sz} bytes) at {repo_rel}"
                 )
             data = full.read_bytes()
@@ -104,7 +104,7 @@ class _SourceAccessor:
             fpath = self.repo_root / repo_rel
             size = fpath.stat().st_size
             if size > MAX_HASH_FILE_BYTES:
-                raise ValueError(
+                raise GuardrailError(
                     f"Version source file too large ({size} bytes): {repo_rel}"
                 )
             return fpath.read_bytes()
@@ -125,7 +125,7 @@ def _compute_component_entry(
     """Compute the lockfile entry for a single component."""
     raw_path = comp.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ValueError(f"Component '{name}' has invalid or missing 'path'")
+        raise ConfigError(f"Component '{name}' has invalid or missing 'path'")
     comp_path = raw_path.rstrip("/")
     version = extract_version(
         repo_root, comp_path, comp.get("version_source"), git_latest_tag,
@@ -263,18 +263,18 @@ def _recompute_slice_entry(
             digest_parts[cname] = fp.get("exact")
         elif mode == "behavior":
             if fp.get("behavior") is None and strict:
-                raise ValueError(f"Slice '{slice_name}' requires behavior digest for component '{cname}'")
+                raise ConfigError(f"Slice '{slice_name}' requires behavior digest for component '{cname}'")
             digest_parts[cname] = fp.get("behavior")
         elif mode == "boundary":
             if fp.get("boundary") is None and strict:
-                raise ValueError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
+                raise ConfigError(f"Slice '{slice_name}' requires boundary digest for component '{cname}'")
             digest_parts[cname] = fp.get("boundary")
         elif mode == "compat":
             if fp.get("compat") is None and strict:
-                raise ValueError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
+                raise ConfigError(f"Slice '{slice_name}' requires compat digest for component '{cname}'")
             digest_parts[cname] = fp.get("compat")
         else:
-            raise ValueError(f"Unknown slice mode: {mode}")
+            raise ConfigError(f"Unknown slice mode: {mode}")
     return {
         "description": slice_def.get("description", ""),
         "mode": mode,
@@ -298,7 +298,7 @@ def generate_lockfile_for_components(
     components_cfg = config.get("components", {})
     missing = [n for n in selected if n not in components_cfg]
     if missing:
-        raise ValueError(f"Unknown component(s): {', '.join(missing)}")
+        raise ConfigError(f"Unknown component(s): {', '.join(missing)}")
 
     subset_config = dict(config)
     subset_config["components"] = {n: components_cfg[n] for n in selected}
@@ -312,7 +312,7 @@ def generate_lockfile_for_components(
         try:
             merged = json.loads(out_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise ValueError(
+            raise ConfigError(
                 f"Existing lockfile at {out_path} is not valid JSON: {exc}"
             ) from exc
     else:
@@ -377,23 +377,24 @@ def verify_lockfile(
     config: dict,
     lockfile: dict,
     repo_root: Path,
-    source: str = "head",
+    source: Union[str, SourceMode] = "head",
     components_filter: Optional[List[str]] = None,
     allow_custom_providers: bool = False,
+    fail_fast: bool = False,
 ) -> List[str]:
-    """Check if the lockfile matches current repo state. Returns list of mismatches."""
-    # When a filter is specified, only regenerate the selected components to avoid
-    # O(all-components) cost for targeted verification in large monorepos.
-    if components_filter:
-        filtered_config = dict(config)
-        all_components = config.get("components", {})
-        filtered_config["components"] = {n: all_components[n] for n in components_filter if n in all_components}
-        filtered_config["slices"] = {}
-        current = generate_lockfile(filtered_config, repo_root, source=source, strict=False,
-                                    allow_custom_providers=allow_custom_providers)
-    else:
-        current = generate_lockfile(config, repo_root, source=source, strict=False,
-                                    allow_custom_providers=allow_custom_providers)
+    """Check if the lockfile matches current repo state. Returns list of mismatches.
+
+    When *fail_fast* is True, returns after the first mismatch is found. This avoids
+    computing fingerprints for remaining components, significantly reducing verification
+    time in large monorepos when you only need a pass/fail signal.
+    """
+    # Load custom providers once up front.
+    provider_errors = load_custom_providers(
+        config.get("providers", []), allow_custom=allow_custom_providers
+    )
+    if provider_errors:
+        return [f"Custom provider loading failed: {e}" for e in provider_errors]
+
     issues = _lockfile_schema_issues(lockfile)
     issues.extend(_lockfile_structure_issues(lockfile))
     if issues:
@@ -402,12 +403,26 @@ def verify_lockfile(
     selected = set(components_filter or [])
     use_filter = len(selected) > 0
 
-    for name, current_comp in current["components"].items():
-        if use_filter and name not in selected:
-            continue
+    # Determine which components to check.
+    all_components = config.get("components", {})
+    if use_filter:
+        check_components = {n: all_components[n] for n in components_filter if n in all_components}
+    else:
+        check_components = all_components
+
+    defaults = config.get("defaults", {})
+    accessor = _SourceAccessor(repo_root, source)
+
+    # Per-component verification with optional early exit.
+    computed_entries: Dict[str, dict] = {}
+    for name, comp_cfg in check_components.items():
+        current_comp = _compute_component_entry(name, comp_cfg, repo_root, source, defaults, accessor)
+        computed_entries[name] = current_comp
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
             issues.append(f"NEW component not in lockfile: {name}")
+            if fail_fast:
+                return issues
             continue
         for facet in ("exact", "behavior", "boundary", "compat"):
             cv = current_comp["fingerprints"].get(facet)
@@ -417,35 +432,47 @@ def verify_lockfile(
                 issues.append(
                     f"MISMATCH {name}.{facet}: lockfile={_short(lv)} current={_short(cv)}"
                 )
+                if fail_fast:
+                    return issues
+
+        # Check for vendored copy drift
+        for warning in current_comp.get("warnings", []):
+            issues.append(f"VENDORED DRIFT {name}: {warning}")
+            if fail_fast:
+                return issues
 
     for name in lockfile.get("components", {}):
         if use_filter and name not in selected:
             continue
-        if name not in current["components"]:
+        if name not in check_components:
             issues.append(f"REMOVED component still in lockfile: {name}")
-
-    # Check for vendored copy drift
-    for name, comp in current["components"].items():
-        if use_filter and name not in selected:
-            continue
-        for warning in comp.get("warnings", []):
-            issues.append(f"VENDORED DRIFT {name}: {warning}")
+            if fail_fast:
+                return issues
 
     # Check slice fingerprints (skip when using component filter, as slices
     # are not regenerated in that case).
     if not use_filter:
-        for sname, current_slice in current.get("slices", {}).items():
-            locked_slice = lockfile.get("slices", {}).get(sname)
-            if locked_slice is None:
-                issues.append(f"NEW slice not in lockfile: {sname}")
-            elif locked_slice.get("fingerprint") != current_slice.get("fingerprint"):
-                issues.append(
-                    f"SLICE MISMATCH {sname}: lockfile={_short(locked_slice.get('fingerprint'))} "
-                    f"current={_short(current_slice.get('fingerprint'))}"
-                )
-        for sname in lockfile.get("slices", {}):
-            if sname not in current.get("slices", {}):
-                issues.append(f"REMOVED slice still in lockfile: {sname}")
+        slices_config = config.get("slices", {})
+        if slices_config:
+            for sname, sdef in slices_config.items():
+                current_slice = _recompute_slice_entry(sname, sdef, computed_entries, strict=False)
+                locked_slice = lockfile.get("slices", {}).get(sname)
+                if locked_slice is None:
+                    issues.append(f"NEW slice not in lockfile: {sname}")
+                    if fail_fast:
+                        return issues
+                elif locked_slice.get("fingerprint") != current_slice.get("fingerprint"):
+                    issues.append(
+                        f"SLICE MISMATCH {sname}: lockfile={_short(locked_slice.get('fingerprint'))} "
+                        f"current={_short(current_slice.get('fingerprint'))}"
+                    )
+                    if fail_fast:
+                        return issues
+            for sname in lockfile.get("slices", {}):
+                if sname not in slices_config:
+                    issues.append(f"REMOVED slice still in lockfile: {sname}")
+                    if fail_fast:
+                        return issues
 
     return issues
 

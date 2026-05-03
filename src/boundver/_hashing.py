@@ -15,8 +15,6 @@ from ._git import (
 from ._utils import (
     GuardrailError,
     _is_within,
-    _short,
-    boundary_provider_name,
 )
 
 MAX_HASH_FILES = 50000

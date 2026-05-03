@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._git import _git_run, _to_posix
-from ._utils import _short, boundary_provider_name
+from ._utils import _is_glob, _short, boundary_provider_name
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +107,17 @@ def print_status(lockfile: dict) -> None:
     for state, count in sorted(boundary_states.items()):
         print(f"    {state}: {count}")
 
+    # Explain partial status for implicit provider (common for new adopters)
+    implicit_partial = [
+        name for name, c in comps.items()
+        if c.get("boundary_status") == "partial" and c.get("boundary_provider") == "implicit"
+    ]
+    if implicit_partial:
+        print(f"\n  Note: {len(implicit_partial)} component(s) use the 'implicit' provider (boundary fingerprint = null).")
+        print("    This is expected — implicit tracks exact changes only.")
+        print("    To track API boundaries, switch to a specific provider:")
+        print("      boundver add <name> <path> --provider openapi")
+
     # Warnings
     warnings = []
     for name, c in comps.items():
@@ -128,32 +139,35 @@ def print_status(lockfile: dict) -> None:
         print(f"    {sname} [{mode}] ({count} components) = {fp}")
 
 
-def explain_component_changes(config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head") -> int:
-    """Explain changed tracked files for one component and its boundary subset."""
+def analyze_explain_changes(
+    config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head"
+) -> Dict[str, Any]:
+    """Analyze changed tracked files for one component and its boundary subset.
+
+    Returns a dict with keys:
+        error (str|None), component_name, component_path, effective_base,
+        source, changed (list of (status, path) tuples),
+        boundary_provider, boundary_paths, boundary_changed (list of (status, path) tuples).
+    """
     if base_ref.lstrip().startswith("-"):
-        print(f"ERROR: invalid base ref: {base_ref!r}", file=sys.stderr)
-        return 2
+        return {"error": f"invalid base ref: {base_ref!r}"}
     comp = config.get("components", {}).get(component_name)
     if not comp:
-        print(f"ERROR: unknown component '{component_name}'", file=sys.stderr)
         known = sorted(config.get("components", {}).keys())
-        if known:
-            print(f"Known components: {', '.join(known)}", file=sys.stderr)
-        return 2
+        return {"error": f"unknown component '{component_name}'", "known": known}
 
     component_path = str(comp.get("path", "")).rstrip("/")
     boundary = comp.get("boundary", {})
-    boundary_paths = boundary.get("paths", []) if isinstance(boundary, dict) else []
+    boundary_paths_raw = boundary.get("paths", []) if isinstance(boundary, dict) else []
 
     # When source=head and base_ref=HEAD, diffing HEAD vs HEAD is useless.
-    # Auto-resolve to HEAD~1 so the command produces meaningful output.
     effective_base = base_ref
     if source == "head" and base_ref == "HEAD":
         try:
             _git_run(repo_root, ["rev-parse", "--verify", "HEAD~1"])
             effective_base = "HEAD~1"
         except subprocess.CalledProcessError:
-            pass  # initial commit — fall through with HEAD
+            pass
 
     # Choose diff target based on source
     diff_args = ["diff", "--name-status"]
@@ -162,28 +176,78 @@ def explain_component_changes(config: dict, repo_root: Path, component_name: str
     elif source == "index":
         diff_args.extend(["--cached", effective_base])
     else:
-        # head: diff between effective_base and HEAD
         diff_args.extend([effective_base, "HEAD"])
     diff_args.extend(["--", component_path])
 
     try:
         diff = _git_run(repo_root, diff_args)
     except subprocess.CalledProcessError as exc:
-        print(f"ERROR: failed to diff '{component_name}' against {effective_base}: {exc}", file=sys.stderr)
-        return 2
+        return {"error": f"failed to diff '{component_name}' against {effective_base}: {exc}"}
 
     changed: List[Tuple[str, str]] = []
     for line in diff.stdout.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
             continue
-        # Renames/copies have 3 fields: status\told\tnew — use the new name
         filepath = parts[-1]
         changed.append((parts[0].strip(), _to_posix(filepath.strip())))
 
+    component_prefix = f"{_to_posix(component_path)}/"
+    normalized_boundary_paths: List[str] = []
+    for p in boundary_paths_raw:
+        rp = _to_posix(str(p).strip().rstrip("/"))
+        if rp:
+            normalized_boundary_paths.append(rp)
+
+    boundary_changed: List[Tuple[str, str]] = []
+    for status, rel in changed:
+        component_relative = rel
+        if component_relative.startswith(component_prefix):
+            component_relative = component_relative[len(component_prefix):]
+        for bp in normalized_boundary_paths:
+            if _is_glob(bp):
+                import fnmatch
+                if fnmatch.fnmatch(component_relative, bp) or fnmatch.fnmatch(component_relative, f"{bp}/*"):
+                    boundary_changed.append((status, rel))
+                    break
+            elif component_relative == bp or component_relative.startswith(f"{bp}/"):
+                boundary_changed.append((status, rel))
+                break
+
+    return {
+        "error": None,
+        "component_name": component_name,
+        "component_path": component_path,
+        "effective_base": effective_base,
+        "base_ref": base_ref,
+        "source": source,
+        "changed": changed,
+        "boundary_provider": boundary_provider_name(boundary),
+        "boundary_paths": normalized_boundary_paths,
+        "boundary_changed": boundary_changed,
+    }
+
+
+def explain_component_changes(config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head") -> int:
+    """Explain changed tracked files for one component and its boundary subset."""
+    result = analyze_explain_changes(config, repo_root, component_name, base_ref, source)
+
+    if result.get("error"):
+        print(f"ERROR: {result['error']}", file=sys.stderr)
+        if result.get("known"):
+            print(f"Known components: {', '.join(result['known'])}", file=sys.stderr)
+        return 2
+
+    component_path = result["component_path"]
+    effective_base = result["effective_base"]
+    base_ref_actual = result["base_ref"]
+    changed = result["changed"]
+    boundary_paths = result["boundary_paths"]
+    boundary_changed = result["boundary_changed"]
+
     print(f"Component: {component_name}")
     print(f"Path: {component_path}")
-    print(f"Base ref: {effective_base}" + (f" (auto-resolved from {base_ref})" if effective_base != base_ref else ""))
+    print(f"Base ref: {effective_base}" + (f" (auto-resolved from {base_ref_actual})" if effective_base != base_ref_actual else ""))
     print(f"Source: {source}")
 
     if not changed:
@@ -198,26 +262,9 @@ def explain_component_changes(config: dict, repo_root: Path, component_name: str
         print("\nBoundary paths: none declared")
         return 0
 
-    component_prefix = f"{_to_posix(component_path)}/"
-    normalized_boundary_paths = []
-    for p in boundary_paths:
-        rp = _to_posix(str(p).strip().rstrip("/"))
-        if rp:
-            normalized_boundary_paths.append(rp)
-
-    boundary_changed: List[Tuple[str, str]] = []
-    for status, rel in changed:
-        component_relative = rel
-        if component_relative.startswith(component_prefix):
-            component_relative = component_relative[len(component_prefix):]
-        for bp in normalized_boundary_paths:
-            if component_relative == bp or component_relative.startswith(f"{bp}/"):
-                boundary_changed.append((status, rel))
-                break
-
-    print(f"\nBoundary provider: {boundary_provider_name(boundary)}")
+    print(f"\nBoundary provider: {result['boundary_provider']}")
     print("Boundary paths:")
-    for bp in normalized_boundary_paths:
+    for bp in boundary_paths:
         print(f"  - {bp}")
 
     if boundary_changed:
@@ -263,100 +310,44 @@ def why_component(
 
     Returns 0 if no drift, 1 if drift found, 2 on usage/config error.
     """
-    from ._diff import _summarize_change
-    from ._lockfile import generate_lockfile
+    result = analyze_component_drift(
+        config, lockfile, repo_root, component_name,
+        source=source, allow_custom_providers=allow_custom_providers,
+    )
+    if result is None:
+        return 2  # error already printed by analyze_component_drift
 
-    comp_cfg = config.get("components", {}).get(component_name)
-    if not comp_cfg:
-        print(f"ERROR: unknown component '{component_name}'", file=sys.stderr)
-        known = sorted(config.get("components", {}).keys())
-        if known:
-            print(f"Known components: {', '.join(known)}", file=sys.stderr)
-        return 2
-
-    locked_comp = lockfile.get("components", {}).get(component_name)
-    if locked_comp is None:
-        print(f"Component '{component_name}' is not in the lockfile — run 'boundver generate' first.")
-        return 2
-
-    # Compute current fingerprints for just this component.
-    subset_config = dict(config)
-    subset_config["components"] = {component_name: comp_cfg}
-    subset_config["slices"] = {}
-    try:
-        current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False,
-                                            allow_custom_providers=allow_custom_providers)
-    except (MemoryError, RecursionError, KeyboardInterrupt):
-        raise
-    except Exception as exc:
-        print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
-        return 2
-
-    current_comp = current_lock["components"][component_name]
-    locked_fps = locked_comp.get("fingerprints", {})
-    current_fps = current_comp.get("fingerprints", {})
-
-    # Build diff of changed facets.
-    changes: Dict[str, dict] = {}
-    for facet in ("exact", "behavior", "boundary", "compat"):
-        lv = locked_fps.get(facet)
-        cv = current_fps.get(facet)
-        if lv != cv:
-            changes[facet] = {"locked": lv, "current": cv}
-
-    # Header.
+    # Format output
+    comp_cfg = config["components"][component_name]
     comp_path = comp_cfg.get("path", "?")
     print(f"\nComponent:  {_bold(component_name)}")
     print(f"Path:       {comp_path}")
     print(f"Source:     {source}")
-    version = current_comp.get("version") or locked_comp.get("version")
-    if version:
-        print(f"Version:    {version}")
+    if result["version"]:
+        print(f"Version:    {result['version']}")
 
-    if not changes:
+    if not result["changes"]:
         print(_green("\nStatus: UP TO DATE — no fingerprint drift detected."))
         return 0
 
+    changes = result["changes"]
     print(_red(f"\nStatus: DRIFTED — {len(changes)} facet(s) changed"))
 
     print("\nFingerprint changes:")
     for facet in ("exact", "behavior", "boundary", "compat"):
-        lv = locked_fps.get(facet)
-        cv = current_fps.get(facet)
+        lv = result["locked_fps"].get(facet)
+        cv = result["current_fps"].get(facet)
         if facet in changes:
             print(f"  {facet:<10}  {_short(lv)}  →  {_red(_short(cv))}  (changed)")
         else:
             print(f"  {facet:<10}  {_short(lv)}  →  {_short(cv)}  (unchanged)")
 
-    summary = _summarize_change(changes)
-    print(f"\n{_yellow('Change type:')}  {summary}")
+    print(f"\n{_yellow('Change type:')}  {result['summary']}")
 
-    # Show git-diff for files under the component path.
-    changed_files: List[Tuple[str, str]] = []
-    if source == "working-tree":
-        try:
-            diff = _git_run(repo_root, ["diff", "HEAD", "--name-status", "--", comp_path])
-            staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
-            for line in (diff.stdout + staged.stdout).splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
-        except subprocess.CalledProcessError:
-            pass
-    elif source == "index":
-        try:
-            staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
-            for line in staged.stdout.splitlines():
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
-        except subprocess.CalledProcessError:
-            pass
-
-    if changed_files:
-        seen: set = set()
+    if result["changed_files"]:
         print(f"\nModified files under {comp_path}:")
-        for status, rel in changed_files:
+        seen: set = set()
+        for status, rel in result["changed_files"]:
             if rel not in seen:
                 seen.add(rel)
                 print(f"  {status:>2}  {rel}")
@@ -375,3 +366,101 @@ def why_component(
 
     print(f"\n{_bold('Recommendation:')} run `boundver generate --components {component_name}` to update the lockfile.")
     return 1
+
+
+def analyze_component_drift(
+    config: dict,
+    lockfile: dict,
+    repo_root: Path,
+    component_name: str,
+    source: str = "head",
+    allow_custom_providers: bool = False,
+) -> Optional[dict]:
+    """Analyze drift for a single component. Returns a dict with analysis results.
+
+    Returns None on error (error printed to stderr).
+    Returns a dict with keys:
+        changes: Dict[str, dict]  — facets that changed
+        summary: str              — human-readable change type
+        changed_files: List[Tuple[str, str]]
+        version: Optional[str]
+        locked_fps: dict
+        current_fps: dict
+    """
+    from ._diff import _summarize_change
+    from ._lockfile import generate_lockfile
+
+    comp_cfg = config.get("components", {}).get(component_name)
+    if not comp_cfg:
+        print(f"ERROR: unknown component '{component_name}'", file=sys.stderr)
+        known = sorted(config.get("components", {}).keys())
+        if known:
+            print(f"Known components: {', '.join(known)}", file=sys.stderr)
+        return None
+
+    locked_comp = lockfile.get("components", {}).get(component_name)
+    if locked_comp is None:
+        print(f"Component '{component_name}' is not in the lockfile — run 'boundver generate' first.", file=sys.stderr)
+        return None
+
+    # Compute current fingerprints for just this component.
+    subset_config = dict(config)
+    subset_config["components"] = {component_name: comp_cfg}
+    subset_config["slices"] = {}
+    try:
+        current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False,
+                                            allow_custom_providers=allow_custom_providers)
+    except (MemoryError, RecursionError, KeyboardInterrupt):
+        raise
+    except Exception as exc:
+        print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
+        return None
+
+    current_comp = current_lock["components"][component_name]
+    locked_fps = locked_comp.get("fingerprints") or {}
+    current_fps = current_comp.get("fingerprints") or {}
+
+    # Build diff of changed facets.
+    changes: Dict[str, dict] = {}
+    for facet in ("exact", "behavior", "boundary", "compat"):
+        lv = locked_fps.get(facet)
+        cv = current_fps.get(facet)
+        if lv != cv:
+            changes[facet] = {"locked": lv, "current": cv}
+
+    summary = _summarize_change(changes) if changes else ""
+
+    # Get changed files via git diff
+    comp_path = comp_cfg.get("path", "?").rstrip("/")
+    changed_files: List[Tuple[str, str]] = []
+    if changes:
+        if source == "working-tree":
+            try:
+                diff = _git_run(repo_root, ["diff", "HEAD", "--name-status", "--", comp_path])
+                staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
+                for line in (diff.stdout + staged.stdout).splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 2:
+                        changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
+            except subprocess.CalledProcessError:
+                pass
+        elif source == "index":
+            try:
+                staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
+                for line in staged.stdout.splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 2:
+                        changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
+            except subprocess.CalledProcessError:
+                pass
+
+    version = current_comp.get("version") or locked_comp.get("version")
+
+    return {
+        "changes": changes,
+        "summary": summary,
+        "changed_files": changed_files,
+        "version": version,
+        "locked_fps": locked_fps,
+        "current_fps": current_fps,
+    }

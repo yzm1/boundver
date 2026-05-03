@@ -33,7 +33,14 @@ jobs:
           pip install -e .[dev]
 
       - name: Run tests
-        run: pytest -v --tb=short
+        run: pytest -v --tb=long --junit-xml=pytest_results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: pytest_results.xml
 
   build:
     runs-on: ubuntu-latest

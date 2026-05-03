@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ._git import _to_posix
 from ._hashing import _is_within
-from ._utils import _is_glob, boundary_provider_name
+from ._utils import _is_glob, boundary_provider_name, ConfigError
 
 # Ordered preference when auto-discovering config (first match wins)
 _CONFIG_CANDIDATES = [
@@ -52,31 +52,31 @@ def load_config_file(path: Path) -> dict:
     try:
         size = path.stat().st_size
     except OSError as exc:
-        raise ValueError(f"Cannot stat config file {path}: {exc}") from exc
+        raise ConfigError(f"Cannot stat config file {path}: {exc}") from exc
     if size > _MAX_CONFIG_BYTES:
-        raise ValueError(f"Config file too large ({size} bytes): {path}")
+        raise ConfigError(f"Config file too large ({size} bytes): {path}")
     suffix = path.suffix.lower()
     text = path.read_text(encoding="utf-8")
     if suffix == ".json":
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"JSON parse error in {path}: {exc}") from exc
+            raise ConfigError(f"JSON parse error in {path}: {exc}") from exc
     if suffix in (".yaml", ".yml"):
         try:
             import yaml  # type: ignore
             result = yaml.safe_load(text)
         except ImportError:
-            raise ValueError(
+            raise ConfigError(
                 f"Cannot parse {path}: PyYAML is not installed. "
                 "Install it with: pip install PyYAML"
             )
         except (MemoryError, RecursionError):
             raise
         except Exception as exc:
-            raise ValueError(f"YAML parse error in {path}: {exc}") from exc
+            raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
         if not isinstance(result, dict):
-            raise ValueError(f"Config file {path} must contain a YAML mapping, got {type(result).__name__}")
+            raise ConfigError(f"Config file {path} must contain a YAML mapping, got {type(result).__name__}")
         return result
     if suffix == ".toml":
         try:
@@ -85,7 +85,7 @@ def load_config_file(path: Path) -> dict:
             try:
                 import tomli as tomllib  # type: ignore  # pip install tomli
             except ImportError:
-                raise ValueError(
+                raise ConfigError(
                     f"Cannot parse {path}: neither tomllib (Python 3.11+) nor tomli is available. "
                     "Install tomli: pip install tomli"
                 )
@@ -94,8 +94,8 @@ def load_config_file(path: Path) -> dict:
         except (MemoryError, RecursionError):
             raise
         except Exception as exc:
-            raise ValueError(f"TOML parse error in {path}: {exc}") from exc
-    raise ValueError(
+            raise ConfigError(f"TOML parse error in {path}: {exc}") from exc
+    raise ConfigError(
         f"Unsupported config file extension '{suffix}' for {path}. "
         "Supported formats: .json, .yaml, .yml, .toml"
     )
@@ -297,7 +297,8 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                     if not declared_name.startswith("custom."):
                         errors.append(
                             f"providers[{i}] field 'name' must start with 'custom.' "
-                            f"(got '{declared_name}')"
+                            f"to avoid collisions with built-in providers "
+                            f"(got '{declared_name}', try 'custom.{declared_name}')"
                         )
                     else:
                         declared_custom_names.add(declared_name)
