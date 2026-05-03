@@ -585,14 +585,43 @@ class OpenApiCanonicalProvider:
 _REGISTRY: Dict[str, BoundaryProvider] = {}
 
 
-def register_provider(p: BoundaryProvider) -> None:
-    """Register a provider instance. Overwrites any existing entry with the same name."""
-    _REGISTRY[p.name] = p
+def register_provider(p: BoundaryProvider, registry: Optional[Dict[str, "BoundaryProvider"]] = None) -> None:
+    """Register a provider instance. Overwrites any existing entry with the same name.
+
+    If *registry* is provided, registers into that dict instead of the global registry.
+    """
+    target = registry if registry is not None else _REGISTRY
+    target[p.name] = p
 
 
-def get_provider(name: str) -> Optional[BoundaryProvider]:
-    """Return the registered provider for *name*, or None."""
-    return _REGISTRY.get(name)
+def get_provider(name: str, registry: Optional[Dict[str, "BoundaryProvider"]] = None) -> Optional[BoundaryProvider]:
+    """Return the registered provider for *name*, or None.
+
+    If *registry* is provided, looks up from that dict instead of the global registry.
+    """
+    target = registry if registry is not None else _REGISTRY
+    return target.get(name)
+
+
+def create_registry() -> Dict[str, BoundaryProvider]:
+    """Create a fresh registry populated with builtins. Useful for isolated testing or
+    running multiple configs with different custom providers in the same process."""
+    reg: Dict[str, BoundaryProvider] = {}
+    for cls in (
+        OpenApiProvider,
+        JsonFileProvider,
+        PythonExportsProvider,
+        TypeScriptExportsProvider,
+        ImplicitProvider,
+        LeafProvider,
+        JsonCanonicalProvider,
+        OpenApiCanonicalProvider,
+    ):
+        reg[cls().name] = cls()
+    for alias, target in _ALIASES.items():
+        if target in reg:
+            reg[alias] = reg[target]
+    return reg
 
 
 def _register_builtins() -> None:

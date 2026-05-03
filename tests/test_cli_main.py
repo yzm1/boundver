@@ -3,6 +3,8 @@ Tests for boundver.core.main() called directly, contributing to coverage of the
 CLI dispatch layer (lines 1469-1762).  Each test patches sys.argv and git_root()
 so no real git repo or subprocess is needed for most cases.
 """
+from __future__ import annotations
+
 import io
 import json
 import subprocess
