@@ -1,6 +1,6 @@
 # Implementation Plan: boundver
 
-_Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near-term, CLI polish, code health, distribution, provider Phases 1–3 complete. Behavior tier implemented._
+_Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near-term, CLI polish, code health, distribution, provider Phases 1–3 complete. Behavior tier implemented. PyPI live._
 
 ---
 
@@ -20,7 +20,7 @@ _Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near
 
 ### Publishing
 
-- [~] Publish to PyPI — **DEFERRED** (tag-triggered workflow exists; register when adoption warrants it).
+- [x] Publish to PyPI — tag-triggered workflow (`on: push: tags: v*`); OIDC trusted publishing via `pypa/gh-action-pypi-publish`; `environment: pypi` with `id-token: write`; package live on PyPI as `boundver>=0.9.0`.
 
 ---
 
@@ -58,14 +58,62 @@ _Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near
 - [x] Standalone single-file download option — `scripts/build_standalone.py` produces `dist/boundver.pyz` (26 KB, no deps).
 - [x] Docker image for CI without Python — `Dockerfile` + `.dockerignore`; `docker run --rm -v "$(pwd):/repo" -w /repo boundver verify`.
 - [ ] Homebrew formula (stretch).
-- [ ] Publish GitHub Action to marketplace (once PyPI publish happens).
+- [x] Publish GitHub Action to marketplace — `action.yml` has all required fields (`name`, `description`, `author`, `branding: {icon: lock, color: blue}`); file is at repo root. **One manual step remaining:** create a versioned GitHub release and check "Publish this Action to the GitHub Marketplace" in the release UI. No code changes needed.
 
 ---
 
-## Future (v1.0+)
+## Future (v0.10.0+)
 
 - [ ] `boundver watch` — regenerate on save.
+
+  **Design:** Poll/watch the working tree for changes to any file under a declared component path or to the config file itself, then re-run `generate --source working-tree` with debounce.
+
+  - **Dependency:** optional `watchdog>=3` via `pip install boundver[watch]`; fall back to polling (`--poll`, 1 s interval) when unavailable.
+  - **Watched paths:** all component paths in config + the config file itself. Re-read config on config-file change so new components are picked up without restart.
+  - **Debounce:** 500 ms quiet period after last event before regenerating (configurable via `--debounce MS`).
+  - **Interface:** `boundver watch [--config FILE] [--out FILE] [--source working-tree] [--debounce MS] [--poll]`
+  - **Output:** on each regeneration, print a timestamped one-line summary of which component(s) changed and the resulting classification (`implementation-only` / `behavioral` / `boundary` / `breaking`). Full status on first run.
+  - **Exit:** clean on `SIGINT`/`SIGTERM`; non-zero if config is invalid at startup.
+  - **Scope:** generates only; does not verify against a committed lockfile (that is `pre-commit`'s job).
+  - **Implementation path:** thin wrapper around `generate_lockfile_for_components()` triggered by watchdog `FileSystemEventHandler`; no new core logic needed.
+
 - [ ] Config includes/extends.
+
+  **Design:** Two distinct mechanisms with separate semantics.
+
+  **`includes`** (additive merge):
+  ```json
+  {
+    "project": "platform",
+    "includes": ["services/billing/boundary.config.json", "services/auth/boundary.config.json"],
+    "slices": { "all": { "mode": "boundary", "components": ["billing", "auth"] } }
+  }
+  ```
+  - Paths are relative to the file containing `includes`.
+  - Included files' `components` and `slices` are merged into the root config.
+  - Conflict (same component or slice name) is a hard error at load time.
+  - Included files may themselves use `includes` (recursive); circular includes are detected and rejected.
+  - Included files' `defaults` are ignored — root `defaults` win.
+  - Max depth: 8 levels.
+
+  **`extends`** (inheritance / override):
+  ```json
+  {
+    "extends": "../../base.config.json",
+    "project": "billing",
+    "components": { "billing": { "path": ".", "boundary": { "provider": "openapi", "paths": ["openapi.yaml"] } } }
+  }
+  ```
+  - Inherits `defaults` and `providers` list from base; local values override.
+  - Does **not** inherit `components` or `slices` — those are always local to the extending file.
+  - Cannot extend a file that itself uses `extends` (single-level inheritance only; avoids deep chains).
+  - Primary use case: shared `defaults.compat_mode` and shared `providers` list across a monorepo.
+
+  **Security constraints (both mechanisms):**
+  - Included/extended paths must resolve within the repository root (`_is_within` check); escaping with `..` is a hard error.
+  - Paths are resolved relative to the referencing file, not `cwd`.
+
+  **Load-time implementation:** `load_config_file()` resolves includes/extends before returning; `validate_config()` operates on the merged result and sees no `includes`/`extends` keys. No changes to any downstream function signatures.
 - [x] Glob patterns in boundary sources — `fnmatch`-based glob support in `PathHashProvider.resolve()` and `_config.validate_config()`; `*`/`?`/`[` patterns expand against component files; `..` rejected; 10 new tests.
 - [x] Pre-commit hook integration — `.pre-commit-hooks.yaml` at repo root; `boundver-verify` and `boundver-generate` hooks; `language: python`; `always_run: true`.
 - [x] `boundver why <component>` — compares current fingerprints against the lockfile; shows which facets drifted (exact/behavior/boundary/compat), change-type classification, modified files under component path; exits 0 (up to date) / 1 (drifted) / 2 (error); shell completions updated; 8 new tests.
@@ -116,7 +164,7 @@ _Updated 2026-05-03 — 771 tests passing, 2 skipped (symlinks on Windows). Near
 
 ## Decisions
 
-- **CI cost control:** automated CI disabled until v1.0.0; see `docs/CI_REENABLE_PLAN.md`.
+- **CI cost control:** automated CI re-enabled at v0.9.0; see `docs/CI_REENABLE_PLAN.md`.
 - **Schema validation:** optional `jsonschema` for strict mode; stdlib fallback for zero-dep baseline.
 - **Terminology:** `boundary` is the only mode name. No `api` alias exists in schema or runtime.
 - **Lockfile determinism:** `generated_at` removed entirely. Lockfiles are always deterministic. Use `git log` for generation timestamps.
