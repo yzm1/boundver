@@ -1,6 +1,6 @@
 # boundver
 
-[![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
+[![PyPI](https://img.shields.io/badge/pypi-0.9.0-orange)](https://pypi.org/project/boundver/)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![No runtime dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
