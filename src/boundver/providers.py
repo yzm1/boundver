@@ -25,10 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
-
-def _is_glob(pattern: str) -> bool:
-    """Return True if the pattern contains glob metacharacters."""
-    return any(c in pattern for c in ("*", "?", "["))
+from ._utils import ProviderError, _is_glob
 
 
 def _fnmatch_case_sensitive(name: str, pattern: str) -> bool:

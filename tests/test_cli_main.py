@@ -506,14 +506,14 @@ class MainValidateConfigTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("valid", out.lower())
 
-    def test_validate_config_invalid_exits_1(self):
+    def test_validate_config_invalid_exits_2(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
             cfg = {"project": "p", "components": {"svc": {"path": "svc", "boundary": {"provider": "bad-provider"}}}, "slices": {}}
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
             code, out, _ = _run_main("validate-config", repo_root=root)
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("INVALID", out)
 
     def test_validate_config_missing_config_exits_1(self):

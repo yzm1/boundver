@@ -10,12 +10,11 @@ from ._hashing import (
     MAX_HASH_FILE_BYTES,
     _content_only_digest,
     _enforce_content_size,
-    _short,
-    boundary_provider_name,
     canonical_json,
     sha256_hex,
     source_tree_digest,
 )
+from ._utils import _short, boundary_provider_name
 from .providers import PathHashProvider, ProviderContext, compute_boundary, get_provider, load_custom_providers
 from .versions import extract_version, parse_semver
 
@@ -45,160 +44,13 @@ def generate_lockfile(
         "slices": {},
     }
 
-    def _version_read_file(repo_rel: str) -> bytes:
-        """Read file content respecting the source mode (for version extraction)."""
-        if source == "head":
-            return _git_cat_blob(repo_root, f"HEAD:{repo_rel}")
-        elif source == "index":
-            return _git_cat_blob(repo_root, f":{repo_rel}")
-        else:
-            fpath = repo_root / repo_rel
-            size = fpath.stat().st_size
-            if size > MAX_HASH_FILE_BYTES:
-                raise ValueError(
-                    f"Version source file too large ({size} bytes): {repo_rel}"
-                )
-            return fpath.read_bytes()
+    accessor = _SourceAccessor(repo_root, source)
 
     # --- Components ---
     for name, comp in components_config.items():
-        comp_path = comp["path"].rstrip("/")
-        version = extract_version(
-            repo_root, comp_path, comp.get("version_source"), git_latest_tag,
-            read_file_fn=_version_read_file,
+        lockfile["components"][name] = _compute_component_entry(
+            name, comp, repo_root, source, defaults, accessor,
         )
-        compat, api_ver, exact_ver = parse_semver(version)
-        compat_mode = defaults.get("compat_mode", "major")
-
-        # Exact fingerprint: git tree hash of the whole component directory
-        exact_errors: List[str] = []
-        try:
-            exact_digest = source_tree_digest(repo_root, comp_path, source=source)
-        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-            exact_digest = None
-            exact_errors.append(f"Exact digest failed: {exc}")
-
-        if exact_digest is None and not exact_errors:
-            if source in ("head", "index"):
-                exact_errors.append(
-                    f"No files found for '{comp_path}' at {source.upper()}. "
-                    f"Have you committed this path? Try --source working-tree"
-                )
-            else:
-                exact_errors.append(f"No files found for '{comp_path}' on disk")
-
-        def _make_read_file(src: str):
-            def _read(repo_rel: str) -> bytes:
-                if src == "head":
-                    data = _git_cat_blob(repo_root, f"HEAD:{repo_rel}")
-                elif src == "index":
-                    data = _git_cat_blob(repo_root, f":{repo_rel}")
-                else:
-                    full = repo_root / repo_rel
-                    data = full.read_bytes()
-                _enforce_content_size(data, repo_rel)
-                return data
-            return _read
-
-        def _make_list_files(src: str):
-            def _list(prefix: str) -> List[str]:
-                return _list_files_for_source(repo_root, prefix, src)
-            return _list
-
-        # API fingerprint: resolve via registered provider
-        boundary = comp.get("boundary", {})
-        boundary_provider = boundary_provider_name(boundary)
-        provider = get_provider(boundary_provider)
-        if provider is None:
-            # Unknown provider — treat as error, no digest
-            api_digest = None
-            boundary_status = "error"
-            boundary_errors: List[str] = [f"Unknown boundary provider: {boundary_provider!r}"]
-        else:
-            # Build ProviderContext with git-aware callbacks
-            ctx = ProviderContext(
-                repo_root=repo_root,
-                component_path=comp_path,
-                boundary_cfg=boundary,
-                source=source,
-                read_file=_make_read_file(source),
-                list_files=_make_list_files(source),
-            )
-            try:
-                api_digest, boundary_status, boundary_errors = compute_boundary(provider, ctx)
-            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-                api_digest = None
-                boundary_status = "error"
-                boundary_errors = [f"Boundary digest failed: {exc}"]
-
-        # Behavior fingerprint: broader contract files (superset of boundary)
-        behavior_cfg = comp.get("behavior")
-        behavior_digest = None
-        if behavior_cfg and behavior_cfg.get("paths"):
-            behavior_provider = PathHashProvider()
-            behavior_provider.name = "behavior"
-            behavior_ctx = ProviderContext(
-                repo_root=repo_root,
-                component_path=comp_path,
-                boundary_cfg=behavior_cfg,
-                source=source,
-                read_file=_make_read_file(source),
-                list_files=_make_list_files(source),
-            )
-            try:
-                behavior_digest, _bstatus, _berrs = compute_boundary(behavior_provider, behavior_ctx)
-            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
-                behavior_digest = None
-                boundary_errors.append(f"behavior computation failed: {exc}")
-
-        # Compatibility fingerprint: derived from semver major (or major.minor)
-        compat_digest = None
-        compat_identity = None
-        if compat_mode in {"major", "semver_major"}:
-            compat_identity = compat
-        elif compat_mode == "semver_major_minor":
-            compat_identity = api_ver
-
-        if compat_identity is not None:
-            compat_digest = sha256_hex(f"{name}@compat:{compat_identity}")
-
-        entry: dict = {
-            "version": version,
-            "path": comp_path,
-            "boundary_provider": boundary_provider,
-            "boundary_provider_version": getattr(provider, "version", "1") if provider else None,
-            "boundary_status": boundary_status,
-            "fingerprints": {
-                "exact": exact_digest,
-                "behavior": behavior_digest,
-                "boundary": api_digest,
-                "compat": compat_digest,
-            },
-            "semver": {
-                "compat_family": compat,
-                "api_surface": api_ver,
-                "exact_version": exact_ver,
-            },
-        }
-        if boundary_errors:
-            entry["boundary_errors"] = boundary_errors
-        if exact_errors:
-            entry["exact_errors"] = exact_errors
-
-        # Flag vendored copies
-        if "vendored_copies" in comp:
-            entry["vendored_copies"] = comp["vendored_copies"]
-            # Check if vendored copies are in sync using path-normalized content digest.
-            source_content_hash = _content_only_digest(repo_root, comp_path, source=source)
-            for vc in comp["vendored_copies"]:
-                vc_content_hash = _content_only_digest(repo_root, vc.rstrip("/"), source=source)
-                entry.setdefault("vendored_digests", {})[vc] = vc_content_hash
-                if vc_content_hash != source_content_hash:
-                    entry.setdefault("warnings", []).append(
-                        f"Vendored copy at {vc} differs from source (source={source_content_hash}, copy={vc_content_hash})"
-                    )
-
-        lockfile["components"][name] = entry
 
     # --- Slices ---
     for slice_name, slice_def in slices_config.items():
@@ -209,6 +61,189 @@ def generate_lockfile(
     return lockfile
 
 
+# ---------------------------------------------------------------------------
+# Source accessor — centralizes git-aware I/O callbacks
+# ---------------------------------------------------------------------------
+
+class _SourceAccessor:
+    """Provides read_file, list_files, and version_read_file for a given source mode."""
+
+    def __init__(self, repo_root: Path, source: str):
+        self.repo_root = repo_root
+        self.source = source
+
+    def read_file(self, repo_rel: str) -> bytes:
+        """Read file content for hashing."""
+        src = self.source
+        if src == "head":
+            data = _git_cat_blob(self.repo_root, f"HEAD:{repo_rel}")
+        elif src == "index":
+            data = _git_cat_blob(self.repo_root, f":{repo_rel}")
+        else:
+            full = self.repo_root / repo_rel
+            sz = full.stat().st_size
+            if sz > MAX_HASH_FILE_BYTES:
+                raise ValueError(
+                    f"Hash guardrail exceeded: file too large ({sz} bytes) at {repo_rel}"
+                )
+            data = full.read_bytes()
+        _enforce_content_size(data, repo_rel)
+        return data
+
+    def list_files(self, prefix: str) -> List[str]:
+        """List files under a prefix."""
+        return _list_files_for_source(self.repo_root, prefix, self.source)
+
+    def version_read_file(self, repo_rel: str) -> bytes:
+        """Read file content for version extraction."""
+        if self.source == "head":
+            return _git_cat_blob(self.repo_root, f"HEAD:{repo_rel}")
+        elif self.source == "index":
+            return _git_cat_blob(self.repo_root, f":{repo_rel}")
+        else:
+            fpath = self.repo_root / repo_rel
+            size = fpath.stat().st_size
+            if size > MAX_HASH_FILE_BYTES:
+                raise ValueError(
+                    f"Version source file too large ({size} bytes): {repo_rel}"
+                )
+            return fpath.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# Per-component fingerprint computation
+# ---------------------------------------------------------------------------
+
+def _compute_component_entry(
+    name: str,
+    comp: dict,
+    repo_root: Path,
+    source: str,
+    defaults: dict,
+    accessor: "_SourceAccessor",
+) -> dict:
+    """Compute the lockfile entry for a single component."""
+    raw_path = comp.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise ValueError(f"Component '{name}' has invalid or missing 'path'")
+    comp_path = raw_path.rstrip("/")
+    version = extract_version(
+        repo_root, comp_path, comp.get("version_source"), git_latest_tag,
+        read_file_fn=accessor.version_read_file,
+    )
+    compat, api_ver, exact_ver = parse_semver(version)
+    compat_mode = defaults.get("compat_mode", "major")
+
+    # Exact fingerprint: git tree hash of the whole component directory
+    exact_errors: List[str] = []
+    try:
+        exact_digest = source_tree_digest(repo_root, comp_path, source=source)
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        exact_digest = None
+        exact_errors.append(f"Exact digest failed: {exc}")
+
+    if exact_digest is None and not exact_errors:
+        if source in ("head", "index"):
+            exact_errors.append(
+                f"No files found for '{comp_path}' at {source.upper()}. "
+                f"Have you committed this path? Try --source working-tree"
+            )
+        else:
+            exact_errors.append(f"No files found for '{comp_path}' on disk")
+
+    # API fingerprint: resolve via registered provider
+    boundary = comp.get("boundary", {})
+    bp_name = boundary_provider_name(boundary)
+    provider = get_provider(bp_name)
+    if provider is None:
+        api_digest = None
+        boundary_status = "error"
+        boundary_errors: List[str] = [f"Unknown boundary provider: {bp_name!r}"]
+    else:
+        ctx = ProviderContext(
+            repo_root=repo_root,
+            component_path=comp_path,
+            boundary_cfg=boundary,
+            source=source,
+            read_file=accessor.read_file,
+            list_files=accessor.list_files,
+        )
+        try:
+            api_digest, boundary_status, boundary_errors = compute_boundary(provider, ctx)
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            api_digest = None
+            boundary_status = "error"
+            boundary_errors = [f"Boundary digest failed: {exc}"]
+
+    # Behavior fingerprint: broader contract files (superset of boundary)
+    behavior_cfg = comp.get("behavior")
+    behavior_digest = None
+    if behavior_cfg and behavior_cfg.get("paths"):
+        behavior_provider = PathHashProvider()
+        behavior_provider.name = "behavior"
+        behavior_ctx = ProviderContext(
+            repo_root=repo_root,
+            component_path=comp_path,
+            boundary_cfg=behavior_cfg,
+            source=source,
+            read_file=accessor.read_file,
+            list_files=accessor.list_files,
+        )
+        try:
+            behavior_digest, _bstatus, _berrs = compute_boundary(behavior_provider, behavior_ctx)
+        except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+            behavior_digest = None
+            boundary_errors.append(f"behavior computation failed: {exc}")
+
+    # Compatibility fingerprint: derived from semver major (or major.minor)
+    compat_digest = None
+    compat_identity = None
+    if compat_mode in {"major", "semver_major"}:
+        compat_identity = compat
+    elif compat_mode == "semver_major_minor":
+        compat_identity = api_ver
+
+    if compat_identity is not None:
+        compat_digest = sha256_hex(f"{name}@compat:{compat_identity}")
+
+    entry: dict = {
+        "version": version,
+        "path": comp_path,
+        "boundary_provider": bp_name,
+        "boundary_provider_version": getattr(provider, "version", "1") if provider else None,
+        "boundary_status": boundary_status,
+        "fingerprints": {
+            "exact": exact_digest,
+            "behavior": behavior_digest,
+            "boundary": api_digest,
+            "compat": compat_digest,
+        },
+        "semver": {
+            "compat_family": compat,
+            "api_surface": api_ver,
+            "exact_version": exact_ver,
+        },
+    }
+    if boundary_errors:
+        entry["boundary_errors"] = boundary_errors
+    if exact_errors:
+        entry["exact_errors"] = exact_errors
+
+    # Flag vendored copies
+    if "vendored_copies" in comp:
+        entry["vendored_copies"] = comp["vendored_copies"]
+        source_content_hash = _content_only_digest(repo_root, comp_path, source=source)
+        for vc in comp["vendored_copies"]:
+            vc_content_hash = _content_only_digest(repo_root, vc.rstrip("/"), source=source)
+            entry.setdefault("vendored_digests", {})[vc] = vc_content_hash
+            if vc_content_hash != source_content_hash:
+                entry.setdefault("warnings", []).append(
+                    f"Vendored copy at {vc} differs from source (source={source_content_hash}, copy={vc_content_hash})"
+                )
+
+    return entry
+
+
 def _recompute_slice_entry(
     slice_name: str,
     slice_def: dict,
@@ -216,7 +251,7 @@ def _recompute_slice_entry(
     strict: bool = True,
 ) -> dict:
     mode = slice_def.get("mode", "exact")
-    component_names = slice_def["components"]
+    component_names = slice_def.get("components", [])
     digest_parts: Dict[str, Optional[str]] = {}
     for cname in sorted(component_names):
         comp_entry = components_map.get(cname)
@@ -290,8 +325,10 @@ def generate_lockfile_for_components(
         }
     merged["schema"] = LOCKFILE_SCHEMA
     merged["project"] = config.get("project", "unknown")
-    merged.setdefault("components", {})
-    merged.setdefault("slices", {})
+    if not isinstance(merged.get("components"), dict):
+        merged["components"] = {}
+    if not isinstance(merged.get("slices"), dict):
+        merged["slices"] = {}
 
     for name in selected:
         merged["components"][name] = subset_lock["components"][name]
@@ -393,6 +430,22 @@ def verify_lockfile(
             continue
         for warning in comp.get("warnings", []):
             issues.append(f"VENDORED DRIFT {name}: {warning}")
+
+    # Check slice fingerprints (skip when using component filter, as slices
+    # are not regenerated in that case).
+    if not use_filter:
+        for sname, current_slice in current.get("slices", {}).items():
+            locked_slice = lockfile.get("slices", {}).get(sname)
+            if locked_slice is None:
+                issues.append(f"NEW slice not in lockfile: {sname}")
+            elif locked_slice.get("fingerprint") != current_slice.get("fingerprint"):
+                issues.append(
+                    f"SLICE MISMATCH {sname}: lockfile={_short(locked_slice.get('fingerprint'))} "
+                    f"current={_short(current_slice.get('fingerprint'))}"
+                )
+        for sname in lockfile.get("slices", {}):
+            if sname not in current.get("slices", {}):
+                issues.append(f"REMOVED slice still in lockfile: {sname}")
 
     return issues
 

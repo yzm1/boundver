@@ -33,7 +33,7 @@ jobs:
           pip install -e .[dev]
 
       - name: Run tests
-        run: pytest -q
+        run: pytest -v --tb=short
 
   build:
     runs-on: ubuntu-latest

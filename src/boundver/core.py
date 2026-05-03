@@ -53,11 +53,18 @@ from ._hashing import (
     _enforce_hash_guardrails,
     _is_within,
     _read_path_content,
-    _short,
-    boundary_provider_name,
     canonical_json,
     sha256_hex,
     source_tree_digest,
+)
+from ._utils import (
+    BoundverError,
+    ConfigError,
+    GuardrailError,
+    LockfileError,
+    ProviderError,
+    _short,
+    boundary_provider_name,
 )
 from ._config import (
     config_warnings,
@@ -277,6 +284,13 @@ def _cmd_verify(args, repo_root: Path) -> None:
             components_filter = [c for c in components_filter if c in auto_set]
         else:
             components_filter = auto
+        # If --changed-from resolved to no components, nothing needs verification.
+        if not components_filter:
+            if args.format == "json":
+                _print_json({"ok": True, "issues": [], "components_filter": []})
+            elif not args.quiet:
+                print(_green("No components changed — nothing to verify."))
+            return
     unknown = [n for n in components_filter if n not in config.get("components", {})]
     if unknown:
         print(f"ERROR: unknown --components entries: {', '.join(unknown)}", file=sys.stderr)
@@ -346,7 +360,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         print(_red(f"CONFIG INVALID ({len(errors)} issues):"))
         for err in errors:
             print(f"  - {err}")
-        sys.exit(EXIT_DRIFT)
+        sys.exit(EXIT_USAGE)
     if warnings:
         print(_yellow(f"CONFIG WARNINGS ({len(warnings)}):"))
         for warning in warnings:
@@ -667,6 +681,10 @@ def main():
     why.add_argument("--lock", default="boundary.lock.json")
     why.add_argument("--source", choices=["head", "index", "working-tree"], default="head",
                      help="Fingerprint source to compare against (default: head)")
+    why.add_argument(
+        "--allow-custom-providers", action="store_true",
+        help="Allow loading external provider modules declared in the config 'providers' key",
+    )
 
     disc = sub.add_parser("discover", help="Print discovered components as JSON")
     disc.add_argument("--format", choices=["json", "text"], default="text", help="Output format")

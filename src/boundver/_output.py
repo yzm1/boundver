@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ._git import _git_run, _to_posix
-from ._hashing import _short, boundary_provider_name
+from ._utils import _short, boundary_provider_name
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +286,8 @@ def why_component(
     try:
         current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False,
                                             allow_custom_providers=allow_custom_providers)
+    except (MemoryError, RecursionError, KeyboardInterrupt):
+        raise
     except Exception as exc:
         print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
         return 2

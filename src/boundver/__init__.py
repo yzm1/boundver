@@ -6,9 +6,16 @@ __all__ = [
     "verify",
     "diff",
     "load_config",
+    "BoundverError",
+    "ConfigError",
+    "LockfileError",
+    "ProviderError",
+    "GuardrailError",
 ]
 
 from importlib.metadata import PackageNotFoundError, version
+
+from ._utils import BoundverError, ConfigError, GuardrailError, LockfileError, ProviderError
 
 from .cli import main
 

@@ -12,6 +12,12 @@ from ._git import (
     _list_files_for_source,
     _to_posix,
 )
+from ._utils import (
+    GuardrailError,
+    _is_within,
+    _short,
+    boundary_provider_name,
+)
 
 MAX_HASH_FILES = 50000
 MAX_HASH_FILE_BYTES = 50 * 1024 * 1024  # 50 MiB per file guardrail
@@ -26,36 +32,17 @@ def sha256_hex(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def boundary_provider_name(boundary: dict) -> str:
-    """Return boundary provider name."""
-    return boundary.get("provider") or "unknown"
-
-
 def _enforce_hash_guardrails(full_path: Path, file_count: int) -> None:
     if file_count > MAX_HASH_FILES:
-        raise ValueError(f"Hash guardrail exceeded: >{MAX_HASH_FILES} files")
+        raise GuardrailError(f"Hash guardrail exceeded: >{MAX_HASH_FILES} files")
 
 
 def _enforce_content_size(content: bytes, path_label: str) -> None:
     size = len(content)
     if size > MAX_HASH_FILE_BYTES:
-        raise ValueError(
+        raise GuardrailError(
             f"Hash guardrail exceeded: file too large ({size} bytes) at {path_label}"
         )
-
-
-def _is_within(base: Path, candidate: Path) -> bool:
-    try:
-        candidate.resolve().relative_to(base.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _short(h: Optional[str]) -> str:
-    if h is None:
-        return "none"
-    return h[:12] + "..."
 
 
 def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
@@ -74,6 +61,12 @@ def _read_path_content(repo_root: Path, full_path: Path, source: str) -> bytes:
             ) from exc
         return target.encode("utf-8") if isinstance(target, str) else target
     try:
+        sz = full_path.stat().st_size
+        if sz > MAX_HASH_FILE_BYTES:
+            raise ValueError(
+                f"Hash guardrail exceeded: file too large ({sz} bytes) at "
+                f"{full_path.relative_to(repo_root)}"
+            )
         raw = full_path.read_bytes()
     except FileNotFoundError:
         # File was listed (e.g. by ls-files) but removed before read — treat as empty.

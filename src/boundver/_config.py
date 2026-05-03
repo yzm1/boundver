@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ._git import _to_posix
-from ._hashing import _is_within, boundary_provider_name
+from ._hashing import _is_within
+from ._utils import _is_glob, boundary_provider_name
 
 # Ordered preference when auto-discovering config (first match wins)
 _CONFIG_CANDIDATES = [
@@ -47,6 +48,13 @@ def load_config_file(path: Path) -> dict:
     """
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
+    _MAX_CONFIG_BYTES = 10 * 1024 * 1024  # 10 MiB
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError(f"Cannot stat config file {path}: {exc}") from exc
+    if size > _MAX_CONFIG_BYTES:
+        raise ValueError(f"Config file too large ({size} bytes): {path}")
     suffix = path.suffix.lower()
     text = path.read_text(encoding="utf-8")
     if suffix == ".json":
@@ -63,6 +71,8 @@ def load_config_file(path: Path) -> dict:
                 f"Cannot parse {path}: PyYAML is not installed. "
                 "Install it with: pip install PyYAML"
             )
+        except (MemoryError, RecursionError):
+            raise
         except Exception as exc:
             raise ValueError(f"YAML parse error in {path}: {exc}") from exc
         if not isinstance(result, dict):
@@ -81,6 +91,8 @@ def load_config_file(path: Path) -> dict:
                 )
         try:
             return tomllib.loads(text)
+        except (MemoryError, RecursionError):
+            raise
         except Exception as exc:
             raise ValueError(f"TOML parse error in {path}: {exc}") from exc
     raise ValueError(
@@ -88,9 +100,6 @@ def load_config_file(path: Path) -> dict:
         "Supported formats: .json, .yaml, .yml, .toml"
     )
 
-
-def _is_glob(pattern: str) -> bool:
-    return any(c in pattern for c in ("*", "?", "["))
 
 
 def _load_config_schema(repo_root: Path) -> Optional[dict]:
@@ -273,6 +282,12 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                         errors.append(
                             f"providers[{i}] missing required string field '{field_name}'"
                         )
+                # Validate class name is a legal Python identifier.
+                cls_val = entry.get("class", "")
+                if isinstance(cls_val, str) and cls_val.strip() and not cls_val.strip().isidentifier():
+                    errors.append(
+                        f"providers[{i}] class name '{cls_val.strip()}' is not a valid Python identifier"
+                    )
                 # Track declared custom provider names for cross-reference.
                 # The registered provider name is: entry["name"] if provided,
                 # otherwise defaults to "custom.{class_name}".
