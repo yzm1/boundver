@@ -1,161 +1,120 @@
-# Implementation Plan: boundver as a Public Tool
+# Implementation Plan: boundver
 
-This plan is for shipping boundver as a public tool.
-
-Immediate execution focus: fix correctness gaps (validation/fallback/source selection) and ensure default usage works without internal or proprietary artifacts.
+_Updated 2026-05-03 — 463 tests passing, 1 skipped (symlinks on Windows). Near-term, CLI polish, code health, distribution, provider Phases 1–3 complete._
 
 ---
 
-## Phase 1: Package structure & installability
+## Near-term
 
-- [x] Restructure into a proper Python package:
-  ```
-  boundver/
-  ├── pyproject.toml
-  ├── README.md
-  ├── LICENSE
-  ├── src/
-  │   └── boundver/
-  │       ├── __init__.py
-  │       ├── cli.py          (argparse CLI entry point)
-  │       ├── core.py         (generate, verify, diff logic)
-  │       ├── git.py          (git helpers)
-  │       ├── versions.py     (version extraction)
-  │       └── fingerprints.py (hashing utilities)
-  └── tests/
-      ├── conftest.py
-      ├── test_generate.py
-      ├── test_verify.py
-      ├── test_diff.py
-      ├── test_versions.py
-      └── fixtures/
-          └── (sample repos as git bundles or temp dirs)
-  ```
-- [x] Create `pyproject.toml` with:
-  - `[project.scripts]` entry: `boundver = "boundver.cli:main"`
-  - Minimum Python 3.8
-  - Zero runtime dependencies
-  - Dev dependencies: pytest, ruff, mypy
-- [x] Add `LICENSE` file (MIT)
-- [ ] Support `pipx install boundver` and `pip install boundver`
+### Portability
 
-## Phase 2: Near-term correctness & portability (high priority)
+- [x] Decouple `service-definition` boundary kind from core validation — dead code removed.
+- [x] Fail with actionable guidance when config references unavailable boundary sources — `version_source` validated in `validate_config`; boundary path error now includes `component/file` path and actionable hint; tests added.
 
-- [x] Add `boundver validate-config` command with strict failures for:
-  - unknown slice components
-  - unknown slice modes
-  - unsupported `defaults.compat_mode`
-  - empty `paths` where a provider requires source artifacts
-  - configured boundary path missing on disk
-  - API slices containing components/boundaries with no API fingerprint
-- [x] Remove silent fallback from `boundary`/`compat` slice selection to `exact`.
-- [x] Add explicit fingerprint source selection and document defaults:
-  - `--source=head`
-  - `--source=index`
-  - `--source=working-tree`
-- [x] Ensure `compat_mode` behavior matches config and docs.
-- [x] Add a clear error/warning model (`error`, `partial`, `ok`) for boundary extraction status.
+### Testing
 
-### Public portability requirement (non-proprietary baseline)
+- [x] Per-module unit tests (canonical JSON, sha256, semver, TOML/YAML extraction) — `tests/test_versions.py` (parse_semver, JSON/TOML/YAML extraction, extract_version) and `tests/test_hashing.py` (canonical_json, sha256_hex, source_tree_digest) created; 65 new tests.
+- [x] Integration tests using temporary git repos (`git init` + commits in tmp dirs).
+- [x] Edge cases: no version source, vendored copy drift, repo with no commits.
+- [x] Parser coverage: 3-level TOML paths (`tool.poetry.version`), representative YAML patterns — covered in `tests/test_versions.py`.
 
-- [ ] Ensure default CLI/examples/docs do **not** assume internal HSL/TechScout artifacts.
-- [ ] Treat `service-definition` and other organization-specific contracts as optional adapters/providers.
-- [ ] Ship public examples that rely only on accessible artifacts (OpenAPI, Python exports, TypeScript exports, JSON Schema, etc.).
-- [ ] If a config references unavailable proprietary boundary sources, fail with actionable guidance instead of implicit fallback.
+### Publishing
 
-## Phase 3: Testing
-
-- [ ] Unit tests for each module (canonical JSON, sha256, semver parsing, TOML/YAML extraction)
-- [ ] Integration tests using temporary git repos (`git init` + commits in tmp dirs)
-- [ ] Snapshot tests for lockfile output (golden file comparison)
-- [ ] Edge case tests:
-  - Component with no version source
-  - Component with missing/unavailable boundary source
-  - Component with `implicit` boundary (`boundary` fingerprint = null)
-  - Empty slices
-  - Vendored copy drift detection
-  - Non-existent paths in config
-  - Git repo with no commits
-- [ ] CI pipeline (GitHub Actions): lint, type-check, test on Python 3.8–3.12 (deferred until v1.0.0 cost controls are in place)
-  - CI re-enable runbook: `docs/CI_REENABLE_PLAN.md`.
-
-## Phase 4: CLI polish
-
-- [x] Add `boundver init` command — starter config scaffolding (non-interactive)
-- [ ] Add `--format json|text|table` output option for all commands
-- [ ] Add `--quiet` / `--verbose` flags
-- [ ] Add `--exit-code` option for `verify` (already exits 1 on mismatch — document it)
-- [ ] Color output in TTY mode (red for breaking, yellow for API changes, green for unchanged)
-- [ ] Add shell completions (bash, zsh, fish)
-- [x] Add `boundver check-config` alias to `validate-config` for discoverability
-
-## Phase 5: Config schema & validation
-
-- [x] JSON Schema for `boundary.config.json` — publish alongside the tool
-- [x] Validate config on load with clear error messages:
-  - Missing required fields
-  - Unknown component references in slices
-  - Duplicate component paths
-  - Invalid/unknown boundary provider names
-- [ ] Provide schema for editor autocompletion (VS Code, JetBrains)
-- [ ] Add `$schema` field support in config files
-
-## Phase 6: Documentation
-
-- [ ] Expand README with:
-  - Logo/banner
-  - Badges (PyPI version, Python versions, CI status, license)
-  - "When to use this" vs alternatives comparison table
-- [ ] Create `docs/` site (mkdocs-material or similar):
-  - Getting started guide
-  - Config reference
-  - CI integration cookbook (GitHub Actions, GitLab CI, Jenkins)
-  - Conceptual guide: "What are boundary fingerprints?"
-  - Migration guide for teams currently using manual versioning
-- [x] Add `CONTRIBUTING.md`
-- [x] Add `CHANGELOG.md` (keep-a-changelog format)
-- [ ] Add a dedicated "public vs proprietary providers" doc with examples.
-
-## Phase 7: Publishing & distribution
-
-- [ ] Register `boundver` on PyPI
-- [ ] Set up automated release workflow:
-  - Tag-triggered: push `v1.0.0` tag → build + publish to PyPI
-  - GitHub Release with auto-generated notes
-- [ ] Provide standalone single-file download option (for teams that don't want pip)
-- [ ] Docker image for CI environments without Python
-- [ ] Homebrew formula (stretch goal)
-
-## Phase 8: Features for v1.0+
-
-- [ ] `boundver watch` — file watcher that regenerates on save (dev experience)
-- [ ] Config includes/extends — split large configs across files
-- [ ] Glob patterns in boundary sources
-- [ ] Pre-commit hook integration (`pre-commit-hooks.yaml`)
-- [ ] `boundver why <component>` — show which slices include a component and what would change
-- [ ] GitHub Action wrapper (`uses: yzm1/boundver-action@v1`)
-- [ ] Support `boundary.config.yaml` and `boundary.config.toml` as alternatives to JSON
+- [~] Publish to PyPI — **DEFERRED** (tag-triggered workflow exists; register when adoption warrants it).
 
 ---
 
-## Next increment (concrete execution order)
+## CLI polish
 
-Completed in current implementation:
+- [x] `--format json|text` for all commands (`--json` replaced with `--format json|text`, `table` deferred).
+- [x] Document `--exit-code` behavior for `verify` — exit code table (0/1/2) added to README; `verify` subparser description updated with structured exit code semantics.
+- [x] Color output in TTY mode — `_green`, `_red`, `_yellow`, `_bold` helpers; applied to verify ok/fail, validate-config ok/fail, diff +/-/~, status warnings. Suppressed automatically for piped/JSON output.
+- [x] Shell completions (bash, zsh, fish) — `completions` subcommand added; static scripts for bash/zsh/fish embedded in `core.py`; works without a git repo; 6 tests added.
 
-1. ✅ Implemented `validate-config`/`check-config` and strict error cases in Phase 2.
-2. ✅ Removed `boundary`/`compat` silent fallback and enforced explicit digest selection (with `--allow-partial` escape hatch).
-3. ✅ Added and documented `--source=head|index|working-tree` and wired it into generate/verify hashing.
-4. ✅ Added `compat_mode` handling (`major`/`semver_major`/`semver_major_minor`) in compatibility digest computation.
+---
 
-Next work to execute:
+## Code health
 
-1. Add packaging smoke checks in CI to validate install/run from built artifacts.
-2. Expand tests for remaining portability constraints and edge cases.
-3. Continue docs/examples cleanup toward non-proprietary/public provider baselines by default.
+- [x] Split `core.py` into modules: `_git.py`, `_hashing.py`, `_config.py`, `_lockfile.py`, `_diff.py`, `_output.py`, `_completions.py`. `core.py` is now a 406-line re-export shim + `main()`. All 297 tests pass.
+- [x] Batch git reads — `_git_batch_cat` implemented using `git cat-file --batch`; `source_tree_digest`, `boundary_paths_digest`, and `_content_only_digest` all use it for `head`/`index` sources, replacing O(N) subprocesses with O(1).
+- [x] Binary blob reads — `_git_cat_blob` uses binary subprocess (no text-mode CRLF conversion); `_read_path_content` for head/index uses it. Working-tree reads normalize CRLF→LF for cross-platform consistency.
 
+---
 
-## Conflicts and decisions
+## Documentation
 
-- **CI activation vs cost control:** automated CI remains disabled until v1.0.0 per cost constraints; re-enable is gated by `docs/CI_REENABLE_PLAN.md`.
-- **Schema strictness vs portability:** runtime now uses optional `jsonschema` engine checks when available, but keeps stdlib hand-rolled validation as a fallback to avoid mandatory dependencies.
-- **Terminology migration safety:** `boundary` is primary; `api` remains a compatibility alias to avoid breaking existing lockfile consumers.
+- [x] README: badges, comparison table, fixed stale `--json` flag references, docs index section.
+- [x] `docs/getting-started.md` — install → first config → first lockfile → CI step.
+- [x] `docs/gradual-adoption.md` — staged adoption from implicit provider to full boundary + compat coverage.
+- [x] `docs/ci-cookbook.md` — GitHub Actions, GitLab, cache keys, pre-commit, JSON output scripting.
+- [~] Docs site (mkdocs-material): rendered site with nav, search, and versioning — **DEFERRED**.
+
+---
+
+## Distribution
+
+- [x] GitHub Action (`action.yml`) — composite action; `uses: yzm1/boundver@main`; inputs: `command`, `args`, `version`; outputs: `exit-code`, `issues`.
+- [x] Standalone single-file download option — `scripts/build_standalone.py` produces `dist/boundver.pyz` (26 KB, no deps).
+- [x] Docker image for CI without Python — `Dockerfile` + `.dockerignore`; `docker run --rm -v "$(pwd):/repo" -w /repo boundver verify`.
+- [ ] Homebrew formula (stretch).
+- [ ] Publish GitHub Action to marketplace (once PyPI publish happens).
+
+---
+
+## Future (v1.0+)
+
+- [ ] `boundver watch` — regenerate on save.
+- [ ] Config includes/extends.
+- [x] Glob patterns in boundary sources — `fnmatch`-based glob support in `PathHashProvider.resolve()` and `_config.validate_config()`; `*`/`?`/`[` patterns expand against component files; `..` rejected; 10 new tests.
+- [x] Pre-commit hook integration — `.pre-commit-hooks.yaml` at repo root; `boundver-verify` and `boundver-generate` hooks; `language: python`; `always_run: true`.
+- [x] `boundver why <component>` — compares current fingerprints against the lockfile; shows which facets drifted (exact/boundary/compat), change-type classification, modified files under component path; exits 0 (up to date) / 1 (drifted) / 2 (error); shell completions updated; 8 new tests.
+- [x] Support `boundary.config.yaml` / `.toml` — `find_config_file()` probes alternatives when default `.json` is absent; `load_config_file()` dispatches on extension (JSON built-in, YAML via PyYAML, TOML via `tomllib`/`tomli`); all config-loading sites in `core.py` updated; 11 new tests. **474 tests pass**.
+
+---
+
+## Product-model maturity (post-v1)
+
+- [x] Real provider architecture: `extract`, `normalize`, `digest`, `validate_config`, `explain_diff` interface — designed in `docs/design/07-provider-architecture.md`. Protocol: `BoundaryProvider` (resolve/validate_config/explain_diff), `ProviderContext`, `ResolvedBoundary`; registry; 3-phase migration plan; security constraints for custom providers.
+- [x] **Phase 1 — Protocol + built-in wrappers** (`src/boundver/providers.py`): `ProviderContext`, `ResolvedBoundary`, `BoundaryProvider` protocol; `PathHashProvider`, `ImplicitProvider`, `LeafProvider`, `OpenApiProvider`, `JsonFileProvider`, `PythonExportsProvider`, `TypeScriptExportsProvider`; provider registry; `compute_boundary()` (only SHA-256 call for boundary digests); `generate_lockfile()` now delegates to `compute_boundary()`. Added `tests/test_providers.py` (34 tests). **Zero digest drift — 352 tests pass**.
+- [x] **Phase 2 — `options` + custom provider loading**: `boundary.options` added to config schema; `providers` top-level config key validated; `load_custom_providers()` in `providers.py`; `--allow-custom-providers` flag on `generate`/`verify`/`validate-config`/`check-config`/`status`; `BOUNDVER_ALLOW_CUSTOM_PROVIDERS` env var; `custom.*` namespace enforced; `generate_lockfile()` raises if providers declared without flag; registry isolation in tests. **463 tests pass**.
+- [x] **Phase 3 — Semantic built-ins**: `JsonCanonicalProvider` (`json-canonical`) re-serialises JSON as RFC 8785 canonical form — stable across key reordering and whitespace. `OpenApiCanonicalProvider` (`openapi-canonical`) strips `info`/`servers`/`tags` top-level blocks and recursively removes `description`, `summary`, `externalDocs`, `example`, `examples`, and `x-*` extension keys — digest stable across docs edits, changes on endpoint/parameter/schema changes. Both registered at import time; `known_providers` updated in `_config.py`. 22 new tests (14 unit + 8 integration). **438 tests pass**.
+- [ ] Semantic/canonical providers: `json-canonical`, `openapi-canonical`, TS/public API, Python/public symbol.
+- [ ] Multi-boundary components (REST/events/CLI/schema per component).
+- [ ] Dependency/impact model: component graph, `impact`, `affected`, `why` commands.
+- [ ] Richer identity model: clarify exact/boundary/compat/api-version separation.
+
+---
+
+## Governance & contracts (post-v1)
+
+- [x] Migration policy: `migrate_lockfile()` in `_lockfile.py`; `MigrationError` for unknown schemas; `boundver migrate-lock [--lock FILE] [--dry-run]` CLI subcommand — reads, migrates, writes in-place (strips legacy `generated_at`); dry-run prints without writing; 12 new tests. **486 tests pass**.
+- [x] Stable machine contracts: JSON schemas for CLI outputs (verify, status, diff, discover) in `spec/cli-output.*.schema.json`; 6 conformance tests added (`tests/test_cli_output_schemas.py`).
+- [ ] Security model: custom provider execution policy, CI allowlists, path escape constraints.
+- [ ] Custom provider execution model: config shape (`type: command`/`type: python`), sandboxing, `--allow-custom-providers` flag.
+- [x] Resolve `generated_at` in deterministic mode — removed entirely; lockfiles are always deterministic; `git log` provides timestamps.
+- [ ] Maintainer sustainability: ownership/triage expectations, bus factor > 1.
+
+---
+
+## Strategic checkpoints
+
+- Confirm at least one real team using boundver in CI; treat their friction as top priority.
+- Validate persona: CI/platform users → prioritize Action/docs over runtime rewrites.
+- [x] Dogfood boundver on itself — `boundary.config.json` tracks `src/boundver/` with all 11 source files as boundary paths; `boundary.lock.json` committed. Validated and generates cleanly.
+- Re-evaluate quarterly against Nx/Turborepo/Bazel/Pants overlap.
+
+## Non-goals (for now)
+
+- No rewrite (Go/Rust) before spec + adoption proven.
+- No plugin marketplace before provider interface and demand are clear.
+- No over-splitting modules before contracts stabilized.
+- No docs-site ceremony before spec + examples + CI path are solid.
+
+---
+
+## Decisions
+
+- **CI cost control:** automated CI disabled until v1.0.0; see `docs/CI_REENABLE_PLAN.md`.
+- **Schema validation:** optional `jsonschema` for strict mode; stdlib fallback for zero-dep baseline.
+- **Terminology:** `boundary` is the only mode name. No `api` alias exists in schema or runtime.
+- **Lockfile determinism:** `generated_at` removed entirely. Lockfiles are always deterministic. Use `git log` for generation timestamps.

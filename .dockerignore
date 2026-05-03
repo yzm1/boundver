@@ -1,0 +1,30 @@
+# Development artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
+
+# Git metadata (not needed inside the image build context)
+.git/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Docs (not needed at runtime)
+docs/
+spec/
+examples/
+
+# CI configs (not needed in image)
+.github/

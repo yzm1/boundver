@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.discover.schema.json",
+  "title": "boundver discover --format json output",
+  "description": "Schema for the JSON object printed to stdout by `boundver discover --format json`.",
+  "type": "object",
+  "required": ["count", "components"],
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of discovered components."
+    },
+    "components": {
+      "type": "object",
+      "description": "Map of component name to its discovered config stub.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "boundary"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repo-relative path to the component directory."
+          },
+          "version_source": {
+            "type": ["object", "null"],
+            "description": "Auto-detected version source from manifest file.",
+            "properties": {
+              "file": { "type": "string" },
+              "field": { "type": "string" }
+            }
+          },
+          "boundary": {
+            "type": "object",
+            "required": ["provider", "paths"],
+            "properties": {
+              "provider": { "type": "string" },
+              "paths": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

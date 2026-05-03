@@ -6,6 +6,24 @@
   "required": ["project", "components", "slices"],
   "properties": {
     "project": { "type": "string", "minLength": 1 },
+    "providers": {
+      "type": "array",
+      "description": "Custom provider registrations. Requires allow_custom_providers: true or --allow-custom-providers at runtime.",
+      "items": {
+        "type": "object",
+        "required": ["module", "class"],
+        "properties": {
+          "module": { "type": "string", "minLength": 1 },
+          "class": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "allow_custom_providers": {
+      "type": "boolean",
+      "description": "When true, custom providers declared in 'providers' are loaded without requiring the --allow-custom-providers CLI flag.",
+      "default": false
+    },
     "defaults": {
       "type": "object",
       "properties": {
@@ -38,6 +56,11 @@
               "paths": {
                 "type": "array",
                 "items": { "type": "string" }
+              },
+              "options": {
+                "type": "object",
+                "description": "Provider-specific options passed to the provider via ProviderContext.",
+                "additionalProperties": true
               },
               "note": { "type": "string" }
             },

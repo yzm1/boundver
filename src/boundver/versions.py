@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
@@ -23,7 +24,13 @@ def extract_version(
     component_path: str,
     version_source: Optional[dict],
     git_latest_tag_fn: Optional[Callable[[Path, str], Optional[str]]] = None,
+    read_file_fn: Optional[Callable[[str], bytes]] = None,
 ) -> Optional[str]:
+    """Extract version from a version_source config.
+
+    If *read_file_fn* is provided, it is used to read file content (supporting
+    head/index/working-tree sources). Otherwise falls back to disk reads.
+    """
     if version_source is None:
         return None
     if "git_tag_prefix" in version_source:
@@ -34,6 +41,14 @@ def extract_version(
     field_path = version_source.get("field")
     if not file_rel or not field_path:
         return None
+    repo_rel = f"{component_path}/{file_rel}"
+    if read_file_fn is not None:
+        try:
+            raw = read_file_fn(repo_rel)
+        except (OSError, subprocess.CalledProcessError, FileNotFoundError):
+            return None
+        return _extract_field_from_bytes(raw, file_rel, field_path)
+    # Fallback: read from disk
     full_path = repo_root / component_path / file_rel
     if not full_path.exists():
         return None
@@ -43,6 +58,107 @@ def extract_version(
         return _extract_toml_field(full_path, field_path)
     if file_rel.endswith('.yaml') or file_rel.endswith('.yml'):
         return _extract_yaml_field(full_path, field_path)
+    return None
+
+
+def _extract_field_from_bytes(raw: bytes, file_rel: str, field_path: str) -> Optional[str]:
+    """Extract a field from raw file bytes based on file extension."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if file_rel.endswith('.json'):
+        return _extract_json_from_text(text, field_path)
+    if file_rel.endswith('.toml'):
+        return _extract_toml_from_text(text, field_path)
+    if file_rel.endswith('.yaml') or file_rel.endswith('.yml'):
+        return _extract_yaml_from_text(text, field_path)
+    return None
+
+
+def _extract_json_from_text(text: str, field_path: str) -> Optional[str]:
+    try:
+        data = json.loads(text)
+        for key in field_path.split('.'):
+            data = data[key]
+        return str(data)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
+    keys = field_path.split('.')
+    if tomllib is not None:
+        try:
+            data = tomllib.loads(text)
+        except Exception:
+            return None
+        current: Any = data
+        for key in keys:
+            if not isinstance(current, dict) or key not in current:
+                return None
+            current = current[key]
+        return str(current) if current is not None else None
+    # Fallback regex parser
+    current_section = ''
+    if len(keys) >= 2:
+        target_section = '.'.join(keys[:-1])
+        target_key = keys[-1]
+    else:
+        target_section = ''
+        target_key = keys[0]
+    for line in text.splitlines():
+        line = line.strip()
+        section_match = re.match(r"^\[([^\]]+)\]", line)
+        if section_match:
+            current_section = section_match.group(1).strip()
+            continue
+        if current_section == target_section:
+            kv_match = re.match(r'^(\w[\w-]*)\s*=\s*("?)([^"]*)\2', line)
+            if kv_match and kv_match.group(1) == target_key:
+                return kv_match.group(3)
+    return None
+
+
+def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
+    keys = field_path.split('.')
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text)
+        except Exception:
+            data = None
+        current: Any = data
+        for key in keys:
+            if not isinstance(current, dict) or key not in current:
+                current = None
+                break
+            current = current[key]
+        if current is not None:
+            return str(current)
+    # Fallback regex parser
+    indent_stack: list = []
+    current_path: list = []
+    for line in text.splitlines():
+        if not line.strip() or line.strip().startswith('#'):
+            continue
+        indent = len(line) - len(line.lstrip())
+        stripped = line.strip()
+        while indent_stack and indent <= indent_stack[-1]:
+            indent_stack.pop()
+            if current_path:
+                current_path.pop()
+        kv_match = re.match(r"^([\w.-]+)\s*:\s*(.+)$", stripped)
+        if kv_match:
+            key = kv_match.group(1)
+            value = kv_match.group(2).strip().strip("'\"")
+            test_path = current_path + [key]
+            if test_path == keys:
+                return value
+        else:
+            section_match = re.match(r"^([\w.-]+)\s*:\s*$", stripped)
+            if section_match:
+                current_path.append(section_match.group(1))
+                indent_stack.append(indent)
     return None
 
 

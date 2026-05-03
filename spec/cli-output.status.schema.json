@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.status.schema.json",
+  "title": "boundver status --format json output",
+  "description": "Schema for the JSON object printed to stdout by `boundver status --format json`.",
+  "type": "object",
+  "required": ["lockfile", "issues"],
+  "additionalProperties": false,
+  "properties": {
+    "lockfile": {
+      "type": "object",
+      "description": "Full lockfile content as parsed from disk. See boundary.lock.schema.json for the full lockfile schema."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Drift issues between the lockfile and current repo state. Empty when up to date.",
+      "items": { "type": "string" }
+    }
+  }
+}

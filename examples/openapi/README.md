@@ -13,5 +13,5 @@ PYTHONPATH=src python -m boundver.core generate \
   --config examples/openapi/boundary.config.json \
   --out examples/openapi/expected.boundary.lock.json \
   --source working-tree \
-  --deterministic
+
 ```

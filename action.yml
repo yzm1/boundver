@@ -1,0 +1,76 @@
+name: boundver
+description: >
+  Verify semantic version lockfiles with boundary fingerprints.
+  Ensures your boundary.lock.json is up to date with current repo state.
+author: yzm1
+
+branding:
+  icon: lock
+  color: blue
+
+inputs:
+  command:
+    description: >
+      boundver command to run. One of: verify, generate, validate-config,
+      status, diff, discover. Default is 'verify'.
+    required: false
+    default: verify
+
+  args:
+    description: >
+      Additional arguments passed directly to the boundver command.
+      Example: "--source head --components svc,worker"
+    required: false
+    default: ""
+
+  version:
+    description: >
+      pip install specifier for boundver. Defaults to installing from the
+      main branch on GitHub. Once published on PyPI, set to e.g. "boundver==0.9.0".
+    required: false
+    default: "boundver>=0.9.0"
+
+outputs:
+  exit-code:
+    description: Exit code from the boundver command (0=ok, 1=drift, 2=usage error).
+    value: ${{ steps.run.outputs.exit-code }}
+
+  issues:
+    description: >
+      Newline-separated list of issues found (verify command only).
+      Empty when the lockfile is up to date.
+    value: ${{ steps.run.outputs.issues }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install boundver
+      shell: bash
+      run: pip install --quiet ${{ inputs.version }}
+
+    - name: Run boundver
+      id: run
+      shell: bash
+      run: |
+        set +e
+        output=$(boundver ${{ inputs.command }} ${{ inputs.args }} --format json 2>&1)
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # Extract issues array from JSON output when available
+        issues=$(echo "$output" | python3 -c "
+        import json, sys
+        try:
+            data = json.load(sys.stdin)
+            for issue in data.get('issues', []):
+                print(issue)
+        except Exception:
+            pass
+        " 2>/dev/null || true)
+        {
+          echo "issues<<EOF"
+          echo "$issues"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+        # Re-run in text mode for human-readable CI log output
+        boundver ${{ inputs.command }} ${{ inputs.args }} || true
+        exit $code

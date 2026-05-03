@@ -13,6 +13,6 @@ boundver generate \
   --config "$CONFIG_PATH" \
   --out "$LOCKFILE_PATH" \
   --source "$SOURCE_MODE" \
-  --deterministic
+
 
 exit 0

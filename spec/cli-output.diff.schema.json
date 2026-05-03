@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.diff.schema.json",
+  "title": "boundver diff --format json output",
+  "description": "Schema for the JSON object printed to stdout by `boundver diff --format json <old> <new>`.",
+  "type": "object",
+  "required": ["components", "slices"],
+  "additionalProperties": false,
+  "properties": {
+    "components": {
+      "type": "object",
+      "required": ["added", "removed", "changed", "unchanged"],
+      "additionalProperties": false,
+      "properties": {
+        "added": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "old_version", "new_version", "changed_facets", "summary"],
+            "properties": {
+              "name": { "type": "string" },
+              "old_version": { "type": ["string", "null"] },
+              "new_version": { "type": ["string", "null"] },
+              "summary": { "type": "string" },
+              "changed_facets": {
+                "type": "object",
+                "description": "Map of facet name to old/new digest pair.",
+                "additionalProperties": {
+                  "type": "object",
+                  "required": ["old", "new"],
+                  "properties": {
+                    "old": { "type": ["string", "null"] },
+                    "new": { "type": ["string", "null"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "unchanged": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "slices": {
+      "type": "object",
+      "required": ["changed", "unchanged"],
+      "additionalProperties": false,
+      "properties": {
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "old", "new"],
+            "properties": {
+              "name": { "type": "string" },
+              "old": { "type": ["string", "null"] },
+              "new": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "unchanged": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

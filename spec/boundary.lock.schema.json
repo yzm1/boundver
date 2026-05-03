@@ -5,6 +5,7 @@
   "type": "object",
   "required": ["schema", "project", "components", "slices"],
   "properties": {
+    "$schema": {"type": "string", "format": "uri"},
     "schema": {"const": "boundary-lock/v1"},
     "project": {"type": "string"},
     "generated_at": {"type": "string", "format": "date-time"},
@@ -14,7 +15,7 @@
         "type": "object",
         "required": ["version", "path", "boundary_provider", "boundary_status", "fingerprints", "semver"],
         "properties": {
-          "version": {"type": "string"},
+          "version": {"type": ["string", "null"]},
           "path": {"type": "string"},
           "boundary_provider": {"type": "string"},
           "boundary_status": {"type": "string", "enum": ["ok", "partial", "error"]},
@@ -32,9 +33,9 @@
             "type": "object",
             "required": ["compat_family", "api_surface", "exact_version"],
             "properties": {
-              "compat_family": {"type": ["integer", "null"]},
+              "compat_family": {"type": ["string", "null"]},
               "api_surface": {"type": ["string", "null"]},
-              "exact_version": {"type": "string"}
+              "exact_version": {"type": ["string", "null"]}
             },
             "additionalProperties": false
           },

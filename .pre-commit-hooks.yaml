@@ -1,0 +1,26 @@
+- id: boundver-verify
+  name: boundver verify
+  language: python
+  entry: boundver
+  args: [verify, --source, head]
+  pass_filenames: false
+  description: >
+    Verify that boundary.lock.json is up to date with the current HEAD.
+    Fails (exit 1) when fingerprints drift; blocks the commit until you run
+    `boundver generate` and stage the updated lockfile.
+  additional_dependencies: []
+  always_run: true
+  stages: [pre-commit, pre-push]
+
+- id: boundver-generate
+  name: boundver generate
+  language: python
+  entry: boundver
+  args: [generate, --source, head]
+  pass_filenames: false
+  description: >
+    Regenerate boundary.lock.json from HEAD. Use this hook on the
+    pre-commit stage to auto-update the lockfile before committing.
+  additional_dependencies: []
+  always_run: true
+  stages: [pre-commit]

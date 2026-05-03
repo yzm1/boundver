@@ -1,0 +1,75 @@
+{
+  "schema": "boundary-lock/v1",
+  "project": "boundver",
+  "components": {
+    "boundver": {
+      "version": null,
+      "path": "src/boundver",
+      "boundary_provider": "python-exports",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "2237085529488ba3a32c4100e4b5b323aa2c6d424ab159288176294bc42b520e",
+        "boundary": "9ffd37eb7eafd3db1a30c562d3e63bc4efec8f478bb17a0f2a8f3e1c51db2862",
+        "compat": null
+      },
+      "semver": {
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
+      }
+    },
+    "spec": {
+      "version": null,
+      "path": "spec",
+      "boundary_provider": "json-file",
+      "boundary_status": "ok",
+      "fingerprints": {
+        "exact": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231",
+        "boundary": "a4498d7dbe5f3438d70844c18371c80f8d203d3b16d6bc6028bfb3d2204bca8b",
+        "compat": null
+      },
+      "semver": {
+        "compat_family": null,
+        "api_surface": null,
+        "exact_version": null
+      }
+    }
+  },
+  "slices": {
+    "cli-api": {
+      "description": "CLI interface and public API surface",
+      "mode": "boundary",
+      "components": [
+        "boundver"
+      ],
+      "fingerprint": "85929c659c9ce419aaef218933d8c5eed42f382404dd1327bf4f95f4e57ce783",
+      "component_digests": {
+        "boundver": "9ffd37eb7eafd3db1a30c562d3e63bc4efec8f478bb17a0f2a8f3e1c51db2862"
+      }
+    },
+    "spec": {
+      "description": "Spec documents and schemas",
+      "mode": "exact",
+      "components": [
+        "spec"
+      ],
+      "fingerprint": "783ef3047f177e1de8cfc4e07df187863986c979c68ff3f959bad5c8ab483010",
+      "component_digests": {
+        "spec": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231"
+      }
+    },
+    "all": {
+      "description": "Full implementation fingerprint",
+      "mode": "exact",
+      "components": [
+        "boundver",
+        "spec"
+      ],
+      "fingerprint": "3640c048aea6601578223467fdf6a8680f3dac7b7c47a8d8093f5acc3b066c9b",
+      "component_digests": {
+        "boundver": "2237085529488ba3a32c4100e4b5b323aa2c6d424ab159288176294bc42b520e",
+        "spec": "142220e816628e7f3f322ba51dc4fadc4f9879c117e496f43e25ce89c9740231"
+      }
+    }
+  }
+}

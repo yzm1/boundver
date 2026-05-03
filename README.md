@@ -1,20 +1,38 @@
 # boundver
 
-**Semantic version fingerprints for multi-component repositories.**
+[![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://pypi.org/project/boundver/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![No runtime dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](pyproject.toml)
+
+**Automated change-type classification for components that lack static verification.**
 
 boundver answers three questions per component — *did the implementation change?*, *did the declared boundary change?*, *is it still compatible?* — using content-addressed fingerprints derived from Git state and declared boundary files. No external dependencies. No build system required.
 
 ## Why
 
-In a repository with many components and layered dependencies, you need different answers at different times:
+When a component has consumers but no compiler or type system verifying its interface — services exposing OpenAPI specs, Python libraries, config-driven systems, internal platforms — there's no machine that tells you whether a change is internal, boundary-affecting, or breaking.
 
-- **CI** needs to know: "did this component actually change, or can I skip the build?"
-- **Consumers** need to know: "did the API I depend on change?"
-- **Operators** need to know: "is this still compatible with what's deployed?"
+boundver fills that gap. It lets you **declare** what constitutes your component's boundary, then **automatically classifies every change** into one of three categories:
 
-Traditional version managers require humans to answer these questions via commit messages or changelogs. boundver derives the answers from repo state — deterministically, automatically, and with no runtime dependencies beyond Git and Python 3.8+.
+- **Implementation-only** — internals changed, boundary stable, consumers unaffected.
+- **Boundary change** — the declared contract changed, consumers should re-verify.
+- **Compatibility break** — the compatibility family changed, deployment coordination required.
 
-For tool-selection guidance and scope boundaries, see `docs/WHY_BOUNDVER.md`.
+This is the information that CI, consumers, and operators each need — derived deterministically from repo state, not from human discipline or commit-message conventions.
+
+### When to use boundver
+
+boundver is for any component whose boundary has consumers but **no static verification** — no compiler checking signatures, no type system enforcing contracts. That includes most services, most Python/Go libraries, most YAML/JSON-defined APIs, and most internal platforms.
+
+| Tool | Sweet spot | Skip if… |
+|---|---|---|
+| **Nx / Turborepo** | JS/TS monorepos with task graphs and caching | You have a polyglot repo or can't adopt a full task runner |
+| **Bazel / Pants** | Large-scale build + dependency graph orchestration | Adoption cost exceeds value for your team size |
+| **TypeScript / Rust compiler** | Statically verified API contracts within a single language | Your entire stack is one statically-typed language |
+| **boundver** | Any language — automated change classification where no static verifier exists | You already have affected-graph + cache-key tooling that satisfies all three questions |
+
+For full tool-selection guidance, see [docs/WHY_BOUNDVER.md](docs/WHY_BOUNDVER.md).
 
 ## How it works
 
@@ -79,9 +97,6 @@ boundver generate
 # Regenerate only selected components (and affected slices)
 boundver generate --components auth-service,billing-service
 
-# Deterministic output (omits generated_at)
-boundver generate --deterministic
-
 # Preview generation without writing boundary.lock.json
 boundver generate --dry-run
 
@@ -98,7 +113,7 @@ boundver verify --components auth-service,billing-service
 boundver verify --changed-from origin/main
 
 # JSON output for automation
-boundver verify --json
+boundver verify --format json
 
 # Logging controls
 boundver --quiet status
@@ -111,7 +126,7 @@ boundver diff old.lock.json boundary.lock.json
 boundver slice auth-api
 
 # Preview discovered components
-boundver discover --json
+boundver discover --format json
 ```
 
 ## Behavior matrix
@@ -215,9 +230,11 @@ Short term deliverables: `validate-config`, strict digest selection, explicit so
 
 ## CI integration
 
-For lockfile merge conflict handling, see `docs/LOCKFILE_MERGE.md`.
+For lockfile merge conflict handling, see [docs/LOCKFILE_MERGE.md](docs/LOCKFILE_MERGE.md).
 
 ### GitHub Actions — PR verification
+
+For a full set of patterns (conditional builds, cache keys, GitLab, pre-commit), see [docs/ci-cookbook.md](docs/ci-cookbook.md).
 
 #### Option A: use bundled composite action
 
@@ -285,6 +302,19 @@ fi
 scripts/boundver-verify.sh boundary.config.json boundary.lock.json
 ```
 
+## Exit codes
+
+`boundver verify` uses structured exit codes for reliable CI scripting:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Lockfile matches current repo state |
+| `1` | Lockfile is out of date (fingerprint mismatches found) |
+| `2` | Usage error (unknown component, config missing, etc.) |
+
+`validate-config` exits `0` on success, `1` on validation errors.
+`generate` exits `0` on success, `1` on config/generation error.
+
 ## Design decisions
 
 - **No external dependencies.** Only Git and Python stdlib. Runs anywhere Python 3.8+ and Git are available.
@@ -300,6 +330,15 @@ scripts/boundver-verify.sh boundary.config.json boundary.lock.json
 - `examples/implicit-and-leaf/`
 - `examples/python-package/`
 - `examples/typescript-package/`
+
+## Documentation
+
+- [Getting started](docs/getting-started.md) — install, first config, first lockfile, CI setup
+- [Gradual adoption guide](docs/gradual-adoption.md) — incremental adoption from one component to full coverage
+- [CI cookbook](docs/ci-cookbook.md) — GitHub Actions, cache keys, GitLab, pre-commit
+- [Why boundver?](docs/WHY_BOUNDVER.md) — tool comparison and positioning
+- [Custom vs public providers](docs/public-vs-custom-providers.md) — when to use `custom.*`
+- [Lockfile merge handling](docs/LOCKFILE_MERGE.md) — resolving merge conflicts
 
 ## Validation dependencies
 
@@ -319,7 +358,27 @@ Without `jsonschema`, boundver still runs and applies built-in semantic validati
 - PyPI publish workflow: `.github/workflows/publish.yml`
 - Trigger: push a version tag matching `v*` (for example `v0.3.0`)
 
-## Ignore behavior for `--source=working-tree`
+## Source modes
+
+| Mode | File list | Content read from | Default for |
+|------|-----------|-------------------|-------------|
+| `head` | `git ls-tree HEAD` | committed git blobs | `generate`, `verify`, `status`, `why` |
+| `index` | `git ls-files --cached` | staged blobs | — |
+| `working-tree` | `git ls-files` (tracked) | disk bytes (CRLF→LF) | `explain` |
+
+### Important: `working-tree` only sees tracked files
+
+`--source=working-tree` hashes the **on-disk content** of files that are already tracked by git.
+It does **not** include untracked files.  If you just created a new file but haven't run
+`git add`, that file will not appear in any fingerprint until it is tracked.
+
+This matters most during:
+
+- **Initial setup** — run `git add .` before `boundver generate --source working-tree`.
+- **Adding new boundary files** — a new `openapi.yaml` won't affect digests until tracked.
+- **CI with uncommitted generated files** — prefer `--source head` (the default) in CI.
+
+### Ignore behavior
 
 `--source=working-tree` prefers Git-backed tracked-file enumeration (`git ls-files`) when available.
 In non-git fallback contexts, local file traversal is used.

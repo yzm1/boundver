@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v1",
   "project": "example-json-file",
   "components": {

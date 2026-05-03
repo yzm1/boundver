@@ -9,7 +9,7 @@ Always regenerate from `boundary.config.json`.
 ## Manual resolution
 ```bash
 # After merge conflict appears
-boundver generate --deterministic
+boundver generate
 
 git add boundary.lock.json
 ```

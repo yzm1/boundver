@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "project": "boundver",
+  "defaults": {
+    "compat_mode": "major"
+  },
+  "components": {
+    "boundver": {
+      "path": "src/boundver",
+      "version_source": {
+        "git_tag_prefix": "v"
+      },
+      "boundary": {
+        "provider": "python-exports",
+        "paths": ["cli.py", "__init__.py"]
+      }
+    },
+    "spec": {
+      "path": "spec",
+      "boundary": {
+        "provider": "json-file",
+        "paths": ["boundary.lock.schema.json", "HASHING.md", "spec.md"]
+      }
+    }
+  },
+  "slices": {
+    "cli-api": {
+      "description": "CLI interface and public API surface",
+      "mode": "boundary",
+      "components": ["boundver"]
+    },
+    "spec": {
+      "description": "Spec documents and schemas",
+      "mode": "exact",
+      "components": ["spec"]
+    },
+    "all": {
+      "description": "Full implementation fingerprint",
+      "mode": "exact",
+      "components": ["boundver", "spec"]
+    }
+  }
+}

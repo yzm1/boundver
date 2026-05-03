@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.verify.schema.json",
+  "title": "boundver verify --format json output",
+  "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
+  "type": "object",
+  "required": ["ok", "issues", "components_filter"],
+  "additionalProperties": false,
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "true when the lockfile matches current repo state; false when any issues were found."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Human-readable issue strings. Empty when ok=true.",
+      "items": { "type": "string" }
+    },
+    "components_filter": {
+      "type": "array",
+      "description": "Component names actually verified. Empty list means all components were checked.",
+      "items": { "type": "string" }
+    }
+  }
+}
