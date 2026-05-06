@@ -1,7 +1,7 @@
 name: boundver
 description: >
-  Verify semantic version lockfiles with boundary fingerprints.
-  Ensures your boundary.lock.json is up to date with current repo state.
+  Detect whether component changes are internal, behavioral, boundary-affecting,
+  or compatibility-breaking.
 author: yzm1
 
 branding:
