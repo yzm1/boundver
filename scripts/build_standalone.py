@@ -6,7 +6,7 @@ Usage:
     python scripts/build_standalone.py
     python scripts/build_standalone.py --output dist/boundver.pyz
 
-The resulting .pyz file is self-contained (no external deps beyond Python 3.8+
+The resulting .pyz file is self-contained (no external deps beyond Python 3.9+
 stdlib) and can be run directly:
 
     python3 boundver.pyz generate
@@ -17,8 +17,9 @@ On Unix systems you can also make it executable:
     ./dist/boundver.pyz verify
 
 Requires:
-  - Python 3.8+
-  - No external packages (boundver itself has none)
+  - Python 3.9+ for JSON configs
+  - Python 3.11+ for TOML configs in the standalone archive; YAML support is
+    optional
 """
 
 import argparse

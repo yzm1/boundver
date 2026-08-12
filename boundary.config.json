@@ -2,14 +2,16 @@
   "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
   "project": "boundver",
   "defaults": {
-    "compat_mode": "major"
+    "compat_mode": "major",
+    "verify_facets": [
+      "boundary",
+      "compat"
+    ]
   },
   "components": {
     "boundver": {
       "path": "src/boundver",
-      "version_source": {
-        "git_tag_prefix": "v"
-      },
+      "version_source": null,
       "boundary": {
         "provider": "python-exports",
         "paths": [
@@ -20,6 +22,9 @@
     },
     "spec": {
       "path": "spec",
+      "consumers": [
+        "boundver"
+      ],
       "boundary": {
         "provider": "json-file",
         "paths": [

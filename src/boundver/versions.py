@@ -59,7 +59,12 @@ def extract_version(
     # Reject path traversal in version_source.file
     if ".." in file_rel.replace("\\", "/").split("/"):
         return None
-    repo_rel = f"{component_path}/{file_rel}"
+    component_prefix = component_path.strip().strip("/")
+    repo_rel = (
+        file_rel.lstrip("/")
+        if component_prefix in {"", "."}
+        else f"{component_prefix}/{file_rel.lstrip('/')}"
+    )
     if read_file_fn is not None:
         try:
             raw = read_file_fn(repo_rel)
@@ -318,7 +323,12 @@ def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
 def parse_semver(version: Optional[str]) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     if not version:
         return (None, None, None)
-    match = re.match(r"^v?(\d+)\.(\d+)(?:\.(\d+))?", version)
+    match = re.fullmatch(
+        r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    )
     if not match:
         return (None, None, version)
     major = match.group(1)

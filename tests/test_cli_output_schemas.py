@@ -6,6 +6,7 @@ These tests run against real tmpdir git repos so every key that the schema
 declares as required is actually present in live output.
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -72,30 +73,44 @@ class TestCLIOutputSchemas(unittest.TestCase):
         _commit_all(root)
         return root, cfg
 
+    def _run_cli(self, root: Path, *args: str) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(ROOT / "src")
+        return subprocess.run(
+            [sys.executable, "-m", "boundver", *args],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
     def test_verify_output_schema(self):
         schema = _load_schema("cli-output.verify.schema.json")
-        root, cfg = self._make_repo()
+        root, _cfg = self._make_repo()
         try:
-            from boundver.core import generate_lockfile, verify_lockfile
-            lock = generate_lockfile(cfg, root, source="head")
-            issues = verify_lockfile(cfg, lock, root, source="head")
-            output = {"ok": len(issues) == 0, "issues": issues, "components_filter": []}
-            _assert_valid(schema, output)
-            # also with components_filter populated
-            output2 = {"ok": True, "issues": [], "components_filter": ["svc"]}
-            _assert_valid(schema, output2)
+            generated = self._run_cli(root, "generate", "--format", "json")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            verified = self._run_cli(root, "verify", "--format", "json")
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            _assert_valid(schema, json.loads(verified.stdout))
+
+            filtered = self._run_cli(
+                root, "verify", "--components", "svc", "--format", "json"
+            )
+            self.assertEqual(filtered.returncode, 0, filtered.stderr)
+            _assert_valid(schema, json.loads(filtered.stdout))
         finally:
             import shutil; shutil.rmtree(root, ignore_errors=True)
 
     def test_status_output_schema(self):
         schema = _load_schema("cli-output.status.schema.json")
-        root, cfg = self._make_repo()
+        root, _cfg = self._make_repo()
         try:
-            from boundver.core import generate_lockfile, verify_lockfile
-            lock = generate_lockfile(cfg, root, source="head")
-            issues = verify_lockfile(cfg, lock, root, source="head")
-            output = {"lockfile": lock, "issues": issues}
-            _assert_valid(schema, output)
+            generated = self._run_cli(root, "generate", "--format", "json")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            status = self._run_cli(root, "status", "--format", "json")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            _assert_valid(schema, json.loads(status.stdout))
         finally:
             import shutil; shutil.rmtree(root, ignore_errors=True)
 

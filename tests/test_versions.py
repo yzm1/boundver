@@ -42,12 +42,23 @@ class ParseSemverTests(unittest.TestCase):
     def test_large_version_numbers(self):
         self.assertEqual(parse_semver("10.20.300"), ("10", "10.20", "10.20.300"))
 
-    def test_prerelease_suffix_ignored_in_semver_parts(self):
-        # parse_semver extracts leading numeric parts; suffix after patch is ignored
+    def test_prerelease_suffix_ignored_in_derived_semver_parts(self):
         major, api, exact = parse_semver("1.2.3-alpha")
         self.assertEqual(major, "1")
         self.assertEqual(api, "1.2")
         self.assertEqual(exact, "1.2.3")
+
+    def test_trailing_junk_is_not_accepted_as_semver(self):
+        major, api, exact = parse_semver("1.2.3-not valid")
+        self.assertIsNone(major)
+        self.assertIsNone(api)
+        self.assertEqual(exact, "1.2.3-not valid")
+
+    def test_build_metadata_is_valid_semver(self):
+        self.assertEqual(
+            parse_semver("1.2.3-alpha.1+build.9"),
+            ("1", "1.2", "1.2.3"),
+        )
 
 
 class ExtractJsonFieldTests(unittest.TestCase):

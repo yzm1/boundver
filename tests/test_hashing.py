@@ -457,8 +457,8 @@ class GitBatchCatTests(unittest.TestCase):
             blobs = _git_batch_cat(root, ["HEAD:hello.txt"])
             self.assertEqual(blobs["HEAD:hello.txt"], b"hello world\n")
 
-    def test_missing_object_maps_to_empty_bytes(self):
-        """_git_batch_cat maps missing objects to b''."""
+    def test_missing_object_raises(self):
+        """_git_batch_cat fails closed for a missing object."""
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -466,8 +466,8 @@ class GitBatchCatTests(unittest.TestCase):
             (root / "f.txt").write_text("x\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
-            blobs = _git_batch_cat(root, ["HEAD:nonexistent.txt"])
-            self.assertEqual(blobs["HEAD:nonexistent.txt"], b"")
+            with self.assertRaisesRegex(ValueError, "not found"):
+                _git_batch_cat(root, ["HEAD:nonexistent.txt"])
 
     def test_multiple_refs_returned_correctly(self):
         """_git_batch_cat returns correct content for each ref in a batch."""
@@ -490,8 +490,8 @@ class GitBatchCatTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             _git_batch_cat(Path("/nonexistent-repo-xyz"), ["HEAD:file.txt"])
 
-    def test_git_batch_cat_missing_object_maps_to_empty_bytes(self):
-        """_git_batch_cat returns b'' for objects marked 'missing' in batch output."""
+    def test_git_batch_cat_missing_object_raises(self):
+        """_git_batch_cat raises for objects marked missing in batch output."""
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -499,8 +499,8 @@ class GitBatchCatTests(unittest.TestCase):
             (root / "f.txt").write_text("x\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
-            blobs = _git_batch_cat(root, ["HEAD:no-such-file.txt"])
-            self.assertEqual(blobs["HEAD:no-such-file.txt"], b"")
+            with self.assertRaisesRegex(ValueError, "not found"):
+                _git_batch_cat(root, ["HEAD:no-such-file.txt"])
 
 
 class ReadPathContentTests(unittest.TestCase):

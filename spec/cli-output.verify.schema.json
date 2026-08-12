@@ -4,7 +4,7 @@
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
-  "required": ["ok", "issues", "components_filter"],
+  "required": ["ok", "updated", "issues", "observations", "facets", "components_filter"],
   "additionalProperties": false,
   "properties": {
     "ok": {
@@ -15,6 +15,22 @@
       "type": "array",
       "description": "Human-readable issue strings. Empty when ok=true.",
       "items": { "type": "string" }
+    },
+    "updated": {
+      "type": "boolean",
+      "description": "true when --update successfully wrote a refreshed lockfile."
+    },
+    "observations": {
+      "type": "array",
+      "description": "Detected drift outside the selected gating facets.",
+      "items": { "type": "string" }
+    },
+    "facets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["exact", "behavior", "boundary", "compat"]
+      }
     },
     "components_filter": {
       "type": "array",

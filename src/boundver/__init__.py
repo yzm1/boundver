@@ -60,19 +60,29 @@ def generate(
     """
     import json
     from pathlib import Path
-    from ._config import load_config_file, find_config_file
+    from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import generate_lockfile
     from ._git import git_root
+    from .core import _ensure_lock_outside_components, _write_text_atomic
 
     repo_root = git_root()
     config = load_config_file(find_config_file(repo_root, config_path))
+    config_errors = validate_config(
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom_providers,
+        source=source,
+    )
+    if config_errors:
+        raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     lockfile = generate_lockfile(
         config, repo_root, source=source, strict=True,
         allow_custom_providers=allow_custom_providers,
     )
     if out_path is not None:
         dest = repo_root / out_path
-        dest.write_text(json.dumps(lockfile, indent=2) + "\n", encoding="utf-8")
+        _ensure_lock_outside_components(repo_root, dest, config)
+        _write_text_atomic(dest, json.dumps(lockfile, indent=2) + "\n")
     return lockfile
 
 
@@ -87,15 +97,24 @@ def verify(
 
     Returns a list of mismatch strings. Empty list means up to date.
     """
-    import json
-    from pathlib import Path
-    from ._config import load_config_file, find_config_file
+    from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import verify_lockfile
     from ._git import git_root
+    from .core import _ensure_lock_outside_components, _load_lockfile
 
     repo_root = git_root()
     config = load_config_file(find_config_file(repo_root, config_path))
-    lf = json.loads((repo_root / lock_path).read_text(encoding="utf-8"))
+    config_errors = validate_config(
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom_providers,
+        source=source,
+    )
+    if config_errors:
+        raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
+    resolved_lock_path = repo_root / lock_path
+    _ensure_lock_outside_components(repo_root, resolved_lock_path, config)
+    lf = _load_lockfile(resolved_lock_path)
     return verify_lockfile(
         config, lf, repo_root, source=source,
         components_filter=components,

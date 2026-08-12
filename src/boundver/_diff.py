@@ -2,6 +2,8 @@
 
 from typing import Dict, List
 
+from ._lockfile import COMPONENT_METADATA_FIELDS
+
 
 def diff_lockfiles(old: dict, new: dict) -> dict:
     """Produce a human-readable diff between two lockfiles."""
@@ -40,14 +42,25 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
                 nv = new_fp.get(facet)
                 if ov != nv:
                     changes[facet] = {"old": ov, "new": nv}
-            if changes:
+            metadata_changes: Dict[str, dict] = {}
+            for field in COMPONENT_METADATA_FIELDS:
+                old_value = old_entry.get(field)
+                new_value = new_entry.get(field)
+                if old_value != new_value:
+                    metadata_changes[field] = {"old": old_value, "new": new_value}
+            if changes or metadata_changes:
                 entry = {
                     "name": name,
                     "old_version": old_entry.get("version"),
                     "new_version": new_entry.get("version"),
                     "changed_facets": changes,
+                    "changed_metadata": metadata_changes,
                 }
-                entry["summary"] = _summarize_change(changes)
+                entry["summary"] = (
+                    _summarize_change(changes)
+                    if changes
+                    else "component metadata changed"
+                )
                 result["components"]["changed"].append(entry)
             else:
                 result["components"]["unchanged"].append(name)
@@ -90,11 +103,11 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
 def _summarize_change(changes: dict) -> str:
     facets = list(changes.keys())
     if facets == ["exact"]:
-        return "implementation-only change (API stable)"
+        return "implementation-only by declaration: exact content changed; declared behavior and boundary artifacts are unchanged"
     elif set(facets) == {"exact", "behavior"}:
-        return "behavioral contract changed (API shape stable)"
+        return "behavioral artifacts changed; declared boundary artifacts are unchanged"
     elif "boundary" in facets and "compat" not in facets:
-        return "declared boundary changed (compatibility unchanged)"
+        return "declared boundary changed; compatibility family is unchanged"
     elif "compat" in facets:
-        return "BREAKING: compatibility family changed"
+        return "BREAKING-policy signal: declared compatibility family changed"
     return "changed: " + ", ".join(facets)

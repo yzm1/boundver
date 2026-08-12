@@ -1,24 +1,25 @@
 {
   "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v1",
+  "schema": "boundary-lock/v2",
   "project": "example-typescript-package",
   "components": {
     "pkg": {
-      "version": null,
+      "version": "2.1.0",
       "path": "examples/typescript-package/src",
       "boundary_provider": "typescript-exports",
       "boundary_provider_version": "1",
       "boundary_status": "ok",
+      "consumers": [],
       "fingerprints": {
-        "exact": "bad956d7f9651d1acb1d6898c7c2894ea93a3bbbd47fd5e214ad9407d92ee6a7",
+        "exact": "301f6b4f605e7b1777f7198461d0a5ae4a36aa680fee87a78bec55d7f82370be",
         "behavior": null,
-        "boundary": "b79d90df58aa3f22203444e990efe416f3836d5d677c3d98b89fd4e3ce2ce38e",
-        "compat": null
+        "boundary": "fc78a4eeeef6d431a74e42bdf96129f1c8701b1ae6b15e1a237115cda8d8cd85",
+        "compat": "e04ddbe80dd1edeab55821dbe157943486507534b7baaeacdeb225347fd10682"
       },
       "semver": {
-        "compat_family": null,
-        "api_surface": null,
-        "exact_version": null
+        "compat_family": "2",
+        "api_surface": "2.1",
+        "exact_version": "2.1.0"
       }
     }
   },
@@ -29,9 +30,9 @@
       "components": [
         "pkg"
       ],
-      "fingerprint": "7d3c0383e354181b2bc3d603f043be903e9fe5ea97c1bbc03f88a601b4d7494c",
+      "fingerprint": "800bb1bb9fd3bab50e2119c9751d3c717a06857d3e4bfac1b6257f38b3863b56",
       "component_digests": {
-        "pkg": "b79d90df58aa3f22203444e990efe416f3836d5d677c3d98b89fd4e3ce2ce38e"
+        "pkg": "fc78a4eeeef6d431a74e42bdf96129f1c8701b1ae6b15e1a237115cda8d8cd85"
       }
     }
   }

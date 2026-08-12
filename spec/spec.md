@@ -1,7 +1,7 @@
-# boundver Spec Overview (v1)
+# boundver Spec Overview (v2)
 
 ## Lockfile schema
-- Lockfile schema identifier: `boundary-lock/v1`.
+- Lockfile schema identifier: `boundary-lock/v2`.
 - Canonical schema file: `spec/boundary.lock.schema.json`.
 
 ## Component facets

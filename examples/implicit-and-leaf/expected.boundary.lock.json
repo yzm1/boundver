@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v1",
+  "schema": "boundary-lock/v2",
   "project": "example-implicit-leaf",
   "components": {
     "worker": {
@@ -9,8 +9,9 @@
       "boundary_provider": "implicit",
       "boundary_provider_version": "1",
       "boundary_status": "partial",
+      "consumers": [],
       "fingerprints": {
-        "exact": "4ead1526ad5ee4087940e33712e6006cea6967a13ec58060041bf95e3383aeca",
+        "exact": "e5787fbcf50fc81bcfe35f09dd08e3fc9148403fa7a9c9a7ebfbb72d95812a61",
         "behavior": null,
         "boundary": null,
         "compat": null
@@ -30,8 +31,9 @@
       "boundary_provider": "leaf",
       "boundary_provider_version": "1",
       "boundary_status": "ok",
+      "consumers": [],
       "fingerprints": {
-        "exact": "3c3a7b65bc88a63285a90cf5c612b589cc5c0d1327023a40daeb1ff8783f4fa5",
+        "exact": "87c0393e4c11fdd0b4f8070f3f2088a1f62c67e0c8b592a3045307d99a72ccf7",
         "behavior": null,
         "boundary": null,
         "compat": null
@@ -50,9 +52,9 @@
       "components": [
         "worker"
       ],
-      "fingerprint": "c6eef65d8d3d69e4d2ac0fae54e949a13ad88793ca0bb6f9b6083d557928cdc7",
+      "fingerprint": "bf87bd0a4be3b4479228ebfeae0014040db7db60f429e87e0dd64b5d4260a845",
       "component_digests": {
-        "worker": "4ead1526ad5ee4087940e33712e6006cea6967a13ec58060041bf95e3383aeca"
+        "worker": "e5787fbcf50fc81bcfe35f09dd08e3fc9148403fa7a9c9a7ebfbb72d95812a61"
       }
     },
     "leaf-exact": {
@@ -61,9 +63,9 @@
       "components": [
         "leafsvc"
       ],
-      "fingerprint": "48eac8ad3f0355cb4dda4a6225eb1d7919342231c1d188504d23bede7e218d29",
+      "fingerprint": "dee3ec0c6ed4cee820be76f1b052fc8e4f6308c76a4f688a5334c30c53a41d7b",
       "component_digests": {
-        "leafsvc": "3c3a7b65bc88a63285a90cf5c612b589cc5c0d1327023a40daeb1ff8783f4fa5"
+        "leafsvc": "87c0393e4c11fdd0b4f8070f3f2088a1f62c67e0c8b592a3045307d99a72ccf7"
       }
     }
   }

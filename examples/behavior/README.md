@@ -1,35 +1,39 @@
 # Behavior tier example
 
-Demonstrates the behavior fingerprint — a broader contract hash that covers configuration and runtime-relevant files in addition to the API boundary.
+This example separates a service's observable behavior from its narrower API boundary.
 
 ## Files
 
-- `boundary.config.json` — declares both `boundary` (OpenAPI spec) and `behavior` (spec + config)
-- `service/openapi.yaml` — API boundary file
-- `service/config.json` — behavioral config (retry policy, rate limits, feature flags)
-- `service/version.json` — version source
-- `expected.boundary.lock.json` — generated lockfile with all four fingerprints
+- `boundary.config.json` declares the component and two slices.
+- `service/openapi.yaml` belongs to both the behavior and boundary facets.
+- `service/config.json` belongs only to the behavior facet.
+- `service/version.json` supplies the compatibility version.
+- `expected.boundary.lock.json` records the expected fingerprints.
 
-## Key concepts
+## Expected classifications
 
-The `behavior.paths` list is a **superset** of `boundary.paths`. This gives three useful change classifications:
+| Change | Facets that drift |
+|---|---|
+| Internal tracked file | `exact` |
+| `service/config.json` | `exact`, `behavior` |
+| `service/openapi.yaml` | `exact`, `behavior`, `boundary` |
+| Major version in `service/version.json` | `exact`, `compat` |
 
-| What changed | Fingerprint drift | Classification |
-|---|---|---|
-| Internal implementation only | `exact` | Refactor / internal |
-| `config.json` (behavior file, not boundary) | `exact` + `behavior` | Behavioral contract changed (API shape stable) |
-| `openapi.yaml` (both boundary and behavior) | `exact` + `behavior` + `boundary` | API contract changed |
+The `payment-boundary` slice follows API shape; `payment-behavior` follows the broader observable contract.
 
-## Slices
+## Generate and verify
 
-- `payment-boundary` — tracks API shape only (mode `boundary`)
-- `payment-behavior` — tracks observable behavior (mode `behavior`)
-
-## Re-generate expected lockfile
+Install `boundver`, then run from the **boundver repository root**:
 
 ```bash
-PYTHONPATH=src python -m boundver.core generate \
+boundver generate \
   --config examples/behavior/boundary.config.json \
   --out examples/behavior/expected.boundary.lock.json \
   --source working-tree
+boundver verify \
+  --config examples/behavior/boundary.config.json \
+  --lock examples/behavior/expected.boundary.lock.json \
+  --source working-tree
 ```
+
+These fingerprints detect changes in the declared files; they do not prove runtime compatibility.

@@ -5,6 +5,7 @@ import subprocess
 import os
 import json
 import io
+import sys
 from contextlib import redirect_stdout
 
 import boundver.core as boundary_lock
@@ -33,7 +34,7 @@ class BoundaryLockTests(unittest.TestCase):
         repo_src = str(Path(__file__).resolve().parents[1] / "src")
         env["PYTHONPATH"] = repo_src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         return subprocess.run(
-            ["python", "-m", "boundver.core", *args],
+            [sys.executable, "-m", "boundver", *args],
             cwd=root,
             capture_output=True,
             text=True,
@@ -265,7 +266,9 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            lock = boundary_lock.generate_lockfile(
+                cfg, root, source="working-tree", strict=False
+            )
             entry = lock["components"]["svc"]
             self.assertEqual(entry["boundary_status"], "partial")
             self.assertIn("No boundary paths declared for implicit boundary", entry.get("boundary_errors", []))
@@ -389,7 +392,54 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertEqual(comps["core"]["path"], "libs/core")
             # version_source.file must be relative to component path, not repo root
             self.assertEqual(comps["auth"]["version_source"]["file"], "package.json")
+            self.assertEqual(comps["auth"]["version_source"]["field"], "version")
             self.assertEqual(comps["core"]["version_source"]["file"], "pyproject.toml")
+            self.assertEqual(comps["core"]["version_source"]["field"], "project.version")
+
+    def test_discover_components_uses_tracked_manifests_and_deduplicates_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            (root / ".gitignore").write_text("ignored/\n")
+            (root / "packages" / "real").mkdir(parents=True)
+            (root / "packages" / "real" / "package.json").write_text(
+                '{"version":"2.0.0"}'
+            )
+            (root / "packages" / "real" / "pyproject.toml").write_text(
+                "[project]\nversion='2.0.0'\n"
+            )
+            (root / "crates" / "engine").mkdir(parents=True)
+            (root / "crates" / "engine" / "Cargo.toml").write_text(
+                "[package]\nversion='3.1.4'\n"
+            )
+            (root / "cmd" / "tool").mkdir(parents=True)
+            (root / "cmd" / "tool" / "go.mod").write_text(
+                "module example.com/tool\n"
+            )
+            (root / "ignored" / "dep").mkdir(parents=True)
+            (root / "ignored" / "dep" / "package.json").write_text(
+                '{"version":"9.9.9"}'
+            )
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "manifests"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            components = boundary_lock.discover_components(root)
+
+            self.assertEqual(set(components), {"real", "engine", "tool"})
+            self.assertEqual(
+                components["real"]["version_source"],
+                {"file": "package.json", "field": "version"},
+            )
+            self.assertEqual(
+                components["engine"]["version_source"],
+                {"file": "Cargo.toml", "field": "package.version"},
+            )
+            self.assertIsNone(components["tool"]["version_source"])
 
     def test_discover_components_excludes_ignored_dirs(self):
         with tempfile.TemporaryDirectory() as td:
@@ -400,6 +450,8 @@ class BoundaryLockTests(unittest.TestCase):
             (root / ".venv" / "lib" / "pkg" / "pyproject.toml").write_text("[project]\nversion='0.1.0'\n")
             (root / "__pycache__" / "cached").mkdir(parents=True)
             (root / "__pycache__" / "cached" / "pyproject.toml").write_text("[project]\nversion='0.1.0'\n")
+            (root / "vendor" / "copied").mkdir(parents=True)
+            (root / "vendor" / "copied" / "package.json").write_text('{"version":"9.9.9"}')
             (root / "packages" / "real").mkdir(parents=True)
             (root / "packages" / "real" / "package.json").write_text('{"version":"2.0.0"}')
             comps = boundary_lock.discover_components(root)
@@ -536,7 +588,9 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            lock = boundary_lock.generate_lockfile(
+                cfg, root, source="working-tree", strict=False
+            )
             entry = lock["components"]["svc"]
             self.assertEqual(entry["boundary_status"], "error")
             self.assertIn(
@@ -921,7 +975,16 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertTrue(any("NEW component not in lockfile: b" in i for i in new_issues), new_issues)
 
             # removed component
-            cfg_removed = {"project": "p", "components": {}, "slices": {}}
+            cfg_removed = {
+                "project": "p",
+                "components": {
+                    "b": {
+                        "path": "b",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                    }
+                },
+                "slices": {},
+            }
             removed_issues = boundary_lock.verify_lockfile(cfg_removed, lock, root, source="working-tree")
             self.assertTrue(any("REMOVED component still in lockfile: a" in i for i in removed_issues), removed_issues)
 
@@ -942,7 +1005,7 @@ class BoundaryLockTests(unittest.TestCase):
         self.assertEqual(len(diff["components"]["changed"]), 1)
         self.assertEqual(
             diff["components"]["changed"][0]["summary"],
-            "declared boundary changed (compatibility unchanged)",
+            "declared boundary changed; compatibility family is unchanged",
         )
 
     def test_generate_lockfile_reports_boundary_digest_failures(self):
@@ -1251,7 +1314,9 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            lock = boundary_lock.generate_lockfile(
+                cfg, root, source="working-tree", strict=False
+            )
             self.assertIsNone(lock["components"]["svc"]["version"])
 
     def test_vendored_copy_drift_reported_as_warning(self):
@@ -2434,7 +2499,9 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            lock = boundary_lock.generate_lockfile(
+                cfg, root, source="working-tree", strict=False
+            )
             self.assertEqual(lock["components"]["svc"]["boundary_status"], "error")
 
     # ------------------------------------------------------------------
@@ -2746,8 +2813,8 @@ class BoundaryLockTests(unittest.TestCase):
     # changed_components_since_ref: git failure path
     # ------------------------------------------------------------------
 
-    def test_changed_components_since_ref_bad_ref_returns_empty(self):
-        """changed_components_since_ref returns [] when git diff fails (bad ref)."""
+    def test_changed_components_since_ref_bad_ref_raises(self):
+        """An invalid baseline must fail closed instead of skipping verification."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
@@ -2760,8 +2827,10 @@ class BoundaryLockTests(unittest.TestCase):
                 "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}},
                 "slices": {},
             }
-            result = boundary_lock.changed_components_since_ref(cfg, root, "nonexistent-ref-12345")
-            self.assertEqual(result, [])
+            with self.assertRaisesRegex(ValueError, "nonexistent-ref-12345"):
+                boundary_lock.changed_components_since_ref(
+                    cfg, root, "nonexistent-ref-12345"
+                )
 
     # ------------------------------------------------------------------
     # _lockfile_schema_issues
@@ -2779,7 +2848,7 @@ class BoundaryLockTests(unittest.TestCase):
 
     def test_lockfile_schema_issues_correct_schema_passes(self):
         """_lockfile_schema_issues returns empty for correct schema."""
-        issues = boundary_lock._lockfile_schema_issues({"schema": "boundary-lock/v1"})
+        issues = boundary_lock._lockfile_schema_issues({"schema": "boundary-lock/v2"})
         self.assertEqual(issues, [])
 
 
@@ -2962,35 +3031,52 @@ class MigrateLockTests(unittest.TestCase):
         base.update(extra)
         return base
 
+    def _minimal_v2(self, **extra):
+        base = self._minimal_v1()
+        base["schema"] = "boundary-lock/v2"
+        base["components"]["svc"]["provider"] = {
+            "name": "implicit",
+            "version": "2",
+        }
+        base["components"]["svc"]["consumers"] = []
+        base.update(extra)
+        return base
+
     # ------------------------------------------------------------------
     # Unit tests for migrate_lockfile()
     # ------------------------------------------------------------------
 
-    def test_migrate_v1_schema_preserved(self):
-        from boundver._lockfile import LOCKFILE_SCHEMA, migrate_lockfile
-        result = migrate_lockfile(self._minimal_v1())
-        self.assertEqual(result["schema"], LOCKFILE_SCHEMA)
+    def test_migrate_v1_requires_regeneration(self):
+        from boundver._lockfile import MigrationError, migrate_lockfile
+
+        with self.assertRaises(MigrationError) as cm:
+            migrate_lockfile(self._minimal_v1())
+
+        message = str(cm.exception)
+        self.assertIn("cannot be migrated", message)
+        self.assertIn("boundver generate", message)
 
     def test_migrate_strips_generated_at(self):
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v1(generated_at="2024-01-01T00:00:00Z")
+        lf = self._minimal_v2(generated_at="2024-01-01T00:00:00Z")
         result = migrate_lockfile(lf)
         self.assertNotIn("generated_at", result)
 
     def test_migrate_does_not_mutate_input(self):
-        from boundver._lockfile import migrate_lockfile
+        from boundver._lockfile import MigrationError, migrate_lockfile
         lf = self._minimal_v1(generated_at="x")
-        migrate_lockfile(lf)
+        with self.assertRaises(MigrationError):
+            migrate_lockfile(lf)
         self.assertIn("generated_at", lf)  # original untouched
 
     def test_migrate_preserves_components(self):
         from boundver._lockfile import migrate_lockfile
-        result = migrate_lockfile(self._minimal_v1())
+        result = migrate_lockfile(self._minimal_v2())
         self.assertEqual(result["components"]["svc"]["fingerprints"]["exact"], "aaa")
 
     def test_migrate_adds_missing_components_and_slices(self):
         from boundver._lockfile import migrate_lockfile
-        lf = {"schema": "boundary-lock/v1", "project": "x"}
+        lf = {"schema": "boundary-lock/v2", "project": "x"}
         result = migrate_lockfile(lf)
         self.assertEqual(result["components"], {})
         self.assertEqual(result["slices"], {})
@@ -3011,7 +3097,7 @@ class MigrateLockTests(unittest.TestCase):
     def test_migrate_idempotent(self):
         """Running migrate twice gives the same result as running it once."""
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v1(generated_at="ts")
+        lf = self._minimal_v2(generated_at="ts")
         once = migrate_lockfile(lf)
         twice = migrate_lockfile(once)
         self.assertEqual(once, twice)
@@ -3053,21 +3139,20 @@ class MigrateLockTests(unittest.TestCase):
             rc = self._run_migrate_cli(p)
             self.assertEqual(rc, 2)
 
-    def test_cli_writes_in_place_strips_generated_at(self):
+    def test_cli_v1_requires_regeneration_and_does_not_write(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            p.write_text(json.dumps(self._minimal_v1(generated_at="2020-01-01T00:00:00Z")))
+            original = json.dumps(self._minimal_v1(generated_at="2020-01-01T00:00:00Z"))
+            p.write_text(original)
             rc = self._run_migrate_cli(p)
-            self.assertEqual(rc, 0)
-            rewritten = json.loads(p.read_text())
-            self.assertNotIn("generated_at", rewritten)
-            self.assertEqual(rewritten["schema"], "boundary-lock/v1")
+            self.assertEqual(rc, 2)
+            self.assertEqual(p.read_text(), original)
 
     def test_cli_dry_run_does_not_write(self):
         import io, sys as _sys
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            original = json.dumps(self._minimal_v1(generated_at="ts"))
+            original = json.dumps(self._minimal_v2(generated_at="ts"))
             p.write_text(original)
             buf = io.StringIO()
             old_stdout = _sys.stdout

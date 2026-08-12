@@ -2,11 +2,12 @@
   name: boundver verify
   language: python
   entry: boundver
-  args: [verify, --source, head]
+  args: [verify, --source, index]
   pass_filenames: false
   description: >
-    Verify that boundary.lock.json is up to date with the current HEAD.
-    Fails (exit 1) when fingerprints drift; blocks the commit until you run
+    Verify that boundary.lock.json is up to date with the staged snapshot.
+    Fails with the documented facet-specific exit code when fingerprints drift;
+    blocks the commit until you run
     `boundver generate` and stage the updated lockfile.
   additional_dependencies: []
   always_run: true
@@ -16,10 +17,10 @@
   name: boundver generate
   language: python
   entry: boundver
-  args: [generate, --source, head]
+  args: [generate, --source, index]
   pass_filenames: false
   description: >
-    Regenerate boundary.lock.json from HEAD. Use this hook on the
+    Regenerate boundary.lock.json from the staged snapshot. Use this hook on the
     pre-commit stage to auto-update the lockfile before committing.
   additional_dependencies: []
   always_run: true
