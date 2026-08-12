@@ -31,6 +31,11 @@ After the version, changelog, and v2 lockfiles are updated, merge the release PR
 only after its full CI matrix passes. Then create a branch named
 `release/vX.Y.Z` at the tested `main` commit. The release-tag workflow verifies
 that the branch points to current `main` and matches `pyproject.toml` before it
-creates the immutable version tag. The tag-triggered publish workflow retests
+creates the immutable version tag. The dispatched publish workflow retests
 and builds the package, publishes the verified artifacts to PyPI, creates the
 GitHub Release, and advances the stable major tag.
+
+Publishing the Action in GitHub Marketplace is a separate owner-only step.
+Edit the new GitHub Release, select **Publish this Action to the GitHub
+Marketplace**, confirm the categories, update the release, and complete 2FA.
+Verify that the public Marketplace page marks the new version as **Latest**.

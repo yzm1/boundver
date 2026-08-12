@@ -2,13 +2,13 @@
 
 - Date: 2026-08-12
 - Baseline: `55dd961` (`main`, package version `0.9.1`)
-- Remediation target: current working tree (planned package version `0.10.0`)
+- Released tree: `5664437` (`main`, package version `0.10.0`)
 
 This document records the pre-release review of boundver's correctness,
 security, packaging, onboarding, documentation, automation, and public project
-surface. “Resolved” means the repository now contains the implementation,
-regression coverage, or repeatable source-level verification named below. It
-does not mean the release candidate has passed external CI or been published.
+surface. “Resolved” means the repository contains the implementation,
+regression coverage, or repeatable verification named below. The release gate
+records the separate external CI and publication evidence.
 
 ## Executive summary
 
@@ -23,10 +23,8 @@ source modes, and OpenAPI canonicalization have focused regression coverage.
 The usability and visibility work is also represented in the repository: the
 README has an immediate workflow, examples use the installed CLI, one public
 Action is documented, package metadata and community files are present, and
-the supported Python floor is consistently 3.9. Release readiness remains
-conditional on the unchecked execution and publication gates at the end of
-this document; no claim is made here that external CI, GitHub Marketplace, or
-PyPI has completed those gates.
+the supported Python floor is consistently 3.9. External CI and publication
+completed for `v0.10.0`; the evidence is summarized in the release gate below.
 
 ## Baseline findings (BV-001–BV-042)
 
@@ -114,6 +112,7 @@ folding them invisibly into the broader baseline items.
 | BV-071 | Medium | Atomic writes | Direct lock/config replacement could leave truncated JSON if writing failed. `_write_text_atomic` writes and fsyncs a sibling temporary file before `os.replace`, and generate, verify-update, migration, init, add, and remove route mutations through it. | Resolved |
 | BV-072 | Medium | Documentation lifecycle | The historical implementation plan described a retired Action interface and linked deleted design/CI files, while a provider docstring repeated one stale link. The obsolete plan is retired and the provider points to the maintained custom-provider guide. | Resolved |
 | BV-073 | Medium | Release initiation | Tag creation had no repository-enforced link to the tested `main` commit. `.github/workflows/create-release-tag.yml` accepts only `release/vX.Y.Z`, requires the branch SHA to equal current `main`, matches the version to `pyproject.toml`, rejects a conflicting immutable tag, and explicitly dispatches publication with the pinned tag/SHA. This uses GitHub's documented `workflow_dispatch` exception to `GITHUB_TOKEN` recursion suppression. | Resolved |
+| BV-074 | Low | Marketplace release | Publishing a GitHub Release does not automatically select that release for the Actions Marketplace; GitHub requires an owner to use the release form and complete 2FA. `CONTRIBUTING.md` records the post-release step, and the live listing identifies `v0.10.0` as Latest. | Resolved |
 
 ## Verification index
 
@@ -141,18 +140,18 @@ The committed release candidate passed all 834 unit/integration tests in four
 balanced shards without an environment shim. Fresh wheel and sdist builds from
 that exact commit contained the required runtime/audit assets; the extracted
 wheel passed module-entry-point, config validation, generate, verify, and status
-smoke checks in an unrelated Git repository. These local results do not
-substitute for the supported-version CI matrix or the publication workflow.
+smoke checks in an unrelated Git repository. The supported-version CI matrix
+and pinned publication workflow subsequently passed for the same tree.
 
 ## Visibility and adoption baseline
 
 At review time, the public repository had one star, no forks, no GitHub
 Releases, and an existing Marketplace listing at version `0.9.1`. PyPI's latest
 release was also `0.9.1`, published through trusted publishing. The remediation
-tree now configures project links, discovery keywords, clearer outcome-led
+tree configures project links, discovery keywords, clearer outcome-led
 messaging, an immediate copyable workflow, and one canonical Action. Those
-changes are not described as publicly released until the publication gates
-below complete.
+changes are published in PyPI, the GitHub Release, and the Actions Marketplace
+as version `0.10.0`.
 
 The intended audience is teams maintaining polyglot repositories, services,
 or dynamically typed libraries whose consumer-facing contracts are represented
@@ -167,6 +166,6 @@ semantic or backward compatibility.
 - [x] Supported Python versions pass in external CI (Python 3.9–3.14 on Linux and Windows).
 - [x] Root Action passes its external workflow test with safe input handling.
 - [x] Wheel and sdist inspection plus installed-package smoke tests pass for the exact local release commit.
-- [ ] Tag exactly matches `pyproject.toml` and `boundver.__version__`.
+- [x] Tags `v0.10.0` and `v0` point to `5664437`, whose package metadata and `boundver.__version__` are `0.10.0`.
 - [x] GitHub branch/PR and post-merge `main` checks pass before the release tag is created.
-- [ ] GitHub Release, Marketplace tag, and PyPI publication all point to the same commit.
+- [x] GitHub Release and Marketplace publish `v0.10.0`; PyPI `0.10.0` artifact digests match the attached release artifacts.
