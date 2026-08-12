@@ -4,6 +4,22 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable version tag to publish.
+        required: true
+        type: string
+      release_sha:
+        description: Exact commit SHA referenced by the version tag.
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
 
 jobs:
   verify-release:
@@ -15,6 +31,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_sha || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v6
@@ -23,18 +40,29 @@ jobs:
 
       - name: Validate tag and package version
         shell: bash
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python - "$RELEASE_TAG" <<'PY'
+          python - "$RELEASE_TAG" "$RELEASE_SHA" <<'PY'
           import pathlib
+          import re
+          import subprocess
           import sys
           import tomllib
 
           expected = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
           actual = sys.argv[1]
+          release_sha = sys.argv[2]
+          if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
+              raise SystemExit(f"invalid release SHA: {release_sha!r}")
           if actual != f"v{expected}":
               raise SystemExit(f"tag {actual!r} does not match package version v{expected}")
+          head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if head_sha != release_sha:
+              raise SystemExit(f"checked-out commit {head_sha} does not match {release_sha}")
+          remote_tag = subprocess.check_output(
+              ["git", "ls-remote", "origin", f"refs/tags/{actual}"], text=True
+          ).split()
+          if not remote_tag or remote_tag[0] != release_sha:
+              raise SystemExit(f"tag {actual!r} does not resolve to {release_sha}")
           PY
 
       - name: Test and build
@@ -80,6 +108,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_sha || github.sha }}
 
       - name: Download verified distributions
         uses: actions/download-artifact@v4
@@ -89,8 +118,6 @@ jobs:
 
       - name: Advance the stable v0 tag
         shell: bash
-        env:
-          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           git tag --force v0 "$RELEASE_SHA"
@@ -102,7 +129,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then

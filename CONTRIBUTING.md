@@ -24,3 +24,13 @@ python -m pytest -q
 
 boundver fingerprints are deterministic and content-addressed. Prefer explicit,
 strict behavior over implicit fallback to avoid surprising CI behavior.
+
+## Maintainer releases
+
+After the version, changelog, and v2 lockfiles are updated, merge the release PR
+only after its full CI matrix passes. Then create a branch named
+`release/vX.Y.Z` at the tested `main` commit. The release-tag workflow verifies
+that the branch points to current `main` and matches `pyproject.toml` before it
+creates the immutable version tag. The tag-triggered publish workflow retests
+and builds the package, publishes the verified artifacts to PyPI, creates the
+GitHub Release, and advances the stable major tag.
