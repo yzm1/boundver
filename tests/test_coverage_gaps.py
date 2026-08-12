@@ -153,21 +153,20 @@ class TestGitBatchCatEdgeCases(unittest.TestCase):
             cwd=self.tmpdir, capture_output=True, check=True,
         )
 
-    def test_missing_ref_returns_empty_bytes(self):
-        result = _git_batch_cat(Path(self.tmpdir), ["HEAD:nonexistent.txt"])
-        self.assertEqual(result["HEAD:nonexistent.txt"], b"")
+    def test_missing_ref_raises(self):
+        with self.assertRaisesRegex(ValueError, "not found"):
+            _git_batch_cat(Path(self.tmpdir), ["HEAD:nonexistent.txt"])
 
     def test_existing_ref_returns_content(self):
         result = _git_batch_cat(Path(self.tmpdir), ["HEAD:hello.txt"])
         self.assertEqual(result["HEAD:hello.txt"], b"hello world\n")
 
-    def test_mixed_existing_and_missing(self):
-        result = _git_batch_cat(
-            Path(self.tmpdir),
-            ["HEAD:hello.txt", "HEAD:missing.txt"],
-        )
-        self.assertEqual(result["HEAD:hello.txt"], b"hello world\n")
-        self.assertEqual(result["HEAD:missing.txt"], b"")
+    def test_mixed_existing_and_missing_raises(self):
+        with self.assertRaisesRegex(ValueError, "not found"):
+            _git_batch_cat(
+                Path(self.tmpdir),
+                ["HEAD:hello.txt", "HEAD:missing.txt"],
+            )
 
     def test_empty_refs_returns_empty_dict(self):
         result = _git_batch_cat(Path(self.tmpdir), [])

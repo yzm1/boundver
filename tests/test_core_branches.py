@@ -62,7 +62,9 @@ class GenerateLockfileCompatModeTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             # No tag → version = None → compat = None
-            lockfile = core.generate_lockfile(cfg, root, source="head")
+            lockfile = core.generate_lockfile(
+                cfg, root, source="head", strict=False
+            )
             fp = lockfile["components"]["svc"]["fingerprints"]
             self.assertIsNone(fp["compat"])
 
@@ -87,7 +89,9 @@ class GenerateLockfileUnknownProviderTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lockfile = core.generate_lockfile(cfg, root, source="working-tree")
+            lockfile = core.generate_lockfile(
+                cfg, root, source="working-tree", strict=False
+            )
             comp = lockfile["components"]["svc"]
             self.assertEqual(comp["boundary_status"], "error")
             self.assertIsNone(comp["fingerprints"]["boundary"])
@@ -218,20 +222,49 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
                 )
             self.assertIn("Unknown", str(cm.exception))
 
-    def test_creates_fresh_lockfile_when_none_exists(self):
-        """Line 247: generate_lockfile_for_components starts fresh when out_path missing."""
+    def test_missing_existing_lockfile_requires_full_generation(self):
+        """A subset cannot silently create an incomplete first lockfile."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
             cfg = self._setup(root)
             out_path = root / "boundary.lock.json"
             self.assertFalse(out_path.exists())
-            result = core.generate_lockfile_for_components(
-                cfg, root, ["svc"],
-                out_path=out_path,
-                source="working-tree",
+            with self.assertRaisesRegex(ValueError, "full `boundver generate`"):
+                core.generate_lockfile_for_components(
+                    cfg,
+                    root,
+                    ["svc"],
+                    out_path=out_path,
+                    source="working-tree",
+                )
+
+    def test_non_v2_existing_lockfile_requires_full_generation(self):
+        """Partial updates must not mix v1 and v2 hashing contracts."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            cfg = self._setup(root)
+            out_path = root / "boundary.lock.json"
+            out_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "boundary-lock/v1",
+                        "project": "p",
+                        "components": {},
+                        "slices": {},
+                    }
+                )
             )
-            self.assertIn("svc", result["components"])
+
+            with self.assertRaisesRegex(ValueError, "boundary-lock/v2"):
+                core.generate_lockfile_for_components(
+                    cfg,
+                    root,
+                    ["svc"],
+                    out_path=out_path,
+                    source="working-tree",
+                )
 
     def test_merges_into_existing_lockfile(self):
         """generate_lockfile_for_components merges into an existing lockfile."""
@@ -580,13 +613,14 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
     """Additional validate_config branches for coverage."""
 
     def test_load_config_schema_invalid_json(self):
-        """_load_config_schema returns None when schema file is invalid JSON."""
+        """An invalid repository schema falls back to the bundled schema."""
         from boundver._config import _load_config_schema
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "boundary.config.schema.json").write_text("not valid json {{{")
             result = _load_config_schema(root)
-            self.assertIsNone(result)
+            self.assertIsInstance(result, dict)
+            self.assertIn("components", result.get("properties", {}))
 
     def test_validate_config_non_dict_returns_error(self):
         """validate_config with non-dict input returns an error immediately."""
@@ -1065,16 +1099,21 @@ class WhyComponentVersionTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
+            (root / "svc" / "version.json").write_text('{"version": "1.0.0"}\n')
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             cfg = {
                 "project": "p",
-                "components": {"svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}}},
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "openapi", "paths": ["api.yaml"]},
+                        "version_source": {"file": "version.json", "field": "version"},
+                    }
+                },
                 "slices": {},
             }
             lockfile = core.generate_lockfile(cfg, root)
-            # Manually inject a version
-            lockfile["components"]["svc"]["version"] = "1.0.0"
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = core.why_component(cfg, lockfile, root, "svc")
@@ -1106,10 +1145,10 @@ class RecomputeSliceEntryTests(unittest.TestCase):
 
 
 class ValidateConfigCustomProviderListTests(unittest.TestCase):
-    """Validate provider declared in component but not in providers list."""
+    """Validate explicit custom-provider names against component references."""
 
-    def test_custom_provider_in_component_not_in_providers_list(self):
-        """Component uses custom.X but providers list doesn't include it (lines 234-235)."""
+    def test_implicit_provider_name_is_resolved_only_after_loading(self):
+        """A class-only declaration cannot be name-checked before trusted loading."""
         import tempfile
         from boundver._config import validate_config
         with tempfile.TemporaryDirectory() as td:
@@ -1127,10 +1166,36 @@ class ValidateConfigCustomProviderListTests(unittest.TestCase):
                 "slices": {},
             }
             errors = validate_config(cfg, root)
-            self.assertTrue(
+            self.assertFalse(
                 any("not declared in the" in e for e in errors),
-                f"Expected 'not declared in the' error, got: {errors}",
+                f"Unexpected name cross-reference error: {errors}",
             )
+
+    def test_explicit_provider_name_must_match_component_reference(self):
+        from boundver._config import validate_config
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "svc").mkdir()
+            cfg = {
+                "project": "p",
+                "providers": [
+                    {
+                        "module": "custom_pkg",
+                        "class": "OtherProvider",
+                        "name": "custom.OtherProvider",
+                    }
+                ],
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "custom.MyProvider"},
+                    }
+                },
+                "slices": {},
+            }
+            errors = validate_config(cfg, root)
+            self.assertTrue(any("not declared in the" in e for e in errors), errors)
 
 
 class ExplainGitDiffFailureTests(unittest.TestCase):
@@ -1450,41 +1515,30 @@ class GitListHeadFilesFallbackTests(unittest.TestCase):
         from unittest.mock import patch, MagicMock
         from boundver._git import list_head_files
 
-        call_count = [0]
-
-        def fake_git_run(repo_root, args, **kw):
-            call_count[0] += 1
-            result = MagicMock()
-            if "ls-tree" in args:
-                result.stdout = ""  # Empty → triggers cat-file fallback
-            else:
-                # cat-file -t → returns "blob"
-                result.stdout = "blob"
-            return result
-
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            with patch("boundver._git._git_run", side_effect=fake_git_run):
+            ls_tree = MagicMock(stdout=b"")
+            cat_file = MagicMock(stdout="blob")
+            with patch("boundver._git._git_run_bytes", return_value=ls_tree) as run_bytes, patch(
+                "boundver._git._git_run", return_value=cat_file
+            ) as run_text:
                 result = list_head_files(root, "readme.txt")
             self.assertEqual(result, ["readme.txt"])
-            self.assertEqual(call_count[0], 2)  # ls-tree + cat-file
+            run_bytes.assert_called_once()
+            run_text.assert_called_once()
 
     def test_list_head_files_cat_file_not_blob_returns_empty(self):
         """When cat-file -t returns 'tree' (not 'blob'), returns [] (line 139 false branch)."""
         from unittest.mock import patch, MagicMock
         from boundver._git import list_head_files
 
-        def fake_git_run(repo_root, args, **kw):
-            result = MagicMock()
-            if "ls-tree" in args:
-                result.stdout = ""
-            else:
-                result.stdout = "tree"  # Not a blob
-            return result
-
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            with patch("boundver._git._git_run", side_effect=fake_git_run):
+            with patch(
+                "boundver._git._git_run_bytes", return_value=MagicMock(stdout=b"")
+            ), patch(
+                "boundver._git._git_run", return_value=MagicMock(stdout="tree")
+            ):
                 result = list_head_files(root, "somedir")
             self.assertEqual(result, [])
 
@@ -1494,20 +1548,14 @@ class GitListHeadFilesFallbackTests(unittest.TestCase):
         import subprocess as _sp
         from boundver._git import list_head_files
 
-        call_count = [0]
-
-        def fake_git_run(repo_root, args, **kw):
-            call_count[0] += 1
-            if "ls-tree" in args:
-                result = MagicMock()
-                result.stdout = ""
-                return result
-            # cat-file -t → raises
-            raise _sp.CalledProcessError(128, "git")
-
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            with patch("boundver._git._git_run", side_effect=fake_git_run):
+            with patch(
+                "boundver._git._git_run_bytes", return_value=MagicMock(stdout=b"")
+            ), patch(
+                "boundver._git._git_run",
+                side_effect=_sp.CalledProcessError(128, "git"),
+            ):
                 result = list_head_files(root, "missingfile.txt")
             self.assertEqual(result, [])
 
@@ -1793,7 +1841,9 @@ class BehaviorTierGenerationTests(unittest.TestCase):
                 "slices": {},
             }
 
-            lockfile = core.generate_lockfile(cfg, root, source="head")
+            lockfile = core.generate_lockfile(
+                cfg, root, source="head", strict=False
+            )
 
             self.assertEqual(lockfile["components"]["svc"]["boundary_status"], "error")
             self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["boundary"])
@@ -2197,7 +2247,7 @@ class BehaviorTierDiffTests(unittest.TestCase):
         changed = result["components"]["changed"]
         self.assertEqual(len(changed), 1)
         self.assertIn("behavioral", changed[0]["summary"].lower())
-        self.assertIn("stable", changed[0]["summary"].lower())
+        self.assertIn("unchanged", changed[0]["summary"].lower())
 
     def test_exact_only_still_impl_only(self):
         """diff with only exact changed still says implementation-only."""
@@ -2433,10 +2483,10 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
             from boundver import _lockfile
             original_fn = _lockfile.compute_boundary
 
-            def _raising_compute(provider, ctx):
+            def _raising_compute(provider, ctx, **kwargs):
                 if provider.name == "behavior":
                     raise subprocess.CalledProcessError(128, "git")
-                return original_fn(provider, ctx)
+                return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
                 lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
@@ -2469,10 +2519,10 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
             }
             original_fn = _lockfile.compute_boundary
 
-            def _raising_compute(provider, ctx):
+            def _raising_compute(provider, ctx, **kwargs):
                 if provider.name == "behavior":
                     raise OSError("disk error")
-                return original_fn(provider, ctx)
+                return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
                 lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
@@ -2503,10 +2553,10 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
             }
             original_fn = _lockfile.compute_boundary
 
-            def _raising_compute(provider, ctx):
+            def _raising_compute(provider, ctx, **kwargs):
                 if provider.name == "behavior":
                     raise ValueError("bad config")
-                return original_fn(provider, ctx)
+                return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
                 lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)

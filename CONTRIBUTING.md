@@ -4,7 +4,7 @@ Thanks for your interest in improving boundver.
 
 ## Development setup
 
-- Python 3.8+
+- Python 3.9+
 - Git
 
 Run tests:

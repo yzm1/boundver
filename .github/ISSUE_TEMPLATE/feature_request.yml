@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an improvement to boundver.
+title: "feature: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem first. Concrete workflows help evaluate the smallest useful solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: Who encounters this problem, and what are they trying to accomplish?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the behavior you would like, including a CLI or config example when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or other designs have you tried?
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility considerations
+      description: Note any effect on lockfiles, config, exit codes, providers, or CI integrations.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues and documentation for this request.
+          required: true
+        - label: I can help test or document this change if it is accepted.
+          required: false

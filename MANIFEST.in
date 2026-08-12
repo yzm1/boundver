@@ -1,0 +1,12 @@
+include CHANGELOG.md
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include LICENSE
+include README.md
+include SECURITY.md
+include SUPPORT.md
+include boundary.config.schema.json
+recursive-include docs *.md
+recursive-include examples *.json *.md *.py *.toml *.ts *.yaml
+recursive-include spec *.json *.md
+recursive-include tests *.py

@@ -1,8 +1,8 @@
 """
 Provider protocol for boundver boundary extraction.
 
-Phase 1: protocol types, built-in wrappers that replicate current raw-byte
-behavior exactly (zero digest drift), registry, and compute_boundary().
+Phase 1: protocol types, raw-byte built-in wrappers, registry, and
+compute_boundary().
 
 Phase 2: load_custom_providers() — loads and registers custom providers from
 the `providers` config key. Requires --allow-custom-providers at runtime.
@@ -12,12 +12,12 @@ Phase 3: semantic built-ins — openapi-canonical, json-canonical.
   change when the logical API contract changes. They are opt-in (activated only
   by explicit provider name) and have zero impact on existing lockfiles.
 
-The design is specified in docs/design/07-provider-architecture.md.
+The public extension and trust model is documented in
+docs/public-vs-custom-providers.md.
 """
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import importlib
 import json as _json_mod
 import re
@@ -25,7 +25,39 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
 
+from ._hashing import HASH_DOMAIN_BOUNDARY, _hash_framed_entries
 from ._utils import ProviderError, _is_glob
+
+
+def _join_repo_path(component_path: str, relative_path: str) -> str:
+    """Join config paths without treating a root component as ``./``."""
+    prefix = component_path.strip().replace("\\", "/").strip("/")
+    while prefix.startswith("./"):
+        prefix = prefix[2:]
+    if prefix in {"", "."}:
+        return relative_path.lstrip("/")
+    return f"{prefix}/{relative_path.lstrip('/')}"
+
+
+def _component_relative_path(component_path: str, repo_relative_path: str) -> str:
+    """Return a stable component-relative label for a repo-relative path."""
+    prefix = component_path.strip().replace("\\", "/").strip("/")
+    while prefix.startswith("./"):
+        prefix = prefix[2:]
+    # Git already emits '/' as its separator on every platform.  A backslash
+    # returned here is therefore a literal filename byte on POSIX and must not
+    # be rewritten into a separator (which would collapse distinct labels).
+    path = repo_relative_path.lstrip("/")
+    if prefix in {"", "."}:
+        return path
+    expected = prefix + "/"
+    if path.startswith(expected):
+        return path[len(expected):]
+    if path == prefix:
+        return Path(path).name
+    raise ProviderError(
+        f"Provider returned path outside component '{component_path}': {repo_relative_path}"
+    )
 
 
 def _fnmatch_case_sensitive(name: str, pattern: str) -> bool:
@@ -64,13 +96,11 @@ class ResolvedBoundary:
     """What a provider returns from resolve().
 
     ``entries`` is an ordered list of (label, content) pairs.
-    Core hashes them as::
-
-        sha256(b"entry:<label>\\n" + content + ...)
+    Core hashes them with boundver's length-delimited, domain-separated wire
+    format.
 
     Labels MUST be deterministic and sorted by the provider.
-    For path-based providers the label is ``file:<component-relative-path>``,
-    preserving backwards-compatibility with the pre-Phase-1 digest format.
+    For path-based providers the label is ``file:<component-relative-path>``.
     """
 
     entries: List[tuple] = field(default_factory=list)  # List[tuple[str, bytes]]
@@ -128,6 +158,9 @@ class BoundaryProvider(Protocol):
         ...  # pragma: no cover
 
 
+ProviderRegistry = Dict[str, BoundaryProvider]
+
+
 # ---------------------------------------------------------------------------
 # Core hashing function — the ONLY place SHA-256 is called for boundary digests
 # ---------------------------------------------------------------------------
@@ -135,29 +168,81 @@ class BoundaryProvider(Protocol):
 def compute_boundary(
     provider: BoundaryProvider,
     ctx: ProviderContext,
-) -> tuple:  # tuple[Optional[str], str, List[str]]
+    *,
+    include_metadata: bool = False,
+) -> tuple:
     """Ask the provider to resolve content, then hash it.
 
-    Returns ``(digest_or_None, status, errors)``.
+    By default, returns the historical three-item tuple
+    ``(digest_or_None, status, errors)``.  Callers that persist or explain
+    provider metadata can pass ``include_metadata=True`` to receive
+    ``(digest_or_None, status, errors, metadata)`` instead.
 
-    The label format ``"entry:<label>\\n"`` matches the per-entry prefix used in
-    the pre-Phase-1 ``boundary_paths_digest`` function (which used
-    ``"file:<rel>\\n"``), so labels like ``"file:openapi.yaml"`` produce
-    identical digests.
+    Hashing uses the shared, length-delimited boundary domain so entry content
+    cannot be confused with the framing for a later entry.
     """
     resolved = provider.resolve(ctx)
+    result: tuple
     if resolved.status == "error" or not resolved.entries:
-        return None, resolved.status or "error", resolved.errors
-    # Hash format mirrors pre-Phase-1 boundary_paths_digest:
-    #   sha256( ("file:child_rel\n" + content) * N )
-    # Labels produced by path-based providers are "file:<child_rel>",
-    # so we append "\n" and then the content — identical wire format.
-    parts: List[bytes] = []
-    for label, content in resolved.entries:
-        parts.append(label.encode("utf-8"))
-        parts.append(b"\n")
-        parts.append(content)
-    return hashlib.sha256(b"".join(parts)).hexdigest(), resolved.status, resolved.errors
+        result = (None, resolved.status or "error", resolved.errors)
+    else:
+        result = (
+            _hash_framed_entries(resolved.entries, domain=HASH_DOMAIN_BOUNDARY),
+            resolved.status,
+            resolved.errors,
+        )
+    if include_metadata:
+        return result + (resolved.metadata,)
+    return result
+
+
+def validate_provider_config(
+    provider: BoundaryProvider,
+    boundary_cfg: dict,
+    component_path: str,
+    repo_root: Path,
+) -> List[str]:
+    """Invoke a provider's optional validation hook with stable error handling.
+
+    Older third-party providers that predate the hook remain usable.  A broken
+    hook becomes an actionable validation error rather than crashing the CLI.
+    """
+    validator = getattr(provider, "validate_config", None)
+    if not callable(validator):
+        return []
+    provider_name = getattr(provider, "name", provider.__class__.__name__)
+    try:
+        errors = validator(boundary_cfg, component_path, repo_root)
+    except Exception as exc:
+        return [f"Provider '{provider_name}' config validation failed: {exc}"]
+    if errors is None:
+        return []
+    if not isinstance(errors, list):
+        return [
+            f"Provider '{provider_name}' validate_config() must return a list of errors"
+        ]
+    return [str(error) for error in errors]
+
+
+def explain_provider_diff(
+    provider: BoundaryProvider,
+    old_metadata: Optional[dict],
+    new_metadata: Optional[dict],
+    ctx: ProviderContext,
+) -> str:
+    """Return a provider-specific diff summary with a useful fallback."""
+    provider_name = getattr(provider, "name", provider.__class__.__name__)
+    fallback = f"{provider_name} boundary changed"
+    explainer = getattr(provider, "explain_diff", None)
+    if not callable(explainer):
+        return fallback
+    try:
+        explanation = explainer(old_metadata, new_metadata, ctx)
+    except Exception as exc:
+        return f"{fallback} (provider explanation unavailable: {exc})"
+    if isinstance(explanation, str) and explanation.strip():
+        return explanation.strip()
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +252,8 @@ def compute_boundary(
 class PathHashProvider:
     """Hash declared boundary paths as raw normalised bytes.
 
-    Replicates the pre-Phase-1 ``boundary_paths_digest`` behavior exactly so
-    existing lockfile digests are preserved.
+    Replicates the historical provider's content selection; core applies the
+    current unambiguous hashing wire format.
 
     Subclasses set ``name`` to the provider identifier string.
     """
@@ -185,6 +270,7 @@ class PathHashProvider:
             )
         seen: set = set()
         ordered: List[tuple] = []  # List[tuple[str, bytes]]
+        unmatched: List[str] = []
 
         # Lazily enumerate all component files once when any glob pattern is present.
         _all_component_files: Optional[List[str]] = None
@@ -197,12 +283,15 @@ class PathHashProvider:
 
         for rel in sorted(paths):
             rel = rel.strip()
+            matched = False
             if _is_glob(rel):
                 # Expand glob against all files in the component directory.
                 # fnmatch treats * as matching any characters incl. path separators,
                 # so 'api/*.yaml' matches files at any depth under api/.
                 for repo_rel in _component_files():
-                    child_rel = repo_rel[len(ctx.component_path) + 1:]
+                    child_rel = _component_relative_path(ctx.component_path, repo_rel)
+                    if _fnmatch_case_sensitive(child_rel, rel):
+                        matched = True
                     if _fnmatch_case_sensitive(child_rel, rel) and repo_rel not in seen:
                         seen.add(repo_rel)
                         content = ctx.read_file(repo_rel)
@@ -210,8 +299,9 @@ class PathHashProvider:
                             content = content.replace(b"\r\n", b"\n")
                         ordered.append((f"file:{child_rel}", content))
             else:
-                full_base = f"{ctx.component_path}/{rel}".lstrip("/")
+                full_base = _join_repo_path(ctx.component_path, rel)
                 for repo_rel in sorted(ctx.list_files(full_base)):
+                    matched = True
                     if repo_rel in seen:
                         continue
                     seen.add(repo_rel)
@@ -219,10 +309,21 @@ class PathHashProvider:
                     # CRLF normalisation — preserved from _read_path_content
                     if b"\r\n" in content and b"\x00" not in content:
                         content = content.replace(b"\r\n", b"\n")
-                    child_rel = repo_rel[len(ctx.component_path) + 1:]
-                    # Label uses "file:" prefix to match pre-Phase-1 format.
+                    child_rel = _component_relative_path(ctx.component_path, repo_rel)
+                    # Keep the stable, provider-independent path label.
                     ordered.append((f"file:{child_rel}", content))
 
+            if not matched:
+                unmatched.append(rel)
+
+        if unmatched:
+            return ResolvedBoundary(
+                status="error",
+                errors=[
+                    f"Declared boundary path matched no tracked files: {rel}"
+                    for rel in unmatched
+                ],
+            )
         if not ordered:
             return ResolvedBoundary(
                 status="error",
@@ -373,23 +474,80 @@ _OPENAPI_STRIP_KEYS = frozenset(
 # Top-level OpenAPI keys that are metadata only, not API contract.
 _OPENAPI_DROP_TOP = frozenset({"info", "servers", "tags"})
 
+# Maps whose direct keys are user-defined identifiers rather than OpenAPI
+# annotation fields.  Preserve those keys, then resume normal annotation
+# stripping inside each referenced object.
+_OPENAPI_COMPONENT_MAPS = frozenset({
+    "schemas", "responses", "parameters", "examples", "requestBodies",
+    "headers", "securitySchemes", "links", "callbacks", "pathItems",
+})
+_OPENAPI_NAMED_MAP_KEYS = frozenset({
+    "paths", "webhooks", "scopes", "patternProperties", "dependentSchemas",
+    "dependentRequired", "parameters", "headers", "encoding", "mapping",
+    "callbacks", "links", "variables",
+})
 
-def _strip_openapi(obj: Any) -> Any:
+
+def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
+    """Return whether ``key`` introduces a map of user-defined schema names.
+
+    Annotation-looking names are legal property/schema identifiers.  For
+    example, ``properties.description`` describes a property named
+    ``description``; it is not the Schema Object's documentation field.
+    """
+    if key in {"properties", "definitions", "$defs"} | _OPENAPI_NAMED_MAP_KEYS:
+        return True
+    return path == ("components",) and key in _OPENAPI_COMPONENT_MAPS
+
+
+def _strip_openapi(
+    obj: Any,
+    *,
+    path: tuple = (),
+    preserve_keys: bool = False,
+) -> Any:
     """Recursively remove non-contract fields from an OpenAPI object.
 
     Drops:
     - All ``x-*`` extension keys (vendor-specific, non-standard).
     - ``description``, ``summary``, ``externalDocs``, ``example``, ``examples``
       at any nesting level (documentation-only fields).
+
+    Keys inside Schema Object ``properties``/``definitions``/``$defs`` maps
+    and ``components.schemas`` are user-defined identifiers.  Those map keys
+    are retained even when their spelling looks like an annotation; annotation
+    fields within the schema value are still removed.
     """
     if isinstance(obj, dict):
-        return {
-            k: _strip_openapi(v)
-            for k, v in obj.items()
-            if k not in _OPENAPI_STRIP_KEYS and not (isinstance(k, str) and k.startswith("x-"))
-        }
+        stripped = {}
+        for key, value in obj.items():
+            is_annotation = key in _OPENAPI_STRIP_KEYS or (
+                isinstance(key, str) and key.startswith("x-")
+            )
+            if is_annotation and not preserve_keys:
+                continue
+
+            # A named-map entry's value is a schema object.  Its arbitrary key
+            # must not make that schema object itself behave like a named map.
+            child_preserves_keys = (
+                not preserve_keys and _is_openapi_named_schema_map(path, key)
+            )
+            stripped[key] = _strip_openapi(
+                value,
+                path=path + (key,),
+                preserve_keys=child_preserves_keys,
+            )
+        return stripped
     if isinstance(obj, list):
-        return [_strip_openapi(item) for item in obj]
+        return [
+            _strip_openapi(
+                item,
+                path=path,
+                # Security Requirement Object keys are arbitrary scheme names.
+                preserve_keys=(path and path[-1] == "security"),
+            )
+            for item in obj
+        ]
     return obj
 
 
@@ -436,6 +594,7 @@ class JsonCanonicalProvider:
                 errors=["No boundary paths declared for json-canonical provider"],
             )
         entries: List[tuple] = []
+        unmatched: List[str] = []
         for rel in sorted(paths):
             rel = rel.strip()
             if _is_glob(rel):
@@ -443,10 +602,13 @@ class JsonCanonicalProvider:
                     status="error",
                     errors=[f"Glob patterns not supported by json-canonical provider: {rel}"],
                 )
-            full_base = f"{ctx.component_path}/{rel}".lstrip("/")
-            for repo_rel in sorted(ctx.list_files(full_base)):
+            full_base = _join_repo_path(ctx.component_path, rel)
+            matched_files = sorted(ctx.list_files(full_base))
+            if not matched_files:
+                unmatched.append(rel)
+            for repo_rel in matched_files:
                 raw = ctx.read_file(repo_rel)
-                child_rel = repo_rel[len(ctx.component_path) + 1:]
+                child_rel = _component_relative_path(ctx.component_path, repo_rel)
                 try:
                     obj = _json_mod.loads(raw.decode("utf-8"))
                 except (_json_mod.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -458,6 +620,14 @@ class JsonCanonicalProvider:
                     obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
                 )
                 entries.append((f"canonical:{child_rel}", canonical.encode("utf-8")))
+        if unmatched:
+            return ResolvedBoundary(
+                status="error",
+                errors=[
+                    f"Declared boundary path matched no tracked files: {rel}"
+                    for rel in unmatched
+                ],
+            )
         if not entries:
             return ResolvedBoundary(
                 status="error",
@@ -513,7 +683,8 @@ class OpenApiCanonicalProvider:
     """
 
     name = "openapi-canonical"
-    version = "1"
+    # v2 preserves annotation-looking user-defined schema/property names.
+    version = "2"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -523,6 +694,7 @@ class OpenApiCanonicalProvider:
                 errors=["No boundary paths declared for openapi-canonical provider"],
             )
         entries: List[tuple] = []
+        unmatched: List[str] = []
         for rel in sorted(paths):
             rel = rel.strip()
             if _is_glob(rel):
@@ -530,10 +702,13 @@ class OpenApiCanonicalProvider:
                     status="error",
                     errors=[f"Glob patterns not supported by openapi-canonical provider: {rel}"],
                 )
-            full_base = f"{ctx.component_path}/{rel}".lstrip("/")
-            for repo_rel in sorted(ctx.list_files(full_base)):
+            full_base = _join_repo_path(ctx.component_path, rel)
+            matched_files = sorted(ctx.list_files(full_base))
+            if not matched_files:
+                unmatched.append(rel)
+            for repo_rel in matched_files:
                 raw = ctx.read_file(repo_rel)
-                child_rel = repo_rel[len(ctx.component_path) + 1:]
+                child_rel = _component_relative_path(ctx.component_path, repo_rel)
                 try:
                     obj = _parse_yaml_or_json(raw, child_rel)
                 except ValueError as exc:
@@ -546,6 +721,14 @@ class OpenApiCanonicalProvider:
                     contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False
                 )
                 entries.append((f"canonical:{child_rel}", canonical.encode("utf-8")))
+        if unmatched:
+            return ResolvedBoundary(
+                status="error",
+                errors=[
+                    f"Declared boundary path matched no tracked files: {rel}"
+                    for rel in unmatched
+                ],
+            )
         if not entries:
             return ResolvedBoundary(
                 status="error",
@@ -582,10 +765,32 @@ class OpenApiCanonicalProvider:
 # Provider registry
 # ---------------------------------------------------------------------------
 
-_REGISTRY: Dict[str, BoundaryProvider] = {}
+_BUILTIN_PROVIDER_TYPES = (
+    OpenApiProvider,
+    JsonFileProvider,
+    PythonExportsProvider,
+    TypeScriptExportsProvider,
+    ImplicitProvider,
+    LeafProvider,
+    JsonCanonicalProvider,
+    OpenApiCanonicalProvider,
+)
+
+# Raw-hash aliases make the behavior explicit while preserving short names.
+_ALIASES = {
+    "openapi-raw": "openapi",
+    "json-file-raw": "json-file",
+    "python-exports-raw": "python-exports",
+    "typescript-exports-raw": "typescript-exports",
+}
+
+_REGISTRY: ProviderRegistry = {}
 
 
-def register_provider(p: BoundaryProvider, registry: Optional[Dict[str, "BoundaryProvider"]] = None) -> None:
+def register_provider(
+    p: BoundaryProvider,
+    registry: Optional[ProviderRegistry] = None,
+) -> None:
     """Register a provider instance. Overwrites any existing entry with the same name.
 
     If *registry* is provided, registers into that dict instead of the global registry.
@@ -594,7 +799,10 @@ def register_provider(p: BoundaryProvider, registry: Optional[Dict[str, "Boundar
     target[p.name] = p
 
 
-def get_provider(name: str, registry: Optional[Dict[str, "BoundaryProvider"]] = None) -> Optional[BoundaryProvider]:
+def get_provider(
+    name: str,
+    registry: Optional[ProviderRegistry] = None,
+) -> Optional[BoundaryProvider]:
     """Return the registered provider for *name*, or None.
 
     If *registry* is provided, looks up from that dict instead of the global registry.
@@ -603,21 +811,13 @@ def get_provider(name: str, registry: Optional[Dict[str, "BoundaryProvider"]] = 
     return target.get(name)
 
 
-def create_registry() -> Dict[str, BoundaryProvider]:
+def create_registry() -> ProviderRegistry:
     """Create a fresh registry populated with builtins. Useful for isolated testing or
     running multiple configs with different custom providers in the same process."""
-    reg: Dict[str, BoundaryProvider] = {}
-    for cls in (
-        OpenApiProvider,
-        JsonFileProvider,
-        PythonExportsProvider,
-        TypeScriptExportsProvider,
-        ImplicitProvider,
-        LeafProvider,
-        JsonCanonicalProvider,
-        OpenApiCanonicalProvider,
-    ):
-        reg[cls().name] = cls()
+    reg: ProviderRegistry = {}
+    for cls in _BUILTIN_PROVIDER_TYPES:
+        provider = cls()
+        reg[provider.name] = provider
     for alias, target in _ALIASES.items():
         if target in reg:
             reg[alias] = reg[target]
@@ -625,32 +825,10 @@ def create_registry() -> Dict[str, BoundaryProvider]:
 
 
 def _register_builtins() -> None:
-    for cls in (
-        OpenApiProvider,
-        JsonFileProvider,
-        PythonExportsProvider,
-        TypeScriptExportsProvider,
-        ImplicitProvider,
-        LeafProvider,
-        JsonCanonicalProvider,
-        OpenApiCanonicalProvider,
-    ):
-        register_provider(cls())
+    _REGISTRY.update(create_registry())
 
 
 _register_builtins()
-
-# Aliases: raw-hash providers get explicit "-raw" names for clarity.
-# Users can write "openapi-raw" or "openapi" interchangeably.
-_ALIASES = {
-    "openapi-raw": "openapi",
-    "json-file-raw": "json-file",
-    "python-exports-raw": "python-exports",
-    "typescript-exports-raw": "typescript-exports",
-}
-for _alias, _target in _ALIASES.items():
-    if _target in _REGISTRY:
-        _REGISTRY[_alias] = _REGISTRY[_target]
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +838,7 @@ for _alias, _target in _ALIASES.items():
 def load_custom_providers(
     providers_list: list,
     allow_custom: bool,
-    registry: Optional[Dict[str, "BoundaryProvider"]] = None,
+    registry: Optional[ProviderRegistry] = None,
 ) -> List[str]:
     """Load and register custom providers declared in the config ``providers`` key.
 
@@ -677,7 +855,7 @@ def load_custom_providers(
     if not allow_custom:
         return [
             "Config declares custom providers but loading is not enabled. "
-            "Set \"allow_custom_providers\": true in your config or pass --allow-custom-providers."
+            "Pass --allow-custom-providers (or the equivalent trusted API argument)."
         ]
     errors: List[str] = []
     # Validate module names before importing anything to prevent injection via
@@ -685,9 +863,19 @@ def load_custom_providers(
     _VALID_MODULE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
     _VALID_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
     for entry in providers_list:
+        if not isinstance(entry, dict):
+            errors.append(
+                f"Provider entry must be an object, got {type(entry).__name__}"
+            )
+            continue
         module_name = entry.get("module", "")
         class_name = entry.get("class", "")
-        if not module_name or not class_name:
+        if (
+            not isinstance(module_name, str)
+            or not module_name
+            or not isinstance(class_name, str)
+            or not class_name
+        ):
             errors.append(
                 f"Provider entry missing required fields 'module'/'class': {entry!r}"
             )

@@ -52,16 +52,16 @@ class GitBatchCatEdgeCases(unittest.TestCase):
                 _git_batch_cat(root, ["HEAD:some\rfile"])
             self.assertIn("newline", str(cm.exception))
 
-    def test_missing_object_returns_empty_bytes(self):
-        """Non-existent paths return empty bytes."""
+    def test_missing_object_raises(self):
+        """Non-existent paths fail closed."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
             (root / "x.txt").write_text("hello\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
-            result = _git_batch_cat(root, ["HEAD:nonexistent.txt"])
-            self.assertEqual(result["HEAD:nonexistent.txt"], b"")
+            with self.assertRaisesRegex(ValueError, "not found"):
+                _git_batch_cat(root, ["HEAD:nonexistent.txt"])
 
     def test_empty_refs_returns_empty_dict(self):
         """Empty refs list returns empty dict immediately."""
@@ -257,8 +257,8 @@ class GitLatestTagTests(unittest.TestCase):
 class ChangedComponentsSinceRefTests(unittest.TestCase):
     """Tests for changed_components_since_ref."""
 
-    def test_invalid_ref_returns_empty(self):
-        """Non-existent ref returns empty list."""
+    def test_invalid_ref_raises(self):
+        """A non-existent ref fails closed instead of selecting no components."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -266,8 +266,8 @@ class ChangedComponentsSinceRefTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             config = {"components": {"svc": {"path": "svc"}}}
-            result = changed_components_since_ref(config, root, "nonexistent_ref_xyz")
-            self.assertEqual(result, [])
+            with self.assertRaisesRegex(ValueError, "Unable to diff"):
+                changed_components_since_ref(config, root, "nonexistent_ref_xyz")
 
     def test_detects_changed_component(self):
         """Correctly identifies component with changed files."""
@@ -853,18 +853,27 @@ class LockfileVerifyEdgeCases(unittest.TestCase):
             _init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
+            (root / "keep").mkdir()
+            (root / "keep" / "main.py").write_text("y=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             cfg = {
                 "project": "p",
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "implicit"}},
+                    "keep": {"path": "keep", "boundary": {"provider": "implicit"}},
                 },
                 "slices": {},
             }
             lockfile = _lockfile.generate_lockfile(cfg, root, source="head")
             # Now verify with config that removed 'svc'
-            cfg_without = {"project": "p", "components": {}, "slices": {}}
+            cfg_without = {
+                "project": "p",
+                "components": {
+                    "keep": {"path": "keep", "boundary": {"provider": "implicit"}},
+                },
+                "slices": {},
+            }
             issues = _lockfile.verify_lockfile(cfg_without, lockfile, root, source="head")
             self.assertTrue(any("REMOVED" in i for i in issues))
 

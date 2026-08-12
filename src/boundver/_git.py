@@ -5,6 +5,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ._utils import GuardrailError
+
+
+MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024
+
 
 def git_root() -> Path:
     """Find the repository root."""
@@ -23,17 +28,29 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     )
 
 
+def _git_run_bytes(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+    """Run Git with byte output for NUL-delimited, filename-safe commands."""
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True, text=False, check=True,
+    )
+
+
+def _decode_nul_paths(data: bytes) -> List[str]:
+    """Decode Git's NUL-delimited path output without C-quote mangling."""
+    return [os.fsdecode(raw) for raw in data.split(b"\0") if raw]
+
+
 def _git_cat_blob(repo_root: Path, ref: str) -> bytes:
     """Read a single git blob at the given ref as raw bytes (no text-mode CRLF conversion)."""
     result = subprocess.run(
         ["git", "-C", str(repo_root), "show", ref],
         capture_output=True, text=False, check=True,
     )
-    # Guardrail: reject blobs larger than the per-file limit (50 MiB).
-    _MAX_BLOB = 50 * 1024 * 1024
-    if len(result.stdout) > _MAX_BLOB:
-        raise ValueError(
-            f"Git blob too large ({len(result.stdout)} bytes) for ref {ref!r}"
+    if len(result.stdout) > MAX_GIT_BLOB_BYTES:
+        raise GuardrailError(
+            f"Hash guardrail exceeded: Git blob too large "
+            f"({len(result.stdout)} bytes) for ref {ref!r}"
         )
     return result.stdout
 
@@ -42,74 +59,106 @@ def _git_batch_cat(repo_root: Path, refs: List[str]) -> Dict[str, bytes]:
     """Batch-read multiple git objects via ``git cat-file --batch``.
 
     All objects are fetched in a single subprocess, replacing O(N) ``git show``
-    calls with O(1).  Returns ``{ref: raw_bytes}``.  Missing objects map to
-    ``b""``.  Raises ``subprocess.CalledProcessError`` on git failure.
+    calls with O(1).  Returns ``{ref: raw_bytes}``.  Missing, malformed,
+    truncated, non-blob, and oversized responses raise instead of being
+    confused with a valid empty blob.
     """
     if not refs:
         return {}
-    # Reject refs containing newlines — they would desynchronize the batch
-    # protocol (git uses newline as the request delimiter).
-    sanitized = []
+    # The widely supported batch protocol uses newline-delimited requests.
+    # Read the rare refs containing CR/LF individually so valid Git filenames
+    # never desynchronize the protocol.
+    batch_refs: List[str] = []
+    blobs: Dict[str, bytes] = {}
     for r in refs:
         if "\n" in r or "\r" in r:
-            raise ValueError(
-                f"git cat-file ref contains newline (possible filename with embedded newline): {r!r}"
-            )
-        sanitized.append(r)
-    inp = "\n".join(sanitized) + "\n"
+            try:
+                blobs[r] = _git_cat_blob(repo_root, r)
+            except subprocess.CalledProcessError as exc:
+                raise ValueError(
+                    f"Git blob not found for ref containing a newline: {r!r}"
+                ) from exc
+        else:
+            batch_refs.append(r)
+    if not batch_refs:
+        return blobs
+    inp = b"\n".join(os.fsencode(ref) for ref in batch_refs) + b"\n"
     proc = subprocess.run(
         ["git", "-C", str(repo_root), "cat-file", "--batch"],
-        input=inp.encode("utf-8"),
+        input=inp,
         capture_output=True,
     )
     if proc.returncode != 0:
         raise subprocess.CalledProcessError(
             proc.returncode, ["git", "cat-file", "--batch"], proc.stderr
         )
-    blobs: Dict[str, bytes] = {}
     data = proc.stdout
     pos = 0
-    for i, ref in enumerate(refs):
+    for ref in batch_refs:
         try:
             nl = data.index(b"\n", pos)
-        except ValueError:
-            # Truncated output — remaining refs get empty bytes.
-            for remaining in refs[i:]:
-                blobs.setdefault(remaining, b"")
-            break
+        except ValueError as exc:
+            raise ValueError(
+                f"Truncated git cat-file response before header for {ref!r}"
+            ) from exc
         header = data[pos:nl].decode("ascii", errors="replace")
         pos = nl + 1
         # Header format: "<ref> SP <type> SP <size>" or "<ref> SP missing".
         # Refs may contain spaces (e.g. paths with spaces), so split from the
         # right where we know the fixed-format suffix lives.
         if header.endswith(" missing"):
-            blobs[ref] = b""
-            continue
+            raise ValueError(f"Git blob not found for ref {ref!r}")
         # Expect "<ref> <type> <size>" — size is always the last token.
         last_space = header.rfind(" ")
         if last_space < 0:
-            blobs[ref] = b""
-            continue
+            raise ValueError(
+                f"Malformed git cat-file header for {ref!r}: {header!r}"
+            )
+        type_space = header.rfind(" ", 0, last_space)
+        if type_space < 0:
+            raise ValueError(
+                f"Malformed git cat-file header for {ref!r}: {header!r}"
+            )
+        object_type = header[type_space + 1:last_space]
+        if object_type != "blob":
+            raise ValueError(
+                f"Expected a Git blob for {ref!r}, got {object_type!r}"
+            )
         try:
             size = int(header[last_space + 1:])
-        except ValueError:
-            # Cannot determine content size; stream is now desynchronized.
-            for remaining in refs[i:]:
-                blobs.setdefault(remaining, b"")
-            break
-        # Guardrail: skip objects exceeding per-file limit.
-        _MAX_BLOB = 50 * 1024 * 1024
-        if size > _MAX_BLOB:
-            blobs[ref] = b""
-            pos += size + 1
-            continue
-        blobs[ref] = data[pos : pos + size]
-        pos += size + 1  # skip trailing LF after content
+        except ValueError as exc:
+            raise ValueError(
+                f"Malformed git cat-file size for {ref!r}: {header!r}"
+            ) from exc
+        if size < 0:
+            raise ValueError(f"Negative git blob size for {ref!r}: {size}")
+        if size > MAX_GIT_BLOB_BYTES:
+            raise GuardrailError(
+                f"Hash guardrail exceeded: Git blob too large "
+                f"({size} bytes) for ref {ref!r}"
+            )
+        end = pos + size
+        if end >= len(data):
+            raise ValueError(
+                f"Truncated git cat-file content for {ref!r}: "
+                f"expected {size} bytes"
+            )
+        blobs[ref] = data[pos:end]
+        if data[end:end + 1] != b"\n":
+            raise ValueError(
+                f"Malformed git cat-file terminator for {ref!r}"
+            )
+        pos = end + 1
+    if pos != len(data):
+        raise ValueError("Unexpected trailing data from git cat-file --batch")
     return blobs
 
 
 def _to_posix(rel_path: str) -> str:
-    return rel_path.replace("\\", "/")
+    # ``Path.as_posix`` converts native Windows separators while preserving a
+    # literal backslash in a POSIX filename. A blind string replacement would
+    # collapse two distinct Git paths on POSIX.
+    return Path(rel_path).as_posix()
 
 
 def _is_ignored(path: Path) -> bool:
@@ -247,11 +296,14 @@ def _matches_gitignore(rel_path: str, patterns: "_GitignoreRules") -> bool:
 def list_head_files(repo_root: Path, path: str) -> List[str]:
     """List files at a repo-relative path as represented in HEAD."""
     try:
-        result = _git_run(repo_root, ["ls-tree", "-r", "--name-only", "HEAD", path])
+        result = _git_run_bytes(
+            repo_root,
+            ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", path],
+        )
     except subprocess.CalledProcessError:
         return []
 
-    files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+    files = _decode_nul_paths(result.stdout)
     if files:
         return files
 
@@ -265,32 +317,53 @@ def list_head_files(repo_root: Path, path: str) -> List[str]:
 def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> List[str]:
     if source == "head":
         return list_head_files(repo_root, repo_rel_path)
-    args = ["ls-files"]
-    if source == "index":
-        args.append("--cached")
-    else:
-        # working-tree: include tracked AND untracked (but not ignored) files,
-        # but exclude deleted tracked files (--deleted lists them for removal).
-        args.extend(["--cached", "--others", "--exclude-standard"])
+    # Index and working-tree use the same tracked file set.  The selected
+    # source only controls whether content comes from the index or from disk.
+    args = ["--literal-pathspecs", "ls-files", "--cached", "-z"]
     args.extend(["--", repo_rel_path])
     try:
-        result = _git_run(repo_root, args)
+        result = _git_run_bytes(repo_root, args)
     except subprocess.CalledProcessError:
-        result_files: List[str] = []
+        if source == "index":
+            raise
+        # Do not turn a Git failure inside a real repository into an
+        # approximate filesystem fingerprint. Fallback is reserved for
+        # non-Git/unborn first-run environments.
+        try:
+            _git_run(repo_root, ["rev-parse", "--git-dir"])
+        except subprocess.CalledProcessError:
+            git_failed = True
+            result_files: List[str] = []
+        else:
+            raise
     else:
-        result_files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+        git_failed = False
+        result_files = _decode_nul_paths(result.stdout)
 
     # For working-tree source, exclude files that are tracked but deleted on disk.
     if result_files and source == "working-tree":
-        result_files = [f for f in result_files if (repo_root / f).exists()]
+        result_files = [
+            f
+            for f in result_files
+            if (repo_root / f).exists() or (repo_root / f).is_symlink()
+        ]
 
-    if result_files:
+    # An empty successful result is authoritative (for example, a legitimate
+    # empty index). The one usability exception is an unborn repository in
+    # working-tree mode: before the first commit there is no tracked-file view,
+    # so use the bounded filesystem fallback to support initial setup.
+    if not result_files and source == "working-tree":
+        try:
+            _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
+        except subprocess.CalledProcessError:
+            git_failed = True
+    if not git_failed:
         return result_files
 
     # Fallback for non-git test/runtime environments: local filesystem enumeration.
     import sys as _sys
     print(
-        "WARNING: git file listing returned no results; falling back to filesystem enumeration. "
+        "WARNING: git file listing failed; falling back to filesystem enumeration. "
         "Fingerprints may differ from git-based computation.",
         file=_sys.stderr,
     )
@@ -306,6 +379,9 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
         if not f.is_file():
             continue
         rel = _to_posix(str(f.relative_to(repo_root)))
+        rel_parts = Path(rel).parts
+        if any(_is_ignored(Path(part)) for part in rel_parts):
+            continue
         if gitignore_patterns is not None:
             if _matches_gitignore(rel, gitignore_patterns):
                 continue
@@ -341,29 +417,55 @@ def git_latest_tag(repo_root: Path, prefix: str) -> Optional[str]:
 def changed_components_since_ref(config: dict, repo_root: Path, base_ref: str) -> List[str]:
     """Return component names with tracked changes since `base_ref`."""
     if not base_ref or not base_ref.strip():
-        return []
+        raise ValueError("--changed-from requires a non-empty Git ref")
     ref = base_ref.strip()
     if ref.startswith("-"):
-        return []
+        raise ValueError(f"Invalid Git ref: {ref!r}")
     try:
-        result = _git_run(repo_root, ["diff", "--name-only", ref, "--"])
-    except subprocess.CalledProcessError:
-        import sys as _sys
-        print(
-            f"WARNING: git diff failed for ref {ref!r}; assuming no changes.",
-            file=_sys.stderr,
-        )
-        return []
-    changed_files = [_to_posix(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+        _git_run(repo_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
+        result = _git_run_bytes(repo_root, ["diff", "--name-only", "-z", ref, "--"])
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(f"Unable to diff from Git ref {ref!r}") from exc
+    changed_files = _decode_nul_paths(result.stdout)
     changed: List[str] = []
-    for cname, comp in config.get("components", {}).items():
-        cpath = _to_posix(str(comp.get("path", "")).rstrip("/"))
-        if not cpath:
+    config_names = {
+        "boundary.config.json", "boundary.config.yaml", "boundary.config.yml",
+        "boundary.config.toml",
+    }
+    if any(Path(f).name in config_names for f in changed_files):
+        return sorted(config.get("components", {}))
+    tag_versioned = {
+        name
+        for name, component in config.get("components", {}).items()
+        if isinstance(component, dict)
+        and isinstance(component.get("version_source"), dict)
+        and "git_tag_prefix" in component["version_source"]
+    }
+    components = config.get("components", {})
+    matched_files: set = set()
+    for cname, comp in components.items():
+        raw_path = str(comp.get("path", "")).strip()
+        cpath = _to_posix(os.path.normpath(raw_path)) if raw_path else ""
+        if cpath in {"", "."}:
+            if changed_files:
+                changed.append(cname)
+                matched_files.update(changed_files)
             continue
         prefix = f"{cpath}/"
-        if any(f == cpath or f.startswith(prefix) for f in changed_files):
+        component_matches = {
+            f for f in changed_files if f == cpath or f.startswith(prefix)
+        }
+        if component_matches:
             changed.append(cname)
-    return sorted(changed)
+            matched_files.update(component_matches)
+
+    # A changed path outside every currently configured component may be a
+    # deleted/moved component or another config input.  Selecting everything is
+    # conservative, but avoids a false-clean result when the old path is no
+    # longer available to map precisely.
+    if changed_files and matched_files != set(changed_files):
+        return sorted(components)
+    return sorted(set(changed) | tag_versioned)
 
 
 def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[str]:
@@ -373,27 +475,29 @@ def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[s
     modified locally.
     """
     try:
-        result = _git_run(repo_root, ["status", "--porcelain", "-u", "--"])
+        result = _git_run_bytes(
+            repo_root,
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--"],
+        )
     except subprocess.CalledProcessError:
         return []
-    dirty_files = []
-    for line in result.stdout.splitlines():
-        if len(line) > 3:
-            # porcelain format: XY <path> or XY <old> -> <new>
-            fpath = line[3:].split(" -> ")[-1].strip()
-            if fpath.startswith('"') and fpath.endswith('"'):
-                # Git C-quotes: octal escapes represent raw bytes (usually UTF-8).
-                try:
-                    fpath = (
-                        fpath[1:-1]
-                        .encode("utf-8")
-                        .decode("unicode_escape")
-                        .encode("latin-1")
-                        .decode("utf-8")
-                    )
-                except (UnicodeDecodeError, UnicodeEncodeError):
-                    fpath = fpath[1:-1]
-            dirty_files.append(_to_posix(fpath))
+    records = [raw for raw in result.stdout.split(b"\0") if raw]
+    dirty_files: List[str] = []
+    index = 0
+    while index < len(records):
+        record = records[index]
+        if len(record) < 3:
+            raise ValueError("Malformed NUL-delimited git status output")
+        status = record[:2]
+        if record[2:3] != b" ":
+            raise ValueError("Malformed NUL-delimited git status output")
+        dirty_files.append(os.fsdecode(record[3:]))
+        if b"R" in status or b"C" in status:
+            index += 1
+            if index >= len(records):
+                raise ValueError("Truncated rename in git status output")
+            dirty_files.append(os.fsdecode(records[index]))
+        index += 1
     dirty: List[str] = []
     for cpath in component_paths:
         cpath_norm = cpath.rstrip("/")

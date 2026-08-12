@@ -1,12 +1,13 @@
 """Output / pretty-printing helpers for boundver."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._git import _git_run, _to_posix
+from ._git import _git_run, _git_run_bytes, _to_posix
 from ._utils import _is_glob, _short, boundary_provider_name
 
 
@@ -34,6 +35,25 @@ def _bold(s: str) -> str:
     return f"\033[1m{s}\033[0m" if _is_tty() else s
 
 
+def _parse_name_status_z(data: bytes) -> List[Tuple[str, str]]:
+    """Parse ``git diff --name-status -z`` without filename ambiguity."""
+    fields = [field for field in data.split(b"\0") if field]
+    changed: List[Tuple[str, str]] = []
+    index = 0
+    while index < len(fields):
+        status = os.fsdecode(fields[index])
+        index += 1
+        if index >= len(fields):
+            break
+        path = os.fsdecode(fields[index])
+        index += 1
+        if status.startswith(("R", "C")) and index < len(fields):
+            path = os.fsdecode(fields[index])
+            index += 1
+        changed.append((status, path))
+    return changed
+
+
 def print_diff(diff: dict) -> None:
     comps = diff["components"]
 
@@ -57,6 +77,8 @@ def print_diff(diff: dict) -> None:
             print(f"      {c['summary']}")
             for facet, vals in c["changed_facets"].items():
                 print(f"      {facet}: {_short(vals['old'])} -> {_short(vals['new'])}")
+            for field, vals in c.get("changed_metadata", {}).items():
+                print(f"      {field}: {vals['old']!r} -> {vals['new']!r}")
 
     if comps["unchanged"]:
         print(f"\n  UNCHANGED: {len(comps['unchanged'])} components")
@@ -92,6 +114,21 @@ def print_status(lockfile: dict) -> None:
     unversioned = len(comps) - versioned
     print(f"\n  Versioned: {versioned}  |  Unversioned: {unversioned}")
 
+    print("\n  Component details:")
+    for name, component in sorted(comps.items()):
+        fps = component.get("fingerprints", {})
+        version = component.get("version") or "unversioned"
+        provider = component.get("boundary_provider", "unknown")
+        state = component.get("boundary_status", "unknown")
+        print(
+            f"    {name}: {component.get('path', '?')} @ {version}  "
+            f"{provider}/{state}  exact={_short(fps.get('exact'))}  "
+            f"boundary={_short(fps.get('boundary'))}"
+        )
+        consumers = component.get("consumers", [])
+        if consumers:
+            print(f"      consumers: {', '.join(consumers)}")
+
     # Boundary coverage
     boundary_kinds: Dict[str, int] = {}
     boundary_states: Dict[str, int] = {}
@@ -115,8 +152,7 @@ def print_status(lockfile: dict) -> None:
     if implicit_partial:
         print(f"\n  Note: {len(implicit_partial)} component(s) use the 'implicit' provider (boundary fingerprint = null).")
         print("    This is expected — implicit tracks exact changes only.")
-        print("    To track API boundaries, switch to a specific provider:")
-        print("      boundver add <name> <path> --provider openapi")
+        print("    To track a declared boundary, edit the component's boundary provider and paths in the config.")
 
     # Warnings
     warnings = []
@@ -125,6 +161,12 @@ def print_status(lockfile: dict) -> None:
             warnings.append(f"    {name}: {w}")
         for e in c.get("boundary_errors", []):
             warnings.append(f"    {name}: boundary {c.get('boundary_status', 'unknown')} - {e}")
+        for e in c.get("version_errors", []):
+            warnings.append(f"    {name}: version error - {e}")
+        for e in c.get("behavior_errors", []):
+            warnings.append(f"    {name}: behavior error - {e}")
+        for e in c.get("exact_errors", []):
+            warnings.append(f"    {name}: exact error - {e}")
     if warnings:
         print(_yellow(f"\n  WARNINGS ({len(warnings)}):"))
         for w in warnings:
@@ -170,7 +212,7 @@ def analyze_explain_changes(
             pass
 
     # Choose diff target based on source
-    diff_args = ["diff", "--name-status"]
+    diff_args = ["diff", "--name-status", "-z"]
     if source == "working-tree":
         diff_args.append(effective_base)
     elif source == "index":
@@ -180,17 +222,11 @@ def analyze_explain_changes(
     diff_args.extend(["--", component_path])
 
     try:
-        diff = _git_run(repo_root, diff_args)
+        diff = _git_run_bytes(repo_root, ["--literal-pathspecs", *diff_args])
     except subprocess.CalledProcessError as exc:
         return {"error": f"failed to diff '{component_name}' against {effective_base}: {exc}"}
 
-    changed: List[Tuple[str, str]] = []
-    for line in diff.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 2:
-            continue
-        filepath = parts[-1]
-        changed.append((parts[0].strip(), _to_posix(filepath.strip())))
+    changed = _parse_name_status_z(diff.stdout)
 
     component_prefix = f"{_to_posix(component_path)}/"
     normalized_boundary_paths: List[str] = []
@@ -326,12 +362,13 @@ def why_component(
     if result["version"]:
         print(f"Version:    {result['version']}")
 
-    if not result["changes"]:
-        print(_green("\nStatus: UP TO DATE — no fingerprint drift detected."))
+    if not (result["changes"] or result["metadata_changes"] or result["digest_errors"]):
+        print(_green("\nStatus: UP TO DATE — no fingerprint or metadata drift detected."))
         return 0
 
     changes = result["changes"]
-    print(_red(f"\nStatus: DRIFTED — {len(changes)} facet(s) changed"))
+    drift_count = len(changes) + len(result["metadata_changes"]) + len(result["digest_errors"])
+    print(_red(f"\nStatus: DRIFTED — {drift_count} issue(s) detected"))
 
     print("\nFingerprint changes:")
     for facet in ("exact", "behavior", "boundary", "compat"):
@@ -343,6 +380,16 @@ def why_component(
             print(f"  {facet:<10}  {_short(lv)}  →  {_short(cv)}  (unchanged)")
 
     print(f"\n{_yellow('Change type:')}  {result['summary']}")
+
+    if result["metadata_changes"]:
+        print("\nMetadata changes:")
+        for field, values in result["metadata_changes"].items():
+            print(f"  {field}: {values['locked']!r} → {values['current']!r}")
+
+    if result["digest_errors"]:
+        print(_red("\nFingerprint errors:"))
+        for message in result["digest_errors"]:
+            print(f"  {message}")
 
     if result["changed_files"]:
         print(f"\nModified files under {comp_path}:")
@@ -363,6 +410,12 @@ def why_component(
     boundary_paths = comp_cfg.get("boundary", {}).get("paths", [])
     if boundary_paths and "boundary" in changes:
         print(f"\nBoundary paths:  {', '.join(boundary_paths)}")
+    if result.get("provider_explanation"):
+        print(f"Provider detail: {result['provider_explanation']}")
+
+    consumers = comp_cfg.get("consumers", [])
+    if consumers and ({"boundary", "compat"} & set(changes)):
+        print(f"\nAffected consumers: {', '.join(sorted(set(consumers)))}")
 
     print(f"\n{_bold('Recommendation:')} run `boundver generate --components {component_name}` to update the lockfile.")
     return 1
@@ -388,7 +441,19 @@ def analyze_component_drift(
         current_fps: dict
     """
     from ._diff import _summarize_change
-    from ._lockfile import generate_lockfile
+    from ._lockfile import (
+        COMPONENT_METADATA_FIELDS,
+        _SourceAccessor,
+        _generation_errors,
+        generate_lockfile,
+    )
+    from .providers import (
+        ProviderContext,
+        create_registry,
+        explain_provider_diff,
+        get_provider,
+        load_custom_providers,
+    )
 
     comp_cfg = config.get("components", {}).get(component_name)
     if not comp_cfg:
@@ -428,7 +493,59 @@ def analyze_component_drift(
         if lv != cv:
             changes[facet] = {"locked": lv, "current": cv}
 
-    summary = _summarize_change(changes) if changes else ""
+    metadata_changes: Dict[str, dict] = {}
+    for field in COMPONENT_METADATA_FIELDS:
+        locked_value = locked_comp.get(field)
+        current_value = current_comp.get(field)
+        if locked_value != current_value:
+            metadata_changes[field] = {
+                "locked": locked_value,
+                "current": current_value,
+            }
+    digest_errors = [
+        *(f"current {message}" for message in _generation_errors(
+            {"components": {component_name: current_comp}}
+        )),
+        *(f"locked {message}" for message in _generation_errors(
+            {"components": {component_name: locked_comp}}
+        )),
+    ]
+
+    if changes:
+        summary = _summarize_change(changes)
+    elif digest_errors:
+        summary = "fingerprint computation failed"
+    elif metadata_changes:
+        summary = "component metadata changed"
+    else:
+        summary = ""
+
+    provider_explanation = ""
+    if "boundary" in changes or "boundary_metadata" in metadata_changes:
+        registry = create_registry()
+        load_errors = load_custom_providers(
+            config.get("providers", []),
+            allow_custom=allow_custom_providers,
+            registry=registry,
+        )
+        provider_name = boundary_provider_name(comp_cfg.get("boundary", {}))
+        provider = get_provider(provider_name, registry=registry)
+        if provider is not None and not load_errors:
+            accessor = _SourceAccessor(repo_root, source)
+            ctx = ProviderContext(
+                repo_root=repo_root,
+                component_path=comp_cfg.get("path", "").rstrip("/"),
+                boundary_cfg=comp_cfg.get("boundary", {}),
+                source=source,
+                read_file=accessor.read_file,
+                list_files=accessor.list_files,
+            )
+            provider_explanation = explain_provider_diff(
+                provider,
+                locked_comp.get("boundary_metadata"),
+                current_comp.get("boundary_metadata"),
+                ctx,
+            )
 
     # Get changed files via git diff
     comp_path = comp_cfg.get("path", "?").rstrip("/")
@@ -436,21 +553,16 @@ def analyze_component_drift(
     if changes:
         if source == "working-tree":
             try:
-                diff = _git_run(repo_root, ["diff", "HEAD", "--name-status", "--", comp_path])
-                staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
-                for line in (diff.stdout + staged.stdout).splitlines():
-                    parts = line.split("\t")
-                    if len(parts) >= 2:
-                        changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
+                diff = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "HEAD", "--name-status", "-z", "--", comp_path])
+                staged = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "--cached", "--name-status", "-z", "--", comp_path])
+                changed_files.extend(_parse_name_status_z(diff.stdout))
+                changed_files.extend(_parse_name_status_z(staged.stdout))
             except subprocess.CalledProcessError:
                 pass
         elif source == "index":
             try:
-                staged = _git_run(repo_root, ["diff", "--cached", "--name-status", "--", comp_path])
-                for line in staged.stdout.splitlines():
-                    parts = line.split("\t")
-                    if len(parts) >= 2:
-                        changed_files.append((parts[0].strip(), _to_posix(parts[-1].strip())))
+                staged = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "--cached", "--name-status", "-z", "--", comp_path])
+                changed_files.extend(_parse_name_status_z(staged.stdout))
             except subprocess.CalledProcessError:
                 pass
 
@@ -458,9 +570,12 @@ def analyze_component_drift(
 
     return {
         "changes": changes,
+        "metadata_changes": metadata_changes,
+        "digest_errors": digest_errors,
         "summary": summary,
         "changed_files": changed_files,
         "version": version,
         "locked_fps": locked_fps,
         "current_fps": current_fps,
+        "provider_explanation": provider_explanation,
     }

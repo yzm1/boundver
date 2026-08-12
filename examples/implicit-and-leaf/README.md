@@ -1,17 +1,25 @@
-# Implicit and leaf example
+# Implicit and leaf boundaries
 
-## Files
-- `boundary.config.json`
-- `worker/main.py` (`implicit` boundary)
-- `leafsvc/main.py` (`leaf` boundary)
-- `expected.boundary.lock.json`
+This example contrasts two intentionally lightweight providers:
 
-## Re-generate expected lockfile
+- `worker` uses `implicit`, which records exact content while its boundary remains undeclared and reports partial boundary coverage.
+- `leafsvc` uses `leaf`, meaning the component has no downstream contract to fingerprint.
+
+Both are useful during gradual adoption, but neither provides an API compatibility guarantee.
+
+## Generate and verify
+
+Install `boundver`, then run from the **boundver repository root**:
 
 ```bash
-PYTHONPATH=src python -m boundver.core generate \
+boundver generate \
   --config examples/implicit-and-leaf/boundary.config.json \
   --out examples/implicit-and-leaf/expected.boundary.lock.json \
-  --source working-tree \
-
+  --source working-tree
+boundver verify \
+  --config examples/implicit-and-leaf/boundary.config.json \
+  --lock examples/implicit-and-leaf/expected.boundary.lock.json \
+  --source working-tree
 ```
+
+Use `boundver status --lock examples/implicit-and-leaf/expected.boundary.lock.json` to see the provider coverage states.

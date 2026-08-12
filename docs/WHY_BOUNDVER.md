@@ -21,7 +21,7 @@ boundver provides **machine-verifiable change classification** at these boundari
 ### You probably **do** need boundver if…
 - Your components have consumers but lack static verification of their interface.
 - You want to distinguish "internals changed" from "behavior changed" from "boundary changed" from "compatibility broke" — automatically, not via commit messages.
-- You need a portable, source-controlled lockfile (`boundary-lock/v1`) that CI, scripts, and downstream tools can consume.
+- You need a portable, source-controlled lockfile (`boundary-lock/v2`) that CI, scripts, and downstream tools can consume.
 - You want stable CI cache keys and verification signals without migrating your entire build stack.
 
 ## Positioning
@@ -62,7 +62,7 @@ These are **conscious scope boundaries**, not bugs:
 | **Behavioral change in an undeclared file** | If a file changes behavior but isn't in `behavior.paths`, boundver can't know about it. The user must declare what matters. |
 | **Protocol/wire-format semantic change** | If the `.proto` or schema file type is unchanged but the runtime interpretation differs, no file content changes. |
 
-For the last case — where no static file analysis can detect the change — a custom provider that hashes test output can bridge the gap. See [design/08-behavior-tier.md](design/08-behavior-tier.md#extension-test-output-fingerprinting-via-custom-provider).
+For the last case — where no static file analysis can detect the change — a trusted custom provider can hash a deterministic test-output artifact. Treat such providers as executable code and enable them only through the explicit trusted-code opt-in.
 
 ## Adoption pattern
 

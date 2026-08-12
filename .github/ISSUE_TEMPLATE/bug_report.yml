@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a reproducible problem with boundver.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve boundver. Remove secrets and proprietary source before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: boundver version
+      description: Paste the output of `boundver --version`.
+      placeholder: boundver 0.10.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Python, operating system, and Git versions.
+      placeholder: Python 3.12, Ubuntu 24.04, Git 2.43
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest repository layout, sanitized config, and commands that reproduce the problem.
+      placeholder: |
+        1. Create ...
+        2. Run `boundver ...`
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Paste logs, tracebacks, or JSON output. Remove credentials and sensitive paths.
+      render: shell
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Where did this occur?
+      options:
+        - CLI
+        - GitHub Action
+        - Python API
+        - Packaging or installation
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed secrets and proprietary content from this report.
+          required: true
+        - label: This is not a vulnerability; security reports belong in private vulnerability reporting.
+          required: true

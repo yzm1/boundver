@@ -2,12 +2,21 @@
 
 import fnmatch
 import json
+import os
+import subprocess
+from importlib import resources
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from ._git import _to_posix
+from ._git import _decode_nul_paths, _git_run_bytes, _to_posix
 from ._hashing import _is_within
 from ._utils import _is_glob, boundary_provider_name, ConfigError
+from .providers import (
+    create_registry,
+    get_provider,
+    load_custom_providers,
+    validate_provider_config,
+)
 
 # Ordered preference when auto-discovering config (first match wins)
 _CONFIG_CANDIDATES = [
@@ -59,10 +68,10 @@ def load_config_file(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     if suffix == ".json":
         try:
-            return json.loads(text)
+            result = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ConfigError(f"JSON parse error in {path}: {exc}") from exc
-    if suffix in (".yaml", ".yml"):
+    elif suffix in (".yaml", ".yml"):
         try:
             import yaml  # type: ignore
             result = yaml.safe_load(text)
@@ -75,10 +84,7 @@ def load_config_file(path: Path) -> dict:
             raise
         except Exception as exc:
             raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
-        if not isinstance(result, dict):
-            raise ConfigError(f"Config file {path} must contain a YAML mapping, got {type(result).__name__}")
-        return result
-    if suffix == ".toml":
+    elif suffix == ".toml":
         try:
             import tomllib  # type: ignore  # Python 3.11+
         except ImportError:
@@ -90,25 +96,39 @@ def load_config_file(path: Path) -> dict:
                     "Install tomli: pip install tomli"
                 )
         try:
-            return tomllib.loads(text)
+            result = tomllib.loads(text)
         except (MemoryError, RecursionError):
             raise
         except Exception as exc:
             raise ConfigError(f"TOML parse error in {path}: {exc}") from exc
-    raise ConfigError(
-        f"Unsupported config file extension '{suffix}' for {path}. "
-        "Supported formats: .json, .yaml, .yml, .toml"
-    )
+    else:
+        raise ConfigError(
+            f"Unsupported config file extension '{suffix}' for {path}. "
+            "Supported formats: .json, .yaml, .yml, .toml"
+        )
+    if not isinstance(result, dict):
+        raise ConfigError(
+            f"Config file {path} must contain an object/mapping, "
+            f"got {type(result).__name__}"
+        )
+    return result
 
 
 
 def _load_config_schema(repo_root: Path) -> Optional[dict]:
+    """Load the packaged schema, falling back to a checkout-local override."""
     schema_path = repo_root / "boundary.config.schema.json"
-    if not schema_path.exists():
-        return None
+    if schema_path.exists():
+        try:
+            return json.loads(schema_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
     try:
-        return json.loads(schema_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        bundled = resources.read_text(
+            "boundver", "boundary.config.schema.json", encoding="utf-8"
+        )
+        return json.loads(bundled)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
 
 
@@ -130,6 +150,7 @@ def _validate_component_path_entries(
     component_path: Optional[str],
     field_name: str,
     paths: List[str],
+    check_exists: bool = True,
 ) -> None:
     """Validate a component-relative path list for boundary/behavior config."""
     if component_path is None:
@@ -137,6 +158,12 @@ def _validate_component_path_entries(
 
     component_root = repo_root / component_path
     for rel in paths:
+        if "\\" in rel:
+            errors.append(
+                f"Component '{component_name}' {field_name} path must use '/' "
+                f"separators for portability: {rel}"
+            )
+            continue
         if _is_glob(rel):
             if ".." in rel:
                 errors.append(
@@ -151,7 +178,7 @@ def _validate_component_path_entries(
         if not _is_within(repo_root, full):
             errors.append(f"Component '{component_name}' {field_name} path escapes repository root: {rel}")
             continue
-        if not full.exists():
+        if check_exists and not full.exists():
             errors.append(
                 f"Component '{component_name}' {field_name} path not found: {component_path}/{rel}"
                 f" — ensure the file exists before running generate"
@@ -232,10 +259,17 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
     return sorted(errors)
 
 
-def validate_config(config: dict, repo_root: Path) -> List[str]:
+def validate_config(
+    config: dict,
+    repo_root: Path,
+    allow_custom_providers: bool = False,
+    source: str = "working-tree",
+) -> List[str]:
     errors: List[str] = []
     if not isinstance(config, dict):
         return ["Config root must be a JSON object"]
+    if source not in {"head", "index", "working-tree"}:
+        return [f"Unknown source mode: {source!r}"]
 
     schema = _load_config_schema(repo_root)
     errors.extend(_schema_engine_errors(config, schema))
@@ -243,19 +277,49 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if required_key not in config:
             errors.append(f"Missing required top-level field: {required_key}")
 
+    project = config.get("project")
+    if not isinstance(project, str) or not project.strip():
+        errors.append("Field 'project' must be a non-empty string")
+
     supported_modes = {"exact", "behavior", "boundary", "compat"}
-    compat_mode = config.get("defaults", {}).get("compat_mode", "major")
-    if compat_mode not in {"major", "semver_major", "semver_major_minor"}:
+    defaults = config.get("defaults", {})
+    if not isinstance(defaults, dict):
+        errors.append("Field 'defaults' must be an object")
+        defaults = {}
+    compat_mode = defaults.get("compat_mode", "major")
+    if not isinstance(compat_mode, str) or compat_mode not in {
+        "major", "semver_major", "semver_major_minor"
+    }:
         errors.append(f"Unsupported defaults.compat_mode: {compat_mode}")
+    verify_facets = defaults.get("verify_facets")
+    if verify_facets is not None:
+        if not _is_str_list(verify_facets) or not verify_facets:
+            errors.append("defaults.verify_facets must be a non-empty array of strings")
+        else:
+            invalid = sorted(set(verify_facets) - supported_modes)
+            if invalid:
+                errors.append(
+                    "defaults.verify_facets contains unknown facets: "
+                    + ", ".join(invalid)
+                )
 
     components = config.get("components", {})
     slices = config.get("slices", {})
     if not isinstance(components, dict):
         errors.append("Field 'components' must be an object")
         components = {}
+    elif not components:
+        errors.append("Field 'components' must define at least one component")
     if not isinstance(slices, dict):
         errors.append("Field 'slices' must be an object")
         slices = {}
+
+    if "allow_custom_providers" in config:
+        errors.append(
+            "Top-level 'allow_custom_providers' is not supported: repository config "
+            "cannot authorize Python imports; pass --allow-custom-providers or set "
+            "BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1 in trusted automation"
+        )
 
     seen_component_paths: Dict[str, str] = {}
     known_providers = {
@@ -302,8 +366,8 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                         )
                     else:
                         declared_custom_names.add(declared_name)
-                elif isinstance(cls_name, str) and cls_name.strip():
-                    declared_custom_names.add(f"custom.{cls_name.strip()}")
+                # Without an explicit name, the provider instance determines
+                # its registered custom.* identifier after trusted loading.
 
     for name, comp in components.items():
         if not isinstance(comp, dict):
@@ -316,7 +380,12 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
         if component_path is None:
             errors.append(f"Component '{name}' field 'path' must be a non-empty string")
         else:
-            normalized_path = component_path.rstrip("/")
+            if "\\" in component_path:
+                errors.append(
+                    f"Component '{name}' path must use '/' separators for portability: "
+                    f"{component_path}"
+                )
+            normalized_path = _to_posix(os.path.normpath(component_path.strip()))
             if ".." in normalized_path.replace("\\", "/").split("/"):
                 errors.append(
                     f"Component '{name}' path must not contain '..': {normalized_path}"
@@ -324,6 +393,25 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             elif Path(normalized_path).is_absolute():
                 errors.append(
                     f"Component '{name}' path must be relative: {normalized_path}"
+                )
+            elif normalized_path in {"", "."}:
+                errors.append(
+                    f"Component '{name}' cannot use the repository root as its path: "
+                    "the generated lockfile would become part of its own exact fingerprint. "
+                    "Place the component in a subdirectory."
+                )
+            elif source == "working-tree" and (repo_root / normalized_path).is_symlink():
+                errors.append(
+                    f"Component '{name}' path must not be a symlink: {normalized_path}"
+                )
+            elif source == "working-tree" and not _is_within(repo_root, repo_root / normalized_path):
+                errors.append(
+                    f"Component '{name}' path escapes the repository: {normalized_path}"
+                )
+            elif source == "working-tree" and not (repo_root / normalized_path).is_dir():
+                errors.append(
+                    f"Component '{name}' path not found or not a directory: "
+                    f"{normalized_path}"
                 )
             if normalized_path in seen_component_paths:
                 other = seen_component_paths[normalized_path]
@@ -353,7 +441,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                     f"Component '{name}' uses '{provider_name}' but no 'providers' list is "
                     "declared in the config — add a top-level 'providers' array"
                 )
-            elif provider_name not in declared_custom_names:
+            elif declared_custom_names and provider_name not in declared_custom_names:
                 errors.append(
                     f"Component '{name}' uses '{provider_name}' which is not declared in the "
                     f"'providers' list — add an entry with \"class\": \"{provider_name[7:]}\""
@@ -369,6 +457,7 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
             component_path,
             "boundary",
             paths,
+            check_exists=(source == "working-tree"),
         )
 
         behavior = comp.get("behavior")
@@ -387,10 +476,43 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                     component_path,
                     "behavior",
                     behavior_paths,
+                    check_exists=(source == "working-tree"),
                 )
         vendored = comp.get("vendored_copies")
         if vendored is not None and not _is_str_list(vendored):
             errors.append(f"Component '{name}' field 'vendored_copies' must be an array of strings")
+        elif vendored is not None:
+            for vendored_path in vendored:
+                normalized_vendored = vendored_path.replace("\\", "/")
+                if (
+                    not vendored_path.strip()
+                    or "\\" in vendored_path
+                    or Path(vendored_path).is_absolute()
+                    or ".." in normalized_vendored.split("/")
+                    or not _is_within(repo_root, repo_root / vendored_path)
+                ):
+                    errors.append(
+                        f"Component '{name}' vendored copy must be a safe repo-relative "
+                        f"path using '/' separators: {vendored_path!r}"
+                    )
+                elif source == "working-tree" and not (repo_root / vendored_path).exists():
+                    errors.append(
+                        f"Component '{name}' vendored copy not found: {vendored_path}"
+                    )
+        consumers = comp.get("consumers")
+        if consumers is not None:
+            if not _is_str_list(consumers):
+                errors.append(f"Component '{name}' field 'consumers' must be an array of strings")
+            else:
+                if len(consumers) != len(set(consumers)):
+                    errors.append(f"Component '{name}' field 'consumers' contains duplicates")
+                for consumer in consumers:
+                    if consumer == name:
+                        errors.append(f"Component '{name}' cannot consume its own boundary")
+                    elif consumer not in components:
+                        errors.append(
+                            f"Component '{name}' references unknown consumer: {consumer}"
+                        )
 
         # Validate version_source — check file exists and has a supported extension.
         version_source = comp.get("version_source")
@@ -405,6 +527,15 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                 if not isinstance(vs_file, str) or not vs_file.strip():
                     errors.append(f"Component '{name}' version_source.file must be a non-empty string")
                 else:
+                    if (
+                        "\\" in vs_file
+                        or Path(vs_file).is_absolute()
+                        or ".." in vs_file.replace("\\", "/").split("/")
+                    ):
+                        errors.append(
+                            f"Component '{name}' version_source.file must be a safe "
+                            f"component-relative path using '/' separators: {vs_file!r}"
+                        )
                     _supported_vs_exts = {".json", ".toml", ".yaml", ".yml"}
                     if Path(vs_file).suffix not in _supported_vs_exts:
                         errors.append(
@@ -412,7 +543,17 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                             f" — supported: {', '.join(sorted(_supported_vs_exts))}"
                         )
                     vs_full = (repo_root / component_path / vs_file) if component_path is not None else None
-                    if vs_full is not None and not vs_full.exists():
+                    if source == "working-tree" and vs_full is not None and vs_full.is_symlink():
+                        errors.append(
+                            f"Component '{name}' version_source.file must not be a symlink: "
+                            f"'{vs_file}'"
+                        )
+                    elif source == "working-tree" and vs_full is not None and not _is_within(repo_root, vs_full):
+                        errors.append(
+                            f"Component '{name}' version_source.file escapes the repository: "
+                            f"'{vs_file}'"
+                        )
+                    if source == "working-tree" and vs_full is not None and not vs_full.exists():
                         errors.append(
                             f"Component '{name}' version_source.file not found: '{vs_file}'"
                             f" (looked for {component_path}/{vs_file})"
@@ -422,17 +563,24 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                             f"Component '{name}' version_source has 'file' but no 'field' — "
                             "specify which field to read, e.g. \"field\": \"version\""
                         )
+                    elif not isinstance(version_source.get("field"), str) or not version_source["field"].strip():
+                        errors.append(
+                            f"Component '{name}' version_source.field must be a non-empty string"
+                        )
             else:
                 errors.append(
                     f"Component '{name}' version_source must have either 'file' or 'git_tag_prefix'"
                 )
 
     for sname, sdef in slices.items():
+        if not isinstance(sname, str) or not sname.strip():
+            errors.append("Slice names must be non-empty strings")
+            continue
         if not isinstance(sdef, dict):
             errors.append(f"Slice '{sname}' must be an object")
             continue
         mode = sdef.get("mode", "exact")
-        if mode not in supported_modes:
+        if not isinstance(mode, str) or mode not in supported_modes:
             errors.append(f"Slice '{sname}' has unknown mode: {mode}")
         slice_components = sdef.get("components", [])
         if not _is_str_list(slice_components):
@@ -451,6 +599,39 @@ def validate_config(config: dict, repo_root: Path) -> List[str]:
                     errors.append(f"Slice '{sname}' in {mode} mode cannot include '{cname}' (implicit with no paths produces no boundary)")
                 elif kind not in {"leaf", "implicit"} and not paths:
                     errors.append(f"Slice '{sname}' in {mode} mode includes '{cname}' with no boundary paths")
+
+    registry = create_registry()
+    provider_load_errors = load_custom_providers(
+        config.get("providers", []),
+        allow_custom=allow_custom_providers,
+        registry=registry,
+    )
+    if allow_custom_providers:
+        errors.extend(provider_load_errors)
+    for name, comp in components.items():
+        if not isinstance(name, str) or not name.strip():
+            errors.append("Component names must be non-empty strings")
+            continue
+        if not isinstance(comp, dict):
+            continue
+        boundary = comp.get("boundary")
+        component_path = comp.get("path")
+        if not isinstance(boundary, dict) or not isinstance(component_path, str):
+            continue
+        provider_name = boundary_provider_name(boundary)
+        provider = get_provider(provider_name, registry=registry)
+        if provider is None:
+            if allow_custom_providers and provider_name.startswith("custom."):
+                errors.append(
+                    f"Component '{name}' provider '{provider_name}' was not registered "
+                    "by the configured provider module"
+                )
+            continue
+        if source == "working-tree" or provider_name.startswith("custom."):
+            for provider_error in validate_provider_config(
+                provider, boundary, component_path, repo_root
+            ):
+                errors.append(f"Component '{name}': {provider_error}")
 
     return errors
 
@@ -501,18 +682,45 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
 
 
 def discover_components(repo_root: Path) -> Dict[str, dict]:
-    """Best-effort component discovery from common manifest files."""
-    manifests = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod")
-    _ignored_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
+    """Discover components from tracked manifests, with a bounded non-Git fallback."""
+    manifest_specs = (
+        ("package.json", "version"),
+        ("pyproject.toml", "project.version"),
+        ("Cargo.toml", "package.version"),
+        ("go.mod", None),
+    )
+    _ignored_dirs = {
+        ".git", "node_modules", "__pycache__", ".venv", "venv",
+        "dist", "build", "vendor",
+    }
     _MAX_DISCOVER = 1000  # Cap discovered components to prevent runaway on huge monorepos
     found: Dict[str, dict] = {}
-    for manifest in manifests:
-        for mf in sorted(repo_root.rglob(manifest)):
+    seen_directories: Set[str] = set()
+    try:
+        tracked = _git_run_bytes(repo_root, ["ls-files", "-z", "--"])
+        candidate_paths = [repo_root / p for p in _decode_nul_paths(tracked.stdout)]
+        if not candidate_paths:
+            try:
+                _git_run_bytes(repo_root, ["rev-parse", "--verify", "HEAD"])
+            except subprocess.CalledProcessError:
+                for manifest, _field in manifest_specs:
+                    candidate_paths.extend(repo_root.rglob(manifest))
+    except (OSError, subprocess.CalledProcessError):
+        candidate_paths = []
+        for manifest, _field in manifest_specs:
+            candidate_paths.extend(repo_root.rglob(manifest))
+
+    for manifest, version_field in manifest_specs:
+        for mf in sorted(p for p in candidate_paths if p.name == manifest):
             if _ignored_dirs & set(mf.relative_to(repo_root).parts):
                 continue
             rel_dir = mf.parent.relative_to(repo_root)
             if str(rel_dir) == ".":
                 continue
+            rel_path = _to_posix(str(rel_dir))
+            if rel_path in seen_directories:
+                continue
+            seen_directories.add(rel_path)
             comp_name = rel_dir.name
             base_name = comp_name
             idx = 2
@@ -520,9 +728,14 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
                 comp_name = f"{base_name}-{idx}"
                 idx += 1
             provider, paths = _detect_provider(mf.parent)
+            version_source = (
+                {"file": mf.name, "field": version_field}
+                if version_field is not None
+                else None
+            )
             found[comp_name] = {
-                "path": _to_posix(str(rel_dir)),
-                "version_source": {"file": mf.name, "field": "version"},
+                "path": rel_path,
+                "version_source": version_source,
                 "boundary": {"provider": provider, "paths": paths},
             }
             if len(found) >= _MAX_DISCOVER:

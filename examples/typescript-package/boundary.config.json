@@ -4,7 +4,7 @@
   "components": {
     "pkg": {
       "path": "examples/typescript-package/src",
-      "version_source": {"file": "../package.json", "field": "version"},
+      "version_source": {"file": "version.json", "field": "version"},
       "boundary": {"provider": "typescript-exports", "paths": ["index.ts"]}
     }
   },

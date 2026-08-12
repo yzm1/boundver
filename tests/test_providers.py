@@ -102,7 +102,10 @@ class TestPathHashProvider(unittest.TestCase):
         ctx = _make_ctx(boundary_cfg={"paths": ["missing.yaml"]}, files={})
         rb = self.p.resolve(ctx)
         self.assertEqual(rb.status, "error")
-        self.assertIn("Declared boundary paths produced no digest", rb.errors)
+        self.assertTrue(
+            any("matched no tracked files" in error for error in rb.errors),
+            rb.errors,
+        )
 
     def test_single_file_produces_ok_entry(self):
         ctx = _make_ctx(
@@ -191,15 +194,13 @@ class TestPathHashProvider(unittest.TestCase):
 
 class TestComputeBoundary(unittest.TestCase):
     def test_digest_stability(self):
-        """compute_boundary must produce the same hash as pre-Phase-1 boundary_paths_digest format.
-
-        Pre-Phase-1 format: sha256( concat("file:child_rel\\n" + content) )
-        """
-        import hashlib
+        """compute_boundary must use the shared framed boundary digest."""
+        from boundver._hashing import HASH_DOMAIN_BOUNDARY, _hash_framed_entries
 
         content = b"openapi: 3.0\n"
-        expected_input = b"file:api.yaml\n" + content
-        expected_digest = hashlib.sha256(expected_input).hexdigest()
+        expected_digest = _hash_framed_entries(
+            [("file:api.yaml", content)], domain=HASH_DOMAIN_BOUNDARY
+        )
 
         p = PathHashProvider()
         p.name = "test"
@@ -212,15 +213,15 @@ class TestComputeBoundary(unittest.TestCase):
         self.assertEqual(status, "ok")
         self.assertEqual(errors, [])
 
-    def test_multi_file_digest_matches_pre_phase1(self):
-        """Multi-file digest must match concatenated pre-Phase-1 format."""
-        import hashlib
+    def test_multi_file_digest_matches_framed_contract(self):
+        """Multi-file digest must match the framed boundary format."""
+        from boundver._hashing import HASH_DOMAIN_BOUNDARY, _hash_framed_entries
 
         files = {"svc/a.yaml": b"A\n", "svc/b.yaml": b"B\n"}
-        expected = hashlib.sha256(
-            b"file:a.yaml\nA\n"
-            b"file:b.yaml\nB\n"
-        ).hexdigest()
+        expected = _hash_framed_entries(
+            [("file:a.yaml", b"A\n"), ("file:b.yaml", b"B\n")],
+            domain=HASH_DOMAIN_BOUNDARY,
+        )
 
         p = PathHashProvider()
         p.name = "test"
@@ -564,7 +565,10 @@ class TestJsonCanonicalProvider(unittest.TestCase):
         )
         rb = p.resolve(ctx)
         self.assertEqual(rb.status, "error")
-        self.assertIn("Declared boundary paths produced no digest", rb.errors)
+        self.assertTrue(
+            any("matched no tracked files" in error for error in rb.errors),
+            rb.errors,
+        )
 
     def test_digest_differs_from_raw_provider(self):
         """json-canonical digest must not collide with raw json-file digest for same file."""
@@ -747,7 +751,10 @@ components:
         )
         rb = p.resolve(ctx)
         self.assertEqual(rb.status, "error")
-        self.assertIn("Declared boundary paths produced no digest", rb.errors)
+        self.assertTrue(
+            any("matched no tracked files" in error for error in rb.errors),
+            rb.errors,
+        )
 
     def test_validate_config_missing_file(self):
         """validate_config reports error for missing boundary path."""
@@ -838,7 +845,10 @@ class TestGlobPatterns(unittest.TestCase):
         ctx = _make_ctx(boundary_cfg={"paths": ["*.yaml"]}, files=files)
         result = PathHashProvider().resolve(ctx)
         self.assertEqual(result.status, "error")
-        self.assertTrue(any("no digest" in e.lower() for e in result.errors))
+        self.assertTrue(
+            any("matched no tracked files" in error for error in result.errors),
+            result.errors,
+        )
 
     def test_glob_digest_changes_when_matched_file_changes(self):
         """Digest must change when a glob-matched file's content changes."""

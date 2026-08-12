@@ -1,37 +1,98 @@
-# Lockfile Merge Strategy
+# Lockfile merge strategy
 
-`boundary.lock.json` is a generated artifact. When parallel branches both regenerate it, Git conflicts are expected.
+`boundary.lock.json` is generated from the repository's source and configuration. When branches change components concurrently, regenerate the complete lockfile from the real merged tree instead of combining fingerprint JSON by hand.
 
-## Future-proof rule
-Do **not** hand-edit lockfile conflict hunks.
-Always regenerate from `boundary.config.json`.
+## Why not use a merge driver?
 
-## Manual resolution
-```bash
-# After merge conflict appears
-boundver generate
+A Git merge driver runs while Git is still constructing the merge. It receives individual conflict stages, not a guaranteed materialization of the final source tree, and it may run on a machine without the expected boundver version. Regenerating there can bless fingerprints from the wrong snapshot.
 
-git add boundary.lock.json
-```
+Keep the lockfile as ordinary text in `.gitattributes`. Perform regeneration only after the source and `boundary.config.json` represent the intended merged result.
 
-## Optional Git merge driver (recommended)
+## Resolve a lockfile conflict
 
-1. Add to `.gitattributes`:
-
-```gitattributes
-boundary.lock.json merge=boundver-lock
-```
-
-2. Register merge driver locally:
+From the repository root:
 
 ```bash
-git config merge.boundver-lock.name "boundver lockfile regenerate"
-git config merge.boundver-lock.driver "scripts/boundver-merge-driver.sh %A"
+# 1. Resolve source and configuration conflicts first.
+git status --short
+
+# 2. Regenerate the whole lock from the materialized merged tree.
+boundver validate-config
+boundver generate --source working-tree
+
+# 3. Check the exact same snapshot and inspect the generated diff.
+boundver verify \
+  --source working-tree \
+  --facets exact,behavior,boundary,compat
+git diff -- boundary.lock.json
+
+# 4. Mark the generated file resolved, then finish the merge.
+git add boundary.config.json boundary.lock.json
+git status --short
+git commit
 ```
 
-3. Ensure `boundver` is available in your environment.
+Only add `boundary.config.json` in step 4 if the merge actually changed it. Add every resolved source file separately as usual.
 
-Now when `boundary.lock.json` conflicts, Git invokes the driver, which regenerates deterministic lock output and writes `%A`.
+After the merge commit exists, verify the committed snapshot:
 
-## CI note
-If your CI runs `boundver verify`, merge-driver output is naturally validated during PR checks.
+```bash
+boundver verify --source head --facets exact,behavior,boundary,compat
+```
+
+The source pairing matters: use `working-tree` before the merge commit, then `head` after it. `head` during conflict resolution still names the pre-merge commit and cannot represent both branches.
+
+## Clean merge but stale lockfile
+
+Git may merge the JSON without a textual conflict even though the combined source requires a different aggregate or slice fingerprint. Run the same regeneration after every merge that touches components, configuration, or the lockfile:
+
+```bash
+boundver generate --source working-tree
+boundver verify \
+  --source working-tree \
+  --facets exact,behavior,boundary,compat
+git diff --exit-code -- boundary.lock.json || {
+  echo "Review and commit the regenerated boundary.lock.json"
+}
+```
+
+## Optional post-merge hook
+
+A local post-merge hook runs after Git has materialized the merged tree. It can regenerate and leave any required lockfile update visible for review:
+
+```sh
+#!/bin/sh
+# .git/hooks/post-merge
+set -eu
+
+if command -v boundver >/dev/null 2>&1 && test -f boundary.config.json; then
+  boundver generate --source working-tree
+  boundver verify \
+    --source working-tree \
+    --facets exact,behavior,boundary,compat
+
+  if ! git diff --quiet -- boundary.lock.json; then
+    echo "boundver regenerated boundary.lock.json; review and commit it."
+  fi
+fi
+```
+
+Make the hook executable:
+
+```bash
+chmod +x .git/hooks/post-merge
+```
+
+Hooks are local and are not cloned with the repository. Treat this as a convenience, not enforcement. The authoritative safeguard is a CI job that runs:
+
+```bash
+boundver verify --source head --facets boundary,compat
+```
+
+## Rules of thumb
+
+- Resolve configuration and source before regenerating the lockfile.
+- Regenerate the full lockfile; a partial refresh is inappropriate for a merge.
+- Never hand-edit fingerprint values.
+- Review direct consumer changes and slice changes in the generated diff.
+- Keep CI on `head` so it verifies exactly what the pull request commits.

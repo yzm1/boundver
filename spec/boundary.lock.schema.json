@@ -6,19 +6,24 @@
   "required": ["schema", "project", "components", "slices"],
   "properties": {
     "$schema": {"type": "string", "format": "uri"},
-    "schema": {"const": "boundary-lock/v1"},
+    "schema": {"const": "boundary-lock/v2"},
     "project": {"type": "string"},
-    "generated_at": {"type": "string", "format": "date-time"},
     "components": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["version", "path", "boundary_provider", "boundary_status", "fingerprints", "semver"],
+        "required": ["version", "path", "boundary_provider", "boundary_provider_version", "boundary_status", "consumers", "fingerprints", "semver"],
         "properties": {
           "version": {"type": ["string", "null"]},
           "path": {"type": "string"},
           "boundary_provider": {"type": "string"},
+          "boundary_provider_version": {"type": ["string", "null"]},
           "boundary_status": {"type": "string", "enum": ["ok", "partial", "error"]},
+          "consumers": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": true
+          },
           "fingerprints": {
             "type": "object",
             "required": ["exact", "behavior", "boundary", "compat"],
@@ -41,7 +46,10 @@
             "additionalProperties": false
           },
           "boundary_errors": {"type": "array", "items": {"type": "string"}},
+          "version_errors": {"type": "array", "items": {"type": "string"}},
+          "behavior_errors": {"type": "array", "items": {"type": "string"}},
           "exact_errors": {"type": "array", "items": {"type": "string"}},
+          "boundary_metadata": {"type": ["object", "null"]},
           "warnings": {"type": "array", "items": {"type": "string"}},
           "vendored_copies": {"type": "array", "items": {"type": "string"}},
           "vendored_digests": {"type": "object", "additionalProperties": {"type": "string"}}

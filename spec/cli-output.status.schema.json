@@ -4,7 +4,7 @@
   "title": "boundver status --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver status --format json`.",
   "type": "object",
-  "required": ["lockfile", "issues"],
+  "required": ["lockfile", "issues", "warnings"],
   "additionalProperties": false,
   "properties": {
     "lockfile": {
@@ -14,6 +14,11 @@
     "issues": {
       "type": "array",
       "description": "Drift issues between the lockfile and current repo state. Empty when up to date.",
+      "items": { "type": "string" }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Non-drift warnings and recorded computation errors.",
       "items": { "type": "string" }
     }
   }

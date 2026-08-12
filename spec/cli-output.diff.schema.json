@@ -38,7 +38,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["name", "old_version", "new_version", "changed_facets", "summary"],
+            "required": ["name", "old_version", "new_version", "changed_facets", "changed_metadata", "summary"],
             "properties": {
               "name": { "type": "string" },
               "old_version": { "type": ["string", "null"] },
@@ -54,6 +54,19 @@
                     "old": { "type": ["string", "null"] },
                     "new": { "type": ["string", "null"] }
                   }
+                }
+              },
+              "changed_metadata": {
+                "type": "object",
+                "description": "Map of metadata field name to old/new values.",
+                "additionalProperties": {
+                  "type": "object",
+                  "required": ["old", "new"],
+                  "properties": {
+                    "old": {},
+                    "new": {}
+                  },
+                  "additionalProperties": false
                 }
               }
             }
