@@ -1,0 +1,91 @@
+name: Create release tag
+
+on:
+  push:
+    branches:
+      - "release/v*"
+
+concurrency:
+  group: release-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Checkout the candidate
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release branch, version, and main commit
+        id: validate
+        shell: bash
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release_tag=$(python - "$RELEASE_BRANCH" <<'PY'
+          import pathlib
+          import re
+          import sys
+          import tomllib
+
+          branch = sys.argv[1]
+          match = re.fullmatch(r"release/(v[0-9]+\.[0-9]+\.[0-9]+)", branch)
+          if match is None:
+              raise SystemExit(f"invalid release branch: {branch!r}")
+          tag = match.group(1)
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"branch tag {tag!r} does not match package version v{version}")
+          print(tag)
+          PY
+          )
+          git fetch --no-tags origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+            echo "Release branch must point to current main: $RELEASE_SHA != $main_sha" >&2
+            exit 1
+          fi
+          existing_tag=$(git ls-remote origin "refs/tags/$release_tag" | awk '{print $1}')
+          if [[ -n "$existing_tag" && "$existing_tag" != "$RELEASE_SHA" ]]; then
+            echo "Tag $release_tag already points to $existing_tag, not $RELEASE_SHA" >&2
+            exit 1
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          if [[ "$existing_tag" == "$RELEASE_SHA" ]]; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create the immutable version tag
+        if: steps.validate.outputs.tag_exists != 'true'
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag "$RELEASE_TAG" "$RELEASE_SHA"
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Dispatch the verified publish workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run publish.yml \
+            --ref main \
+            --field release_tag="$RELEASE_TAG" \
+            --field release_sha="$RELEASE_SHA"

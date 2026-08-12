@@ -113,6 +113,7 @@ folding them invisibly into the broader baseline items.
 | BV-070 | Medium | Build/runtime floor | The earlier Python 3.8 support claim conflicted with the setuptools build-backend floor. `pyproject.toml`, CI matrices, README, maintained guides, and `CHANGELOG.md` now consistently declare Python 3.9+. External matrix execution remains a release gate. | Resolved |
 | BV-071 | Medium | Atomic writes | Direct lock/config replacement could leave truncated JSON if writing failed. `_write_text_atomic` writes and fsyncs a sibling temporary file before `os.replace`, and generate, verify-update, migration, init, add, and remove route mutations through it. | Resolved |
 | BV-072 | Medium | Documentation lifecycle | The historical implementation plan described a retired Action interface and linked deleted design/CI files, while a provider docstring repeated one stale link. The obsolete plan is retired and the provider points to the maintained custom-provider guide. | Resolved |
+| BV-073 | Medium | Release initiation | Tag creation had no repository-enforced link to the tested `main` commit. `.github/workflows/create-release-tag.yml` accepts only `release/vX.Y.Z`, requires the branch SHA to equal current `main`, matches the version to `pyproject.toml`, rejects a conflicting immutable tag, and explicitly dispatches publication with the pinned tag/SHA. This uses GitHub's documented `workflow_dispatch` exception to `GITHUB_TOKEN` recursion suppression. | Resolved |
 
 ## Verification index
 
@@ -163,9 +164,9 @@ semantic or backward compatibility.
 
 - [x] Every finding above is marked resolved with a verification reference.
 - [x] Unit and integration suites pass without environment shims (834 tests).
-- [ ] Supported Python versions pass in external CI.
-- [ ] Root Action passes its external workflow test with safe input handling.
+- [x] Supported Python versions pass in external CI (Python 3.9–3.14 on Linux and Windows).
+- [x] Root Action passes its external workflow test with safe input handling.
 - [x] Wheel and sdist inspection plus installed-package smoke tests pass for the exact local release commit.
 - [ ] Tag exactly matches `pyproject.toml` and `boundver.__version__`.
-- [ ] GitHub branch/PR checks pass before the release tag is created.
+- [x] GitHub branch/PR and post-merge `main` checks pass before the release tag is created.
 - [ ] GitHub Release, Marketplace tag, and PyPI publication all point to the same commit.
