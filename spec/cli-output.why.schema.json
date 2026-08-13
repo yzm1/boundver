@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.why.schema.json",
+  "title": "boundver why --format json output",
+  "type": "object",
+  "required": [
+    "component", "path", "source", "version", "drifted", "changes",
+    "metadata_changes", "digest_errors", "summary", "changed_files",
+    "boundary_paths", "provider_detail", "affected_consumers",
+    "transitive_consumers"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "component": {"type": "string"},
+    "path": {"type": "string"},
+    "source": {"type": "string", "enum": ["head", "index", "working-tree"]},
+    "version": {"type": ["string", "null"]},
+    "drifted": {"type": "boolean"},
+    "changes": {
+      "type": "object",
+      "propertyNames": {"enum": ["exact", "behavior", "boundary", "compat"]},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["locked", "current"],
+        "additionalProperties": false,
+        "properties": {
+          "locked": {"type": ["string", "null"]},
+          "current": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "metadata_changes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["locked", "current"],
+        "additionalProperties": false,
+        "properties": {
+          "locked": true,
+          "current": true
+        }
+      }
+    },
+    "digest_errors": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"},
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["status", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "status": {"type": "string"},
+          "path": {"type": "string"}
+        }
+      }
+    },
+    "boundary_paths": {"type": "array", "items": {"type": "string"}},
+    "provider_detail": {"type": "string"},
+    "affected_consumers": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "transitive_consumers": {"type": "boolean"}
+  }
+}

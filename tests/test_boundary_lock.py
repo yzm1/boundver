@@ -19,6 +19,15 @@ class BoundaryLockTests(unittest.TestCase):
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True, text=True)
         subprocess.run(["git", "config", "user.name", "Test User"], cwd=root, check=True, capture_output=True, text=True)
 
+    def _commit_all(self, root: Path, message: str = "test fixture") -> None:
+        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
     def test_package_exposes_version(self):
         self.assertTrue(isinstance(boundver.__version__, str))
         self.assertNotEqual(boundver.__version__.strip(), "")
@@ -55,7 +64,7 @@ class BoundaryLockTests(unittest.TestCase):
         errs = boundary_lock.validate_config(cfg, Path.cwd())
         self.assertTrue(any("Unsupported defaults.compat_mode" in e for e in errs))
 
-    def test_validate_config_boundary_slice_leaf_component(self):
+    def test_validate_config_allows_boundary_slice_leaf_component_for_partial_lock(self):
         cfg = {
             "components": {
                 "x": {
@@ -66,7 +75,7 @@ class BoundaryLockTests(unittest.TestCase):
             "slices": {"s1": {"mode": "boundary", "components": ["x"]}},
         }
         errs = boundary_lock.validate_config(cfg, Path.cwd())
-        self.assertTrue(any("boundary mode cannot include" in e for e in errs))
+        self.assertFalse(any("boundary mode cannot include" in e for e in errs))
 
     def test_validate_config_accepts_boundary_provider_key(self):
         cfg = {
@@ -248,7 +257,14 @@ class BoundaryLockTests(unittest.TestCase):
                 "slices": {},
             }
             errs = boundary_lock.validate_config(cfg, root)
-            self.assertTrue(any("escapes component root" in e for e in errs), errs)
+            self.assertTrue(
+                any(
+                    "must not contain '..' path segments" in error
+                    and "escapes" in error
+                    for error in errs
+                ),
+                errs,
+            )
 
     def test_generate_lockfile_marks_partial_when_no_boundary_paths(self):
         with tempfile.TemporaryDirectory() as td:
@@ -588,15 +604,12 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(
-                cfg, root, source="working-tree", strict=False
-            )
-            entry = lock["components"]["svc"]
-            self.assertEqual(entry["boundary_status"], "error")
-            self.assertIn(
-                "No boundary paths declared for explicit boundary provider",
-                entry.get("boundary_errors", []),
-            )
+            with self.assertRaisesRegex(
+                ValueError, "No boundary paths declared for explicit boundary provider"
+            ):
+                boundary_lock.generate_lockfile(
+                    cfg, root, source="working-tree", strict=False
+                )
 
     def test_exact_hash_matches_between_head_and_working_tree_for_same_content(self):
         with tempfile.TemporaryDirectory() as td:
@@ -782,7 +795,7 @@ class BoundaryLockTests(unittest.TestCase):
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
-                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
                 "project": "p",
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}}
@@ -802,7 +815,7 @@ class BoundaryLockTests(unittest.TestCase):
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
-                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
                 "project": "p",
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}}
@@ -825,7 +838,7 @@ class BoundaryLockTests(unittest.TestCase):
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
-                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
                 "project": "p",
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}}
@@ -853,7 +866,7 @@ class BoundaryLockTests(unittest.TestCase):
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
-                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+                "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
                 "project": "p",
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "openapi", "paths": ["api.yaml"]}}
@@ -873,6 +886,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_examples_expected_lockfiles_are_current(self):
         repo_root = Path(__file__).resolve().parents[1]
         examples = [
+            "behavior",
             "openapi",
             "json-file",
             "implicit-and-leaf",
@@ -1023,12 +1037,12 @@ class BoundaryLockTests(unittest.TestCase):
             original = _providers_mod.compute_boundary
             try:
                 _lockfile_mod.compute_boundary = lambda *args, **kwargs: (_ for _ in ()).throw(OSError("denied"))
-                lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree", strict=False)
+                with self.assertRaisesRegex(ValueError, "Boundary digest failed"):
+                    boundary_lock.generate_lockfile(
+                        cfg, root, source="working-tree", strict=False
+                    )
             finally:
                 _lockfile_mod.compute_boundary = original
-            comp = lock["components"]["svc"]
-            self.assertEqual(comp["boundary_status"], "error")
-            self.assertTrue(any("Boundary digest failed" in e for e in comp.get("boundary_errors", [])))
 
     def test_hash_guardrail_reports_large_file_boundary_error(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1044,12 +1058,12 @@ class BoundaryLockTests(unittest.TestCase):
             old_limit = _hashing_mod.MAX_HASH_FILE_BYTES
             try:
                 _hashing_mod.MAX_HASH_FILE_BYTES = 16
-                lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree", strict=False)
+                with self.assertRaisesRegex(ValueError, "Hash guardrail exceeded"):
+                    boundary_lock.generate_lockfile(
+                        cfg, root, source="working-tree", strict=False
+                    )
             finally:
                 _hashing_mod.MAX_HASH_FILE_BYTES = old_limit
-            comp = lock["components"]["svc"]
-            self.assertEqual(comp["boundary_status"], "error")
-            self.assertTrue(any("Hash guardrail exceeded" in e for e in comp.get("boundary_errors", [])))
 
     def test_hash_guardrail_applies_to_head_source_content(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1069,13 +1083,12 @@ class BoundaryLockTests(unittest.TestCase):
             old_limit = _hashing_mod.MAX_HASH_FILE_BYTES
             try:
                 _hashing_mod.MAX_HASH_FILE_BYTES = 16
-                lock = boundary_lock.generate_lockfile(cfg, root, source="head", strict=False)
+                with self.assertRaisesRegex(ValueError, "Hash guardrail exceeded"):
+                    boundary_lock.generate_lockfile(
+                        cfg, root, source="head", strict=False
+                    )
             finally:
                 _hashing_mod.MAX_HASH_FILE_BYTES = old_limit
-            self.assertEqual(lock["components"]["svc"]["boundary_status"], "error")
-            self.assertTrue(
-                any("Hash guardrail exceeded" in e for e in lock["components"]["svc"].get("boundary_errors", []))
-            )
 
     def test_internal_change_updates_exact_but_not_api(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1319,8 +1332,8 @@ class BoundaryLockTests(unittest.TestCase):
             )
             self.assertIsNone(lock["components"]["svc"]["version"])
 
-    def test_vendored_copy_drift_reported_as_warning(self):
-        """When a vendored copy differs from source, a warning is recorded."""
+    def test_vendored_copy_drift_fails_strict_generation(self):
+        """A divergent vendored copy cannot be blessed by strict generation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             svc_dir = root / "svc"
@@ -1340,11 +1353,12 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(cfg, root, source="working-tree")
-            entry = lock["components"]["svc"]
-            self.assertIn("vendored_digests", entry)
-            self.assertIn("warnings", entry)
-            self.assertTrue(any("vendor/svc" in w for w in entry["warnings"]))
+            with self.assertRaisesRegex(ValueError, "differs from source"):
+                boundary_lock.generate_lockfile(cfg, root, source="working-tree")
+            with self.assertRaisesRegex(ValueError, "differs from source"):
+                boundary_lock.generate_lockfile(
+                    cfg, root, source="working-tree", strict=False
+                )
 
     def test_vendored_copy_in_sync_has_no_warning(self):
         """When vendored copy matches source, no warning is produced."""
@@ -1371,8 +1385,8 @@ class BoundaryLockTests(unittest.TestCase):
             entry = lock["components"]["svc"]
             self.assertNotIn("warnings", entry)
 
-    def test_repo_with_no_commits_returns_none_exact_digest(self):
-        """A git repo with no commits should not crash; exact digest returns None."""
+    def test_repo_with_no_commits_rejects_head_source(self):
+        """HEAD source fails closed when no commit can be captured."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
@@ -1390,9 +1404,10 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            # source=head requires commits; with none it should return None, not crash
-            lock = boundary_lock.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lock["components"]["svc"]["fingerprints"]["exact"])
+            with self.assertRaisesRegex(ValueError, "HEAD does not resolve"):
+                boundary_lock.generate_lockfile(
+                    cfg, root, source="head", strict=False
+                )
 
     def test_format_json_flag_accepted_by_verify(self):
         """--format json is accepted and produces JSON output."""
@@ -1689,6 +1704,7 @@ class BoundaryLockTests(unittest.TestCase):
                 "slices": {},
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            self._commit_all(root, "add config")
             res = self._run_cli(root, "explain", "no-such-component")
             self.assertEqual(res.returncode, 2)
 
@@ -1707,6 +1723,7 @@ class BoundaryLockTests(unittest.TestCase):
                 "slices": {},
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            self._commit_all(root, "add config")
             res = self._run_cli(root, "explain", "svc")
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertIn("svc", res.stdout)
@@ -2064,21 +2081,20 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertEqual(digest1, digest2)
 
     # ------------------------------------------------------------------
-    # git_latest_tag: tag list fallback (when describe fails)
+    # git_latest_tag: reachable tag lookup
     # ------------------------------------------------------------------
 
-    def test_git_latest_tag_falls_back_to_tag_list(self):
-        """git_latest_tag returns a tag when git describe fails but tag list succeeds."""
+    def test_git_latest_tag_returns_reachable_tag(self):
+        """git_latest_tag returns a tag reachable from the selected commit."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
-            # Create an orphan commit so describe would fail on most refs
+            # Create and tag the selected orphan history.
             subprocess.run(["git", "checkout", "--orphan", "orphan-branch"], cwd=root, check=True, capture_output=True)
             (root / "f.txt").write_text("v\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "tag", "svc-v1.2.3"], cwd=root, check=True, capture_output=True)
-            # Now the tag IS reachable so describe might work — test the result regardless
             result = boundary_lock.git_latest_tag(root, "svc-v")
             self.assertEqual(result, "1.2.3")
 
@@ -2499,10 +2515,12 @@ class BoundaryLockTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lock = boundary_lock.generate_lockfile(
-                cfg, root, source="working-tree", strict=False
-            )
-            self.assertEqual(lock["components"]["svc"]["boundary_status"], "error")
+            with self.assertRaisesRegex(
+                ValueError, "No boundary paths declared for explicit boundary provider"
+            ):
+                boundary_lock.generate_lockfile(
+                    cfg, root, source="working-tree", strict=False
+                )
 
     # ------------------------------------------------------------------
     # Phase 3 — semantic provider integration tests
@@ -2848,7 +2866,7 @@ class BoundaryLockTests(unittest.TestCase):
 
     def test_lockfile_schema_issues_correct_schema_passes(self):
         """_lockfile_schema_issues returns empty for correct schema."""
-        issues = boundary_lock._lockfile_schema_issues({"schema": "boundary-lock/v2"})
+        issues = boundary_lock._lockfile_schema_issues({"schema": "boundary-lock/v3"})
         self.assertEqual(issues, [])
 
 
@@ -2973,6 +2991,7 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             (root / "boundary.config.json").write_text(json.dumps(config))
             (root / "boundary.lock.json").write_text(json.dumps(lockfile))
+            self._commit_all(root, "add config and lock")
             import sys as _sys
             old_argv = _sys.argv[:]
             old_dir = os.getcwd()
@@ -2996,6 +3015,7 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             (root / "boundary.config.json").write_text(json.dumps(config))
             (root / "boundary.lock.json").write_text(json.dumps(lockfile))
+            self._commit_all(root, "add config and lock")
             import sys as _sys
             old_argv = _sys.argv[:]
             old_dir = os.getcwd()
@@ -3042,6 +3062,14 @@ class MigrateLockTests(unittest.TestCase):
         base.update(extra)
         return base
 
+    def _minimal_v3(self, **extra):
+        base = self._minimal_v2()
+        base["schema"] = "boundary-lock/v3"
+        base["config_contract"] = "boundver-semantic-config/v1"
+        base["config_digest"] = "0" * 64
+        base.update(extra)
+        return base
+
     # ------------------------------------------------------------------
     # Unit tests for migrate_lockfile()
     # ------------------------------------------------------------------
@@ -3056,9 +3084,9 @@ class MigrateLockTests(unittest.TestCase):
         self.assertIn("cannot be migrated", message)
         self.assertIn("boundver generate", message)
 
-    def test_migrate_strips_generated_at(self):
+    def test_current_v3_cleanup_strips_generated_at(self):
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v2(generated_at="2024-01-01T00:00:00Z")
+        lf = self._minimal_v3(generated_at="2024-01-01T00:00:00Z")
         result = migrate_lockfile(lf)
         self.assertNotIn("generated_at", result)
 
@@ -3069,17 +3097,22 @@ class MigrateLockTests(unittest.TestCase):
             migrate_lockfile(lf)
         self.assertIn("generated_at", lf)  # original untouched
 
-    def test_migrate_preserves_components(self):
+    def test_current_v3_cleanup_preserves_components(self):
         from boundver._lockfile import migrate_lockfile
-        result = migrate_lockfile(self._minimal_v2())
+        result = migrate_lockfile(self._minimal_v3())
         self.assertEqual(result["components"]["svc"]["fingerprints"]["exact"], "aaa")
 
-    def test_migrate_adds_missing_components_and_slices(self):
+    def test_current_v3_cleanup_adds_missing_components_and_slices(self):
         from boundver._lockfile import migrate_lockfile
-        lf = {"schema": "boundary-lock/v2", "project": "x"}
+        lf = {"schema": "boundary-lock/v3", "project": "x"}
         result = migrate_lockfile(lf)
         self.assertEqual(result["components"], {})
         self.assertEqual(result["slices"], {})
+
+    def test_migrate_v2_requires_regeneration(self):
+        from boundver._lockfile import MigrationError, migrate_lockfile
+        with self.assertRaisesRegex(MigrationError, "cannot be migrated"):
+            migrate_lockfile(self._minimal_v2())
 
     def test_migrate_unknown_schema_raises(self):
         from boundver._lockfile import MigrationError, migrate_lockfile
@@ -3097,7 +3130,7 @@ class MigrateLockTests(unittest.TestCase):
     def test_migrate_idempotent(self):
         """Running migrate twice gives the same result as running it once."""
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v2(generated_at="ts")
+        lf = self._minimal_v3(generated_at="ts")
         once = migrate_lockfile(lf)
         twice = migrate_lockfile(once)
         self.assertEqual(once, twice)
@@ -3148,11 +3181,20 @@ class MigrateLockTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertEqual(p.read_text(), original)
 
-    def test_cli_dry_run_does_not_write(self):
-        import io, sys as _sys
+    def test_cli_v2_requires_regeneration_and_does_not_write(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
             original = json.dumps(self._minimal_v2(generated_at="ts"))
+            p.write_text(original)
+            rc = self._run_migrate_cli(p)
+            self.assertEqual(rc, 2)
+            self.assertEqual(p.read_text(), original)
+
+    def test_cli_current_v3_dry_run_does_not_write(self):
+        import io, sys as _sys
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "boundary.lock.json"
+            original = json.dumps(self._minimal_v3(generated_at="ts"))
             p.write_text(original)
             buf = io.StringIO()
             old_stdout = _sys.stdout

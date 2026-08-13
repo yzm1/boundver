@@ -1,6 +1,6 @@
 """Diff operations between lockfiles for boundver."""
 
-from typing import Dict, List
+from typing import Dict
 
 from ._lockfile import COMPONENT_METADATA_FIELDS
 

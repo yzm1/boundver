@@ -1,91 +1,275 @@
 name: Create release tag
 
 on:
-  push:
-    branches:
-      - "release/v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Exact vMAJOR.MINOR.PATCH tag to create.
+        required: true
+        type: string
+      release_sha:
+        description: Exact current-main commit to release.
+        required: true
+        type: string
+      compatibility_alias:
+        description: Explicit vMAJOR.MINOR Action alias to advance, or none.
+        required: true
+        type: string
 
 concurrency:
-  group: release-tag-${{ github.ref }}
+  # Share one mutex with publish.yml. The dispatched publication waits until
+  # this tag workflow finishes, and no other release version can overlap it.
+  group: boundver-release-promotion
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
-  tag:
+  verify-candidate:
+    name: Verify candidate before tagging
     runs-on: ubuntu-latest
     permissions:
-      actions: write
-      contents: write
+      actions: read
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      release-tag: ${{ steps.validate.outputs.tag }}
+      release-sha: ${{ steps.validate.outputs.sha }}
+      compatibility-alias: ${{ steps.validate.outputs.alias }}
     steps:
-      - name: Checkout the candidate
-        uses: actions/checkout@v6
+      - name: Checkout the exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.release_sha }}
 
-      - name: Validate release branch, version, and main commit
+      - name: Validate inputs, version, and current main commit
         id: validate
         shell: bash
         env:
-          RELEASE_BRANCH: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
         run: |
           set -euo pipefail
-          release_tag=$(python - "$RELEASE_BRANCH" <<'PY'
+          python3 - "$RELEASE_TAG" "$RELEASE_SHA" "$COMPATIBILITY_ALIAS" <<'PY'
           import pathlib
           import re
+          import subprocess
           import sys
           import tomllib
 
-          branch = sys.argv[1]
-          match = re.fullmatch(r"release/(v[0-9]+\.[0-9]+\.[0-9]+)", branch)
-          if match is None:
-              raise SystemExit(f"invalid release branch: {branch!r}")
-          tag = match.group(1)
-          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
-          if tag != f"v{version}":
-              raise SystemExit(f"branch tag {tag!r} does not match package version v{version}")
-          print(tag)
+          tag, release_sha, alias = sys.argv[1:]
+          if re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag) is None:
+              raise SystemExit(f"invalid release tag: {tag!r}")
+          if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
+              raise SystemExit(f"invalid release SHA: {release_sha!r}")
+          expected_alias = tag.rsplit(".", 1)[0]
+          if alias not in {expected_alias, "none"}:
+              raise SystemExit(
+                  f"compatibility alias must be {expected_alias!r} or 'none', got {alias!r}"
+              )
+          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
+          if project.get("name") != "boundver" or tag != f"v{project.get('version')}":
+              raise SystemExit("release tag does not match boundver project metadata")
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if head != release_sha:
+              raise SystemExit(f"checked-out commit {head} != requested {release_sha}")
           PY
-          )
           git fetch --no-tags origin main
           main_sha=$(git rev-parse FETCH_HEAD)
           if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
-            echo "Release branch must point to current main: $RELEASE_SHA != $main_sha" >&2
+            echo "Release candidate must be current main: $RELEASE_SHA != $main_sha" >&2
             exit 1
           fi
-          existing_tag=$(git ls-remote origin "refs/tags/$release_tag" | awk '{print $1}')
+          existing_tag=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
           if [[ -n "$existing_tag" && "$existing_tag" != "$RELEASE_SHA" ]]; then
-            echo "Tag $release_tag already points to $existing_tag, not $RELEASE_SHA" >&2
+            echo "Tag $RELEASE_TAG already points to $existing_tag, not $RELEASE_SHA" >&2
             exit 1
           fi
-          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
-          if [[ "$existing_tag" == "$RELEASE_SHA" ]]; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "alias=$COMPATIBILITY_ALIAS" >> "$GITHUB_OUTPUT"
 
-      - name: Create the immutable version tag
-        if: steps.validate.outputs.tag_exists != 'true'
-        shell: bash
-        env:
-          RELEASE_SHA: ${{ github.sha }}
-          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
-        run: |
-          set -euo pipefail
-          git tag "$RELEASE_TAG" "$RELEASE_SHA"
-          git push origin "refs/tags/$RELEASE_TAG"
-
-      - name: Dispatch the verified publish workflow
+      - name: Require successful CI for the exact main commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          conclusion=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${RELEASE_SHA}&event=push&per_page=20" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main" and .head_sha == env.RELEASE_SHA and .status == "completed" and .conclusion == "success")][0].conclusion // ""')
+          if [[ "$conclusion" != success ]]; then
+            echo "No successful CI push run found for release commit $RELEASE_SHA" >&2
+            exit 1
+          fi
+
+      - name: Refuse overlapping release promotions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          active=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[] | select(.status == "requested" or .status == "pending" or .status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
+          if [[ ! "$active" =~ ^[0-9]+$ || "$active" -ne 0 ]]; then
+            echo "Another release promotion is active; refusing to create a second version tag." >&2
+            exit 1
+          fi
+
+      - name: Require completed reviews since the previous release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
           RELEASE_TAG: ${{ steps.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          gh workflow run publish.yml \
-            --ref main \
+          bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
+
+      - name: Require exact release notes and public copy before tagging
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Test source and exact distributions
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' twine
+          pytest -q
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_SHA") \
+            bash scripts/packaging_smoke.sh
+          python -m twine check dist/*.whl dist/*.tar.gz
+
+      - name: Verify the public Action contract
+        uses: ./
+
+  tag:
+    name: Create tag and dispatch publication
+    runs-on: ubuntu-latest
+    needs: verify-candidate
+    permissions:
+      actions: write
+      contents: write
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout the exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.verify-candidate.outputs.release-sha }}
+
+      - name: Revalidate mutable state and create the version tag
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.verify-candidate.outputs.release-sha }}
+          RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+            echo "Main advanced while the candidate was tested: $RELEASE_SHA != $main_sha" >&2
+            exit 1
+          fi
+          existing_tag=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          if [[ -n "$existing_tag" && "$existing_tag" != "$RELEASE_SHA" ]]; then
+            echo "Tag $RELEASE_TAG already points to $existing_tag, not $RELEASE_SHA" >&2
+            exit 1
+          fi
+          if [[ -z "$existing_tag" ]]; then
+            python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+              --output "$RUNNER_TEMP/release-notes.md"
+            python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+            git fetch --no-tags origin main
+            main_sha=$(git rev-parse FETCH_HEAD)
+            if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+              echo "Main advanced before the final review audit: $RELEASE_SHA != $main_sha" >&2
+              exit 1
+            fi
+            bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
+            active=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=100" \
+              --jq '[.workflow_runs[] | select(.status == "requested" or .status == "pending" or .status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
+            if [[ ! "$active" =~ ^[0-9]+$ || "$active" -ne 0 ]]; then
+              echo "Another release promotion became active; refusing to create the tag." >&2
+              exit 1
+            fi
+            # The checks above can take long enough for main to advance. Bind
+            # the final mutation to current main after the final review audit.
+            git fetch --no-tags origin main
+            main_sha=$(git rev-parse FETCH_HEAD)
+            if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+              echo "Main advanced at the tag mutation boundary: $RELEASE_SHA != $main_sha" >&2
+              exit 1
+            fi
+            git tag "$RELEASE_TAG" "$RELEASE_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch publication exactly once
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.verify-candidate.outputs.release-sha }}
+          RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
+          COMPATIBILITY_ALIAS: ${{ needs.verify-candidate.outputs.compatibility-alias }}
+        run: |
+          set -euo pipefail
+          find_existing_run() {
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?event=workflow_dispatch&head_sha=${RELEASE_SHA}&per_page=100" \
+              --jq '[.workflow_runs[] | select(.head_sha == env.RELEASE_SHA and .head_branch == env.RELEASE_TAG)] | if length > 1 then error("multiple publication runs exist for this tag and SHA") elif length == 1 then .[0].html_url else "" end'
+          }
+          existing_run=$(find_existing_run)
+          if [[ -n "$existing_run" ]]; then
+            echo "Publication already exists for $RELEASE_TAG at $existing_run; not dispatching again."
+            exit 0
+          fi
+          error_file=$(mktemp)
+          if gh workflow run publish.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_TAG" \
             --field release_tag="$RELEASE_TAG" \
-            --field release_sha="$RELEASE_SHA"
+            --field release_sha="$RELEASE_SHA" \
+            --field compatibility_alias="$COMPATIBILITY_ALIAS" \
+            2>"$error_file"; then
+            exit 0
+          fi
+          # Dispatch is at-least-once. If the request was accepted but the CLI
+          # lost the response, discover that run instead of dispatching again.
+          for attempt in 1 2 3 4 5 6; do
+            existing_run=$(find_existing_run)
+            if [[ -n "$existing_run" ]]; then
+              echo "Dispatch response was ambiguous; accepted run is $existing_run"
+              exit 0
+            fi
+            sleep 5
+          done
+          cat "$error_file" >&2
+          echo "Publication dispatch failed and no accepted run appeared." >&2
+          exit 1

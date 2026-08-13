@@ -446,6 +446,7 @@ class TestLoadCustomProviders(unittest.TestCase):
 
         class ValidProvider:
             name = "custom.test.valid-provider-abc"
+            version = "1"
 
             def resolve(self, ctx):
                 return ResolvedBoundary()
@@ -664,8 +665,8 @@ components:
         get_op = obj["paths"]["/users"]["get"]
         self.assertNotIn("description", get_op)
         self.assertNotIn("summary", get_op)
-        # x-* stripped
-        self.assertNotIn("x-internal", get_op)
+        # x-* extensions may be contract-bearing and are retained.
+        self.assertTrue(get_op["x-internal"])
         # operationId kept
         self.assertIn("operationId", get_op)
         # components kept
@@ -793,9 +794,10 @@ def _json_to_yaml_bytes(obj: dict) -> bytes:
 class TestGlobPatterns(unittest.TestCase):
     """boundary.paths entries containing *, ?, [ are glob patterns."""
 
-    def test_star_matches_files_in_subdirectory(self):
-        """*.yaml should match yaml files at any depth (fnmatch semantics)."""
+    def test_star_matches_only_the_current_directory(self):
+        """*.yaml is segment-local; recursive matches require **/*.yaml."""
         files = {
+            "svc/root.yaml": b"openapi: 3.0.0",
             "svc/api/v1.yaml": b"openapi: 3.0.0",
             "svc/api/v2.yaml": b"openapi: 3.1.0",
             "svc/main.py":     b"# python",
@@ -804,8 +806,9 @@ class TestGlobPatterns(unittest.TestCase):
         result = PathHashProvider().resolve(ctx)
         self.assertEqual(result.status, "ok")
         labels = [label for label, _ in result.entries]
-        self.assertIn("file:api/v1.yaml", labels)
-        self.assertIn("file:api/v2.yaml", labels)
+        self.assertEqual(labels, ["file:root.yaml"])
+        self.assertNotIn("file:api/v1.yaml", labels)
+        self.assertNotIn("file:api/v2.yaml", labels)
         self.assertNotIn("file:main.py", labels)
 
     def test_glob_with_directory_prefix(self):
@@ -819,7 +822,7 @@ class TestGlobPatterns(unittest.TestCase):
         result = PathHashProvider().resolve(ctx)
         labels = [label for label, _ in result.entries]
         self.assertIn("file:api/openapi.yaml", labels)
-        # fnmatch * matches /, so api/*.yaml also matches nested paths — that's expected
+        # Ordinary * never crosses a path separator.
         self.assertNotIn("file:api/ignored.json", labels)
 
     def test_glob_and_literal_mixed(self):

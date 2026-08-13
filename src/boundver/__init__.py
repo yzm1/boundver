@@ -38,7 +38,6 @@ def load_config(config_path: str = "boundary.config.json") -> dict:
 
     Raises ValueError if the config is invalid or the file is not found.
     """
-    from pathlib import Path
     from ._config import load_config_file, find_config_file
     from ._git import git_root
 
@@ -49,7 +48,7 @@ def load_config(config_path: str = "boundary.config.json") -> dict:
 
 def generate(
     config_path: str = "boundary.config.json",
-    out_path: str = "boundary.lock.json",
+    out_path: Optional[str] = "boundary.lock.json",
     source: str = "head",
     allow_custom_providers: bool = False,
 ) -> dict:
@@ -59,29 +58,41 @@ def generate(
     to skip writing.
     """
     import json
-    from pathlib import Path
     from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import generate_lockfile
     from ._git import git_root
-    from .core import _ensure_lock_outside_components, _write_text_atomic
+    from .core import (
+        _capture_operation_snapshot,
+        _ensure_lock_outside_components,
+        _write_text_atomic,
+    )
 
     repo_root = git_root()
-    config = load_config_file(find_config_file(repo_root, config_path))
+    snapshot = _capture_operation_snapshot(repo_root, source)
+    resolved_config_path = find_config_file(
+        repo_root, config_path, snapshot=snapshot
+    )
+    config = load_config_file(
+        resolved_config_path, repo_root=repo_root, snapshot=snapshot
+    )
     config_errors = validate_config(
         config,
         repo_root,
         allow_custom_providers=allow_custom_providers,
         source=source,
+        snapshot=snapshot,
     )
     if config_errors:
         raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
-    lockfile = generate_lockfile(
-        config, repo_root, source=source, strict=True,
-        allow_custom_providers=allow_custom_providers,
-    )
     if out_path is not None:
         dest = repo_root / out_path
         _ensure_lock_outside_components(repo_root, dest, config)
+    lockfile = generate_lockfile(
+        config, repo_root, source=source, strict=True,
+        allow_custom_providers=allow_custom_providers,
+        snapshot=snapshot,
+    )
+    if out_path is not None:
         _write_text_atomic(dest, json.dumps(lockfile, indent=2) + "\n")
     return lockfile
 
@@ -92,42 +103,68 @@ def verify(
     source: str = "head",
     components: Optional[List[str]] = None,
     allow_custom_providers: bool = False,
+    facets: Optional[List[str]] = None,
+    observations: Optional[List[str]] = None,
+    fail_fast: bool = False,
+    transitive_consumers: bool = False,
 ) -> List[str]:
     """Verify lockfile matches current repo state.
 
-    Returns a list of mismatch strings. Empty list means up to date.
+    Returns gated mismatch strings. Empty means the selected gate is current.
+    When *facets* is omitted, ``defaults.verify_facets`` is honored just like
+    the CLI. Pass a list as *observations* to collect drift outside that gate.
     """
     from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import verify_lockfile
     from ._git import git_root
-    from .core import _ensure_lock_outside_components, _load_lockfile
+    from .core import (
+        _capture_operation_snapshot,
+        _ensure_lock_outside_components,
+        _load_lockfile,
+    )
 
     repo_root = git_root()
-    config = load_config_file(find_config_file(repo_root, config_path))
+    snapshot = _capture_operation_snapshot(repo_root, source)
+    resolved_config_path = find_config_file(
+        repo_root, config_path, snapshot=snapshot
+    )
+    config = load_config_file(
+        resolved_config_path, repo_root=repo_root, snapshot=snapshot
+    )
     config_errors = validate_config(
         config,
         repo_root,
         allow_custom_providers=allow_custom_providers,
         source=source,
+        snapshot=snapshot,
     )
     if config_errors:
         raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     resolved_lock_path = repo_root / lock_path
     _ensure_lock_outside_components(repo_root, resolved_lock_path, config)
-    lf = _load_lockfile(resolved_lock_path)
+    lf = _load_lockfile(
+        resolved_lock_path, repo_root=repo_root, snapshot=snapshot
+    )
     return verify_lockfile(
         config, lf, repo_root, source=source,
         components_filter=components,
         allow_custom_providers=allow_custom_providers,
+        facets=facets,
+        observations=observations,
+        fail_fast=fail_fast,
+        snapshot=snapshot,
+        transitive_consumers=transitive_consumers,
     )
 
 
 def diff(old_path: str, new_path: str) -> dict:
     """Diff two lockfiles and return structured result."""
-    import json
     from pathlib import Path
     from ._diff import diff_lockfiles
+    from .core import _load_lockfile, _require_valid_lockfile
 
-    old = json.loads(Path(old_path).read_text(encoding="utf-8"))
-    new = json.loads(Path(new_path).read_text(encoding="utf-8"))
+    old = _load_lockfile(Path(old_path))
+    new = _load_lockfile(Path(new_path))
+    _require_valid_lockfile(old)
+    _require_valid_lockfile(new)
     return diff_lockfiles(old, new)

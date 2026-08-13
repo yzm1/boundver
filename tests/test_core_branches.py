@@ -53,27 +53,27 @@ class GenerateLockfileCompatModeTests(unittest.TestCase):
             expected = core.sha256_hex("svc@compat:1.2")
             self.assertEqual(fp["compat"], expected)
 
-    def test_semver_major_minor_no_tag_gives_null_compat(self):
-        """semver_major_minor with no tag → no version → compat is None."""
+    def test_semver_major_minor_no_tag_is_generation_error(self):
+        """A declared tag source that resolves no version remains fatal."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
             cfg = self._setup(root)
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
-            # No tag → version = None → compat = None
-            lockfile = core.generate_lockfile(
-                cfg, root, source="head", strict=False
-            )
-            fp = lockfile["components"]["svc"]["fingerprints"]
-            self.assertIsNone(fp["compat"])
+            with self.assertRaisesRegex(
+                ValueError, "Configured version source did not produce a version"
+            ):
+                core.generate_lockfile(
+                    cfg, root, source="head", strict=False
+                )
 
 
 class GenerateLockfileUnknownProviderTests(unittest.TestCase):
     """Test unknown boundary provider is handled gracefully."""
 
-    def test_unknown_boundary_provider_recorded_as_error(self):
-        """Lines 60-62: unknown provider → boundary_status='error', api_digest=None."""
+    def test_unknown_boundary_provider_fails_even_when_non_strict(self):
+        """Allowing null slice inputs does not bless an unknown provider."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -89,12 +89,10 @@ class GenerateLockfileUnknownProviderTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lockfile = core.generate_lockfile(
-                cfg, root, source="working-tree", strict=False
-            )
-            comp = lockfile["components"]["svc"]
-            self.assertEqual(comp["boundary_status"], "error")
-            self.assertIsNone(comp["fingerprints"]["boundary"])
+            with self.assertRaisesRegex(ValueError, "Unknown boundary provider"):
+                core.generate_lockfile(
+                    cfg, root, source="working-tree", strict=False
+                )
 
 
 class SliceStrictModeTests(unittest.TestCase):
@@ -239,8 +237,8 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
                     source="working-tree",
                 )
 
-    def test_non_v2_existing_lockfile_requires_full_generation(self):
-        """Partial updates must not mix v1 and v2 hashing contracts."""
+    def test_non_v3_existing_lockfile_requires_full_generation(self):
+        """Partial updates must not mix v1 and v3 hashing contracts."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -257,7 +255,7 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
                 )
             )
 
-            with self.assertRaisesRegex(ValueError, "boundary-lock/v2"):
+            with self.assertRaisesRegex(ValueError, "boundary-lock/v3"):
                 core.generate_lockfile_for_components(
                     cfg,
                     root,
@@ -288,10 +286,10 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
 
 
 class VendoredDriftTests(unittest.TestCase):
-    """Test vendored copy drift warning in verify_lockfile."""
+    """Test fail-closed vendored copy drift handling."""
 
-    def test_vendored_drift_recorded_as_issue(self):
-        """Line 347: vendored drift appears in verify_lockfile issues."""
+    def test_vendored_drift_remains_fatal_when_non_strict(self):
+        """Allowing null slice inputs does not bless vendored drift."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -311,13 +309,12 @@ class VendoredDriftTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lockfile = core.generate_lockfile(cfg, root, source="working-tree")
-            # Lockfile itself has warnings already; verify adds them as issues
-            issues = core.verify_lockfile(cfg, lockfile, root, source="working-tree")
-            # The lockfile was generated WITH drift, so exact fingerprints match.
-            # But there should still be a VENDORED DRIFT warning in issues.
-            drift_issues = [i for i in issues if "VENDORED DRIFT" in i]
-            self.assertGreater(len(drift_issues), 0)
+            with self.assertRaisesRegex(ValueError, "differs from source"):
+                core.generate_lockfile(cfg, root, source="working-tree")
+            with self.assertRaisesRegex(ValueError, "differs from source"):
+                core.generate_lockfile(
+                    cfg, root, source="working-tree", strict=False
+                )
 
 
 class ValidateConfigBranchTests(unittest.TestCase):
@@ -345,8 +342,8 @@ class ValidateConfigBranchTests(unittest.TestCase):
             errors = core.validate_config(cfg, root)
             self.assertTrue(any("nonexistent.yaml" in e or "not found" in e.lower() for e in errors))
 
-    def test_validate_config_boundary_slice_with_implicit_provider_errors(self):
-        """Lines 820-828: boundary slice with implicit/leaf component reports error."""
+    def test_validate_config_allows_partial_boundary_slice_declaration(self):
+        """Availability is enforced by strict generation, not base validation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -364,7 +361,7 @@ class ValidateConfigBranchTests(unittest.TestCase):
                 },
             }
             errors = core.validate_config(cfg, root)
-            self.assertTrue(any("boundary" in e.lower() for e in errors))
+            self.assertEqual(errors, [])
 
 
 class DiffLockfilesTests(unittest.TestCase):
@@ -711,7 +708,9 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
             }
             errors = core.validate_config(cfg, root)
             # Should report either escapes-component-root or escapes-repository-root
-            self.assertTrue(any("escapes" in e for e in errors))
+            self.assertTrue(
+                any("escapes" in e or "repository root" in e for e in errors)
+            )
 
 
 class LoadCustomProvidersInstantiationTests(unittest.TestCase):
@@ -882,7 +881,9 @@ class MainDryRunTests(unittest.TestCase):
             old_dir = import_os.getcwd()
             import_os.chdir(str(root))
             try:
-                _sys.argv = ["boundver", "generate", "--dry-run"]
+                _sys.argv = [
+                    "boundver", "generate", "--source", "working-tree", "--dry-run"
+                ]
                 out = io.StringIO()
                 with redirect_stdout(out):
                     try:
@@ -921,14 +922,38 @@ class MainVerifyDriftTextTests(unittest.TestCase):
                 "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit", "paths": []}}},
                 "slices": {},
             }
+            (root / "boundary.config.json").write_text(json.dumps(cfg))
+            subprocess.run(
+                ["git", "add", "boundary.config.json"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "config"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
             # Generate lockfile at commit 1
             lockfile = core.generate_lockfile(cfg, root)
+            (root / "boundary.lock.json").write_text(json.dumps(lockfile))
+            subprocess.run(
+                ["git", "add", "boundary.lock.json"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "lock"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
             # Now make a second commit so HEAD diverges from lockfile
             (root / "svc" / "main.py").write_text("x=2\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "change"], cwd=root, check=True, capture_output=True)
-            (root / "boundary.config.json").write_text(json.dumps(cfg))
-            (root / "boundary.lock.json").write_text(json.dumps(lockfile))
             old_argv = _sys.argv[:]
             old_dir = import_os.getcwd()
             import_os.chdir(str(root))
@@ -1654,8 +1679,8 @@ class HashingContentOnlyValueErrorTests(unittest.TestCase):
             self.assertIsNotNone(digest)
             self.assertEqual(len(digest), 64)  # SHA-256 hex
 
-    def test_content_only_digest_head_file_outside_base_uses_repo_rel(self):
-        """Same ValueError fallback for head source (_hashing.py:125-126)."""
+    def test_content_only_head_snapshot_cannot_select_file_outside_base(self):
+        """Captured Git-tree selection stays confined to the requested base."""
         from unittest.mock import patch, MagicMock
         from boundver._hashing import _content_only_digest
 
@@ -1666,10 +1691,11 @@ class HashingContentOnlyValueErrorTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
 
-            # Patch _list_files_for_source to return "readme.txt" while base is "svc".
+            # Git-backed sources enumerate the captured immutable tree rather
+            # than trusting the legacy moving-ref listing callback.
             with patch("boundver._hashing._list_files_for_source", return_value=["readme.txt"]):
                 digest = _content_only_digest(root, "svc", source="head")
-            self.assertIsNotNone(digest)
+            self.assertIsNone(digest)
 
 
 class PathHashProviderGlobTests(unittest.TestCase):
@@ -1714,16 +1740,15 @@ class PathHashProviderGlobTests(unittest.TestCase):
 
 
 class GitLatestTagFallbackTests(unittest.TestCase):
-    """_git.py lines 206, 208-209: git_latest_tag fallback when describe fails."""
+    """git_latest_tag never falls back to repository-wide unreachable tags."""
 
     def _init_git_repo(self, root: Path) -> None:
         subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
         subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
-    def test_latest_tag_fallback_returns_tag_when_describe_fails(self):
-        """When git describe fails but git tag --list succeeds, returns the tag version
-        (_git.py:206)."""
+    def test_latest_tag_returns_none_when_describe_fails(self):
+        """A failed reachability lookup cannot select a repository-wide tag."""
         from unittest.mock import patch, call
         import subprocess as _sp
         from boundver._git import git_latest_tag
@@ -1737,18 +1762,16 @@ class GitLatestTagFallbackTests(unittest.TestCase):
                 call_count[0] += 1
                 if "describe" in args:
                     raise _sp.CalledProcessError(128, "git")
-                # Simulate `git tag --list svc-v* --sort=-v:refname`
-                result = MagicMock()
-                result.stdout = "svc-v2.1.0\nsvc-v1.0.0\n"
-                return result
+                raise AssertionError("repository-wide tag fallback must not run")
 
             from unittest.mock import MagicMock
             with patch("boundver._git._git_run", side_effect=fake_git_run):
                 version = git_latest_tag(root, "svc-v")
-            self.assertEqual(version, "2.1.0")
+            self.assertIsNone(version)
+            self.assertEqual(call_count, [1])
 
     def test_latest_tag_fallback_returns_none_when_no_tags(self):
-        """When both describe and tag list return nothing, returns None (_git.py:208-209)."""
+        """A failed reachable-tag query returns None."""
         from unittest.mock import patch
         import subprocess as _sp
         from boundver._git import git_latest_tag
@@ -1770,7 +1793,7 @@ class GitLatestTagFallbackTests(unittest.TestCase):
             self.assertIsNone(version)
 
     def test_latest_tag_fallback_returns_none_when_tag_list_also_fails(self):
-        """When both describe and tag --list fail, returns None (_git.py:208-209 outer except)."""
+        """A Git failure while querying reachable tags returns None."""
         from unittest.mock import patch
         import subprocess as _sp
         from boundver._git import git_latest_tag
@@ -1824,8 +1847,8 @@ class BehaviorTierGenerationTests(unittest.TestCase):
             lockfile = core.generate_lockfile(cfg, root, source="head")
             self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
 
-    def test_behavior_generation_survives_unknown_boundary_provider(self):
-        """behavior hashing still works when boundary provider is unknown."""
+    def test_behavior_generation_does_not_mask_unknown_boundary_provider(self):
+        """A valid behavior digest cannot bless an invalid boundary provider."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._make_repo(root)
@@ -1841,13 +1864,10 @@ class BehaviorTierGenerationTests(unittest.TestCase):
                 "slices": {},
             }
 
-            lockfile = core.generate_lockfile(
-                cfg, root, source="head", strict=False
-            )
-
-            self.assertEqual(lockfile["components"]["svc"]["boundary_status"], "error")
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["boundary"])
-            self.assertIsNotNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+            with self.assertRaisesRegex(ValueError, "Unknown boundary provider"):
+                core.generate_lockfile(
+                    cfg, root, source="head", strict=False
+                )
 
     def test_behavior_populated_when_configured(self):
         """behavior fingerprint is a hex string when behavior.paths is declared."""
@@ -2411,8 +2431,8 @@ class BehaviorTierConfigValidationTests(unittest.TestCase):
 class BehaviorDigestErrorPathTests(unittest.TestCase):
     """Tests for behavior digest computation failure paths (_lockfile.py lines 134-135)."""
 
-    def test_behavior_digest_null_when_path_missing(self):
-        """behavior.paths referencing non-existent files → digest is null (error swallowed)."""
+    def test_behavior_missing_path_fails_when_non_strict(self):
+        """Allowing null slice inputs does not bless behavior selection failure."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -2431,12 +2451,11 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            # Should not crash — behavior digest should be null
-            lockfile = core.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+            with self.assertRaisesRegex(ValueError, "matched no tracked files"):
+                core.generate_lockfile(cfg, root, source="head", strict=False)
 
-    def test_behavior_digest_null_with_only_missing_globs(self):
-        """Glob patterns that match nothing produce null behavior digest."""
+    def test_behavior_missing_glob_fails_when_non_strict(self):
+        """An empty behavior glob remains a computation error."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -2455,8 +2474,8 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
                 },
                 "slices": {},
             }
-            lockfile = core.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+            with self.assertRaisesRegex(ValueError, "matched no tracked files"):
+                core.generate_lockfile(cfg, root, source="head", strict=False)
 
     def test_behavior_digest_null_on_subprocess_error(self):
         """CalledProcessError during behavior resolve → digest is null (except path)."""
@@ -2489,10 +2508,8 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
                 return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
-                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
-            # The boundary fingerprint should still work (only behavior raises)
-            self.assertIsNotNone(lockfile["components"]["svc"]["fingerprints"]["boundary"])
+                with self.assertRaisesRegex(ValueError, "Behavior digest failed"):
+                    _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
 
     def test_behavior_digest_null_on_oserror(self):
         """OSError during behavior resolve → digest is null (except path)."""
@@ -2525,8 +2542,8 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
                 return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
-                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+                with self.assertRaisesRegex(ValueError, "Behavior digest failed"):
+                    _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
 
     def test_behavior_digest_null_on_value_error(self):
         """ValueError during behavior resolve → digest is null (except path)."""
@@ -2559,8 +2576,8 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
                 return original_fn(provider, ctx, **kwargs)
 
             with patch.object(_lockfile, "compute_boundary", side_effect=_raising_compute):
-                lockfile = _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
-            self.assertIsNone(lockfile["components"]["svc"]["fingerprints"]["behavior"])
+                with self.assertRaisesRegex(ValueError, "Behavior digest failed"):
+                    _lockfile.generate_lockfile(cfg, root, source="head", strict=False)
 
 
 class BehaviorRecomputeSliceTests(unittest.TestCase):
@@ -2673,7 +2690,8 @@ class GenerateLockfileForComponentsBehaviorTests(unittest.TestCase):
 
             # Partial regen of only worker
             merged = core.generate_lockfile_for_components(
-                cfg, root, selected_components=["worker"], out_path=out_path, source="head", strict=False
+                cfg, root, selected_components=["worker"], out_path=out_path,
+                source="head", strict=False, existing_lockfile=full_lock,
             )
             # svc behavior should be preserved from the original lockfile
             self.assertEqual(
@@ -2726,4 +2744,3 @@ class GenerateLockfileForComponentsBehaviorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

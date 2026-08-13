@@ -7,8 +7,21 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._git import _git_run, _git_run_bytes, _to_posix
-from ._utils import _is_glob, _short, boundary_provider_name
+from ._git import (
+    GitSourceSnapshot,
+    _capture_git_source_snapshot,
+    _git_run,
+    _git_run_bytes,
+    _to_posix,
+)
+from ._utils import (
+    _is_glob,
+    _match_path_glob,
+    _normalize_declared_path,
+    _short,
+    boundary_provider_name,
+)
+from ._consumer_graph import affected_consumers
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +61,14 @@ def _parse_name_status_z(data: bytes) -> List[Tuple[str, str]]:
         path = os.fsdecode(fields[index])
         index += 1
         if status.startswith(("R", "C")) and index < len(fields):
-            path = os.fsdecode(fields[index])
+            destination = os.fsdecode(fields[index])
             index += 1
+            # A rename can remove a declared boundary path even when its
+            # destination is internal. Preserve both identities for impact
+            # classification. A copy leaves its source unchanged.
+            if status.startswith("R"):
+                changed.append((status, path))
+            path = destination
         changed.append((status, path))
     return changed
 
@@ -128,6 +147,9 @@ def print_status(lockfile: dict) -> None:
         consumers = component.get("consumers", [])
         if consumers:
             print(f"      consumers: {', '.join(consumers)}")
+        external_consumers = component.get("external_consumers", [])
+        if external_consumers:
+            print(f"      external consumers: {', '.join(external_consumers)}")
 
     # Boundary coverage
     boundary_kinds: Dict[str, int] = {}
@@ -182,7 +204,12 @@ def print_status(lockfile: dict) -> None:
 
 
 def analyze_explain_changes(
-    config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head"
+    config: dict,
+    repo_root: Path,
+    component_name: str,
+    base_ref: str = "HEAD",
+    source: str = "head",
+    snapshot: Optional[GitSourceSnapshot] = None,
 ) -> Dict[str, Any]:
     """Analyze changed tracked files for one component and its boundary subset.
 
@@ -191,6 +218,22 @@ def analyze_explain_changes(
         source, changed (list of (status, path) tuples),
         boundary_provider, boundary_paths, boundary_changed (list of (status, path) tuples).
     """
+    if source not in {"head", "index", "working-tree"}:
+        return {
+            "error": (
+                f"unknown source mode {source!r}; expected head, index, or "
+                "working-tree"
+            )
+        }
+    if snapshot is not None and snapshot.source != source:
+        return {
+            "error": (
+                f"captured source mismatch: snapshot={snapshot.source!r}, "
+                f"source={source!r}"
+            )
+        }
+    if source == "working-tree" and snapshot is not None:
+        return {"error": "working-tree source does not accept a Git snapshot"}
     if base_ref.lstrip().startswith("-"):
         return {"error": f"invalid base ref: {base_ref!r}"}
     comp = config.get("components", {}).get(component_name)
@@ -203,11 +246,15 @@ def analyze_explain_changes(
     boundary_paths_raw = boundary.get("paths", []) if isinstance(boundary, dict) else []
 
     # When source=head and base_ref=HEAD, diffing HEAD vs HEAD is useless.
+    # Resolve the automatic parent from the captured commit when available so
+    # a concurrent branch update cannot change either side of the comparison.
     effective_base = base_ref
     if source == "head" and base_ref == "HEAD":
+        captured_head = snapshot.head_oid if snapshot is not None else None
+        parent_ref = f"{captured_head}~1" if captured_head else "HEAD~1"
         try:
-            _git_run(repo_root, ["rev-parse", "--verify", "HEAD~1"])
-            effective_base = "HEAD~1"
+            _git_run(repo_root, ["rev-parse", "--verify", parent_ref])
+            effective_base = parent_ref
         except subprocess.CalledProcessError:
             pass
 
@@ -215,25 +262,51 @@ def analyze_explain_changes(
     diff_args = ["diff", "--name-status", "-z"]
     if source == "working-tree":
         diff_args.append(effective_base)
+    elif source == "index" and snapshot is not None:
+        if effective_base == "HEAD" and snapshot.head_oid is not None:
+            effective_base = snapshot.head_oid
+        if snapshot.head_oid is None and effective_base == "HEAD":
+            # An unborn repository has no base tree.  Use the captured entry
+            # set rather than consulting the mutable live index again.
+            changed = [
+                ("A", path)
+                for path in sorted(snapshot.entries)
+                if path == component_path
+                or path.startswith(f"{component_path}/")
+            ]
+            diff_args = []
+        else:
+            diff_args.extend([effective_base, snapshot.tree_oid])
     elif source == "index":
         diff_args.extend(["--cached", effective_base])
+    elif snapshot is not None:
+        diff_args.extend(
+            [effective_base, snapshot.head_oid or snapshot.tree_oid]
+        )
     else:
         diff_args.extend([effective_base, "HEAD"])
-    diff_args.extend(["--", component_path])
-
-    try:
-        diff = _git_run_bytes(repo_root, ["--literal-pathspecs", *diff_args])
-    except subprocess.CalledProcessError as exc:
-        return {"error": f"failed to diff '{component_name}' against {effective_base}: {exc}"}
-
-    changed = _parse_name_status_z(diff.stdout)
+    if diff_args:
+        diff_args.extend(["--", component_path])
+        try:
+            diff = _git_run_bytes(
+                repo_root, ["--literal-pathspecs", *diff_args]
+            )
+        except subprocess.CalledProcessError as exc:
+            return {
+                "error": (
+                    f"failed to diff '{component_name}' against "
+                    f"{effective_base}: {exc}"
+                )
+            }
+        changed = _parse_name_status_z(diff.stdout)
 
     component_prefix = f"{_to_posix(component_path)}/"
     normalized_boundary_paths: List[str] = []
     for p in boundary_paths_raw:
-        rp = _to_posix(str(p).strip().rstrip("/"))
-        if rp:
-            normalized_boundary_paths.append(rp)
+        try:
+            normalized_boundary_paths.append(_normalize_declared_path(p))
+        except (TypeError, ValueError):
+            continue
 
     boundary_changed: List[Tuple[str, str]] = []
     for status, rel in changed:
@@ -242,8 +315,7 @@ def analyze_explain_changes(
             component_relative = component_relative[len(component_prefix):]
         for bp in normalized_boundary_paths:
             if _is_glob(bp):
-                import fnmatch
-                if fnmatch.fnmatch(component_relative, bp) or fnmatch.fnmatch(component_relative, f"{bp}/*"):
+                if _match_path_glob(component_relative, bp):
                     boundary_changed.append((status, rel))
                     break
             elif component_relative == bp or component_relative.startswith(f"{bp}/"):
@@ -264,9 +336,23 @@ def analyze_explain_changes(
     }
 
 
-def explain_component_changes(config: dict, repo_root: Path, component_name: str, base_ref: str = "HEAD", source: str = "head") -> int:
+def explain_component_changes(
+    config: dict,
+    repo_root: Path,
+    component_name: str,
+    base_ref: str = "HEAD",
+    source: str = "head",
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> int:
     """Explain changed tracked files for one component and its boundary subset."""
-    result = analyze_explain_changes(config, repo_root, component_name, base_ref, source)
+    result = analyze_explain_changes(
+        config,
+        repo_root,
+        component_name,
+        base_ref,
+        source,
+        snapshot=snapshot,
+    )
 
     if result.get("error"):
         print(f"ERROR: {result['error']}", file=sys.stderr)
@@ -336,6 +422,9 @@ def why_component(
     component_name: str,
     source: str = "head",
     allow_custom_providers: bool = False,
+    snapshot: Optional[GitSourceSnapshot] = None,
+    transitive_consumers: bool = False,
+    output_format: str = "text",
 ) -> int:
     """Explain why a component's lockfile entry is out of date.
 
@@ -349,13 +438,54 @@ def why_component(
     result = analyze_component_drift(
         config, lockfile, repo_root, component_name,
         source=source, allow_custom_providers=allow_custom_providers,
+        snapshot=snapshot,
     )
     if result is None:
         return 2  # error already printed by analyze_component_drift
 
-    # Format output
     comp_cfg = config["components"][component_name]
     comp_path = comp_cfg.get("path", "?")
+    changes = result["changes"]
+    consumers = (
+        affected_consumers(
+            config.get("components", {}),
+            component_name,
+            transitive=transitive_consumers,
+        )
+        if {"boundary", "compat"} & set(changes)
+        else []
+    )
+    if output_format == "json":
+        _print_json(
+            {
+                "component": component_name,
+                "path": comp_path,
+                "source": source,
+                "version": result["version"],
+                "drifted": bool(
+                    changes
+                    or result["metadata_changes"]
+                    or result["digest_errors"]
+                ),
+                "changes": changes,
+                "metadata_changes": result["metadata_changes"],
+                "digest_errors": result["digest_errors"],
+                "summary": result["summary"],
+                "changed_files": [
+                    {"status": status, "path": path}
+                    for status, path in result["changed_files"]
+                ],
+                "boundary_paths": comp_cfg.get("boundary", {}).get("paths", []),
+                "provider_detail": result.get("provider_explanation", ""),
+                "affected_consumers": consumers,
+                "transitive_consumers": transitive_consumers,
+            }
+        )
+        return 1 if (
+            changes or result["metadata_changes"] or result["digest_errors"]
+        ) else 0
+
+    # Format human-readable output.
     print(f"\nComponent:  {_bold(component_name)}")
     print(f"Path:       {comp_path}")
     print(f"Source:     {source}")
@@ -366,7 +496,6 @@ def why_component(
         print(_green("\nStatus: UP TO DATE — no fingerprint or metadata drift detected."))
         return 0
 
-    changes = result["changes"]
     drift_count = len(changes) + len(result["metadata_changes"]) + len(result["digest_errors"])
     print(_red(f"\nStatus: DRIFTED — {drift_count} issue(s) detected"))
 
@@ -413,11 +542,14 @@ def why_component(
     if result.get("provider_explanation"):
         print(f"Provider detail: {result['provider_explanation']}")
 
-    consumers = comp_cfg.get("consumers", [])
     if consumers and ({"boundary", "compat"} & set(changes)):
-        print(f"\nAffected consumers: {', '.join(sorted(set(consumers)))}")
+        qualifier = " (transitive)" if transitive_consumers else ""
+        print(f"\nAffected consumers{qualifier}: {', '.join(consumers)}")
 
-    print(f"\n{_bold('Recommendation:')} run `boundver generate --components {component_name}` to update the lockfile.")
+    print(
+        f"\n{_bold('Recommendation:')} run `boundver generate --components "
+        f"{component_name} --source {source}` to update the lockfile."
+    )
     return 1
 
 
@@ -428,6 +560,7 @@ def analyze_component_drift(
     component_name: str,
     source: str = "head",
     allow_custom_providers: bool = False,
+    snapshot: Optional[GitSourceSnapshot] = None,
 ) -> Optional[dict]:
     """Analyze drift for a single component. Returns a dict with analysis results.
 
@@ -468,13 +601,39 @@ def analyze_component_drift(
         print(f"Component '{component_name}' is not in the lockfile — run 'boundver generate' first.", file=sys.stderr)
         return None
 
+    if snapshot is not None and snapshot.source != source:
+        print(
+            "ERROR: captured source mismatch: "
+            f"snapshot={snapshot.source!r}, source={source!r}",
+            file=sys.stderr,
+        )
+        return None
+    if source == "working-tree" and snapshot is not None:
+        print(
+            "ERROR: working-tree source does not accept a Git snapshot",
+            file=sys.stderr,
+        )
+        return None
+    if source in {"head", "index"} and snapshot is None:
+        try:
+            snapshot = _capture_git_source_snapshot(repo_root, source)
+        except ValueError as exc:
+            print(f"ERROR: cannot capture {source} source: {exc}", file=sys.stderr)
+            return None
+
     # Compute current fingerprints for just this component.
     subset_config = dict(config)
     subset_config["components"] = {component_name: comp_cfg}
     subset_config["slices"] = {}
     try:
-        current_lock = generate_lockfile(subset_config, repo_root, source=source, strict=False,
-                                            allow_custom_providers=allow_custom_providers)
+        current_lock = generate_lockfile(
+            subset_config,
+            repo_root,
+            source=source,
+            strict=False,
+            allow_custom_providers=allow_custom_providers,
+            snapshot=snapshot,
+        )
     except (MemoryError, RecursionError, KeyboardInterrupt):
         raise
     except Exception as exc:
@@ -531,7 +690,7 @@ def analyze_component_drift(
         provider_name = boundary_provider_name(comp_cfg.get("boundary", {}))
         provider = get_provider(provider_name, registry=registry)
         if provider is not None and not load_errors:
-            accessor = _SourceAccessor(repo_root, source)
+            accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
             ctx = ProviderContext(
                 repo_root=repo_root,
                 component_path=comp_cfg.get("path", "").rstrip("/"),
@@ -560,11 +719,45 @@ def analyze_component_drift(
             except subprocess.CalledProcessError:
                 pass
         elif source == "index":
-            try:
-                staged = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "--cached", "--name-status", "-z", "--", comp_path])
-                changed_files.extend(_parse_name_status_z(staged.stdout))
-            except subprocess.CalledProcessError:
-                pass
+            if snapshot is not None and snapshot.head_oid is None:
+                changed_files.extend(
+                    ("A", path)
+                    for path in sorted(snapshot.entries)
+                    if path == comp_path or path.startswith(f"{comp_path}/")
+                )
+            else:
+                try:
+                    if snapshot is None:
+                        diff_args = [
+                            "diff", "--cached", "--name-status", "-z",
+                        ]
+                    else:
+                        diff_args = [
+                            "diff",
+                            "--name-status",
+                            "-z",
+                            snapshot.head_oid,
+                            snapshot.tree_oid,
+                        ]
+                    staged = _git_run_bytes(
+                        repo_root,
+                        ["--literal-pathspecs", *diff_args, "--", comp_path],
+                    )
+                    changed_files.extend(_parse_name_status_z(staged.stdout))
+                except subprocess.CalledProcessError:
+                    pass
+
+    # ``git diff HEAD`` already includes staged changes, while the additional
+    # cached diff is useful for unborn/fallback cases.  Keep one stable entry
+    # per path so JSON and text views expose the same file set.
+    deduplicated_files: List[Tuple[str, str]] = []
+    seen_paths: set = set()
+    for status, path in changed_files:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        deduplicated_files.append((status, path))
+    changed_files = deduplicated_files
 
     version = current_comp.get("version") or locked_comp.get("version")
 

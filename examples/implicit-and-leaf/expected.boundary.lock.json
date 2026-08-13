@@ -1,17 +1,20 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v2",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v3",
+  "config_contract": "boundver-semantic-config/v1",
+  "config_digest": "958d54beb1929050615d79c1b6d93f420ebc8e57f09b30be700d339c2a2a2e32",
   "project": "example-implicit-leaf",
   "components": {
     "worker": {
       "version": null,
       "path": "examples/implicit-and-leaf/worker",
       "boundary_provider": "implicit",
-      "boundary_provider_version": "1",
+      "boundary_provider_version": "2",
       "boundary_status": "partial",
       "consumers": [],
+      "external_consumers": [],
       "fingerprints": {
-        "exact": "e5787fbcf50fc81bcfe35f09dd08e3fc9148403fa7a9c9a7ebfbb72d95812a61",
+        "exact": "377dabb4cc7452a95e8d5b38e308fd72b8f31277daa335291fc08fb4c6219913",
         "behavior": null,
         "boundary": null,
         "compat": null
@@ -32,8 +35,9 @@
       "boundary_provider_version": "1",
       "boundary_status": "ok",
       "consumers": [],
+      "external_consumers": [],
       "fingerprints": {
-        "exact": "87c0393e4c11fdd0b4f8070f3f2088a1f62c67e0c8b592a3045307d99a72ccf7",
+        "exact": "6094a54eed83a72aef6063908801de802094cfadf17a32fe9f22c78c5a408d7c",
         "behavior": null,
         "boundary": null,
         "compat": null
@@ -52,9 +56,9 @@
       "components": [
         "worker"
       ],
-      "fingerprint": "bf87bd0a4be3b4479228ebfeae0014040db7db60f429e87e0dd64b5d4260a845",
+      "fingerprint": "eade3593e4b1df034d931bf4907ccc90bc54ea2b23e0a2e29768d469e9d0b534",
       "component_digests": {
-        "worker": "e5787fbcf50fc81bcfe35f09dd08e3fc9148403fa7a9c9a7ebfbb72d95812a61"
+        "worker": "377dabb4cc7452a95e8d5b38e308fd72b8f31277daa335291fc08fb4c6219913"
       }
     },
     "leaf-exact": {
@@ -63,9 +67,9 @@
       "components": [
         "leafsvc"
       ],
-      "fingerprint": "dee3ec0c6ed4cee820be76f1b052fc8e4f6308c76a4f688a5334c30c53a41d7b",
+      "fingerprint": "d9cad94bedc382c0bc633b07d9b0d8f4834f8800652fb864b62177628f50e0f3",
       "component_digests": {
-        "leafsvc": "87c0393e4c11fdd0b4f8070f3f2088a1f62c67e0c8b592a3045307d99a72ccf7"
+        "leafsvc": "6094a54eed83a72aef6063908801de802094cfadf17a32fe9f22c78c5a408d7c"
       }
     }
   }

@@ -1,0 +1,655 @@
+#!/usr/bin/env python3
+"""Fail-closed maintainer gate and dispatcher for a boundver release.
+
+``check`` is read-only.  ``start`` repeats every check and then performs one
+mutation: it dispatches ``create-release-tag.yml``.  The protected workflows,
+not this local process, own tag, Release, Marketplace, and package-index writes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Sequence
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
+    import tomli as tomllib
+
+
+REPOSITORY = "yzm1/boundver"
+TAG_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+ALIAS_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)")
+SURFACES = (
+    "repository hygiene",
+    "README and documentation",
+    "changelog and release notes",
+    "schema URLs, configs, and locks",
+    "CI and review state",
+    "reproducible wheel, sdist, and standalone archive",
+    "GitHub Action and Marketplace",
+    "TestPyPI",
+    "PyPI",
+    "GitHub Release assets",
+    "compatibility alias",
+    "Docker",
+    "pre-commit",
+)
+
+
+class GateError(RuntimeError):
+    """A release prerequisite is absent, conflicting, or unreadable."""
+
+
+@dataclass(frozen=True)
+class Check:
+    name: str
+    status: str
+    detail: str
+
+
+def _run(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=check,
+        )
+    except FileNotFoundError as error:
+        raise GateError(f"required command is unavailable: {command[0]}") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "command failed").strip()
+        raise GateError(f"{' '.join(command)}: {detail}") from error
+
+
+def _git(repo: Path, *arguments: str, check: bool = True) -> str:
+    return _run(("git", *arguments), cwd=repo, check=check).stdout.strip()
+
+
+def _head(repo: Path) -> str | None:
+    result = _run(("git", "rev-parse", "--verify", "HEAD"), cwd=repo, check=False)
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and SHA_RE.fullmatch(value) else None
+
+
+def _canonical_origin(value: str) -> str | None:
+    value = value.strip().removesuffix(".git")
+    match = re.fullmatch(
+        r"(?:https://github\.com/|ssh://git@github\.com/|git@github\.com:)"
+        r"(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        value,
+    )
+    return match.group("repo") if match else None
+
+
+def _github_ref_pattern_matches(pattern: str, ref: str) -> bool:
+    """Match GitHub ruleset ref patterns with slash-aware fnmatch semantics."""
+    if pattern == "~ALL":
+        return True
+    pattern_parts = pattern.split("/")
+    ref_parts = ref.split("/")
+
+    def match(pattern_index: int, ref_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return ref_index == len(ref_parts)
+        segment = pattern_parts[pattern_index]
+        if segment == "**":
+            return match(pattern_index + 1, ref_index) or (
+                ref_index < len(ref_parts)
+                and match(pattern_index, ref_index + 1)
+            )
+        return (
+            ref_index < len(ref_parts)
+            and fnmatch.fnmatchcase(ref_parts[ref_index], segment)
+            and match(pattern_index + 1, ref_index + 1)
+        )
+
+    return match(0, 0)
+
+
+def _ruleset_targets_ref(ref_name: object, ref: str) -> bool:
+    if not isinstance(ref_name, dict):
+        return False
+    includes = ref_name.get("include")
+    excludes = ref_name.get("exclude")
+    if not isinstance(includes, list) or not all(
+        isinstance(item, str) for item in includes
+    ):
+        return False
+    if not isinstance(excludes, list) or not all(
+        isinstance(item, str) for item in excludes
+    ):
+        return False
+    return any(_github_ref_pattern_matches(item, ref) for item in includes) and not any(
+        _github_ref_pattern_matches(item, ref) for item in excludes
+    )
+
+
+def _environment_requires_review(item: object) -> bool:
+    rules = item.get("protection_rules") if isinstance(item, dict) else None
+    return any(
+        isinstance(rule, dict)
+        and rule.get("type") == "required_reviewers"
+        and isinstance(rule.get("reviewers"), list)
+        and bool(rule["reviewers"])
+        for rule in rules or []
+    )
+
+
+def _validate_tag_rulesets(rulesets: Sequence[dict], tag: str) -> None:
+    exact_ref = f"refs/tags/{tag}"
+    alias_ref = f"refs/tags/{tag.rsplit('.', 1)[0]}"
+    exact_update = False
+    exact_deletion = False
+    exact_creation = False
+    alias_mutation = False
+    for detail in rulesets:
+        rules = detail.get("rules")
+        conditions = detail.get("conditions")
+        rule_types = {
+            rule.get("type") for rule in rules or [] if isinstance(rule, dict)
+        }
+        ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+        if _ruleset_targets_ref(ref_name, exact_ref):
+            exact_update = exact_update or "update" in rule_types
+            exact_deletion = exact_deletion or "deletion" in rule_types
+            exact_creation = exact_creation or "creation" in rule_types
+        if _ruleset_targets_ref(ref_name, alias_ref):
+            alias_mutation = alias_mutation or bool(
+                {"update", "creation"} & rule_types
+            )
+    if not exact_update or not exact_deletion:
+        raise GateError(
+            "active tag rulesets must block update and deletion for the exact version tag"
+        )
+    if exact_creation:
+        raise GateError(
+            "an active creation restriction targets the exact version tag and can block the workflow"
+        )
+    if alias_mutation:
+        raise GateError(
+            "an active creation/update restriction targets the mutable vMAJOR.MINOR alias"
+        )
+
+
+def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
+    fields = _git(repo, "ls-remote", remote, ref).split()
+    if not fields:
+        return None
+    if len(fields) != 2 or fields[1] != ref or SHA_RE.fullmatch(fields[0]) is None:
+        raise GateError(f"remote returned malformed ref data for {ref}")
+    return fields[0]
+
+
+def _gh_json(repo: Path, repository: str, endpoint: str) -> object:
+    result = _run(
+        ("gh", "api", endpoint), cwd=repo, check=False
+    )
+    if result.returncode != 0:
+        raise GateError(
+            f"GitHub API failed for {endpoint}: "
+            f"{(result.stderr or result.stdout).strip() or 'unknown error'}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise GateError(f"GitHub API returned invalid JSON for {endpoint}") from error
+
+
+def _record(checks: list[Check], name: str, operation) -> object | None:
+    try:
+        detail = operation()
+    except (GateError, OSError, ValueError, KeyError, TypeError) as error:
+        checks.append(Check(name, "failed", str(error)))
+        return None
+    checks.append(Check(name, "passed", str(detail or "passed")))
+    return detail
+
+
+def _project(repo: Path, tag: str) -> str:
+    try:
+        project = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))[
+            "project"
+        ]
+    except (OSError, UnicodeError, KeyError, TypeError, tomllib.TOMLDecodeError) as error:
+        raise GateError(f"cannot read pyproject.toml metadata: {error}") from error
+    if project.get("name") != "boundver" or project.get("version") != tag[1:]:
+        raise GateError("pyproject name/version does not match boundver and the release tag")
+    return f"boundver {project['version']}"
+
+
+def _clean(repo: Path) -> str:
+    state = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+    if state:
+        raise GateError("worktree and index must be clean (tracked, staged, and untracked)")
+    git_dir = Path(_git(repo, "rev-parse", "--git-dir"))
+    if not git_dir.is_absolute():
+        git_dir = repo / git_dir
+    for marker in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"):
+        if (git_dir / marker).exists():
+            raise GateError(f"Git operation is still active: {marker}")
+    return "clean worktree/index; no merge, rebase, cherry-pick, or revert"
+
+
+def _repository_hygiene(repo: Path) -> str:
+    result = _run(
+        (sys.executable, "scripts/check_repo_hygiene.py", "--repo", "."),
+        cwd=repo,
+    )
+    return result.stdout.strip() or "tracked repository tree is portable and clean"
+
+
+def _repo_identity(repo: Path, remote: str) -> str:
+    if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo.resolve():
+        raise GateError("--repo must be the repository root")
+    origin = _git(repo, "remote", "get-url", remote)
+    if _canonical_origin(origin) != REPOSITORY:
+        raise GateError(f"{remote} is not canonical repository {REPOSITORY}")
+    return f"{REPOSITORY} via {remote}"
+
+
+def _main_identity(repo: Path, remote: str, sha: str) -> str:
+    if _git(repo, "symbolic-ref", "--short", "HEAD") != "main":
+        raise GateError("release checks must run from branch main")
+    if _head(repo) != sha:
+        raise GateError("HEAD changed during release checks")
+    main = _remote_ref(repo, remote, "refs/heads/main")
+    if main != sha:
+        raise GateError(f"HEAD {sha} is not current remote main {main}")
+    return sha
+
+
+def _remote_release_state(repo: Path, remote: str, tag: str) -> str:
+    tag_sha = _remote_ref(repo, remote, f"refs/tags/{tag}")
+    if tag_sha is not None:
+        raise GateError(f"exact tag already exists at {tag_sha}; use the original run to resume")
+    branch = _remote_ref(repo, remote, f"refs/heads/release/{tag}")
+    if branch is not None:
+        raise GateError(f"legacy release branch already exists at {branch}; inspect its run")
+    return "exact tag and legacy release branch are absent"
+
+
+def _github_controls(repo: Path, sha: str, tag: str) -> str:
+    metadata = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}")
+    if not isinstance(metadata, dict) or metadata.get("full_name") != REPOSITORY:
+        raise GateError("authenticated GitHub repository identity disagrees")
+    if metadata.get("default_branch") != "main" or metadata.get("archived") is not False:
+        raise GateError("GitHub repository must be active with main as default branch")
+    if metadata.get("visibility") != "public":
+        raise GateError("GitHub repository must be public before release promotion")
+    if metadata.get("homepage") != "https://github.com/marketplace/actions/boundver":
+        raise GateError("GitHub repository homepage must point to the Marketplace listing")
+    if not isinstance(metadata.get("description"), str) or not metadata["description"].strip():
+        raise GateError("GitHub repository description must be populated")
+    topics = metadata.get("topics")
+    required_topics = {"api-compatibility", "ci", "openapi", "semantic-versioning"}
+    if not isinstance(topics, list) or not required_topics <= set(topics):
+        raise GateError(
+            "GitHub repository topics must include " + ", ".join(sorted(required_topics))
+        )
+    environments = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/environments")
+    values = environments.get("environments") if isinstance(environments, dict) else None
+    if not isinstance(values, list):
+        raise GateError("cannot enumerate protected release environments")
+    by_name = {item.get("name"): item for item in values if isinstance(item, dict)}
+    for name in ("testpypi", "pypi", "marketplace"):
+        item = by_name.get(name)
+        if not _environment_requires_review(item):
+            raise GateError(
+                f"GitHub environment {name!r} must require at least one reviewer"
+            )
+    immutable = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/immutable-releases")
+    if not isinstance(immutable, dict) or immutable.get("enabled") is not True:
+        raise GateError("immutable GitHub Releases are not enabled")
+    rulesets = _gh_json(
+        repo, REPOSITORY, f"repos/{REPOSITORY}/rulesets?includes_parents=true"
+    )
+    if not isinstance(rulesets, list):
+        raise GateError("cannot enumerate version-tag protection rulesets")
+    tag_rulesets: list[dict] = []
+    for summary in rulesets:
+        if not isinstance(summary, dict) or summary.get("target") != "tag":
+            continue
+        if summary.get("enforcement") != "active":
+            continue
+        ruleset_id = summary.get("id")
+        if not isinstance(ruleset_id, int):
+            continue
+        detail = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/rulesets/{ruleset_id}")
+        if not isinstance(detail, dict):
+            continue
+        tag_rulesets.append(detail)
+    _validate_tag_rulesets(tag_rulesets, tag)
+    runs = _gh_json(
+        repo,
+        REPOSITORY,
+        f"repos/{REPOSITORY}/actions/workflows/ci.yml/runs?head_sha={sha}&event=push&per_page=20",
+    )
+    workflow_runs = runs.get("workflow_runs") if isinstance(runs, dict) else None
+    if not isinstance(workflow_runs, list) or not any(
+        isinstance(run, dict)
+        and run.get("head_sha") == sha
+        and run.get("head_branch") == "main"
+        and run.get("event") == "push"
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+        for run in workflow_runs
+    ):
+        raise GateError("no successful completed ci.yml push run for exact main SHA")
+    active_states = {"requested", "pending", "queued", "in_progress", "waiting"}
+    for workflow in ("create-release-tag.yml", "publish.yml"):
+        promotions = _gh_json(
+            repo,
+            REPOSITORY,
+            f"repos/{REPOSITORY}/actions/workflows/{workflow}/runs?per_page=100",
+        )
+        runs_value = (
+            promotions.get("workflow_runs") if isinstance(promotions, dict) else None
+        )
+        if not isinstance(runs_value, list):
+            raise GateError(f"cannot inspect active runs for {workflow}")
+        if any(
+            isinstance(run, dict) and run.get("status") in active_states
+            for run in runs_value
+        ):
+            raise GateError(f"another release operation is active in {workflow}")
+    release = _run(
+        (
+            "gh",
+            "api",
+            "--include",
+            f"repos/{REPOSITORY}/releases/tags/{tag}",
+        ),
+        cwd=repo,
+        check=False,
+    )
+    release_output = release.stdout + release.stderr
+    status_match = re.search(r"(?m)^HTTP/\S+\s+(\d{3})\b", release_output)
+    if release.returncode == 0 and status_match and status_match.group(1) == "200":
+        raise GateError("a GitHub Release already exists; use the original run to resume")
+    if status_match is None or status_match.group(1) != "404":
+        raise GateError("cannot prove that the GitHub Release is absent")
+    return "repository, exact CI, environments, immutability, and promotion state verified"
+
+
+def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
+    with tempfile.TemporaryDirectory(prefix="boundver-release-check-") as temporary:
+        checkout = Path(temporary) / "checkout"
+        source = _git(repo, "remote", "get-url", remote)
+        _run(("git", "clone", "--quiet", source, str(checkout)), cwd=repo)
+        _run(("git", "checkout", "--quiet", "--detach", sha), cwd=checkout)
+        if _head(checkout) != sha:
+            raise GateError("disposable checkout did not resolve the release SHA")
+        env = os.environ.copy()
+        env["GITHUB_REPOSITORY"] = REPOSITORY
+        if not env.get("GH_TOKEN"):
+            token = _run(
+                ("gh", "auth", "token", "--hostname", "github.com"), cwd=repo
+            ).stdout.strip()
+            if not token:
+                raise GateError("GitHub CLI did not return an authentication token")
+            env["GH_TOKEN"] = token
+        _run((sys.executable, "scripts/verify_release_readiness.py", "--tag", tag), cwd=checkout, env=env)
+        _run(("bash", "scripts/audit_release_reviews.sh", sha, tag), cwd=checkout, env=env)
+        tooling = Path(temporary) / "tooling"
+        _run((sys.executable, "-m", "venv", str(tooling)), cwd=checkout, env=env)
+        if os.name == "nt":
+            tooling_python = tooling / "Scripts" / "python.exe"
+            tooling_bin = tooling / "Scripts"
+        else:
+            tooling_python = tooling / "bin" / "python"
+            tooling_bin = tooling / "bin"
+        _run(
+            (
+                str(tooling_python),
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "-e",
+                ".[dev]",
+                "twine",
+            ),
+            cwd=checkout,
+            env=env,
+        )
+        tool_env = env.copy()
+        tool_env["PATH"] = str(tooling_bin) + os.pathsep + tool_env.get("PATH", "")
+        _run((str(tooling_python), "-m", "pytest", "-q"), cwd=checkout, env=tool_env)
+        _run(("bash", "scripts/packaging_smoke.sh"), cwd=checkout, env=tool_env)
+        distributions = sorted((checkout / "dist").glob("*.whl")) + sorted(
+            (checkout / "dist").glob("*.tar.gz")
+        )
+        if len(distributions) != 2:
+            raise GateError("packaging smoke did not create exactly one wheel and sdist")
+        _run(
+            (str(tooling_python), "-m", "twine", "check", *(str(path) for path in distributions)),
+            cwd=checkout,
+            env=tool_env,
+        )
+        python_dist = checkout / "python-dist"
+        python_dist.mkdir()
+        for distribution in distributions:
+            (python_dist / distribution.name).write_bytes(distribution.read_bytes())
+        for api_base, origin in (
+            ("https://test.pypi.org/pypi", "https://test-files.pythonhosted.org"),
+            ("https://pypi.org/pypi", "https://files.pythonhosted.org"),
+        ):
+            preflight = _run(
+                (
+                    str(tooling_python),
+                    "scripts/verify_testpypi_release.py",
+                    "preflight",
+                    "--dist",
+                    "python-dist",
+                    "--project",
+                    "boundver",
+                    "--version",
+                    tag[1:],
+                    "--api-base",
+                    api_base,
+                    "--download-origin",
+                    origin,
+                ),
+                cwd=checkout,
+                env=tool_env,
+            )
+            if "does not exist yet" not in preflight.stdout:
+                registry = "TestPyPI" if "test.pypi.org" in api_base else "PyPI"
+                raise GateError(
+                    f"{registry} already has exact or partial files for {tag}; "
+                    "resume the original workflow run instead of starting a new one"
+                )
+    return "readiness, reviews, tests, reproducible build, Twine, TestPyPI, and PyPI preflights passed"
+
+
+def _surface_inventory(repo: Path) -> str:
+    required = {
+        "repository hygiene": ("scripts/check_repo_hygiene.py", ".gitignore", ".gitattributes"),
+        "README and documentation": ("README.md", "docs/RELEASING.md"),
+        "changelog and release notes": ("CHANGELOG.md", "scripts/release_changelog.py"),
+        "schema URLs, configs, and locks": ("boundary.config.schema.json", "spec/boundary.lock.schema.json", "boundary.lock.json"),
+        "CI and review state": (".github/workflows/ci.yml", "scripts/audit_release_reviews.sh"),
+        "reproducible wheel, sdist, and standalone archive": ("scripts/packaging_smoke.sh", "scripts/build_release_artifacts.py"),
+        "GitHub Action and Marketplace": ("action.yml", ".github/workflows/publish.yml"),
+        "TestPyPI": ("scripts/verify_testpypi_release.py",),
+        "PyPI": ("scripts/verify_testpypi_release.py",),
+        "GitHub Release assets": ("scripts/verify_release_surfaces.py",),
+        "compatibility alias": (".github/workflows/publish.yml",),
+        "Docker": ("Dockerfile",),
+        "pre-commit": (".pre-commit-hooks.yaml",),
+    }
+    missing = [
+        f"{surface}: {path}"
+        for surface, paths in required.items()
+        for path in paths
+        if not (repo / path).exists()
+    ]
+    if missing:
+        raise GateError("missing release surface files: " + ", ".join(missing))
+    publish_workflow = (repo / ".github/workflows/publish.yml").read_text(
+        encoding="utf-8"
+    )
+    required_jobs = (
+        "publish-testpypi",
+        "verify-testpypi",
+        "prepare-release-draft",
+        "verify-marketplace",
+        "publish-pypi",
+        "verify-pypi",
+        "advance-compatibility-alias",
+        "verify-public-surfaces",
+    )
+    absent_jobs = [name for name in required_jobs if f"  {name}:" not in publish_workflow]
+    if absent_jobs:
+        raise GateError(
+            "publication workflow is missing release phases: " + ", ".join(absent_jobs)
+        )
+    return "; ".join(SURFACES)
+
+
+def _evaluate(repo: Path, remote: str, tag: str) -> tuple[str | None, list[Check]]:
+    repo = repo.resolve()
+    checks: list[Check] = []
+    sha = _head(repo)
+    _record(checks, "release surface inventory", lambda: _surface_inventory(repo))
+    _record(checks, "repository identity", lambda: _repo_identity(repo, remote))
+    _record(checks, "clean repository", lambda: _clean(repo))
+    _record(checks, "repository hygiene", lambda: _repository_hygiene(repo))
+    _record(checks, "project version", lambda: _project(repo, tag))
+    local_ready = all(item.status == "passed" for item in checks)
+    if sha is None:
+        checks.append(Check("main identity", "failed", "HEAD is not a full commit SHA"))
+    elif local_ready:
+        _record(checks, "main identity", lambda: _main_identity(repo, remote, sha))
+        _record(checks, "remote release state", lambda: _remote_release_state(repo, remote, tag))
+        if all(item.status == "passed" for item in checks):
+            _record(checks, "GitHub controls", lambda: _github_controls(repo, sha, tag))
+        if all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "complete release gate",
+                lambda: _disposable_gate(repo, remote, sha, tag),
+            )
+    return sha, checks
+
+
+def _emit(
+    args: argparse.Namespace,
+    sha: str | None,
+    checks: list[Check],
+    dispatch: dict[str, str] | None,
+) -> int:
+    ok = all(item.status == "passed" for item in checks)
+    status = "failed"
+    if ok:
+        status = "dispatched" if args.command == "start" else "ready"
+    payload = {
+        "schema_version": 1,
+        "phase": args.command,
+        "tag": args.tag,
+        "sha": sha,
+        "status": status,
+        "checks": [asdict(item) for item in checks],
+        "dispatch": dispatch,
+    }
+    if args.format == "json":
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        for item in checks:
+            marker = "PASS" if item.status == "passed" else "FAIL"
+            print(f"[{marker}] {item.name}: {item.detail}")
+        if dispatch:
+            print(dispatch["detail"])
+        print(f"Release {args.command} {'passed' if ok else 'failed'} for {args.tag}.")
+    return 0 if ok else 1
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Check and start a gated boundver release.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for command in ("check", "start"):
+        child = subparsers.add_parser(command)
+        child.add_argument("--tag", required=True, help="Exact vMAJOR.MINOR.PATCH tag")
+        child.add_argument("--repo", type=Path, default=Path("."))
+        child.add_argument("--remote", default="origin")
+        child.add_argument("--format", choices=("text", "json"), default="text")
+        if command == "start":
+            child.add_argument("--alias", required=True, help="Explicit vMAJOR.MINOR alias or none")
+            child.add_argument("--confirm", required=True, help="Exact TAG@40-character-SHA confirmation")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if TAG_RE.fullmatch(args.tag) is None:
+        parser.error("--tag must be an exact vMAJOR.MINOR.PATCH release")
+    if args.command == "start":
+        expected_alias = args.tag.rsplit(".", 1)[0]
+        if args.alias != "none" and (
+            ALIAS_RE.fullmatch(args.alias) is None or args.alias != expected_alias
+        ):
+            parser.error(f"--alias must be {expected_alias} or none")
+        confirmation = args.confirm.partition("@")
+        if confirmation[0] != args.tag or confirmation[1] != "@" or SHA_RE.fullmatch(confirmation[2]) is None:
+            parser.error("--confirm must be the exact TAG@lowercase-40-character-SHA")
+
+    sha, checks = _evaluate(args.repo, args.remote, args.tag)
+    if args.command == "start" and sha != args.confirm.partition("@")[2]:
+        checks.append(Check("explicit confirmation", "failed", "confirmation SHA does not equal HEAD"))
+    if any(item.status == "failed" for item in checks):
+        return _emit(args, sha, checks, None)
+    if args.command == "check":
+        return _emit(args, sha, checks, None)
+
+    assert sha is not None
+    # Re-read remote main immediately before the command's only mutation.
+    try:
+        _main_identity(args.repo.resolve(), args.remote, sha)
+        command = (
+            "gh", "workflow", "run", "create-release-tag.yml",
+            "--repo", REPOSITORY,
+            "--ref", "main",
+            "--field", f"release_tag={args.tag}",
+            "--field", f"release_sha={sha}",
+            "--field", f"compatibility_alias={args.alias}",
+        )
+        result = _run(command, cwd=args.repo.resolve())
+    except GateError as error:
+        checks.append(Check("workflow dispatch", "failed", str(error)))
+        return _emit(args, sha, checks, None)
+    detail = result.stdout.strip() or "create-release-tag.yml dispatch accepted"
+    checks.append(Check("workflow dispatch", "passed", detail))
+    dispatch = {
+        "workflow": "create-release-tag.yml",
+        "ref": "main",
+        "tag": args.tag,
+        "sha": sha,
+        "alias": args.alias,
+        "detail": detail,
+    }
+    return _emit(args, sha, checks, dispatch)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

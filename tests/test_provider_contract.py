@@ -123,7 +123,7 @@ class TestOpenApiNamedMaps(unittest.TestCase):
         after["definitions"]["description"]["type"] = "integer"
         self.assertNotEqual(_openapi_digest(before), _openapi_digest(after))
 
-    def test_real_annotation_changes_remain_ignored(self):
+    def test_documentation_changes_are_ignored_but_extensions_are_contract(self):
         before = {
             "openapi": "3.1.0",
             "paths": {
@@ -141,7 +141,12 @@ class TestOpenApiNamedMaps(unittest.TestCase):
         after["paths"]["/widgets"]["description"] = "new docs"
         after["paths"]["/widgets"]["get"]["summary"] = "new summary"
         after["paths"]["/widgets"]["get"]["x-internal"] = False
-        self.assertEqual(_openapi_digest(before), _openapi_digest(after))
+        self.assertNotEqual(_openapi_digest(before), _openapi_digest(after))
+
+        docs_only = json.loads(json.dumps(before))
+        docs_only["paths"]["/widgets"]["description"] = "new docs"
+        docs_only["paths"]["/widgets"]["get"]["summary"] = "new summary"
+        self.assertEqual(_openapi_digest(before), _openapi_digest(docs_only))
 
     def test_annotation_named_callback_link_and_variable_entries_are_contract(self):
         document = {

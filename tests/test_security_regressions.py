@@ -112,9 +112,15 @@ class SchemaIndependentConfigValidationTests(unittest.TestCase):
                     component = config["components"].pop("svc")
                     config["components"][invalid_name] = component
                     errors = validate_config(config, root)
-                    self.assertIn(
-                        "Component names must be non-empty strings", errors
-                    )
+                    if isinstance(invalid_name, str):
+                        self.assertIn(
+                            "Component names must be non-empty strings", errors
+                        )
+                    else:
+                        self.assertTrue(
+                            any("non-string mapping key" in error for error in errors),
+                            errors,
+                        )
 
                 with self.subTest(kind="slice", name=invalid_name):
                     config = self._valid_config(root)
@@ -125,7 +131,13 @@ class SchemaIndependentConfigValidationTests(unittest.TestCase):
                         }
                     }
                     errors = validate_config(config, root)
-                    self.assertIn("Slice names must be non-empty strings", errors)
+                    if isinstance(invalid_name, str):
+                        self.assertIn("Slice names must be non-empty strings", errors)
+                    else:
+                        self.assertTrue(
+                            any("non-string mapping key" in error for error in errors),
+                            errors,
+                        )
 
 
 class SourceAwareValidationTests(unittest.TestCase):

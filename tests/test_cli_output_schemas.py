@@ -59,6 +59,7 @@ class TestCLIOutputSchemas(unittest.TestCase):
         (svc / "main.py").write_text("# v1\n")
         cfg = {
             "project": "test",
+            "defaults": {"verify_facets": ["exact", "boundary"]},
             "components": {
                 "svc": {
                     "path": "svc",
@@ -90,6 +91,7 @@ class TestCLIOutputSchemas(unittest.TestCase):
         try:
             generated = self._run_cli(root, "generate", "--format", "json")
             self.assertEqual(generated.returncode, 0, generated.stderr)
+            _commit_all(root, "record lock")
             verified = self._run_cli(root, "verify", "--format", "json")
             self.assertEqual(verified.returncode, 0, verified.stderr)
             _assert_valid(schema, json.loads(verified.stdout))
@@ -108,9 +110,38 @@ class TestCLIOutputSchemas(unittest.TestCase):
         try:
             generated = self._run_cli(root, "generate", "--format", "json")
             self.assertEqual(generated.returncode, 0, generated.stderr)
+            _commit_all(root, "record lock")
             status = self._run_cli(root, "status", "--format", "json")
             self.assertEqual(status.returncode, 0, status.stderr)
             _assert_valid(schema, json.loads(status.stdout))
+        finally:
+            import shutil; shutil.rmtree(root, ignore_errors=True)
+
+    def test_why_output_schema(self):
+        schema = _load_schema("cli-output.why.schema.json")
+        root, _cfg = self._make_repo()
+        try:
+            generated = self._run_cli(root, "generate", "--format", "json")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            _commit_all(root, "record lock")
+            explained = self._run_cli(
+                root, "why", "svc", "--format", "json", "--transitive"
+            )
+            self.assertEqual(explained.returncode, 0, explained.stderr)
+            _assert_valid(schema, json.loads(explained.stdout))
+        finally:
+            import shutil; shutil.rmtree(root, ignore_errors=True)
+
+    def test_slice_output_schema(self):
+        schema = _load_schema("cli-output.slice.schema.json")
+        root, _cfg = self._make_repo()
+        try:
+            generated = self._run_cli(root, "generate", "--format", "json")
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            _commit_all(root, "record lock")
+            sliced = self._run_cli(root, "slice", "all", "--format", "json")
+            self.assertEqual(sliced.returncode, 0, sliced.stderr)
+            _assert_valid(schema, json.loads(sliced.stdout))
         finally:
             import shutil; shutil.rmtree(root, ignore_errors=True)
 

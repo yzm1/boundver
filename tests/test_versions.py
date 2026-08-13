@@ -526,8 +526,7 @@ class ExtractFieldFromBytesTests(unittest.TestCase):
     def test_yml_extension(self):
         raw = b"info:\n  version: 1.0.0\n"
         result = self._fn(raw, "openapi.yml", "info.version")
-        # YAML parse might return None if yaml not installed, but should not crash.
-        self.assertIn(result, ("1.0.0", None))
+        self.assertEqual(result, "1.0.0")
 
     def test_unsupported_extension_returns_none(self):
         raw = b"version=1.0.0\n"
@@ -559,6 +558,11 @@ class ExtractJsonFromTextTests(unittest.TestCase):
 
     def test_numeric_value_as_string(self):
         self.assertEqual(self._fn('{"v": 42}', "v"), "42")
+
+    def test_oversized_integer_returns_none(self):
+        self.assertIsNone(
+            self._fn('{"v":' + "9" * 5000 + "}", "v")
+        )
 
 
 class ExtractTomlFromTextTests(unittest.TestCase):
@@ -641,16 +645,11 @@ class ExtractYamlFromTextTests(unittest.TestCase):
 
     def test_nested_via_yaml(self):
         result = self._fn("info:\n  version: 2.3.4\n", "info.version")
-        self.assertIn(result, ("2.3.4", None))  # None if PyYAML not installed
+        self.assertEqual(result, "2.3.4")
 
     def test_missing_key_returns_none(self):
         result = self._fn("name: x\n", "version")
         self.assertIsNone(result)
-
-    def test_invalid_yaml_falls_back_to_regex(self):
-        # Malformed YAML should still try the fallback regex parser.
-        result = self._fn("version: 1.0.0\n", "version")
-        self.assertEqual(result, "1.0.0")
 
     def test_yaml_exception_returns_none(self):
         """yaml.safe_load raising Exception → return None (parse failure is authoritative)."""
@@ -790,4 +789,3 @@ class ExtractFileVersionWithReadFnTests(unittest.TestCase):
                 read_file_fn=read_fn,
             )
             self.assertIsNone(result)
-

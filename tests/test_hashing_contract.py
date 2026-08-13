@@ -1,4 +1,4 @@
-"""Regression tests for the v2 hash wire format and Git-backed sources."""
+"""Regression tests for the v3 hash wire format and Git-backed sources."""
 
 import os
 import subprocess
@@ -44,14 +44,14 @@ def _commit_all(root: Path, message: str = "test") -> None:
 
 
 class FramedHashContractTests(unittest.TestCase):
-    def test_known_v2_wire_format_vector(self):
+    def test_known_v3_wire_format_vector(self):
         digest = _hash_framed_entries(
-            [("file:svc/a.txt", b"A\n")],
+            [("file:svc/a.txt", "100644", "blob", b"A\n")],
             domain=HASH_DOMAIN_EXACT,
         )
         self.assertEqual(
             digest,
-            "222b93488c0dc17649cb52a813dcbcde9a916d0b7cee0a16d84f7d577404b9bf",
+            "f511ac9b9ab7f9e4b6abb6bbae12dbd8a81ed550ad602e45170f3cefe12a2801",
         )
 
     def test_length_framing_prevents_file_content_ambiguity(self):
@@ -205,6 +205,17 @@ class GitSourceContractTests(unittest.TestCase):
                 any(path == ".git" or path.startswith(".git/") for path in files),
                 files,
             )
+
+    def test_filesystem_fallback_fails_instead_of_truncating_at_file_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "svc").mkdir()
+            (root / "svc" / "a.txt").write_bytes(b"a")
+            (root / "svc" / "b.txt").write_bytes(b"b")
+
+            with patch("boundver._git.MAX_FALLBACK_FILES", 1):
+                with self.assertRaisesRegex(GuardrailError, ">1 files"):
+                    _list_files_for_source(root, "svc", source="working-tree")
 
     def test_content_only_digest_matches_all_clean_sources(self):
         with tempfile.TemporaryDirectory() as td:

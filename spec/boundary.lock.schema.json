@@ -1,18 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
   "title": "boundver lockfile schema",
   "type": "object",
-  "required": ["schema", "project", "components", "slices"],
+  "required": ["schema", "config_contract", "config_digest", "project", "components", "slices"],
   "properties": {
     "$schema": {"type": "string", "format": "uri"},
-    "schema": {"const": "boundary-lock/v2"},
+    "schema": {"const": "boundary-lock/v3"},
+    "config_contract": {"const": "boundver-semantic-config/v1"},
+    "config_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical semantic configuration."
+    },
     "project": {"type": "string"},
     "components": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
-        "required": ["version", "path", "boundary_provider", "boundary_provider_version", "boundary_status", "consumers", "fingerprints", "semver"],
+        "required": ["version", "path", "boundary_provider", "boundary_provider_version", "boundary_status", "consumers", "external_consumers", "fingerprints", "semver"],
         "properties": {
           "version": {"type": ["string", "null"]},
           "path": {"type": "string"},
@@ -24,14 +30,19 @@
             "items": {"type": "string"},
             "uniqueItems": true
           },
+          "external_consumers": {
+            "type": "array",
+            "items": {"type": "string"},
+            "uniqueItems": true
+          },
           "fingerprints": {
             "type": "object",
             "required": ["exact", "behavior", "boundary", "compat"],
             "properties": {
-              "exact": {"type": ["string", "null"]},
-              "behavior": {"type": ["string", "null"]},
-              "boundary": {"type": ["string", "null"]},
-              "compat": {"type": ["string", "null"]}
+              "exact": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+              "behavior": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+              "boundary": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+              "compat": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
             },
             "additionalProperties": false
           },
@@ -51,8 +62,9 @@
           "exact_errors": {"type": "array", "items": {"type": "string"}},
           "boundary_metadata": {"type": ["object", "null"]},
           "warnings": {"type": "array", "items": {"type": "string"}},
+          "vendored_errors": {"type": "array", "items": {"type": "string"}},
           "vendored_copies": {"type": "array", "items": {"type": "string"}},
-          "vendored_digests": {"type": "object", "additionalProperties": {"type": "string"}}
+          "vendored_digests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
         },
         "additionalProperties": true
       }
@@ -66,10 +78,10 @@
           "description": {"type": "string"},
           "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
           "components": {"type": "array", "items": {"type": "string"}},
-          "fingerprint": {"type": "string"},
+          "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "component_digests": {
             "type": "object",
-            "additionalProperties": {"type": ["string", "null"]}
+            "additionalProperties": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
           }
         },
         "additionalProperties": false

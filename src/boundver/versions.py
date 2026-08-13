@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
+from ._utils import _bounded_json_int
+
 _FALLBACK_WARNED: set = set()  # Track which fallback warnings we've already emitted
 
 
@@ -113,11 +115,11 @@ def _extract_field_from_bytes(raw: bytes, file_rel: str, field_path: str) -> Opt
 
 def _extract_json_from_text(text: str, field_path: str) -> Optional[str]:
     try:
-        data = json.loads(text)
+        data = json.loads(text, parse_int=_bounded_json_int)
         for key in field_path.split('.'):
             data = data[key]
         return str(data)
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 
@@ -217,11 +219,13 @@ def _extract_yaml_from_text(text: str, field_path: str) -> Optional[str]:
 
 def _extract_json_field(path: Path, field_path: str) -> Optional[str]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(
+            path.read_text(encoding="utf-8"), parse_int=_bounded_json_int
+        )
         for key in field_path.split('.'):
             data = data[key]
         return str(data)
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 

@@ -1,26 +1,25 @@
-# Hashing contract (v2)
+# Hashing contract (v3)
 
-This document defines the deterministic hashing contract used by Boundver for
-newly generated lockfiles. Hashes created with the earlier unframed v1 contract
-must be regenerated: v2 intentionally changes every exact, content-only, raw
-boundary, and behavior digest.
+This document defines the deterministic hashing and source-snapshot contract
+for `boundary-lock/v3`. A v1 or v2 lock must be regenerated from repository
+content: neither older format binds all of the inputs required by v3.
 
 ## Core rules
 
-- Hash algorithm: SHA-256 (lowercase hexadecimal output).
-- Path basis: repository-relative Git paths, which use POSIX separators.
-  Filesystem fallback paths use `Path.as_posix()`; a literal backslash in a
-  POSIX filename is content, not a separator, and remains a backslash.
-- Text line endings: CRLF is canonicalized to LF in every source mode when the
-  content contains no NUL byte.
-- Binary content: bytes containing a NUL byte are hashed without line-ending
-  conversion.
-- Ordering: entries are sorted by their UTF-8 label bytes, then by content.
-- Duplicate labels remain separate entries and are included in the entry count.
+- Hash algorithm: SHA-256, emitted as lowercase hexadecimal.
+- Path basis: repository-relative Git paths with POSIX separators. Content-only
+  comparisons use paths relative to each compared tree.
+- File identity: every file entry binds its label/path, canonical Git mode,
+  Git object type, and content. A transition among `100644`, `100755`, and
+  `120000` therefore changes exact, content-only/vendored, raw boundary, and
+  raw behavior fingerprints even when the blob bytes are identical.
+- Text line endings: CRLF is canonicalized to LF when content contains no NUL.
+- Binary content: bytes containing NUL are hashed without line-ending changes.
+- Ordering: entries are sorted by encoded label, mode, type, then content.
+  Duplicate entries remain distinct and count toward `entry_count`.
 
-Every digest over labeled entries uses the following binary wire format. `u64`
-means an unsigned, big-endian 64-bit integer, and `||` means byte
-concatenation:
+Every entry digest uses this binary format. `u64` is an unsigned big-endian
+64-bit integer and `||` means byte concatenation:
 
 ```text
 u64(len(magic)) || magic
@@ -28,80 +27,161 @@ u64(len(domain)) || domain
 u64(entry_count)
 for each entry:
   u64(len(label)) || label
+  u64(len(mode)) || mode
+  u64(len(object_type)) || object_type
   u64(len(content)) || content
 ```
 
-The magic value is the ASCII bytes `boundver-hash/v2`. Domains and labels are
-UTF-8 encoded. On POSIX, undecodable Git filename bytes are preserved through
-Python's `surrogateescape` mapping and re-emitted byte-for-byte. Explicit
-lengths and the entry count make the representation unambiguous even when a
-filename or file content resembles framing data.
+The magic is the ASCII value `boundver-hash/v3`. Domains, labels, modes, and
+types are UTF-8 (the canonical Git values are ASCII). On POSIX, undecodable Git
+filename bytes round-trip through Python's `surrogateescape` mapping. Explicit
+lengths and an entry count make the encoding unambiguous.
 
-## Domains and labels
+## Domains, labels, modes, and types
 
-| Purpose | Domain | Label |
-| --- | --- | --- |
-| Exact component tree | `exact-tree` | `file:{repository-relative path}` |
-| Vendored/content-only tree | `content-only-tree` | `file:{path relative to compared tree}` |
-| Boundary and behavior providers | `boundary` | Provider-supplied deterministic label |
+| Purpose | Domain | Label | Mode/type |
+| --- | --- | --- | --- |
+| Exact component tree | `exact-tree` | `file:{repository-relative path}` | selected file's Git mode/type |
+| Vendored/content-only tree | `content-only-tree` | `file:{path relative to compared tree}` | selected file's Git mode/type |
+| Raw boundary or raw behavior provider | `boundary` | provider's component-relative file label | selected file's Git mode/type |
+| Canonical/semantic provider value | `boundary` | provider's deterministic semantic label | `semantic` / `value` |
+| Behavior envelope | `behavior-envelope` | `behavior`, `boundary` | `semantic` / `value` |
 
-Domain separation prevents equal entry sets used for different purposes from
-producing the same digest. Provider implementations must use the shared framed
-entry helper and must return deterministic labels and raw byte content.
+Domain separation prevents equal entries used for different purposes from
+producing the same digest. Raw path providers must propagate the selected
+file's mode and type with its bytes. Providers that parse and canonicalize a
+file hash the resulting semantic value, not the source representation, and use
+the explicit non-file `semantic/value` identity.
 
-## File enumeration by source mode
+Git modes are the six-character canonical values emitted by Git. Blob modes
+supported by normal file hashing are `100644`, `100755`, and `120000`.
+Unsupported working-tree file types and non-blob Git tree entries fail closed.
 
-- `head`: tracked files from `git ls-tree -r -z --name-only HEAD -- <path>`;
-  content comes from the corresponding `HEAD` blobs.
-- `index`: tracked files from `git ls-files --cached -z -- <path>`; content
-  comes from the corresponding index blobs.
-- `working-tree`: the same tracked file set as `index`, excluding tracked files
-  currently absent from disk; content comes from disk.
+## Declared path and glob grammar
 
-Git filename output is NUL-delimited and decoded with the platform filesystem
-codec, so whitespace, newlines, and non-ASCII names are not confused with Git's
-human-readable C quoting. A successful empty Git result is authoritative.
-Filesystem enumeration is used for `working-tree` only when the Git listing
-command itself fails, such as in a non-Git directory, or when the repository
-has no first commit and therefore no tracked-file snapshot. It emits a warning.
-`head` and `index` require a readable Git source.
+Boundary and behavior path declarations are component-relative POSIX paths and
+are matched case-sensitively, independent of the host platform. Matching is
+path-segment aware:
+
+- `*`, `?`, and bracket classes such as `[a-z]` match only within one segment;
+  they never consume `/`.
+- A complete `**` segment matches zero or more complete path segments. Thus
+  `**/*.yaml` includes root-level and nested YAML files, while
+  `api/**/*.yaml` includes direct children of `api` and descendants.
+- Dotfiles are not implicitly excluded; a wildcard can match a leading `.`.
+- A literal file selects that file. A literal directory selects its tracked
+  descendants. Glob and literal results use the selected source snapshot.
+- Every declaration must match at least one selected tracked file. An unmatched
+  declaration fails the provider rather than silently weakening the contract.
+- The final selection is the deduplicated union of all declarations, sorted by
+  component-relative path bytes. Overlapping declarations hash a file once.
+
+Backslashes, absolute paths, empty/whitespace-only values, and `.` or `..` path
+segments are invalid declarations. In particular, leading `./` is rejected
+rather than assigned a second spelling.
+
+## One source snapshot per operation
+
+A complete generate or verify operation creates one source accessor and reuses
+it for the configuration, lockfile (during verification), every component,
+version source, provider, vendored copy, and slice. Generation writes its new
+lockfile to the working tree only after reading all inputs from the selected
+source:
+
+- `head`: resolve `HEAD^{commit}` once, enumerate its immutable tree, and read
+  blobs by object ID. A concurrent branch/ref update cannot change the source.
+- `index`: run `git write-tree` once, enumerate that immutable tree, and read
+  blobs by object ID. A concurrent index update cannot hybridize components.
+- `working-tree`: capture one index tree for the tracked path set, then read
+  current bytes and mode/type from disk. Tracked paths absent on disk are
+  excluded. Disk state is inherently mutable; disappearance during a read is
+  an error. An unborn repository with no captured tracked state retains the
+  bounded filesystem fallback used for initial setup.
+
+Git-tag version extraction is evaluated against the HEAD commit captured by
+the operation. Tags not reachable from that commit are never selected.
+
+For `head` and `index`, the config and verification lock are blobs from the
+captured source. Unstaged working-tree versions of those files cannot be mixed
+with staged or committed component artifacts. Generation emits its new lock to
+the working tree after computation; callers must stage it before index
+verification or commit it before head verification. A complete index refresh
+therefore stages source/derived output/config, generates, stages the lock, and
+then verifies.
 
 ## Failure contract
 
-Hashing fails closed. A missing, malformed, truncated, non-blob, or oversized
-Git object is an error, as is a working-tree file that disappears between
-enumeration and reading. These states never contribute empty bytes. A real
-zero-byte file remains valid and hashes normally.
+Hashing fails closed. Missing, malformed, truncated, non-blob, or oversized Git
+objects are errors, as are unresolved index stages, unsupported filesystem
+types, and files that disappear between enumeration and reading. None of these
+states contributes empty bytes. A real zero-byte regular file remains valid.
+
+Strict generation also fails when a declared vendored source/copy has no files
+in the selected source or when its v3 content-only digest differs from the
+source. Such a state is never blessable as a strict lockfile.
+
+`generate --allow-partial` changes only slice assembly: an intentional null
+boundary, behavior, or compatibility fingerprint may be stored as that slice
+member's input. It does not suppress provider, version, exact, behavior, or
+vendored computation errors. Verification treats a facet explicitly selected
+by CLI or configured policy as unavailable when either locked or current value
+is null and returns usage exit `2`; the policy-free fallback gates all available
+facets instead.
 
 The guardrails are 50,000 files per digest and 50 MiB per file.
 
 ## Derived digests
 
-- `exact`: the `exact-tree` digest over all tracked files below the component
-  path.
-- `boundary`: the `boundary` digest over the provider's resolved
-  entries.
-- `behavior`: the `boundary` digest over declared behavior entries;
-  `null` when not configured.
-- `compat`: SHA-256 of the UTF-8 identity string
-  `{component_name}@compat:{compat_identity}`. This single-value digest does not
-  use entry framing.
-- `slice`: SHA-256 over canonical JSON of `{component_name: selected_digest}`,
-  where the selected digest is chosen by slice mode (`exact`, `behavior`,
-  `boundary`, or `compat`).
+- `exact`: `exact-tree` over every selected file below the component path.
+- `boundary`: `boundary` over entries resolved by the configured provider.
+- Raw `behavior`: first compute a `boundary` provider digest over declared
+  behavior files. Then hash a `behavior-envelope` containing that digest and
+  the component's boundary digest. If a provider intentionally has no boundary
+  digest, the envelope includes `none:{boundary_status}`. Consequently a
+  boundary change always changes a configured behavior fingerprint.
+- `compat`: SHA-256 of UTF-8
+  `{component_name}@compat:{compat_identity}`. It is a single-value derived
+  digest and does not use entry framing.
+- `slice`: SHA-256 over canonical JSON of
+  `{component_name: selected_digest}`, with the digest selected by slice mode.
 
-## Canonical JSON
+Symlinks use mode `120000` and their link-target text as content; they are not
+dereferenced. Git LFS pointers and other filtered content use Git blobs for
+`head`/`index` and disk bytes for `working-tree`, so those sources can differ by
+design. Line-ending canonicalization is the only built-in content conversion.
 
-- UTF-8 encoded.
-- Object keys sorted.
-- Compact separators: `,` and `:` (no insignificant whitespace).
+## Semantic configuration digest
 
-## Edge cases
+Every v3 lock stores:
 
-- Empty directories are excluded because Git does not track them.
-- File permissions and mode bits are excluded from digest input.
-- Symlinks are hashed as link-target text, not dereferenced content.
-- Git LFS pointer blobs are hashed from `head` and `index`; a smudged
-  `working-tree` file can therefore differ by design.
-- Other clean/smudge filters can likewise make working-tree content differ
-  from Git blobs. Line-ending canonicalization is the one built-in conversion.
+```json
+{
+  "config_contract": "boundver-semantic-config/v1",
+  "config_digest": "<sha256>"
+}
+```
+
+`config_digest` is SHA-256 of the UTF-8 string
+`boundver-semantic-config/v1\n` followed by canonical JSON of the semantic
+configuration. Canonical JSON sorts object keys, uses compact `,`/`:`
+separators, preserves Unicode, and has no insignificant whitespace.
+
+The semantic value covers the project, custom-provider declarations, normalized
+defaults (including compatibility mode and default verify facets), every
+component path, boundary provider/globs/options, behavior paths, version source,
+vendored paths, compatibility inputs, validated internal `consumers`, opaque
+`external_consumers`, per-component `verify_facets`, and every explicit or
+`closure_of` slice declaration. Set-like lists are sorted and documented
+default values are materialized. Presentation-only `$schema` values and object
+insertion order do not affect it. Verification compares this digest before
+component fingerprints, so a contract-affecting config mutation cannot remain
+invisible merely because it happens to select the same current bytes.
+
+## Derived-artifact boundary
+
+The hashing contract binds a declared output artifact, not a relationship
+between that output and generator inputs. v3 defines no `derived_from` command,
+does not execute repository-configured generators, and does not include ambient
+toolchain identity. A deterministic generator freshness check must run before
+boundver when a selected artifact is derived. First-class declarative derivation
+would require a future contract revision.

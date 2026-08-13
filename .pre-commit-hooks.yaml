@@ -1,17 +1,30 @@
 - id: boundver-verify
-  name: boundver verify
+  name: boundver verify staged lock
   language: python
   entry: boundver
-  args: [verify, --source, index]
+  args: [verify, --source, index, --facets, exact]
   pass_filenames: false
   description: >
     Verify that boundary.lock.json is up to date with the staged snapshot.
     Fails with the documented facet-specific exit code when fingerprints drift;
     blocks the commit until you run
-    `boundver generate` and stage the updated lockfile.
-  additional_dependencies: []
+    `boundver generate --source index` and stage the updated lockfile.
+  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
   always_run: true
-  stages: [pre-commit, pre-push]
+  stages: [pre-commit]
+
+- id: boundver-verify-push
+  name: boundver verify committed lock
+  language: python
+  entry: boundver
+  args: [verify, --source, head, --facets, exact]
+  pass_filenames: false
+  description: >
+    Verify that boundary.lock.json is up to date with the committed snapshot
+    before pushing it.
+  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
+  always_run: true
+  stages: [pre-push]
 
 - id: boundver-generate
   name: boundver generate
@@ -22,6 +35,6 @@
   description: >
     Regenerate boundary.lock.json from the staged snapshot. Use this hook on the
     pre-commit stage to auto-update the lockfile before committing.
-  additional_dependencies: []
+  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
   always_run: true
   stages: [pre-commit]

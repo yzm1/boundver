@@ -692,8 +692,8 @@ class AdditionalGitHelperTests(unittest.TestCase):
             result = git_latest_tag(root, "nonexistent-prefix-v")
             self.assertIsNone(result)
 
-    def test_git_latest_tag_fallback_returns_tag(self):
-        """git_latest_tag falls back to git tag --list when describe fails (shallow repo)."""
+    def test_git_latest_tag_returns_reachable_tag(self):
+        """git_latest_tag returns a matching tag reachable from HEAD."""
         from boundver.core import git_latest_tag
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -701,8 +701,6 @@ class AdditionalGitHelperTests(unittest.TestCase):
             (root / "f.txt").write_text("x")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
-            # Create a tag not reachable via --describe (on a detached-head branch workaround:
-            # just create a plain tag so describe *can* find it but also test --list fallback).
             subprocess.run(["git", "tag", "svc-v1.2.3"], cwd=root, check=True, capture_output=True)
             result = git_latest_tag(root, "svc-v")
             self.assertEqual(result, "1.2.3")

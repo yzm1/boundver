@@ -15,6 +15,14 @@ build/
 # Git metadata (not needed inside the image build context)
 .git/
 
+# Local credentials and environment files must never enter image layers
+.env
+.env.*
+.npmrc
+.pypirc
+*.key
+*.pem
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db
@@ -25,6 +33,23 @@ Thumbs.db
 docs/
 spec/
 examples/
+tests/
+scripts/
 
 # CI configs (not needed in image)
 .github/
+
+# Repository-only release and integration surfaces
+.gitattributes
+.gitignore
+.pre-commit-hooks.yaml
+CHANGELOG.md
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+MANIFEST.in
+SECURITY.md
+SUPPORT.md
+action.yml
+boundary.config.json
+boundary.config.schema.json
+boundary.lock.json
