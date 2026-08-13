@@ -146,6 +146,10 @@ class CompletionParserParityTests(unittest.TestCase):
                 self.assertIn("_boundver_completions", stdout.getvalue())
                 self.assertEqual(stderr.getvalue(), "")
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Bash syntax is exercised by the Linux CI matrix",
+    )
     def test_bash_script_has_valid_syntax(self):
         result = subprocess.run(
             ["bash", "-n"],
