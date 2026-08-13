@@ -41,6 +41,16 @@ def _run_main(*args: str, repo_root: Path = None) -> tuple[int, str, str]:
     return exit_code, out_buf.getvalue(), err_buf.getvalue()
 
 
+def _commit_all(root: Path, message: str = "test fixture") -> None:
+    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
+
 class MainNoCommandTests(unittest.TestCase):
     def test_no_command_exits_1(self):
         """main() with no subcommand exits 2 (usage error) and prints help."""
@@ -102,7 +112,14 @@ class MainGenerateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
-            code, _, err = _run_main("generate", "--config", "missing.json", repo_root=root)
+            code, _, err = _run_main(
+                "generate",
+                "--source",
+                "working-tree",
+                "--config",
+                "missing.json",
+                repo_root=root,
+            )
             self.assertEqual(code, 2)
             self.assertIn("not found", err)
 
@@ -201,6 +218,221 @@ class MainGenerateTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
 
+    def test_allow_partial_lock_verifies_from_the_same_snapshot(self):
+        """An implicit boundary and unversioned compat slice round-trip cleanly."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit", "paths": []},
+                    }
+                },
+                "slices": {
+                    "boundary-slice": {
+                        "mode": "boundary",
+                        "components": ["svc"],
+                    },
+                    "compat-slice": {
+                        "mode": "compat",
+                        "components": ["svc"],
+                    },
+                },
+            }
+            (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            (root / "svc").mkdir()
+            (root / "svc" / "a.py").write_text("x=1\n")
+
+            strict_code, _, strict_err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(strict_code, core.EXIT_USAGE)
+            self.assertIn("requires boundary digest", strict_err)
+            self.assertFalse((root / "boundary.lock.json").exists())
+
+            code, _, err = _run_main(
+                "generate",
+                "--source",
+                "working-tree",
+                "--allow-partial",
+                repo_root=root,
+            )
+            self.assertEqual(code, 0, err)
+            code, out, err = _run_main(
+                "verify", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("up to date", out.lower())
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "exact",
+                repo_root=root,
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("up to date", out.lower())
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "boundary",
+                repo_root=root,
+            )
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            self.assertIn("UNAVAILABLE FACET svc.boundary", out)
+            lock_path = root / "boundary.lock.json"
+            before_update = lock_path.read_bytes()
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "boundary",
+                "--update",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            payload = json.loads(out)
+            self.assertFalse(payload["ok"])
+            self.assertFalse(payload["updated"])
+            self.assertEqual(lock_path.read_bytes(), before_update)
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "compat",
+                repo_root=root,
+            )
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            self.assertIn("UNAVAILABLE FACET svc.compat", out)
+            self.assertIn("UNAVAILABLE FACET compat-slice.compat", out)
+            lock = json.loads((root / "boundary.lock.json").read_text())
+            self.assertEqual(
+                lock["components"]["svc"]["boundary_status"], "partial"
+            )
+            self.assertIsNone(
+                lock["slices"]["boundary-slice"]["component_digests"]["svc"]
+            )
+            self.assertIsNone(
+                lock["slices"]["compat-slice"]["component_digests"]["svc"]
+            )
+
+    def test_explicit_compat_policy_requires_a_version_source(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            cfg = self._minimal_cfg(root)
+            cfg["components"]["svc"]["verify_facets"] = ["compat"]
+            (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            code, out, err = _run_main(
+                "validate-config", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            self.assertTrue(
+                "compat" in (out + err).lower()
+                and (
+                    "version" in (out + err).lower()
+                    or "unavailable" in (out + err).lower()
+                ),
+                out + err,
+            )
+
+    def test_fail_fast_unavailable_facet_blocks_update_before_drift(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            for name in ("a", "b"):
+                (root / name).mkdir()
+                (root / name / "api.json").write_text("{}\n")
+            cfg = {
+                "project": "p",
+                "components": {
+                    name: {
+                        "path": name,
+                        "boundary": {
+                            "provider": "json-file",
+                            "paths": ["api.json"],
+                        },
+                    }
+                    for name in ("a", "b")
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            code, _out, err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, 0, err)
+            lock_path = root / "boundary.lock.json"
+            before = lock_path.read_bytes()
+            (root / "b" / "api.json").write_text('{"changed":true}\n')
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "behavior,boundary",
+                "--fail-fast",
+                "--update",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            payload = json.loads(out)
+            self.assertFalse(payload["ok"])
+            self.assertFalse(payload["updated"])
+            self.assertTrue(payload["issues"][0].startswith("UNAVAILABLE FACET"))
+            self.assertEqual(lock_path.read_bytes(), before)
+
+    def test_allow_partial_does_not_bless_missing_declared_boundary(self):
+        """A provider error remains fatal even when slice nulls are allowed."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._init_git_repo(root)
+            cfg = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {
+                            "provider": "json-file",
+                            "paths": ["missing.json"],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            (root / "svc").mkdir()
+            (root / "svc" / "a.py").write_text("x=1\n")
+
+            # Bypass working-tree existence validation so generation itself
+            # proves --allow-partial cannot bless a provider error.
+            with patch("boundver.core.validate_config", return_value=[]):
+                code, _, err = _run_main(
+                    "generate",
+                    "--source",
+                    "working-tree",
+                    "--allow-partial",
+                    repo_root=root,
+                )
+
+            self.assertEqual(code, 2)
+            self.assertIn("missing.json", err)
+            self.assertFalse((root / "boundary.lock.json").exists())
+
     def test_generate_bad_config_json_exits_1(self):
         """generate exits 1 with ERROR when config file has bad JSON (core.py lines 335-337)."""
         with tempfile.TemporaryDirectory() as td:
@@ -210,6 +442,105 @@ class MainGenerateTests(unittest.TestCase):
             code, _, err = _run_main("generate", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
+
+
+class MainRemoveIntegrityTests(unittest.TestCase):
+    def _repo(self, root: Path) -> None:
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "t@t.com"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "T"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    def _assert_remove_refuses_without_writing(self, config: dict, name: str) -> str:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            for component in config["components"].values():
+                path = root / component["path"]
+                path.mkdir(parents=True, exist_ok=True)
+                (path / "main.py").write_text("value = 1\n")
+            config_path = root / "boundary.config.json"
+            config_path.write_text(json.dumps(config, indent=2) + "\n")
+            before = config_path.read_bytes()
+
+            code, _out, err = _run_main("remove", name, repo_root=root)
+
+            self.assertEqual(code, core.EXIT_USAGE, err)
+            self.assertEqual(config_path.read_bytes(), before)
+            return err
+
+    def test_remove_refuses_incoming_consumer_edge(self):
+        config = {
+            "project": "p",
+            "components": {
+                "a": {
+                    "path": "a",
+                    "boundary": {"provider": "implicit"},
+                    "consumers": ["b"],
+                },
+                "b": {"path": "b", "boundary": {"provider": "implicit"}},
+            },
+            "slices": {},
+        }
+        self.assertIn("unknown consumer", self._assert_remove_refuses_without_writing(config, "b"))
+
+    def test_remove_refuses_closure_seed(self):
+        config = {
+            "project": "p",
+            "components": {
+                "a": {"path": "a", "boundary": {"provider": "implicit"}},
+                "b": {"path": "b", "boundary": {"provider": "implicit"}},
+            },
+            "slices": {"impact": {"mode": "exact", "closure_of": "b"}},
+        }
+        self.assertIn("closure_of", self._assert_remove_refuses_without_writing(config, "b"))
+
+    def test_remove_refuses_last_component(self):
+        config = {
+            "project": "p",
+            "components": {
+                "a": {"path": "a", "boundary": {"provider": "implicit"}},
+            },
+            "slices": {},
+        }
+        self.assertIn("at least one component", self._assert_remove_refuses_without_writing(config, "a"))
+
+    def test_add_refuses_invalid_component_without_writing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            (root / "existing").mkdir()
+            (root / "existing" / "main.py").write_text("value = 1\n")
+            config = {
+                "project": "p",
+                "components": {
+                    "existing": {
+                        "path": "existing",
+                        "boundary": {"provider": "implicit"},
+                    }
+                },
+                "slices": {},
+            }
+            config_path = root / "boundary.config.json"
+            config_path.write_text(json.dumps(config, indent=2) + "\n")
+            before = config_path.read_bytes()
+
+            code, _out, err = _run_main(
+                "add", "missing", "does-not-exist", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, err)
+            self.assertIn("would leave an invalid config", err)
+            self.assertEqual(config_path.read_bytes(), before)
 
 
 class MainValidateConfigErrorPathTests(unittest.TestCase):
@@ -264,7 +595,10 @@ class MainStatusConfigWarningTests(unittest.TestCase):
             (root / "boundary.lock.json").write_text(json.dumps(lockfile))
             # Bad config — parse will fail
             (root / "boundary.config.json").write_text("{bad json}")
-            code, _, err = _run_main("status", repo_root=root)
+            code, _, err = _run_main(
+                "status", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, 0)
             self.assertIn("WARNING", err)
 
 
@@ -275,7 +609,7 @@ class MainMigrateLockRelativePathTests(unittest.TestCase):
         """migrate-lock accepts a relative path, resolves against cwd."""
         import os
         with tempfile.TemporaryDirectory() as td:
-            lf = {"schema": "boundary-lock/v2", "project": "x", "components": {}, "slices": {}}
+            lf = {"schema": "boundary-lock/v3", "project": "x", "components": {}, "slices": {}}
             (Path(td) / "boundary.lock.json").write_text(json.dumps(lf))
             old_dir = os.getcwd()
             os.chdir(td)
@@ -295,12 +629,24 @@ class MainVerifyTests(unittest.TestCase):
     def _setup(self, root: Path) -> None:
         cfg = {
             "project": "p",
-            "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}},
+            "defaults": {"verify_facets": ["exact"]},
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "version_source": {"file": "version.json", "field": "version"},
+                    "boundary": {
+                        "provider": "json-file",
+                        "paths": ["contract.json"],
+                    },
+                }
+            },
             "slices": {},
         }
         (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
         (root / "svc").mkdir(exist_ok=True)
         (root / "svc" / "main.py").write_text("x=1\n")
+        (root / "svc" / "version.json").write_text('{"version":"1.0.0"}\n')
+        (root / "svc" / "contract.json").write_text('{"api":"v1"}\n')
 
     def test_verify_up_to_date_exits_0(self):
         with tempfile.TemporaryDirectory() as td:
@@ -398,6 +744,7 @@ class MainVerifyTests(unittest.TestCase):
             self._init_git_repo(root)
             cfg = {
                 "project": "p",
+                "defaults": {"verify_facets": ["exact"]},
                 "components": {
                     "svc": {"path": "svc", "boundary": {"provider": "implicit"}},
                     "worker": {"path": "worker", "boundary": {"provider": "implicit"}},
@@ -529,6 +876,18 @@ class MainVerifyTests(unittest.TestCase):
             lock = json.loads(lock_path.read_text())
             lock["components"]["svc"]["boundary_provider_version"] = "tampered"
             lock_path.write_text(json.dumps(lock) + "\n")
+            subprocess.run(
+                ["git", "add", "boundary.lock.json"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "tamper locked metadata"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
 
             code, out, err = _run_main(
                 "verify",
@@ -558,6 +917,7 @@ class MainVerifyTests(unittest.TestCase):
             self._init_git_repo(root)
             config = {
                 "project": "p",
+                "defaults": {"verify_facets": ["exact"]},
                 "components": {
                     "tagged": {
                         "path": "tagged",
@@ -739,7 +1099,9 @@ class MainSeverityAndConsumerTests(unittest.TestCase):
                 "--source",
                 "working-tree",
                 "--facets",
-                "boundary,compat",
+                "boundary",
+                "--components",
+                "api",
                 "--format",
                 "json",
                 repo_root=root,
@@ -772,6 +1134,18 @@ class MainSeverityAndConsumerTests(unittest.TestCase):
                 "slices": {},
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            subprocess.run(
+                ["git", "add", "boundary.config.json", "svc/version.json"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "track version source"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
             code, _, err = _run_main(
                 "generate", "--source", "working-tree", repo_root=root
             )
@@ -794,13 +1168,41 @@ class MainSeverityAndConsumerTests(unittest.TestCase):
 
 
 class MainDiffTests(unittest.TestCase):
+    @staticmethod
+    def _valid_lock() -> dict:
+        return {
+            "schema": "boundary-lock/v3",
+            "config_contract": "boundver-semantic-config/v1",
+            "config_digest": "0" * 64,
+            "project": "p",
+            "components": {
+                "svc": {
+                    "version": None,
+                    "path": "svc",
+                    "boundary_provider": "leaf",
+                    "boundary_provider_version": "1",
+                    "boundary_status": "ok",
+                    "consumers": [],
+                    "external_consumers": [],
+                    "fingerprints": {
+                        "exact": "1" * 64,
+                        "behavior": None,
+                        "boundary": None,
+                        "compat": None,
+                    },
+                    "semver": {
+                        "compat_family": None,
+                        "api_surface": None,
+                        "exact_version": None,
+                    },
+                }
+            },
+            "slices": {},
+        }
+
     def test_diff_identical_lockfiles_text(self):
         with tempfile.TemporaryDirectory() as td:
-            lock = {
-                "schema": "boundary-lock/v1",
-                "components": {"svc": {"version": "1.0", "fingerprints": {"exact": "aaa", "boundary": None, "compat": None}}},
-                "slices": {},
-            }
+            lock = self._valid_lock()
             p = Path(td) / "lock.json"
             p.write_text(json.dumps(lock))
             code, out, _ = _run_main("diff", str(p), str(p))
@@ -809,11 +1211,7 @@ class MainDiffTests(unittest.TestCase):
 
     def test_diff_format_json(self):
         with tempfile.TemporaryDirectory() as td:
-            lock = {
-                "schema": "boundary-lock/v1",
-                "components": {"svc": {"version": "1.0", "fingerprints": {"exact": "aaa", "boundary": None, "compat": None}}},
-                "slices": {},
-            }
+            lock = self._valid_lock()
             p = Path(td) / "lock.json"
             p.write_text(json.dumps(lock))
             code, out, _ = _run_main("diff", str(p), str(p), "--format", "json")
@@ -898,7 +1296,7 @@ class MainValidateConfigTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("not found", err)
 
-    def test_validate_config_warns_when_behavior_does_not_cover_boundary(self):
+    def test_validate_config_rejects_behavior_that_does_not_cover_boundary(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             self._init_git_repo(root)
@@ -918,12 +1316,11 @@ class MainValidateConfigTests(unittest.TestCase):
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
 
-            code, out, _ = _run_main("validate-config", repo_root=root)
+            code, out, _err = _run_main("validate-config", repo_root=root)
 
-            self.assertEqual(code, 0)
-            self.assertIn("WARNINGS", out)
+            self.assertEqual(code, 2)
             self.assertIn("api.yaml", out)
-            self.assertIn("valid", out.lower())
+            self.assertIn("must cover every boundary artifact", out)
 
 
 class MainInitTests(unittest.TestCase):
@@ -1095,6 +1492,7 @@ class MainExplainTests(unittest.TestCase):
             self._init_git_repo(root)
             cfg = {"project": "p", "components": {}, "slices": {}}
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            _commit_all(root, "add config")
             code, _, _ = _run_main("explain", "ghost", repo_root=root)
             self.assertEqual(code, 2)
 
@@ -1108,6 +1506,7 @@ class MainExplainTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             cfg = {"project": "p", "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}}, "slices": {}}
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
+            _commit_all(root, "add config")
             code, out, _ = _run_main("explain", "svc", repo_root=root)
             self.assertEqual(code, 0)
             self.assertIn("svc", out)
@@ -1273,22 +1672,21 @@ class MainMigrateLockTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("v99", err)
 
-    def test_migrate_lock_dry_run_prints_json_no_write(self):
+    def test_migrate_lock_v2_dry_run_requires_regeneration_no_write(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
             lf = {"schema": "boundary-lock/v2", "project": "x", "components": {}, "slices": {}, "generated_at": "ts"}
             original = json.dumps(lf)
             p.write_text(original)
             code, out, _ = _run_main("migrate-lock", "--lock", str(p), "--dry-run")
-            self.assertEqual(code, 0)
-            self.assertIn('"schema"', out)
-            self.assertNotIn("generated_at", out)
+            self.assertEqual(code, 2)
+            self.assertEqual(out, "")
             self.assertEqual(p.read_text(), original)  # file unchanged
 
-    def test_migrate_lock_writes_in_place(self):
+    def test_migrate_lock_current_v3_cleanup_writes_in_place(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            lf = {"schema": "boundary-lock/v2", "project": "x", "components": {}, "slices": {}, "generated_at": "ts"}
+            lf = {"schema": "boundary-lock/v3", "project": "x", "components": {}, "slices": {}, "generated_at": "ts"}
             p.write_text(json.dumps(lf))
             code, _, _ = _run_main("migrate-lock", "--lock", str(p))
             self.assertEqual(code, 0)
@@ -1309,6 +1707,7 @@ class MainVerifyErrorPathTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             (root / "boundary.lock.json").write_text("{}")
+            _commit_all(root, "add lock")
             code, _, err = _run_main("verify", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
@@ -1319,6 +1718,7 @@ class MainVerifyErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad json}")
             (root / "boundary.lock.json").write_text("{}")
+            _commit_all(root, "add invalid config and lock")
             code, _, err = _run_main("verify", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
@@ -1337,6 +1737,7 @@ class MainWhyErrorPathTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             (root / "boundary.lock.json").write_text("{}")
+            _commit_all(root, "add lock")
             code, _, err = _run_main("why", "svc", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("Config", err)
@@ -1347,6 +1748,7 @@ class MainWhyErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             cfg = {"project": "p", "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}}, "slices": {}}
             (root / "boundary.config.json").write_text(json.dumps(cfg))
+            _commit_all(root, "add config")
             code, _, err = _run_main("why", "svc", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("Lockfile", err)
@@ -1357,6 +1759,7 @@ class MainWhyErrorPathTests(unittest.TestCase):
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad}")
             (root / "boundary.lock.json").write_text("{}")
+            _commit_all(root, "add invalid config and lock")
             code, _, err = _run_main("why", "svc", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
@@ -1375,37 +1778,10 @@ class MainExplainErrorPathTests(unittest.TestCase):
             root = Path(td)
             self._init_git_repo(root)
             (root / "boundary.config.json").write_text("{bad}")
+            _commit_all(root, "add invalid config")
             code, _, err = _run_main("explain", "svc", repo_root=root)
             self.assertEqual(code, 2)
             self.assertIn("ERROR", err)
-
-
-class MigrateLockSchemaChangeLogTests(unittest.TestCase):
-    """core.py line 313: log message when schema actually changes during migrate-lock."""
-
-    def test_migrate_lock_logs_migration_when_schema_changes(self):
-        """When migrate_lockfile returns a different schema, the 'Migrated' log is emitted (line 313)."""
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "boundary.lock.json"
-            p.write_text(json.dumps({
-                "schema": "boundary-lock/v1",
-                "project": "x",
-                "components": {},
-                "slices": {},
-            }))
-            # Simulate a future migration by patching migrate_lockfile to return v2.
-            migrated_v2 = {
-                "schema": "boundary-lock/v2",
-                "project": "x",
-                "components": {},
-                "slices": {},
-            }
-            with patch("boundver.core.migrate_lockfile", return_value=migrated_v2):
-                code, out, _ = _run_main("migrate-lock", "--lock", str(p))
-            self.assertEqual(code, 0)
-            written = json.loads(p.read_text())
-            self.assertEqual(written["schema"], "boundary-lock/v2")
 
 
 class ResolvAllowCustomTests(unittest.TestCase):

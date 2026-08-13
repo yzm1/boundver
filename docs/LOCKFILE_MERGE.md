@@ -23,7 +23,7 @@ boundver generate --source working-tree
 # 3. Check the exact same snapshot and inspect the generated diff.
 boundver verify \
   --source working-tree \
-  --facets exact,behavior,boundary,compat
+  --facets exact
 git diff -- boundary.lock.json
 
 # 4. Mark the generated file resolved, then finish the merge.
@@ -37,7 +37,7 @@ Only add `boundary.config.json` in step 4 if the merge actually changed it. Add 
 After the merge commit exists, verify the committed snapshot:
 
 ```bash
-boundver verify --source head --facets exact,behavior,boundary,compat
+boundver verify --source head --facets exact
 ```
 
 The source pairing matters: use `working-tree` before the merge commit, then `head` after it. `head` during conflict resolution still names the pre-merge commit and cannot represent both branches.
@@ -50,7 +50,7 @@ Git may merge the JSON without a textual conflict even though the combined sourc
 boundver generate --source working-tree
 boundver verify \
   --source working-tree \
-  --facets exact,behavior,boundary,compat
+  --facets exact
 git diff --exit-code -- boundary.lock.json || {
   echo "Review and commit the regenerated boundary.lock.json"
 }
@@ -69,7 +69,7 @@ if command -v boundver >/dev/null 2>&1 && test -f boundary.config.json; then
   boundver generate --source working-tree
   boundver verify \
     --source working-tree \
-    --facets exact,behavior,boundary,compat
+    --facets exact
 
   if ! git diff --quiet -- boundary.lock.json; then
     echo "boundver regenerated boundary.lock.json; review and commit it."
@@ -86,7 +86,7 @@ chmod +x .git/hooks/post-merge
 Hooks are local and are not cloned with the repository. Treat this as a convenience, not enforcement. The authoritative safeguard is a CI job that runs:
 
 ```bash
-boundver verify --source head --facets boundary,compat
+boundver verify --source head
 ```
 
 ## Rules of thumb
@@ -94,5 +94,6 @@ boundver verify --source head --facets boundary,compat
 - Resolve configuration and source before regenerating the lockfile.
 - Regenerate the full lockfile; a partial refresh is inappropriate for a merge.
 - Never hand-edit fingerprint values.
-- Review direct consumer changes and slice changes in the generated diff.
+- Review affected-consumer and slice changes in the generated diff; use
+  `verify --transitive` when the configured graph should drive wider checks.
 - Keep CI on `head` so it verifies exactly what the pull request commits.

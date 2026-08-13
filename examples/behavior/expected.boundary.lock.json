@@ -1,19 +1,22 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v2",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v3",
+  "config_contract": "boundver-semantic-config/v1",
+  "config_digest": "4dfa1f84d31db7bd189f6ac72809435e68b2cc299973dc5e21f4c126c7a4b9ff",
   "project": "example-behavior",
   "components": {
     "payment-svc": {
       "version": "2.1.0",
       "path": "examples/behavior/service",
       "boundary_provider": "openapi",
-      "boundary_provider_version": "1",
+      "boundary_provider_version": "2",
       "boundary_status": "ok",
       "consumers": [],
+      "external_consumers": [],
       "fingerprints": {
-        "exact": "594d9c612e92e5bf3a27fc0a22c8ef57269b20892055d71b836dfa807211260b",
-        "behavior": "012d972cc8ff71a38a53a3c7c4c5f58457bbf9b3e2cea108f5a1bcf7f5007e20",
-        "boundary": "8dd1227ff4b1976de354c54be9528271d18f448d2f34f8adb079d70114fe6d03",
+        "exact": "ec2fa1c34a46dff219d6c881bd4b853a1e580658e2e45a0753443265ca1f7dbd",
+        "behavior": "5a0bfbf69284280a6d8963fe05ff89f36c7dde7a99e5e70d4f833a3bb5ee086b",
+        "boundary": "8ef1e56a607e4d4a5c12bed4eb0a4e9b753afb38790a34e362cbc954379aa53c",
         "compat": "85e5cd77fa1a3e08ce7e859a1326c924c6b43db9d3dfdda278f92c3d33fa43a0"
       },
       "semver": {
@@ -30,9 +33,9 @@
       "components": [
         "payment-svc"
       ],
-      "fingerprint": "c90def6f626c94609b92f3282897f2b6a406e0d56b9f4e836234dadb9e917caf",
+      "fingerprint": "bd71eeb941b68f80c04707ec2df663e98ae63b6e533085ee7a6d916d0ccddf89",
       "component_digests": {
-        "payment-svc": "8dd1227ff4b1976de354c54be9528271d18f448d2f34f8adb079d70114fe6d03"
+        "payment-svc": "8ef1e56a607e4d4a5c12bed4eb0a4e9b753afb38790a34e362cbc954379aa53c"
       }
     },
     "payment-behavior": {
@@ -41,9 +44,9 @@
       "components": [
         "payment-svc"
       ],
-      "fingerprint": "ef542653a39c823b4b261962b5bd5f7723a689098830bae019fb922f642addec",
+      "fingerprint": "becff63c026a8a6ca6dbc98b9675d104ce0dcdaf273956830cb07a5eb5514a40",
       "component_digests": {
-        "payment-svc": "012d972cc8ff71a38a53a3c7c4c5f58457bbf9b3e2cea108f5a1bcf7f5007e20"
+        "payment-svc": "5a0bfbf69284280a6d8963fe05ff89f36c7dde7a99e5e70d4f833a3bb5ee086b"
       }
     }
   }

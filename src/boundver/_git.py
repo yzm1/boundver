@@ -1,7 +1,9 @@
 """Git helper primitives for boundver."""
 
 import os
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -9,6 +11,33 @@ from ._utils import GuardrailError
 
 
 MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024
+MAX_FALLBACK_FILES = 50_000
+
+
+@dataclass(frozen=True)
+class GitTreeEntry:
+    """One immutable path entry in a captured Git tree."""
+
+    path: str
+    mode: str
+    object_type: str
+    oid: str
+
+
+@dataclass(frozen=True)
+class GitSourceSnapshot:
+    """Immutable Git-backed source used by one generate/verify operation.
+
+    ``tree_oid`` is either the tree reached from one captured HEAD commit or a
+    tree written from the index once.  Reading blobs by object ID prevents a
+    concurrent ref/index update from producing a hybrid lockfile.
+    """
+
+    source: str
+    tree_oid: str
+    entries: Dict[str, GitTreeEntry]
+    head_oid: Optional[str] = None
+    filemode: bool = True
 
 
 def git_root() -> Path:
@@ -39,6 +68,146 @@ def _git_run_bytes(repo_root: Path, args: List[str]) -> subprocess.CompletedProc
 def _decode_nul_paths(data: bytes) -> List[str]:
     """Decode Git's NUL-delimited path output without C-quote mangling."""
     return [os.fsdecode(raw) for raw in data.split(b"\0") if raw]
+
+
+def _resolve_head_oid(repo_root: Path) -> Optional[str]:
+    """Resolve HEAD once, returning ``None`` for an unborn repository."""
+    try:
+        result = _git_run(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"])
+    except subprocess.CalledProcessError:
+        return None
+    oid = result.stdout.strip()
+    return oid or None
+
+
+def _is_git_repository(repo_root: Path) -> bool:
+    """Return whether *repo_root* is inside a readable Git work tree.
+
+    This deliberately distinguishes a directory with no repository (where the
+    documented working-tree filesystem fallback is useful) from a real
+    repository whose index cannot be snapshotted.  The latter includes
+    unresolved merge stages and must fail closed.
+    """
+    try:
+        result = _git_run(repo_root, ["rev-parse", "--is-inside-work-tree"])
+    except subprocess.CalledProcessError:
+        return False
+    return result.stdout.strip().lower() == "true"
+
+
+def _parse_ls_tree_entries(data: bytes) -> Dict[str, GitTreeEntry]:
+    """Parse ``git ls-tree -r -z --full-tree`` output without path quoting."""
+    entries: Dict[str, GitTreeEntry] = {}
+    for record in data.split(b"\0"):
+        if not record:
+            continue
+        try:
+            header, raw_path = record.split(b"\t", 1)
+            raw_mode, raw_type, raw_oid = header.split(b" ", 2)
+            mode = raw_mode.decode("ascii")
+            object_type = raw_type.decode("ascii")
+            oid = raw_oid.decode("ascii")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"Malformed git ls-tree record: {record!r}") from exc
+        if len(mode) != 6 or not mode.isdigit():
+            raise ValueError(f"Malformed Git mode {mode!r} for {os.fsdecode(raw_path)!r}")
+        if object_type not in {"blob", "commit"}:
+            raise ValueError(
+                f"Unsupported Git object type {object_type!r} for "
+                f"{os.fsdecode(raw_path)!r}"
+            )
+        path = os.fsdecode(raw_path)
+        if path in entries:
+            raise ValueError(f"Duplicate path in captured Git tree: {path!r}")
+        entries[path] = GitTreeEntry(path, mode, object_type, oid)
+    return entries
+
+
+def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnapshot:
+    """Capture one immutable tree for a ``head`` or ``index`` operation."""
+    if source not in {"head", "index"}:
+        raise ValueError(f"Cannot capture a Git snapshot for source {source!r}")
+
+    head_oid = _resolve_head_oid(repo_root)
+    if source == "head":
+        if head_oid is None:
+            raise ValueError("HEAD does not resolve to a commit")
+        treeish = head_oid
+    else:
+        # ``write-tree`` validates that the index can be represented by one
+        # complete tree (and fails closed for unresolved merge stages).  It
+        # writes only an immutable object; it does not mutate index entries or
+        # the working tree.
+        try:
+            result = _git_run(repo_root, ["write-tree"])
+        except subprocess.CalledProcessError as exc:
+            raise ValueError("Cannot capture index as a complete Git tree") from exc
+        treeish = result.stdout.strip()
+        if not treeish:
+            raise ValueError("git write-tree returned an empty object ID")
+
+    try:
+        listed = _git_run_bytes(
+            repo_root,
+            ["ls-tree", "-r", "-z", "--full-tree", treeish],
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(f"Cannot enumerate captured {source} tree {treeish}") from exc
+    try:
+        filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
+    except subprocess.CalledProcessError:
+        core_filemode = True
+    else:
+        core_filemode = filemode_result.stdout.strip().lower() != "false"
+    return GitSourceSnapshot(
+        source=source,
+        tree_oid=treeish,
+        entries=_parse_ls_tree_entries(listed.stdout),
+        head_oid=head_oid,
+        filemode=core_filemode,
+    )
+
+
+def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
+    """List files at/below one literal repo path in a captured tree."""
+    normalized = Path(path).as_posix().strip("/")
+    if normalized in {"", "."}:
+        return sorted(snapshot.entries)
+    prefix = normalized + "/"
+    return sorted(
+        candidate
+        for candidate in snapshot.entries
+        if candidate == normalized or candidate.startswith(prefix)
+    )
+
+
+def _working_tree_mode(
+    repo_root: Path,
+    repo_rel: str,
+    tracked_entry: Optional[GitTreeEntry] = None,
+    *,
+    core_filemode: bool = True,
+) -> tuple:
+    """Return canonical Git mode/type for a tracked working-tree path."""
+    full_path = repo_root / repo_rel
+    try:
+        path_stat = full_path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"File disappeared while hashing: {repo_rel}") from exc
+    if stat.S_ISLNK(path_stat.st_mode):
+        return "120000", "blob"
+    if stat.S_ISREG(path_stat.st_mode):
+        if (
+            tracked_entry is not None
+            and tracked_entry.mode in {"100644", "100755"}
+            and not core_filemode
+        ):
+            return tracked_entry.mode, "blob"
+        executable = bool(
+            path_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        )
+        return ("100755" if executable else "100644"), "blob"
+    raise ValueError(f"Unsupported working-tree file type at {repo_rel}")
 
 
 def _git_cat_blob(repo_root: Path, ref: str) -> bytes:
@@ -202,7 +371,6 @@ class _GitignoreRules:
 
     def is_ignored(self, rel_path: str) -> bool:
         """Return True if rel_path should be excluded per gitignore rules."""
-        import fnmatch
         parts = rel_path.replace("\\", "/").split("/")
         ignored = False
         for negate, pattern in self._rules:
@@ -374,7 +542,6 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
         return [_to_posix(str(target.relative_to(repo_root)))]
     gitignore_patterns = _load_gitignore_patterns(repo_root)
     results: List[str] = []
-    _MAX_FALLBACK_FILES = 50000
     for f in sorted(target.rglob("*")):
         if not f.is_file():
             continue
@@ -388,30 +555,41 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
         elif _is_ignored(f):
             continue
         results.append(rel)
-        if len(results) >= _MAX_FALLBACK_FILES:
-            break
+        # Enumerate one sentinel beyond the contract limit. Returning a
+        # truncated list would silently exclude files from every fallback
+        # fingerprint instead of enforcing the advertised guardrail.
+        if len(results) > MAX_FALLBACK_FILES:
+            raise GuardrailError(
+                f"Hash guardrail exceeded: >{MAX_FALLBACK_FILES} files"
+            )
     return results
 
 
-def git_latest_tag(repo_root: Path, prefix: str) -> Optional[str]:
-    """Find the latest reachable git tag matching a prefix, extract version part."""
+def git_latest_tag(
+    repo_root: Path,
+    prefix: str,
+    ref: str = "HEAD",
+) -> Optional[str]:
+    """Find the latest tag reachable from one resolved ref.
+
+    Callers performing a multi-component operation should pass the HEAD object
+    ID captured at operation start rather than allowing each lookup to resolve
+    a potentially different moving ``HEAD``.
+    """
     try:
-        # Prefer reachable tags from current HEAD to avoid unrelated branch tags.
-        result = _git_run(repo_root, ["describe", "--tags", "--match", f"{prefix}*", "--abbrev=0"])
+        # Prefer reachable tags from the selected commit to avoid unrelated
+        # branch tags.
+        result = _git_run(
+            repo_root,
+            ["describe", "--tags", "--match", f"{prefix}*", "--abbrev=0", ref],
+        )
         tag = result.stdout.strip()
         ver = tag[len(prefix):] if tag.startswith(prefix) else None
         return ver or None  # Return None instead of empty string
     except subprocess.CalledProcessError:
-        try:
-            # Fallback for repos where describe cannot resolve (e.g. shallow/no reachable matches).
-            result = _git_run(repo_root, ["tag", "--list", f"{prefix}*", "--sort=-v:refname"])
-            tags = [t for t in result.stdout.strip().split("\n") if t]
-            if tags:
-                ver = tags[0][len(prefix):]
-                return ver or None  # Return None instead of empty string
-            return None
-        except subprocess.CalledProcessError:
-            return None
+        # There is no repository-wide fallback: an unreachable tag is not a
+        # version of the captured source commit.
+        return None
 
 
 def changed_components_since_ref(config: dict, repo_root: Path, base_ref: str) -> List[str]:

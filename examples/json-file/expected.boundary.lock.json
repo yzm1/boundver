@@ -1,19 +1,22 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v2",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v3",
+  "config_contract": "boundver-semantic-config/v1",
+  "config_digest": "7966dc995492398d8ac9729812778f24cc64c79fb76e8637fb9410d387ab587b",
   "project": "example-json-file",
   "components": {
     "svc": {
       "version": null,
       "path": "examples/json-file/service",
       "boundary_provider": "json-file",
-      "boundary_provider_version": "1",
+      "boundary_provider_version": "2",
       "boundary_status": "ok",
       "consumers": [],
+      "external_consumers": [],
       "fingerprints": {
-        "exact": "ec5cd447b2a435e1dd27481d14b7a7496565e7aeab26f09b698dab2d5eb0b70f",
+        "exact": "a12f842442607bec1a5451bd12b9491d2bfcaa4073d30b808485a36227e83ab9",
         "behavior": null,
-        "boundary": "22de2604a7c75b4c97b2f49105f7660e06a16f3e2888552c865f429ccb3526b0",
+        "boundary": "778eff7ea2fdcf3e595c2df766de940a720d7f5a655cb7436e6cb221a72bf656",
         "compat": null
       },
       "semver": {
@@ -30,9 +33,9 @@
       "components": [
         "svc"
       ],
-      "fingerprint": "29a9b50e7814f9ab3e737af63812f58e15a12b5d482972f03f5d97311ad279fa",
+      "fingerprint": "175145e023cb71222711991617a0527f94e8309a6c03d19b4a86b5a8fb72f642",
       "component_digests": {
-        "svc": "22de2604a7c75b4c97b2f49105f7660e06a16f3e2888552c865f429ccb3526b0"
+        "svc": "778eff7ea2fdcf3e595c2df766de940a720d7f5a655cb7436e6cb221a72bf656"
       }
     }
   }

@@ -1,54 +1,65 @@
 # Getting started with boundver
 
-This guide takes a Git repository from no configuration to a reviewed lockfile and a useful pull-request gate.
+This guide takes a Git repository from no configuration to a reviewed v3
+lockfile and a useful pull-request gate.
+
+> This guide describes the v3 contract in boundver 0.11. Version 0.10.x writes
+> `boundary-lock/v2`; see [Upgrade from 0.10](#upgrade-from-010) before combining
+> an existing lock with these instructions.
 
 ## Prerequisites
 
 - Python 3.9 or newer
 - Git
-- At least one tracked component or manifest
+- At least one component in a non-root directory
 
-Run every command below from the repository root.
+Run the commands below from the repository root.
 
 ## 1. Install
 
 ```bash
-python -m pip install boundver
+python -m pip install "boundver[schema,yaml]"
 boundver --version
 ```
 
-Optional extras add a full JSON Schema validator and robust YAML parsing:
+The base install can validate JSON configuration without third-party packages.
+The extras add full JSON Schema validation and YAML parsing.
 
-```bash
-python -m pip install "boundver[schema,yaml]"
-```
+## 2. Discover a starting point
 
-## 2. Discover components
-
-For an existing repository, start with tracked manifests:
+Preview tracked manifests before writing anything:
 
 ```bash
 boundver discover
 boundver init --discover
 ```
 
-Discovery uses Git instead of crawling ignored dependency trees. It recognizes common Python, JavaScript/TypeScript, Rust, and Go manifests. Review the generated `boundary.config.json`; discovery cannot decide which files form your public contract.
+Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. It
+uses Git-tracked paths rather than crawling ignored dependency or build trees.
+It proposes a component root and boundary provider; it cannot decide which
+artifacts truly form your contract, so review every result.
 
-If discovery finds nothing useful, create a minimal scaffold:
+A repository-root manifest is not itself a safe component root because the
+repository lockfile would become part of that component's exact fingerprint.
+For a root manifest, discovery uses one unambiguous tracked Python package or a
+conventional tracked `src`, `lib`, or `app` directory. The root manifest is
+outside that component, so its version source is left unset for manual review.
+If no safe directory can be inferred, `init --discover` exits without writing
+an invalid config.
+
+Use the manual scaffold in that case:
 
 ```bash
 boundver init
 ```
 
-`init` is non-interactive. Edit the placeholder component before continuing.
+Replace the placeholder component path before validating.
 
-## 3. Declare the contract and its consumers
-
-Here is a useful starting configuration:
+## 3. Declare contracts and consumer edges
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -59,13 +70,20 @@ Here is a useful starting configuration:
       "path": "services/payment",
       "version_source": {"file": "package.json", "field": "version"},
       "boundary": {
-        "provider": "openapi",
-        "paths": ["openapi/*.yaml", "*.service-definition.json"]
+        "provider": "openapi-canonical",
+        "paths": ["openapi/**/*.yaml"]
       },
       "behavior": {
-        "paths": ["openapi/*.yaml", "*.service-definition.json", "config/*.json"]
+        "paths": ["openapi/**/*.yaml", "config/**/*.json"]
       },
-      "consumers": ["checkout-web", "admin-portal"]
+      "consumers": ["checkout-web"],
+      "external_consumers": ["external-risk-service"]
+    },
+    "checkout-web": {
+      "path": "apps/checkout",
+      "version_source": {"file": "package.json", "field": "version"},
+      "boundary": {"provider": "leaf", "paths": []},
+      "verify_facets": ["exact"]
     }
   },
   "slices": {
@@ -78,20 +96,51 @@ Here is a useful starting configuration:
 }
 ```
 
-Component `path` values are relative to the repository root. Boundary and behavior paths are relative to the component; they may be literal files or glob patterns. `**` matches recursively. A pattern that matches nothing stops generation instead of silently hashing an empty contract.
+Component `path` values are relative to the repository. Boundary, behavior,
+vendored-copy, and file version-source paths use `/` separators and are relative
+to the scope documented by the schema. Empty, absolute, traversing, and
+backslash-separated declarations are rejected.
 
-The four facets have different jobs:
+Path selectors are case-sensitive:
+
+- `*.yaml` matches only component-root YAML files.
+- `api/*.yaml` matches direct children of `api`, not deeper descendants.
+- `**/*.yaml` matches root and nested YAML files.
+- `api/**/*.yaml` matches direct and deeper YAML files below `api`.
+
+`*`, `?`, and character classes stay within one segment and may match a leading
+`.`. A complete `**` segment matches zero or more directories. Raw providers,
+canonical providers, behavior paths, validation, and explain output share this
+grammar. Every
+declaration must match at least one selected file during strict generation.
+
+The four facets serve different review decisions:
 
 | Facet | Tracks | Typical policy |
 |---|---|---|
-| `exact` | All tracked component content | Observe or gate release hygiene |
-| `behavior` | Declared behavior-relevant artifacts | Gate runtime-contract-sensitive systems |
-| `boundary` | Declared public contract artifacts | Gate consumer-facing changes |
-| `compat` | The configured version family | Gate coordinated breaking changes |
+| `exact` | All tracked content and file identities under the component | Observe release hygiene |
+| `behavior` | Declared behavior inputs plus the boundary digest | Gate observable runtime contracts |
+| `boundary` | Declared provider output | Gate consumer-facing artifacts |
+| `compat` | The configured version family | Gate coordinated compatibility changes |
 
-`behavior.paths` should normally be a superset of `boundary.paths`. `consumers` declares direct downstream systems. When a producer's boundary or compatibility facet changes, boundver names those consumers in the verification result.
+For a component with behavior tracking, the v3 behavior digest includes its
+boundary digest. Keep the boundary patterns in `behavior.paths` as well so
+diagnostics show the intended containment and so the additional behavior input
+set remains understandable.
 
-`defaults.verify_facets` controls what fails a plain `boundver verify`. Starting with `boundary` and `compat` prevents internal refactors from making the check noisy. A command-line `--facets` value overrides the default.
+`consumers` contains unique configured component names for immediate downstream
+edges. Unknown names are rejected. Use `external_consumers` for unique opaque
+terminal labels outside this config. Boundary and compatibility drift reports
+the direct names by default; `verify --transitive` and `why --transitive` walk
+the internal graph and include external terminals declared along the closure.
+
+The effective facet gate follows `--facets` (when supplied), then a component's
+`verify_facets`, then `defaults.verify_facets`. With none of those configured,
+boundver gates all facets available for each component. Explicitly selecting a
+facet that cannot exist is a usage error (exit `2`): `compat` needs a
+`version_source`, `behavior` needs behavior inputs, and `implicit`/`leaf`
+components do not provide a boundary digest. Per-component policy is therefore
+the right way to combine heterogeneous component types in one config.
 
 ## 4. Validate before hashing
 
@@ -99,47 +148,69 @@ The four facets have different jobs:
 boundver validate-config
 ```
 
-Fix every reported error. Validation checks the schema, component roots, providers, unsafe paths, slices, consumers, and source declarations.
+Fix every error and review every warning. Validation rejects unknown fields even
+without the optional schema engine, checks path safety and component roots, and
+validates providers, versions, consumers, vendored paths, and slices. The
+installed package's bundled schema is authoritative; a checkout cannot replace
+it with a same-named local file.
 
 ## 5. Generate a local baseline
 
-Use `working-tree` for both local generation and local verification:
-
 ```bash
 boundver generate --source working-tree
-boundver status
-boundver verify --source working-tree --facets boundary,compat
+boundver status --source working-tree
+boundver verify --source working-tree
 ```
 
-Working-tree mode reads on-disk content but only for files known to Git. If you added a component or contract file, stage it before generating:
+In an established repository, working-tree mode reads current on-disk bytes only
+for paths known to Git. Add a new contract file to Git before generating so a
+glob can see it:
 
 ```bash
 git add services/payment/openapi/new-route.yaml
 boundver generate --source working-tree
 ```
 
-Inspect the generated `boundary.lock.json`; it should contain non-null exact and declared boundary fingerprints. Generation fails if a required digest cannot be computed.
+Strict generation fails if a declared digest, version input, or vendored-copy
+comparison cannot be computed. Inspect the generated lock; it should use
+`boundary-lock/v3` and contain `config_contract` and `config_digest`.
 
-## 6. Commit the baseline
+`--allow-partial` does not suppress those computation errors. It only permits
+an intentionally unavailable component facet to be stored as a null input in a
+slice. A declared path that selects nothing, a provider failure, a broken
+version source, or a missing/divergent vendored copy remains fatal.
+
+### Generated contracts need their own freshness check
+
+If the selected OpenAPI document is generated from code or infrastructure,
+boundver sees the output but cannot prove that it is current. Put the generator's
+check before boundver in every gate:
+
+```bash
+python ci/generate_platform_openapi.py --check
+boundver verify --source working-tree
+```
+
+Do not add an executable generator command to repository config. Command trust,
+tool versions, and source materialization are outside the current derivation
+contract; first-class declarative support remains roadmap work.
+
+## 6. Commit one source-consistent baseline
 
 ```bash
 git add boundary.config.json boundary.lock.json
-git commit -m "chore: add boundver contract baseline"
+git commit -m "chore: record boundver contract baseline"
+boundver verify --source head
 ```
 
-After the commit, a source-consistent HEAD check should pass:
-
-```bash
-boundver verify --source head --facets boundary,compat
-```
-
-Do not compare a lock generated from uncommitted working-tree content against `head`; the snapshots intentionally differ.
+Commit any source or contract files represented by the lock in the same commit.
+A lock generated from uncommitted working-tree bytes will not match `head` until
+those bytes are committed.
 
 ## 7. Add the pull-request gate
 
-Create `.github/workflows/boundary-check.yml`:
-
 ```yaml
+# .github/workflows/boundary-check.yml
 name: Contract boundary
 on: [pull_request]
 
@@ -147,69 +218,137 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: yzm1/boundver@v0
+      # Pin the writer and verifier to the lock contract used by the repository.
+      - uses: yzm1/boundver@v0.11.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
           source: head
-          facets: boundary,compat
 ```
 
-`head` is correct here because both the source and lockfile are committed in the pull request. The selected gate passes for an internal-only refactor and fails when a declared boundary or compatibility family drifts.
+`head` captures the committed pull-request tree once. With `facets` omitted,
+the Action honors the component/default policy in the config. In this example,
+consumer-facing drift gates `payment-api` while every tracked `checkout-web`
+change gates through its exact-only override.
 
-## Daily workflow
-
-First inspect a local change against the matching snapshot:
+## Daily review and update
 
 ```bash
-boundver verify --source working-tree --facets boundary,compat
+boundver verify --source working-tree
 boundver why payment-api --source working-tree
-```
-
-If the gated change is intentional, review its consumer impact and update in one step:
-
-```bash
-boundver verify --source working-tree --facets boundary,compat --update
+boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
 
-To refresh exact and behavior observations even when they are not part of your normal gate, explicitly include all facets:
+Facets select the gate and report classification. They are not an update mask:
+an update replaces the complete entry, including all fingerprints and metadata.
+With no component filter, boundver regenerates the full lock. A component-scoped
+update such as this:
 
 ```bash
 boundver verify \
   --source working-tree \
-  --facets exact,behavior,boundary,compat \
+  --components payment-api \
+  --facets boundary,compat \
   --update
 ```
 
-Commit the source change and updated lockfile together. After committing, verify them together with `--source head`.
+recomputes the whole candidate lock first, refuses the update if an unselected
+component is stale, then replaces the selected entry and recomputes all slices.
+This prevents a focused command from silently blessing unrelated drift.
 
-## Understand exit codes
+## Source-mode checklist
 
-The highest-severity selected drift determines the process status:
+| Source | Path set and content | Use |
+|---|---|---|
+| `head` | One captured commit tree | CI and committed verification |
+| `index` | One captured index tree | Pre-commit verification |
+| `working-tree` | Disk bytes for a captured tracked path set | Local editing |
+
+- Generate and verify with the same source.
+- Stage new files before `index`; make them Git-known before `working-tree`.
+- `head` and `index` read the config and verification lock from the same
+  captured source. Stage config/source changes before index generation, then
+  stage the generated lock before index verification.
+- Fetch history before using `--changed-from` or tag-based version sources.
+- Treat `--changed-from` as reporting/scheduling information: boundver still
+  recomputes full lock integrity so unchanged paths cannot hide stale metadata.
+
+## Exit codes
 
 | Code | Meaning |
 |---:|---|
 | `0` | Selected facets match |
 | `1` | Exact or metadata drift |
-| `2` | Usage or configuration error |
+| `2` | Usage, configuration, or digest error |
 | `3` | Behavior drift |
 | `4` | Boundary drift |
-| `5` | Compatibility drift |
+| `5` | Compatibility-family drift |
 
-This lets CI warn or fail differently without parsing human-readable output. `--format json` also returns structured issues, non-gating observations, selected facets, and update status.
+The highest selected severity wins. `--fail-fast` limits the returned report,
+not the safety evaluation. `--format json` exposes issues, observations,
+selected facets, component-selection information, and update status.
+`status --format json` remains available; 0.11 also adds structured output for
+`why --format json` and `slice --format json`.
+
+## Consumer closures and slices
+
+Use an explicit slice when membership is curated independently of the graph:
+
+```json
+{"mode": "boundary", "components": ["payment-api"]}
+```
+
+Use `closure_of` when the desired membership is the seed and its complete
+downstream configured-component closure:
+
+```json
+{"mode": "exact", "closure_of": "payment-api"}
+```
+
+The resolved, sorted, cycle-safe component set is stored in the lock. A slice
+must define exactly one of `components` or `closure_of`. The selected mode must
+be available for every member during strict generation; `exact` is the portable
+choice for heterogeneous closures.
+
+## Upgrade from 0.10
+
+v2 does not bind file mode/type or the complete semantic configuration. There
+is no safe metadata-only migration:
+
+```bash
+python -m pip install --upgrade "boundver[schema,yaml]==0.11.0"
+boundver validate-config
+# Stage changed config and every changed/newly selected contract input.
+git add boundary.config.json services/payment/openapi/new-route.yaml
+boundver generate --source index
+git add boundary.lock.json
+boundver verify --source index
+git diff --cached -- boundary.config.json boundary.lock.json
+```
+
+Review selector changes carefully: the corrected `*`/`**` grammar may add or
+remove matches compared with 0.10. Update every writer and verifier together,
+then commit the regenerated v3 lock. `boundver migrate-lock` deliberately
+rejects v1/v2 hash-bearing locks and directs you to regenerate from content.
+The source path is illustrative; stage every changed or newly selected input.
+Omit `boundary.config.json` from `git add` if it did not change. Alternatively,
+commit config/source changes first and only then generate from `head`.
 
 ## Important limitation
 
-boundver proves that the declared files produced the same fingerprints. It does not prove semantic compatibility, exercise consumers, or replace contract tests. The canonical JSON and OpenAPI providers reduce formatting and documentation noise, but you still decide which artifacts represent the real boundary and which consumer checks to run when it moves.
+boundver proves that declared inputs produce recorded fingerprints. Canonical
+providers can reduce formatting or documentation noise, but they do not prove
+backward compatibility or replace consumer, schema-evolution, or integration
+tests.
 
 ## Next steps
 
-- Choose a provider in the [provider guide](public-vs-custom-providers.md).
-- Add components gradually with the [adoption guide](gradual-adoption.md).
-- Copy a pipeline pattern from the [CI cookbook](ci-cookbook.md).
-- Explore runnable configurations in the [examples index](../examples/README.md).
-- Resolve concurrent updates with the [lockfile merge strategy](LOCKFILE_MERGE.md).
+- [Choose a provider](public-vs-custom-providers.md).
+- [Adopt one component at a time](gradual-adoption.md).
+- [Copy a CI recipe](ci-cookbook.md).
+- [Explore example configurations](../examples/README.md).
+- [Resolve concurrent lock updates](LOCKFILE_MERGE.md).

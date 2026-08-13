@@ -21,7 +21,8 @@ boundver provides **machine-verifiable change classification** at these boundari
 ### You probably **do** need boundver if…
 - Your components have consumers but lack static verification of their interface.
 - You want to distinguish "internals changed" from "behavior changed" from "boundary changed" from "compatibility broke" — automatically, not via commit messages.
-- You need a portable, source-controlled lockfile (`boundary-lock/v2`) that CI, scripts, and downstream tools can consume.
+- You need a portable, source-controlled `boundary-lock/v3` file that CI,
+  scripts, and downstream tools can consume.
 - You want stable CI cache keys and verification signals without migrating your entire build stack.
 
 ## Positioning
@@ -29,13 +30,23 @@ boundver provides **machine-verifiable change classification** at these boundari
 - **Compilers / type systems**: Verify contracts statically within one language. boundver operates where no compiler exists for the boundary.
 - **Bazel/Pants**: Broad build + dependency graph platforms. High power, higher adoption cost. Know *what* changed but don't classify *how* it changed relative to a declared boundary.
 - **Nx/Turborepo**: Task graph + affected/caching ecosystems, primarily JS/TS-centric. Provide "did it change?" but not declared behavioral/API classification.
-- **boundver**: Narrow scope — automated change classification at declared boundaries, for any language, with zero dependencies.
+- **boundver**: Narrow scope — deterministic drift classification at declared
+  boundaries for any language. The base install is dependency-free on Python
+  3.11+ (`tomli` is used on 3.9–3.10); schema and YAML support are explicit
+  extras.
 
 ## Current reality
-- Change classification (exact/behavior/boundary/compat) is fully implemented.
-- Semantic providers (openapi-canonical, json-canonical) strip non-contract content before hashing — formatting and comment changes don't trigger false positives.
+- Exact, behavior, boundary, and compatibility-family drift classification is
+  implemented for declared, tracked inputs.
+- Canonical OpenAPI/JSON providers parse and deterministically normalize their
+  documented inputs, reducing formatting and selected documentation noise.
 - Custom provider protocol allows language-specific boundary extraction (e.g., AST-based export analysis).
-- Dependency impact graph features are roadmap work; current slices are explicit sets.
+- Declared `consumers` edges form a validated internal component graph;
+  `external_consumers` adds opaque terminal labels. Impact reporting is direct
+  by default and has an opt-in transitive closure. Slices can use explicit
+  membership or the declared downstream closure of one component.
+- The graph is declared, not discovered. boundver does not replace a build
+  system's dependency analysis.
 
 ## What boundver detects — and what it doesn't
 
@@ -48,7 +59,7 @@ boundver classifies changes by hashing declared files. It is effective when the 
 | Internal refactor / bug fix | `exact` changes, `behavior` + `boundary` stable |
 | Behavioral contract change (defaults, config, migrations) | `behavior` changes, `boundary` stable |
 | API surface change (new endpoint, removed field) | `boundary` changes |
-| Breaking version bump | `compat` changes |
+| Compatibility-family version change | `compat` changes |
 
 ### Changes boundver cannot detect
 
@@ -56,9 +67,10 @@ These are **conscious scope boundaries**, not bugs:
 
 | Change type | Why it's invisible |
 |---|---|
-| **Transitive dependency behavior change** | Your component's files are unchanged. Boundver does not model a dependency graph — that's the domain of Bazel/Nx/Pants. |
+| **Undeclared dependency behavior change** | The affected files and relationship are absent from the contract. Transitive reporting follows declared `consumers` edges; dependency discovery remains the domain of Bazel/Nx/Pants. |
 | **Environment / infrastructure change** | External to the repository (CI variables, cloud config, runtime environment). |
 | **Build toolchain change** | Boundver tracks source files, not compiled artifacts. A different compiler version producing different output is invisible. |
+| **Stale generated boundary output** | boundver hashes the declared output but does not yet bind it to generator inputs or execute a derivation. Run the generator's deterministic `--check` before verification. |
 | **Behavioral change in an undeclared file** | If a file changes behavior but isn't in `behavior.paths`, boundver can't know about it. The user must declare what matters. |
 | **Protocol/wire-format semantic change** | If the `.proto` or schema file type is unchanged but the runtime interpretation differs, no file content changes. |
 
@@ -66,11 +78,13 @@ For the last case — where no static file analysis can detect the change — a 
 
 ## Adoption pattern
 
-1. Start with one slice that maps to one deployable unit.
+1. Start with one component and a facet policy its inputs can actually supply.
 2. Gate PRs with `verify` and use slice fingerprint for cache keying.
 3. Expand component coverage incrementally.
 4. Add `behavior` paths (config, migrations, contract tests) for richer classification.
-5. Add semantic providers later as they mature.
+5. Declare direct internal and external consumers, then opt into transitive
+   impact where CI needs it.
+6. Add semantic providers later as they mature.
 
 For a step-by-step walkthrough, see [getting-started.md](getting-started.md).
 For a staged adoption strategy with common pitfalls, see [gradual-adoption.md](gradual-adoption.md).

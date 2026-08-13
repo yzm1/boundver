@@ -2,20 +2,48 @@
 
 import json
 import os
+import posixpath
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
-from ._git import _git_cat_blob, _list_files_for_source, _to_posix, git_latest_tag
+from ._config import _json_value_issues, _snapshot_relative_path
+from ._consumer_graph import affected_consumers, resolve_slice_components
+
+from ._git import (
+    GitSourceSnapshot,
+    _capture_git_source_snapshot,
+    _git_cat_blob,
+    _is_git_repository,
+    _list_files_for_source,
+    _resolve_head_oid,
+    _snapshot_files,
+    _to_posix,
+    _working_tree_mode,
+    git_latest_tag,
+)
 from ._hashing import (
+    HASH_DOMAIN_BEHAVIOR,
     MAX_HASH_FILE_BYTES,
+    _ModeAwareBytes,
     _content_only_digest,
     _enforce_content_size,
+    _hash_framed_entries,
     canonical_json,
     sha256_hex,
     source_tree_digest,
 )
-from ._utils import _short, boundary_provider_name, ConfigError, GuardrailError, ProviderError, SourceMode
+from ._utils import (
+    _available_component_facets,
+    _issue_facet,
+    _short,
+    boundary_provider_name,
+    ConfigError,
+    GuardrailError,
+    LockfileError,
+    ProviderError,
+    SourceMode,
+)
 from .providers import (
     PathHashProvider,
     ProviderContext,
@@ -26,18 +54,123 @@ from .providers import (
 )
 from .versions import extract_version, parse_semver
 
-LOCKFILE_SCHEMA = "boundary-lock/v2"
-LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/main/spec/boundary.lock.schema.json"
+LOCKFILE_SCHEMA = "boundary-lock/v3"
+LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json"
+SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v1"
+MAX_LOCKFILE_BYTES = 10 * 1024 * 1024
 
 # Persisted fields whose integrity matters independently of the four digests.
 # Keep this list shared by verify/diff/why so none of those views can report a
 # stale entry as current merely because its fingerprints happen to match.
 COMPONENT_METADATA_FIELDS = (
     "version", "path", "boundary_provider", "boundary_provider_version",
-    "boundary_status", "semver", "consumers", "boundary_metadata",
+    "boundary_status", "semver", "consumers", "external_consumers",
+    "boundary_metadata",
     "version_errors", "exact_errors", "behavior_errors", "boundary_errors", "warnings",
-    "vendored_copies", "vendored_digests",
+    "vendored_copies", "vendored_digests", "vendored_errors",
 )
+
+
+def _lock_json_object_without_duplicates(pairs: List[tuple]) -> dict:
+    value: dict = {}
+    for key, item in pairs:
+        if key in value:
+            raise LockfileError(f"duplicate JSON object key {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_lock_constant(value: str) -> object:
+    raise LockfileError(f"non-finite JSON number {value!r} is not supported")
+
+
+def parse_lockfile_text(text: str, path_label: object = "lockfile") -> dict:
+    """Parse lock JSON without silently accepting duplicate object keys."""
+    try:
+        value = json.loads(
+            text,
+            object_pairs_hook=_lock_json_object_without_duplicates,
+            parse_constant=_reject_nonfinite_lock_constant,
+        )
+    except (ValueError, RecursionError, OverflowError) as exc:
+        raise LockfileError(f"Lockfile is not valid JSON at {path_label}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise LockfileError(
+            f"Lockfile root must be an object, got {type(value).__name__}"
+        )
+    try:
+        value_issues = _json_value_issues(value, path="lockfile")
+    except RecursionError as exc:
+        raise LockfileError(f"Lockfile is nested too deeply at {path_label}") from exc
+    if value_issues:
+        raise LockfileError(
+            f"Lockfile contains values that cannot be represented as deterministic "
+            f"JSON at {path_label}:\n" + "\n".join(value_issues)
+        )
+    return value
+
+
+def parse_lockfile_bytes(data: bytes, path_label: object = "lockfile") -> dict:
+    """Decode and parse a bounded UTF-8 lockfile."""
+    if len(data) > MAX_LOCKFILE_BYTES:
+        raise LockfileError(
+            f"Lockfile exceeds the {MAX_LOCKFILE_BYTES}-byte limit at {path_label}"
+        )
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LockfileError(
+            f"Lockfile is not valid UTF-8 at {path_label}: {exc}"
+        ) from exc
+    return parse_lockfile_text(text, path_label)
+
+
+def load_lockfile_file(
+    path: Path,
+    *,
+    repo_root: Optional[Path] = None,
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> dict:
+    """Load a lock from disk or one captured immutable Git source."""
+    if snapshot is not None:
+        if repo_root is None:
+            raise LockfileError("repo_root is required for source-backed lock reads")
+        label = _snapshot_relative_path(repo_root, path)
+        entry = snapshot.entries.get(label)
+        if entry is None:
+            raise FileNotFoundError(
+                f"Lockfile not found in captured {snapshot.source} source: {label}"
+            )
+        if entry.object_type != "blob" or entry.mode not in {"100644", "100755"}:
+            raise LockfileError(
+                f"Lockfile path must be a regular file in captured {snapshot.source} "
+                f"source: {label} (mode={entry.mode}, type={entry.object_type})"
+            )
+        try:
+            data = _git_cat_blob(repo_root, entry.oid)
+        except (subprocess.CalledProcessError, GuardrailError) as exc:
+            raise LockfileError(
+                f"Cannot read lockfile from captured {snapshot.source} source: "
+                f"{label}"
+            ) from exc
+        return parse_lockfile_bytes(data, label)
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise LockfileError(f"Cannot stat lockfile {path}: {exc}") from exc
+    if size > MAX_LOCKFILE_BYTES:
+        raise LockfileError(
+            f"Lockfile exceeds the {MAX_LOCKFILE_BYTES}-byte limit at {path}"
+        )
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise LockfileError(f"Cannot read lockfile {path}: {exc}") from exc
+    return parse_lockfile_bytes(data, path)
 
 
 def _normalize_source(source: Union[str, SourceMode]) -> str:
@@ -49,9 +182,154 @@ def _normalize_source(source: Union[str, SourceMode]) -> str:
     return value
 
 
+def _normalized_semantic_path(value: object) -> object:
+    """Normalize a validated config path without hiding semantic changes."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    return posixpath.normpath(stripped) if stripped else stripped
+
+
+def _normalized_path_config(value: object) -> object:
+    """Normalize path arrays while retaining provider-specific options."""
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    paths = normalized.get("paths")
+    if isinstance(paths, list):
+        normalized["paths"] = sorted(
+            (_normalized_semantic_path(path) for path in paths),
+            key=lambda item: canonical_json(item),
+        )
+    return normalized
+
+
+def _semantic_config(config: dict) -> dict:
+    """Return the canonical configuration that affects lock semantics.
+
+    Schema URLs and object insertion order are presentation details. Lists used
+    as sets are sorted. Custom-provider declaration order is retained
+    conservatively because import-time interactions are environment-defined.
+    """
+    raw_defaults = config.get("defaults", {})
+    defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
+    verify_facets = defaults.get("verify_facets")
+    if isinstance(verify_facets, list):
+        verify_facets = sorted(verify_facets, key=lambda item: canonical_json(item))
+    semantic: dict = {
+        "project": config.get("project", "unknown"),
+        "providers": config.get("providers", []),
+        "defaults": {
+            **{
+                key: value
+                for key, value in defaults.items()
+                if key not in {"compat_mode", "verify_facets"}
+            },
+            "compat_mode": defaults.get("compat_mode", "major"),
+            "verify_facets": verify_facets,
+        },
+        "components": {},
+        "slices": {},
+    }
+
+    components = config.get("components", {})
+    if isinstance(components, dict):
+        for name, raw_component in components.items():
+            if not isinstance(raw_component, dict):
+                semantic["components"][name] = raw_component
+                continue
+            component = {
+                key: value
+                for key, value in raw_component.items()
+                if key not in {
+                    "path", "boundary", "behavior", "version_source",
+                    "vendored_copies", "consumers", "external_consumers",
+                    "verify_facets",
+                }
+            }
+            component["path"] = _normalized_semantic_path(
+                raw_component.get("path")
+            )
+            component["boundary"] = _normalized_path_config(
+                raw_component.get("boundary", {})
+            )
+            component["behavior"] = _normalized_path_config(
+                raw_component.get("behavior")
+            )
+            component["version_source"] = raw_component.get("version_source")
+            vendored = raw_component.get("vendored_copies", [])
+            if isinstance(vendored, list):
+                vendored = sorted(
+                    (_normalized_semantic_path(path) for path in vendored),
+                    key=lambda item: canonical_json(item),
+                )
+            component["vendored_copies"] = vendored
+            consumers = raw_component.get("consumers", [])
+            if isinstance(consumers, list):
+                consumers = sorted(consumers, key=lambda item: canonical_json(item))
+            component["consumers"] = consumers
+            external_consumers = raw_component.get("external_consumers", [])
+            if isinstance(external_consumers, list):
+                external_consumers = sorted(
+                    external_consumers, key=lambda item: canonical_json(item)
+                )
+            component["external_consumers"] = external_consumers
+            component_verify_facets = raw_component.get("verify_facets")
+            if isinstance(component_verify_facets, list):
+                component_verify_facets = sorted(
+                    component_verify_facets,
+                    key=lambda item: canonical_json(item),
+                )
+            if component_verify_facets is not None:
+                component["verify_facets"] = component_verify_facets
+            semantic["components"][name] = component
+
+    slices = config.get("slices", {})
+    if isinstance(slices, dict):
+        for name, raw_slice in slices.items():
+            if not isinstance(raw_slice, dict):
+                semantic["slices"][name] = raw_slice
+                continue
+            slice_value = dict(raw_slice)
+            slice_value.setdefault("description", "")
+            slice_value.setdefault("mode", "exact")
+            members = slice_value.get("components")
+            if isinstance(members, list):
+                slice_value["components"] = sorted(
+                    members, key=lambda item: canonical_json(item)
+                )
+            semantic["slices"][name] = slice_value
+    return semantic
+
+
+def semantic_config_digest(config: dict) -> str:
+    """Digest all configuration inputs that affect generated/verified locks."""
+    try:
+        value_issues = _json_value_issues(config)
+    except RecursionError as exc:
+        raise ConfigError("Config is nested too deeply to hash safely") from exc
+    if value_issues:
+        raise ConfigError(
+            "Config cannot be hashed as deterministic JSON:\n"
+            + "\n".join(value_issues)
+        )
+    try:
+        payload = (
+            f"{SEMANTIC_CONFIG_VERSION}\n"
+            f"{canonical_json(_semantic_config(config))}"
+        )
+    except (RecursionError, UnicodeEncodeError, ValueError, TypeError) as exc:
+        raise ConfigError(
+            "Config cannot be hashed as deterministic JSON: "
+            f"{exc}"
+        ) from exc
+    return sha256_hex(payload)
+
+
 def generate_lockfile(
     config: dict, repo_root: Path, source: Union[str, SourceMode] = "head", strict: bool = True,
     allow_custom_providers: bool = False,
+    snapshot: Optional[GitSourceSnapshot] = None,
 ) -> dict:
     """Generate the full lockfile from config + repo state."""
     source = _normalize_source(source)
@@ -73,12 +351,27 @@ def generate_lockfile(
     lockfile: dict = {
         "$schema": LOCKFILE_SCHEMA_URL,
         "schema": LOCKFILE_SCHEMA,
+        "config_contract": SEMANTIC_CONFIG_VERSION,
+        "config_digest": semantic_config_digest(config),
         "project": config.get("project", "unknown"),
         "components": {},
         "slices": {},
     }
 
-    accessor = _SourceAccessor(repo_root, source)
+    try:
+        accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
+    except ValueError as exc:
+        raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
+    tag_prefixes = [
+        version_source["git_tag_prefix"]
+        for component in components_config.values()
+        if isinstance(component, dict)
+        for version_source in [component.get("version_source")]
+        if isinstance(version_source, dict)
+        and isinstance(version_source.get("git_tag_prefix"), str)
+        and version_source["git_tag_prefix"]
+    ]
+    accessor.prime_latest_tags(tag_prefixes)
 
     # --- Components ---
     for name, comp in components_config.items():
@@ -86,8 +379,11 @@ def generate_lockfile(
             name, comp, repo_root, source, defaults, accessor, registry,
         )
 
+    # ``strict=False`` (the CLI's ``--allow-partial``) relaxes only slice
+    # requirements for intentional null facets.  It must never bless a
+    # provider/computation failure into a lockfile that verify will reject.
     generation_errors = _generation_errors(lockfile)
-    if strict and generation_errors:
+    if generation_errors:
         raise ConfigError(
             "Lockfile generation failed:\n" + "\n".join(generation_errors)
         )
@@ -108,19 +404,83 @@ def generate_lockfile(
 class _SourceAccessor:
     """Provides read_file, list_files, and version_read_file for a given source mode."""
 
-    def __init__(self, repo_root: Path, source: str):
+    def __init__(
+        self,
+        repo_root: Path,
+        source: str,
+        snapshot: Optional[GitSourceSnapshot] = None,
+    ):
         self.repo_root = repo_root
         self.source = _normalize_source(source)
+        self._latest_tags: Dict[str, Optional[str]] = {}
+        if snapshot is not None and snapshot.source != self.source:
+            raise ValueError(
+                f"Captured source mismatch: snapshot={snapshot.source!r}, "
+                f"source={self.source!r}"
+            )
+        self.snapshot: Optional[GitSourceSnapshot] = snapshot
+        if self.source in {"head", "index"}:
+            if self.snapshot is None:
+                self.snapshot = _capture_git_source_snapshot(repo_root, self.source)
+            self.head_oid = self.snapshot.head_oid
+        else:
+            if self.snapshot is not None:
+                raise ValueError(
+                    "working-tree source does not accept an immutable Git snapshot"
+                )
+            try:
+                tracking_snapshot = _capture_git_source_snapshot(repo_root, "index")
+            except ValueError:
+                if _is_git_repository(repo_root):
+                    raise
+                tracking_snapshot = None
+                self.head_oid = _resolve_head_oid(repo_root)
+            else:
+                self.head_oid = tracking_snapshot.head_oid
+            # Preserve the documented unborn/non-Git filesystem fallback when
+            # there is no captured tracked state at all.
+            if tracking_snapshot is not None and (
+                tracking_snapshot.entries or tracking_snapshot.head_oid is not None
+            ):
+                self.snapshot = tracking_snapshot
+
+    def _captured_entry(self, repo_rel: str):
+        if self.snapshot is None:
+            return None
+        entry = self.snapshot.entries.get(repo_rel)
+        if entry is None:
+            raise ValueError(
+                f"Path is absent from captured {self.source} tree: {repo_rel}"
+            )
+        if entry.object_type != "blob":
+            raise ValueError(
+                f"Expected Git blob at {repo_rel}, got {entry.object_type} "
+                f"mode {entry.mode}"
+            )
+        return entry
 
     def read_file(self, repo_rel: str) -> bytes:
-        """Read file content for hashing."""
+        """Read file bytes carrying canonical Git mode/type metadata."""
         src = self.source
-        if src == "head":
-            data = _git_cat_blob(self.repo_root, f"HEAD:{repo_rel}")
-        elif src == "index":
-            data = _git_cat_blob(self.repo_root, f":{repo_rel}")
+        if src in {"head", "index"}:
+            entry = self._captured_entry(repo_rel)
+            data = _git_cat_blob(self.repo_root, entry.oid)
+            mode, object_type = entry.mode, entry.object_type
         else:
             full = self.repo_root / repo_rel
+            tracked_entry = (
+                self.snapshot.entries.get(repo_rel)
+                if self.snapshot is not None
+                else None
+            )
+            mode, object_type = _working_tree_mode(
+                self.repo_root,
+                repo_rel,
+                tracked_entry,
+                core_filemode=(
+                    self.snapshot.filemode if self.snapshot is not None else True
+                ),
+            )
             if full.is_symlink():
                 # Hash symlink target string (matches git's blob storage for symlinks).
                 target = os.readlink(full)
@@ -133,19 +493,42 @@ class _SourceAccessor:
                     )
                 data = full.read_bytes()
         _enforce_content_size(data, repo_rel)
-        return data
+        return _ModeAwareBytes(data, mode, object_type)
 
     def list_files(self, prefix: str) -> List[str]:
         """List files under a prefix."""
+        if self.snapshot is not None:
+            files = _snapshot_files(self.snapshot, prefix)
+            if self.source == "working-tree":
+                files = [
+                    rel
+                    for rel in files
+                    if (self.repo_root / rel).exists()
+                    or (self.repo_root / rel).is_symlink()
+                ]
+            return files
         return _list_files_for_source(self.repo_root, prefix, self.source)
+
+    def latest_tag(self, repo_root: Path, prefix: str) -> Optional[str]:
+        """Resolve tags against the HEAD commit captured for this operation."""
+        if prefix not in self._latest_tags:
+            self._latest_tags[prefix] = git_latest_tag(
+                repo_root, prefix, ref=self.head_oid or "HEAD"
+            )
+        return self._latest_tags[prefix]
+
+    def prime_latest_tags(self, prefixes: List[str]) -> None:
+        """Resolve every configured tag prefix before component iteration."""
+        for prefix in sorted(set(prefixes)):
+            self.latest_tag(self.repo_root, prefix)
 
     def version_read_file(self, repo_rel: str) -> bytes:
         """Read file content for version extraction."""
-        if self.source == "head":
-            return _git_cat_blob(self.repo_root, f"HEAD:{repo_rel}")
-        elif self.source == "index":
-            return _git_cat_blob(self.repo_root, f":{repo_rel}")
-        else:
+        if self.source == "working-tree":
+            if self.snapshot is not None and repo_rel not in self.snapshot.entries:
+                raise ConfigError(
+                    f"Version source is not tracked in the captured index: {repo_rel}"
+                )
             fpath = self.repo_root / repo_rel
             if fpath.is_symlink():
                 raise ConfigError(
@@ -162,7 +545,7 @@ class _SourceAccessor:
                 raise GuardrailError(
                     f"Version source file too large ({size} bytes): {repo_rel}"
                 )
-            return fpath.read_bytes()
+        return self.read_file(repo_rel)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +567,7 @@ def _compute_component_entry(
         raise ConfigError(f"Component '{name}' has invalid or missing 'path'")
     comp_path = _to_posix(os.path.normpath(raw_path.strip()))
     version = extract_version(
-        repo_root, comp_path, comp.get("version_source"), git_latest_tag,
+        repo_root, comp_path, comp.get("version_source"), accessor.latest_tag,
         read_file_fn=accessor.version_read_file,
     )
     compat, api_ver, exact_ver = parse_semver(version)
@@ -201,7 +584,9 @@ def _compute_component_entry(
     # Exact fingerprint: git tree hash of the whole component directory
     exact_errors: List[str] = []
     try:
-        exact_digest = source_tree_digest(repo_root, comp_path, source=source)
+        exact_digest = source_tree_digest(
+            repo_root, comp_path, source=source, snapshot=accessor.snapshot
+        )
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         exact_digest = None
         exact_errors.append(f"Exact digest failed: {exc}")
@@ -220,11 +605,24 @@ def _compute_component_entry(
     bp_name = boundary_provider_name(boundary)
     provider = get_provider(bp_name, registry=registry)
     provider_metadata = None
+    provider_version = None
     if provider is None:
         api_digest = None
         boundary_status = "error"
         boundary_errors: List[str] = [f"Unknown boundary provider: {bp_name!r}"]
     else:
+        try:
+            provider_version = provider.version
+        except Exception as exc:
+            api_digest = None
+            boundary_status = "error"
+            boundary_errors = [
+                "Boundary provider version could not be read: "
+                f"{exc.__class__.__name__}"
+            ]
+            provider_metadata = None
+            provider = None
+    if provider is not None:
         ctx = ProviderContext(
             repo_root=repo_root,
             component_path=comp_path,
@@ -266,6 +664,21 @@ def _compute_component_entry(
     else:
         behavior_errors = []
 
+    # A behavior contract is a cryptographic superset of the boundary contract.
+    # It cannot remain unchanged when its boundary changes, even when the two
+    # providers select disjoint labels by mistake.
+    if behavior_digest is not None:
+        boundary_identity = (
+            api_digest if api_digest is not None else f"none:{boundary_status}"
+        )
+        behavior_digest = _hash_framed_entries(
+            [
+                ("behavior", behavior_digest.encode("ascii")),
+                ("boundary", boundary_identity.encode("ascii")),
+            ],
+            domain=HASH_DOMAIN_BEHAVIOR,
+        )
+
     # Compatibility fingerprint: derived from semver major (or major.minor)
     compat_digest = None
     compat_identity = None
@@ -281,9 +694,10 @@ def _compute_component_entry(
         "version": version,
         "path": comp_path,
         "boundary_provider": bp_name,
-        "boundary_provider_version": getattr(provider, "version", "1") if provider else None,
+        "boundary_provider_version": provider_version,
         "boundary_status": boundary_status,
         "consumers": sorted(set(comp.get("consumers", []))),
+        "external_consumers": sorted(set(comp.get("external_consumers", []))),
         "fingerprints": {
             "exact": exact_digest,
             "behavior": behavior_digest,
@@ -310,13 +724,30 @@ def _compute_component_entry(
     # Flag vendored copies
     if "vendored_copies" in comp:
         entry["vendored_copies"] = comp["vendored_copies"]
-        source_content_hash = _content_only_digest(repo_root, comp_path, source=source)
+        source_content_hash = _content_only_digest(
+            repo_root, comp_path, source=source, snapshot=accessor.snapshot
+        )
+        if source_content_hash is None:
+            entry.setdefault("vendored_errors", []).append(
+                f"Vendored source path '{comp_path}' has no files at {source}"
+            )
         for vc in comp["vendored_copies"]:
-            vc_content_hash = _content_only_digest(repo_root, vc.rstrip("/"), source=source)
+            vc_content_hash = _content_only_digest(
+                repo_root,
+                vc.rstrip("/"),
+                source=source,
+                snapshot=accessor.snapshot,
+            )
+            if vc_content_hash is None:
+                entry.setdefault("vendored_errors", []).append(
+                    f"Vendored copy at '{vc}' has no files at {source}"
+                )
+                continue
             entry.setdefault("vendored_digests", {})[vc] = vc_content_hash
-            if vc_content_hash != source_content_hash:
-                entry.setdefault("warnings", []).append(
-                    f"Vendored copy at {vc} differs from source (source={source_content_hash}, copy={vc_content_hash})"
+            if source_content_hash is not None and vc_content_hash != source_content_hash:
+                entry.setdefault("vendored_errors", []).append(
+                    f"Vendored copy at '{vc}' differs from source "
+                    f"(source={source_content_hash}, copy={vc_content_hash})"
                 )
 
     return entry
@@ -332,6 +763,8 @@ def _generation_errors(lockfile: dict) -> List[str]:
             errors.append(f"{name}: {message}")
         for message in entry.get("behavior_errors", []):
             errors.append(f"{name}: {message}")
+        for message in entry.get("vendored_errors", []):
+            errors.append(f"{name}: {message}")
         if entry.get("boundary_status") == "error":
             messages = entry.get("boundary_errors", []) or ["Boundary computation failed"]
             for message in messages:
@@ -344,9 +777,13 @@ def _recompute_slice_entry(
     slice_def: dict,
     components_map: Dict[str, dict],
     strict: bool = True,
+    graph_components: Optional[Dict[str, dict]] = None,
 ) -> dict:
     mode = slice_def.get("mode", "exact")
-    component_names = slice_def.get("components", [])
+    component_names = resolve_slice_components(
+        slice_def,
+        graph_components if graph_components is not None else components_map,
+    )
     digest_parts: Dict[str, Optional[str]] = {}
     for cname in sorted(component_names):
         comp_entry = components_map.get(cname)
@@ -387,26 +824,49 @@ def generate_lockfile_for_components(
     source: str = "head",
     strict: bool = True,
     allow_custom_providers: bool = False,
+    snapshot: Optional[GitSourceSnapshot] = None,
+    existing_lockfile: Optional[dict] = None,
 ) -> dict:
     """Generate/update lockfile only for selected components and impacted slices."""
     source = _normalize_source(source)
+    if snapshot is not None and snapshot.source != source:
+        raise ConfigError(
+            f"Captured source mismatch: snapshot={snapshot.source!r}, source={source!r}"
+        )
+    if source in {"head", "index"} and snapshot is None:
+        try:
+            snapshot = _capture_git_source_snapshot(repo_root, source)
+        except ValueError as exc:
+            raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
     selected = sorted(set(selected_components))
     components_cfg = config.get("components", {})
     missing = [n for n in selected if n not in components_cfg]
     if missing:
         raise ConfigError(f"Unknown component(s): {', '.join(missing)}")
 
-    if not out_path.exists():
-        raise ConfigError(
-            "Cannot generate a component subset without an existing v2 lockfile. "
-            "Run a full `boundver generate` first."
-        )
+    if existing_lockfile is None:
+        try:
+            merged = load_lockfile_file(
+                out_path,
+                repo_root=repo_root,
+                snapshot=snapshot if source in {"head", "index"} else None,
+            )
+        except FileNotFoundError as exc:
+            raise ConfigError(
+                f"Cannot generate a component subset without an existing "
+                f"{LOCKFILE_SCHEMA} lockfile in the selected {source} source. "
+                "Run a full `boundver generate` first."
+            ) from exc
+        except LockfileError as exc:
+            raise ConfigError(f"Cannot read existing lockfile at {out_path}: {exc}") from exc
+    else:
+        merged = existing_lockfile
+    # Work on a detached JSON tree so callers' parsed source lock is never
+    # mutated while composing a working-tree output.
     try:
-        merged = json.loads(out_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(
-            f"Existing lockfile at {out_path} is not valid JSON: {exc}"
-        ) from exc
+        merged = json.loads(json.dumps(merged, allow_nan=False))
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ConfigError(f"Existing lockfile cannot be copied safely: {exc}") from exc
     if not isinstance(merged, dict):
         raise ConfigError(
             f"Existing lockfile at {out_path} must contain a JSON object"
@@ -434,6 +894,7 @@ def generate_lockfile_for_components(
     current_lock = generate_lockfile(
         config, repo_root, source=source, strict=strict,
         allow_custom_providers=allow_custom_providers,
+        snapshot=snapshot,
     )
     for name in set(components_cfg) - set(selected):
         if merged.get("components", {}).get(name) != current_lock["components"][name]:
@@ -443,6 +904,8 @@ def generate_lockfile_for_components(
             )
     merged["$schema"] = LOCKFILE_SCHEMA_URL
     merged["schema"] = LOCKFILE_SCHEMA
+    merged["config_contract"] = SEMANTIC_CONFIG_VERSION
+    merged["config_digest"] = current_lock["config_digest"]
     merged["project"] = config.get("project", "unknown")
     if not isinstance(merged.get("components"), dict):
         merged["components"] = {}
@@ -473,8 +936,11 @@ def generate_lockfile_for_components(
             sname, sdef, merged["components"], strict=strict
         )
 
+    # Keep component-scoped generation symmetric with full generation:
+    # ``strict=False`` permits intentional null slice inputs, not digest
+    # computation failures.
     errors = _generation_errors(merged)
-    if strict and errors:
+    if errors:
         raise ConfigError("Lockfile generation failed:\n" + "\n".join(errors))
 
     return merged
@@ -491,12 +957,30 @@ def _lockfile_schema_issues(lockfile: dict) -> List[str]:
     return []
 
 
+def _is_sha256_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
 def _lockfile_structure_issues(lockfile: dict) -> List[str]:
     issues: List[str] = []
     if not isinstance(lockfile, dict):
         return ["LOCKFILE malformed: root must be an object"]
     if not isinstance(lockfile.get("project"), str) or not lockfile.get("project"):
         issues.append("LOCKFILE malformed: project must be a non-empty string")
+    if lockfile.get("config_contract") != SEMANTIC_CONFIG_VERSION:
+        issues.append(
+            "LOCKFILE malformed: config_contract must be "
+            f"{SEMANTIC_CONFIG_VERSION!r}"
+        )
+    config_digest = lockfile.get("config_digest")
+    if not _is_sha256_digest(config_digest):
+        issues.append(
+            "LOCKFILE malformed: config_digest must be a lowercase SHA-256 digest"
+        )
     if not isinstance(lockfile.get("components"), dict):
         issues.append("LOCKFILE malformed: components must be an object")
         return issues
@@ -524,16 +1008,17 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                 f"LOCKFILE malformed: component '{name}' boundary_status must be "
                 "one of ok, partial, or error"
             )
-        consumers = comp.get("consumers")
-        if (
-            not isinstance(consumers, list)
-            or not all(isinstance(item, str) for item in consumers)
-            or len(consumers) != len(set(consumers))
-        ):
-            issues.append(
-                f"LOCKFILE malformed: component '{name}' consumers must be an "
-                "array of unique strings"
-            )
+        for consumer_field in ("consumers", "external_consumers"):
+            consumers = comp.get(consumer_field)
+            if (
+                not isinstance(consumers, list)
+                or not all(isinstance(item, str) for item in consumers)
+                or len(consumers) != len(set(consumers))
+            ):
+                issues.append(
+                    f"LOCKFILE malformed: component '{name}' {consumer_field} "
+                    "must be an array of unique strings"
+                )
         fps = comp.get("fingerprints")
         if not isinstance(fps, dict):
             issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints object")
@@ -541,10 +1026,12 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
             for required in ("exact", "behavior", "boundary", "compat"):
                 if required not in fps:
                     issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints.{required}")
-                elif fps[required] is not None and not isinstance(fps[required], str):
+                elif fps[required] is not None and not _is_sha256_digest(
+                    fps[required]
+                ):
                     issues.append(
                         f"LOCKFILE malformed: component '{name}' fingerprints.{required} "
-                        "must be a string or null"
+                        "must be a lowercase SHA-256 digest or null"
                     )
         semver = comp.get("semver")
         if not isinstance(semver, dict):
@@ -563,7 +1050,7 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                     )
         for field in (
             "version_errors", "exact_errors", "behavior_errors",
-            "boundary_errors", "warnings", "vendored_copies",
+            "boundary_errors", "warnings", "vendored_copies", "vendored_errors",
         ):
             value = comp.get(field)
             if value is not None and (
@@ -583,13 +1070,13 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
         if vendored_digests is not None and (
             not isinstance(vendored_digests, dict)
             or not all(
-                isinstance(key, str) and isinstance(value, str)
+                isinstance(key, str) and _is_sha256_digest(value)
                 for key, value in vendored_digests.items()
             )
         ):
             issues.append(
                 f"LOCKFILE malformed: component '{name}' vendored_digests must "
-                "be an object with string values"
+                "be an object with lowercase SHA-256 digest values"
             )
     if isinstance(lockfile.get("slices"), dict):
         for name, slice_entry in lockfile["slices"].items():
@@ -597,9 +1084,10 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                 issues.append(f"LOCKFILE malformed: slice '{name}' must be an object")
                 continue
             fingerprint = slice_entry.get("fingerprint")
-            if not isinstance(fingerprint, str):
+            if not _is_sha256_digest(fingerprint):
                 issues.append(
-                    f"LOCKFILE malformed: slice '{name}' fingerprint must be a string"
+                    f"LOCKFILE malformed: slice '{name}' fingerprint must be a "
+                    "lowercase SHA-256 digest"
                 )
             if not isinstance(slice_entry.get("description"), str):
                 issues.append(
@@ -625,13 +1113,13 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                 not isinstance(component_digests, dict)
                 or not all(
                     isinstance(key, str)
-                    and (value is None or isinstance(value, str))
+                    and (value is None or _is_sha256_digest(value))
                     for key, value in component_digests.items()
                 )
             ):
                 issues.append(
                     f"LOCKFILE malformed: slice '{name}' component_digests must "
-                    "be an object with string or null values"
+                    "be an object with lowercase SHA-256 digest or null values"
                 )
     return issues
 
@@ -646,6 +1134,8 @@ def verify_lockfile(
     fail_fast: bool = False,
     facets: Optional[List[str]] = None,
     observations: Optional[List[str]] = None,
+    snapshot: Optional[GitSourceSnapshot] = None,
+    transitive_consumers: bool = False,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches.
 
@@ -682,6 +1172,13 @@ def verify_lockfile(
     issues.extend(_lockfile_structure_issues(lockfile))
     if issues:
         return issues
+    current_config_digest = semantic_config_digest(config)
+    if lockfile.get("config_digest") != current_config_digest:
+        issues.append(
+            "METADATA MISMATCH config_digest: "
+            f"lockfile={lockfile.get('config_digest')!r} "
+            f"current={current_config_digest!r}"
+        )
     if lockfile.get("project") != config.get("project", "unknown"):
         issues.append(
             f"METADATA MISMATCH project: lockfile={lockfile.get('project')!r} "
@@ -692,8 +1189,31 @@ def verify_lockfile(
 
     selected = set(components_filter or [])
     use_filter = len(selected) > 0
-    gated_facets: Set[str] = set(facets or ("exact", "behavior", "boundary", "compat"))
-    unknown_facets = gated_facets - {"exact", "behavior", "boundary", "compat"}
+    supported_facets = {"exact", "behavior", "boundary", "compat"}
+    explicit_gated_facets: Optional[Set[str]] = (
+        set(facets) if facets is not None else None
+    )
+    raw_defaults = config.get("defaults", {})
+    has_explicit_default_facets = (
+        isinstance(raw_defaults, dict) and "verify_facets" in raw_defaults
+    )
+    raw_default_facets = raw_defaults.get("verify_facets", [])
+    default_gated_facets: Set[str] = (
+        set(raw_default_facets)
+        if isinstance(raw_default_facets, list)
+        and all(isinstance(item, str) for item in raw_default_facets)
+        else set()
+    )
+    configured_gated_facets = set(default_gated_facets)
+    if explicit_gated_facets is None:
+        for component in config.get("components", {}).values():
+            if isinstance(component, dict) and isinstance(
+                component.get("verify_facets"), list
+            ):
+                configured_gated_facets.update(component["verify_facets"])
+    else:
+        configured_gated_facets = explicit_gated_facets
+    unknown_facets = configured_gated_facets - supported_facets
     if unknown_facets:
         return [f"Unknown verification facet(s): {', '.join(sorted(unknown_facets))}"]
     non_gating = observations if observations is not None else []
@@ -712,11 +1232,28 @@ def verify_lockfile(
         check_components = all_components
 
     defaults = config.get("defaults", {})
-    accessor = _SourceAccessor(repo_root, source)
+    try:
+        accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
+    except ValueError as exc:
+        return [f"Cannot capture {source} source: {exc}"]
 
     # Per-component verification with optional early exit.
     computed_entries: Dict[str, dict] = {}
     for name, comp_cfg in check_components.items():
+        component_gated_facets = explicit_gated_facets
+        configured_component_facets = comp_cfg.get("verify_facets")
+        if component_gated_facets is None:
+            if isinstance(configured_component_facets, list):
+                component_gated_facets = set(configured_component_facets)
+            elif has_explicit_default_facets:
+                component_gated_facets = default_gated_facets
+            else:
+                component_gated_facets = _available_component_facets(comp_cfg)
+        component_availability_is_required = (
+            explicit_gated_facets is not None
+            or isinstance(configured_component_facets, list)
+            or has_explicit_default_facets
+        )
         current_comp = _compute_component_entry(
             name, comp_cfg, repo_root, source, defaults, accessor, registry
         )
@@ -743,15 +1280,35 @@ def verify_lockfile(
             cv = current_comp["fingerprints"].get(facet)
             locked_fps = locked_comp.get("fingerprints", {})
             lv = locked_fps.get(facet)
+            if (
+                component_availability_is_required
+                and facet in component_gated_facets
+                and (cv is None or lv is None)
+            ):
+                issues.append(
+                    f"UNAVAILABLE FACET {name}.{facet}: selected gate requires "
+                    "both locked and current digests"
+                )
+                if fail_fast:
+                    return issues
+                # A null/non-null pair is already explained by this controlled
+                # policy error; do not also classify it as ordinary drift.
+                continue
             if cv != lv:
                 message = f"MISMATCH {name}.{facet}: lockfile={_short(lv)} current={_short(cv)}"
-                if facet in gated_facets:
+                if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
-                        consumers = sorted(set(comp_cfg.get("consumers", [])))
+                        consumers = affected_consumers(
+                            all_components,
+                            name,
+                            transitive=transitive_consumers,
+                        )
                         if consumers:
+                            qualifier = " (TRANSITIVE)" if transitive_consumers else ""
                             issues.append(
-                                f"AFFECTED CONSUMERS {name}: {', '.join(consumers)}"
+                                f"AFFECTED CONSUMERS{qualifier} {name}: "
+                                f"{', '.join(consumers)}"
                             )
                     if fail_fast:
                         return issues
@@ -787,28 +1344,100 @@ def verify_lockfile(
     if slices_config:
         slice_component_names = set()
         for sdef in slices_config.values():
-            slice_component_names.update(sdef.get("components", []))
+            slice_component_names.update(
+                resolve_slice_components(sdef, all_components)
+            )
         for cname in sorted(slice_component_names):
             if cname not in computed_entries and cname in all_components:
                 computed_entries[cname] = _compute_component_entry(
                     cname, all_components[cname], repo_root, source, defaults, accessor, registry
                 )
         for sname, sdef in slices_config.items():
-            if use_filter and not (selected & set(sdef.get("components", []))):
+            resolved_slice_components = set(
+                resolve_slice_components(sdef, all_components)
+            )
+            if use_filter and not (selected & resolved_slice_components):
                 continue
-            current_slice = _recompute_slice_entry(sname, sdef, computed_entries, strict=False)
+            current_slice = _recompute_slice_entry(
+                sname,
+                sdef,
+                computed_entries,
+                strict=False,
+                graph_components=all_components,
+            )
             locked_slice = lockfile.get("slices", {}).get(sname)
             if locked_slice is None:
                 issues.append(f"NEW slice not in lockfile: {sname}")
                 if fail_fast:
                     return issues
-            elif locked_slice != current_slice:
+            else:
+                slice_mode = sdef.get("mode", "exact")
+                if explicit_gated_facets is not None:
+                    slice_gated_facets = explicit_gated_facets
+                    slice_availability_is_required = True
+                else:
+                    # A slice gate follows the effective policy of its
+                    # members. One member selecting the slice mode is enough
+                    # to require a usable aggregate for that mode.
+                    slice_gated_facets = set()
+                    slice_availability_is_required = False
+                    for cname in resolved_slice_components:
+                        member_cfg = all_components.get(cname, {})
+                        member_facets = (
+                            member_cfg.get("verify_facets")
+                            if isinstance(member_cfg, dict)
+                            else None
+                        )
+                        if isinstance(member_facets, list):
+                            effective_member_facets = set(member_facets)
+                        elif has_explicit_default_facets:
+                            effective_member_facets = default_gated_facets
+                        else:
+                            effective_member_facets = (
+                                _available_component_facets(member_cfg)
+                                if isinstance(member_cfg, dict)
+                                else set()
+                            )
+                        slice_gated_facets.update(effective_member_facets)
+                        if (
+                            isinstance(member_facets, list)
+                            or has_explicit_default_facets
+                        ):
+                            slice_availability_is_required = True
+                locked_digests = locked_slice.get("component_digests", {})
+                current_digests = current_slice.get("component_digests", {})
+                unavailable_members = sorted(
+                    cname
+                    for cname in resolved_slice_components
+                    if (
+                        cname in locked_digests
+                        and locked_digests[cname] is None
+                    )
+                    or (
+                        cname in current_digests
+                        and current_digests[cname] is None
+                    )
+                )
+                if (
+                    slice_availability_is_required
+                    and slice_mode in slice_gated_facets
+                    and unavailable_members
+                ):
+                    issues.append(
+                        f"UNAVAILABLE FACET {sname}.{slice_mode}: slice members "
+                        "lack locked or current digests: "
+                        + ", ".join(unavailable_members)
+                    )
+                    if fail_fast:
+                        return issues
+                    continue
+            if locked_slice is not None and locked_slice != current_slice:
                 message = (
                     f"SLICE MISMATCH {sname}.{sdef.get('mode', 'exact')}: "
                     f"lockfile={_short(locked_slice.get('fingerprint'))} "
                     f"current={_short(current_slice.get('fingerprint'))}"
                 )
-                if sdef.get("mode", "exact") in gated_facets:
+                if sdef.get("mode", "exact") in slice_gated_facets:
                     issues.append(message)
                     if fail_fast:
                         return issues
@@ -821,14 +1450,33 @@ def verify_lockfile(
                 return issues
 
     if limit_report and issues:
+        safety_prefixes = (
+            "Config root",
+            "LOCKFILE",
+            "Custom provider loading failed",
+            "Unknown verification facet",
+            "Unknown verification component",
+            "CURRENT DIGEST ERROR",
+            "LOCKED DIGEST ERROR",
+            "UNAVAILABLE FACET",
+        )
+        safety_issues = [
+            issue for issue in issues if issue.startswith(safety_prefixes)
+        ]
+        if safety_issues:
+            # A usage/integrity failure is not ordinary drift and must never be
+            # hidden by a numerically higher facet severity.  In particular,
+            # callers must see unavailable selected facets before considering
+            # --update safe.
+            return [safety_issues[0]]
+
         def _severity(message: str) -> int:
-            if ".compat:" in message or ".compat " in message:
-                return 5
-            if ".boundary:" in message or ".boundary " in message:
-                return 4
-            if ".behavior:" in message or ".behavior " in message:
-                return 3
-            return 1
+            return {
+                "exact": 1,
+                "behavior": 3,
+                "boundary": 4,
+                "compat": 5,
+            }.get(_issue_facet(message), 1)
 
         return [max(issues, key=_severity)]
     return issues
@@ -838,8 +1486,9 @@ def verify_lockfile(
 # Migration
 # ---------------------------------------------------------------------------
 
-# All schema versions this tool can read and migrate from.
-KNOWN_SCHEMAS = frozenset({"boundary-lock/v1", "boundary-lock/v2"})
+# All known schemas. Hash-bearing older locks are recognized only so their
+# rejection can explain that repository content must be regenerated.
+KNOWN_SCHEMAS = frozenset({"boundary-lock/v1", "boundary-lock/v2", "boundary-lock/v3"})
 
 
 class MigrationError(ValueError):
@@ -847,13 +1496,14 @@ class MigrationError(ValueError):
 
 
 def migrate_lockfile(lockfile: dict) -> dict:
-    """Upgrade *lockfile* to the current schema.
+    """Normalize a current lock and reject incompatible hash contracts.
 
     Returns a new dict; does not mutate the input.
-    Raises ``MigrationError`` if the schema is absent or unrecognised.
+    Raises ``MigrationError`` if the schema is absent, unrecognised, or needs
+    repository content to regenerate its fingerprints.
 
-    Hash contract v1 lockfiles cannot be mechanically upgraded because their
-    fingerprints must be recomputed from repository content.
+    Hash contract v1/v2 lockfiles cannot be mechanically upgraded because
+    their fingerprints must be recomputed from repository content.
     """
     schema = lockfile.get("schema")
     if schema is None:
@@ -866,11 +1516,11 @@ def migrate_lockfile(lockfile: dict) -> dict:
             f"Supported: {', '.join(sorted(KNOWN_SCHEMAS))}. "
             "You may need to upgrade boundver."
         )
-    if schema == "boundary-lock/v1":
+    if schema in {"boundary-lock/v1", "boundary-lock/v2"}:
         raise MigrationError(
-            "boundary-lock/v1 uses the ambiguous v1 hash framing and cannot be "
-            "migrated without repository content. Run `boundver generate` with "
-            "boundver 0.10 or newer to create a v2 lockfile."
+            f"{schema} does not bind every file's Git mode/type and semantic "
+            "configuration, so it cannot be migrated without repository content. "
+            f"Run `boundver generate` to create a {LOCKFILE_SCHEMA} lockfile."
         )
     migrated = dict(lockfile)
     migrated.pop("generated_at", None)          # legacy field removed in v1 final

@@ -235,8 +235,8 @@ class GitLatestTagTests(unittest.TestCase):
             result = git_latest_tag(root, "release-")
             self.assertIsNone(result)
 
-    def test_tag_on_other_branch_via_fallback(self):
-        """Tag not reachable from HEAD falls back to git tag --list."""
+    def test_tag_on_ancestor_commit_is_reachable(self):
+        """A tag on a HEAD ancestor is selected by the reachable-tag query."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -244,12 +244,11 @@ class GitLatestTagTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "tag", "svc-v2.0.0"], cwd=root, check=True, capture_output=True)
-            # Create a new branch without the tag reachable
+            # The new branch retains the tagged commit as an ancestor.
             subprocess.run(["git", "checkout", "-b", "other"], cwd=root, check=True, capture_output=True)
             (root / "f.txt").write_text("y\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "other"], cwd=root, check=True, capture_output=True)
-            # The tag is on a different commit; describe may still find it, but test the path
             result = git_latest_tag(root, "svc-v")
             self.assertEqual(result, "2.0.0")
 
@@ -315,17 +314,16 @@ class ConfigValidationEdgeCases(unittest.TestCase):
             _config.load_config_file(Path("/nonexistent/boundary.config.json"))
 
     def test_yaml_config_without_pyyaml(self):
-        """YAML config without PyYAML raises ValueError."""
+        """YAML config without PyYAML raises a controlled config error."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "config.yaml"
             p.write_text("project: test\n")
             with patch.dict(sys.modules, {"yaml": None}):
                 with patch("builtins.__import__", side_effect=ImportError("no yaml")):
-                    # The function tries import yaml internally
-                    try:
+                    with self.assertRaisesRegex(
+                        _config.ConfigError, "PyYAML is not installed"
+                    ):
                         _config.load_config_file(p)
-                    except (ValueError, ImportError):
-                        pass  # Either is acceptable
 
     def test_providers_not_a_list(self):
         """Top-level providers that isn't a list produces error."""

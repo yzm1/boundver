@@ -1,46 +1,101 @@
-name: Publish to PyPI
+name: Promote verified release
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing immutable version tag to publish.
+        description: Existing exact version tag to promote.
         required: true
         type: string
       release_sha:
-        description: Exact commit SHA referenced by the version tag.
+        description: Exact current-main commit referenced by the version tag.
         required: true
         type: string
+      compatibility_alias:
+        description: Explicit vMAJOR.MINOR Action alias to advance, or none.
+        required: true
+        type: string
+
+concurrency:
+  # Promotion mutates repository-wide release state (Releases, registries, and
+  # mutable Action aliases), so different versions must not promote in parallel.
+  group: boundver-release-promotion
+  cancel-in-progress: false
 
 permissions: {}
 
 env:
-  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-  RELEASE_SHA: ${{ inputs.release_sha || github.sha }}
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
 
 jobs:
   verify-release:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      python-dist-artifact-id: ${{ steps.upload-python-dist.outputs.artifact-id }}
+      python-dist-artifact-digest: ${{ steps.upload-python-dist.outputs.artifact-digest }}
+      release-assets-artifact-id: ${{ steps.upload-release-assets.outputs.artifact-id }}
+      release-assets-artifact-digest: ${{ steps.upload-release-assets.outputs.artifact-digest }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Bind this dispatch to the exact version tag and commit
+        shell: bash
+        env:
+          DISPATCH_EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_REF_TYPE: ${{ github.ref_type }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$DISPATCH_EVENT" != workflow_dispatch ]]; then
+            echo "Publication must be started by workflow_dispatch" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid exact release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid release SHA: $RELEASE_SHA" >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_REF_TYPE" != tag || \
+                "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
+                "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "Publish workflow must execute from exact tag ref refs/tags/$RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Dispatch SHA $DISPATCH_SHA does not match release SHA $RELEASE_SHA" >&2
+            exit 1
+          fi
+          expected_alias="v${RELEASE_TAG#v}"
+          expected_alias="${expected_alias%.*}"
+          if [[ "$COMPATIBILITY_ALIAS" != none && \
+                "$COMPATIBILITY_ALIAS" != "$expected_alias" ]]; then
+            echo "Compatibility alias must be $expected_alias or none" >&2
+            exit 1
+          fi
+
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release_sha || github.sha }}
+          ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
-      - name: Validate tag and package version
+      - name: Validate main, tag, commit, and package version
         shell: bash
         run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
           python - "$RELEASE_TAG" "$RELEASE_SHA" <<'PY'
           import pathlib
           import re
@@ -58,84 +113,864 @@ jobs:
           head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           if head_sha != release_sha:
               raise SystemExit(f"checked-out commit {head_sha} does not match {release_sha}")
-          remote_tag = subprocess.check_output(
-              ["git", "ls-remote", "origin", f"refs/tags/{actual}"], text=True
-          ).split()
-          if not remote_tag or remote_tag[0] != release_sha:
-              raise SystemExit(f"tag {actual!r} does not resolve to {release_sha}")
+
+          def remote_sha(ref: str) -> str:
+              fields = subprocess.check_output(
+                  ["git", "ls-remote", "origin", ref], text=True
+              ).split()
+              if not fields:
+                  raise SystemExit(f"remote ref is missing: {ref}")
+              return fields[0]
+
+          tag_sha = remote_sha(f"refs/tags/{actual}")
+          if tag_sha != release_sha:
+              raise SystemExit(f"tag {actual!r} resolves to {tag_sha}, not {release_sha}")
+          main_sha = remote_sha("refs/heads/main")
+          ancestor = subprocess.run(
+              ["git", "merge-base", "--is-ancestor", release_sha, main_sha]
+          )
+          if ancestor.returncode != 0:
+              raise SystemExit(
+                  f"release commit is not on main: {release_sha} (main={main_sha})"
+              )
           PY
 
-      - name: Test and build
+      - name: Require exact changelog release section
+        shell: bash
         run: |
+          set -euo pipefail
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+
+      - name: Test source and exact distributions
+        run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]' twine
           pytest -q
-          python -m build
-          python -m twine check dist/*
-          python -m zipfile --list dist/*.whl
-          tar -tzf dist/*.tar.gz
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_SHA") \
+            bash scripts/packaging_smoke.sh
+          python -m twine check dist/*.whl dist/*.tar.gz
 
       - name: Upload verified distributions
-        uses: actions/upload-artifact@v4
+        id: upload-python-dist
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-dist
-          path: dist/
+          name: python-dist-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 90
 
-  publish:
+      - name: Assemble standalone and checksummed GitHub Release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          pyz="dist/boundver-$version.pyz"
+          test -f "$pyz"
+          mkdir release-assets
+          cp dist/*.whl dist/*.tar.gz "$pyz" release-assets/
+          (
+            cd release-assets
+            LC_ALL=C sha256sum boundver-* > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+
+      - name: Upload verified GitHub Release assets
+        id: upload-release-assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 90
+
+  testpypi-preflight:
+    name: Reject conflicting TestPyPI release state
     runs-on: ubuntu-latest
     needs: verify-release
-    environment: pypi
+    permissions:
+      contents: read
+    outputs:
+      upload-required: ${{ steps.preflight.outputs.upload-required }}
+      missing-files: ${{ steps.preflight.outputs.missing-files }}
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Download the immutable Python distributions by artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Accept only a missing, exact, or exact-partial TestPyPI release
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py preflight \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  publish-testpypi:
+    name: Publish immutable candidate to TestPyPI
+    runs-on: ubuntu-latest
+    needs: [verify-release, testpypi-preflight]
+    environment: testpypi
     permissions:
       id-token: write
       contents: read
     steps:
-      - name: Download verified distributions
-        uses: actions/download-artifact@v4
+      - name: Download the immutable Python distributions by artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-dist
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish missing candidate files to TestPyPI
+        if: needs.testpypi-preflight.outputs.upload-required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          skip-existing: true
+          attestations: true
 
-  release:
+  verify-testpypi:
+    name: Verify and install the exact TestPyPI candidate
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [verify-release, publish-testpypi]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Download the immutable Python distributions by artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Verify TestPyPI filenames, sizes, hashes, and downloaded bytes
+        id: verify-testpypi
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py verify \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --attempts 18 \
+            --delay-seconds 10 \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Install only the verified TestPyPI wheel
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.release_tag }}
+          TESTPYPI_WHEEL_URL: ${{ steps.verify-testpypi.outputs.wheel-url }}
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_NO_INDEX: "1"
+        run: |
+          set -euo pipefail
+          case "$TESTPYPI_WHEEL_URL" in
+            https://test-files.pythonhosted.org/*#sha256=*) ;;
+            *) echo "Verifier returned a non-TestPyPI wheel URL" >&2; exit 1 ;;
+          esac
+          install_root=$(mktemp -d)
+          python3 -m venv "$install_root/venv"
+          "$install_root/venv/bin/python" -m pip install \
+            --no-index --no-deps "$TESTPYPI_WHEEL_URL"
+          actual=$(cd "$RUNNER_TEMP" && \
+            "$install_root/venv/bin/python" -c \
+              'import importlib.metadata; print(importlib.metadata.version("boundver"))')
+          if [[ "v$actual" != "$EXPECTED_VERSION" ]]; then
+            echo "Installed TestPyPI version v$actual != $EXPECTED_VERSION" >&2
+            exit 1
+          fi
+          cd "$RUNNER_TEMP"
+          "$install_root/venv/bin/python" -m boundver --version
+
+      - name: Cryptographically verify TestPyPI trusted-publisher provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check pypi-attestations
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            filename=$(basename "$artifact")
+            provenance="$RUNNER_TEMP/$filename.provenance"
+            python3 - "$filename" "$provenance" "${RELEASE_TAG#v}" <<'PY'
+          import pathlib
+          import sys
+          import urllib.parse
+          import urllib.request
+
+          filename, output, version = sys.argv[1:]
+          url = (
+              "https://test.pypi.org/integrity/boundver/"
+              f"{urllib.parse.quote(version, safe='')}/"
+              f"{urllib.parse.quote(filename, safe='')}/provenance"
+          )
+          request = urllib.request.Request(
+              url,
+              headers={
+                  "Accept": "application/vnd.pypi.integrity.v1+json",
+                  "User-Agent": "boundver-release-verifier/1",
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              if response.geturl() != url:
+                  raise SystemExit("TestPyPI provenance request redirected")
+              payload = response.read()
+          pathlib.Path(output).write_bytes(payload)
+          PY
+            pypi-attestations verify pypi \
+              --repository https://github.com/yzm1/boundver \
+              --provenance-file "$provenance" "$artifact"
+          done
+
+  prepare-release-draft:
+    name: Prepare complete GitHub Release draft
+    runs-on: ubuntu-latest
+    needs: [verify-release, verify-testpypi]
     permissions:
       contents: write
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          ref: ${{ inputs.release_sha || github.sha }}
+          ref: ${{ inputs.release_sha }}
 
-      - name: Download verified distributions
-        uses: actions/download-artifact@v4
+      - name: Download release assets by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-dist
-          path: dist
+          artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
+          path: release-assets
 
-      - name: Advance the stable v0 tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          git tag --force v0 "$RELEASE_SHA"
-          git push origin refs/tags/v0 --force
-          remote_sha=$(git ls-remote origin refs/tags/v0 | awk '{print $1}')
-          test "$remote_sha" = "$RELEASE_SHA"
-
-      - name: Create the GitHub Release from verified artifacts
+      - name: Create or reconcile the exact release draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/* --clobber
-          else
-            gh release create "$RELEASE_TAG" dist/* \
+          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          if [[ -z "$tag_sha" || "$tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Version tag moved or disappeared: $RELEASE_TAG -> $tag_sha (expected $RELEASE_SHA)" >&2
+            exit 1
+          fi
+          (cd release-assets && sha256sum --check --strict SHA256SUMS)
+          notes_file=$(mktemp)
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$notes_file"
+
+          # A failed API request is not evidence that the release is absent.
+          # Capture the HTTP status explicitly so only a real 404 permits create.
+          release_json_file=$(mktemp)
+          api_error_file=$(mktemp)
+          release_url="${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
+          if ! lookup_status=$(curl --silent --show-error \
+            --connect-timeout 15 --max-time 60 \
+            --output "$release_json_file" \
+            --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$release_url" 2>"$api_error_file"); then
+            cat "$api_error_file" >&2
+            echo "GitHub Release API lookup failed before returning an HTTP status" >&2
+            exit 1
+          fi
+          case "$lookup_status" in
+            200)
+              ;;
+            404)
+              gh release create "$RELEASE_TAG" \
+              --draft \
               --verify-tag \
               --title "boundver ${RELEASE_TAG#v}" \
-              --generate-notes
+              --notes-file "$notes_file"
+              if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+                > "$release_json_file"; then
+                echo "GitHub Release was created but its exact state cannot be read" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              cat "$release_json_file" >&2
+              echo "GitHub Release API lookup failed with HTTP $lookup_status" >&2
+              exit 1
+              ;;
+          esac
+
+          expected_assets=$(mktemp)
+          missing_assets=$(mktemp)
+          common_assets=$(mktemp)
+          python3 - \
+            "$RELEASE_TAG" \
+            "$notes_file" \
+            "$release_json_file" \
+            "$expected_assets" \
+            "$missing_assets" \
+            "$common_assets" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          (
+              release_tag,
+              notes_path,
+              release_json_path,
+              expected_path,
+              missing_path,
+              common_path,
+          ) = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_json_path).read_text())
+          expected_title = f"boundver {release_tag.removeprefix('v')}"
+          expected_notes = pathlib.Path(notes_path).read_text(encoding="utf-8")
+          if release.get("name") != expected_title:
+              raise SystemExit("GitHub Release draft title disagrees")
+          body = release.get("body")
+          if not isinstance(body, str) or body.rstrip("\n") != expected_notes.rstrip("\n"):
+              raise SystemExit("GitHub Release draft notes disagree")
+          if release.get("tag_name") != release_tag:
+              raise SystemExit("GitHub Release draft tag disagrees")
+          if release.get("draft") is not True:
+              raise SystemExit(
+                  "GitHub Release already published; draft preparation cannot continue"
+              )
+
+          asset_dir = pathlib.Path("release-assets")
+          local = sorted(
+              path.name
+              for path in asset_dir.iterdir()
+              if path.is_file() and not path.is_symlink()
+          )
+          if len(local) != len(list(asset_dir.iterdir())):
+              raise SystemExit("local release assets must be regular files")
+          remote = []
+          for asset in release.get("assets", []):
+              name = asset.get("name") if isinstance(asset, dict) else None
+              if not isinstance(name, str) or not name or pathlib.PurePath(name).name != name:
+                  raise SystemExit("GitHub Release reported a malformed asset name")
+              remote.append(name)
+          if len(remote) != len(set(remote)):
+              raise SystemExit("GitHub Release contains duplicate asset names")
+
+          expected = set(local)
+          actual = set(remote)
+          extras = sorted(actual - expected)
+          if extras:
+              raise SystemExit(
+                  "GitHub Release contains unexpected assets: " + ", ".join(extras)
+              )
+          pathlib.Path(expected_path).write_text("\n".join(local) + "\n")
+          pathlib.Path(missing_path).write_text("\n".join(sorted(expected - actual)) + ("\n" if expected - actual else ""))
+          pathlib.Path(common_path).write_text("\n".join(sorted(expected & actual)) + ("\n" if expected & actual else ""))
+          PY
+
+          # Compare every existing byte before performing a resumable upload.
+          downloaded_existing=$(mktemp -d)
+          while IFS= read -r asset; do
+            [[ -n "$asset" ]] || continue
+            gh release download "$RELEASE_TAG" \
+              --dir "$downloaded_existing" \
+              --pattern "$asset"
+            if ! cmp --silent "release-assets/$asset" "$downloaded_existing/$asset"; then
+              echo "GitHub Release asset conflicts with candidate bytes: $asset" >&2
+              exit 1
+            fi
+          done < "$common_assets"
+
+          if [[ -s "$missing_assets" ]]; then
+            is_draft=$(python3 -c \
+              'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' \
+              "$release_json_file")
+            if [[ "$is_draft" != true ]]; then
+              echo "Public GitHub Release is missing assets and cannot be resumed safely" >&2
+              exit 1
+            fi
+            while IFS= read -r asset; do
+              [[ -n "$asset" ]] || continue
+              gh release upload "$RELEASE_TAG" "release-assets/$asset"
+            done < "$missing_assets"
           fi
+
+          # Re-read after upload: concurrent extras, omissions, and metadata
+          # changes must all fail closed.
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$release_json_file"; then
+            echo "GitHub Release API failed during final draft verification" >&2
+            exit 1
+          fi
+          python3 - \
+            "$RELEASE_TAG" \
+            "$notes_file" \
+            "$release_json_file" \
+            "$expected_assets" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release_tag, notes_path, release_json_path, expected_path = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_json_path).read_text())
+          expected_title = f"boundver {release_tag.removeprefix('v')}"
+          expected_notes = pathlib.Path(notes_path).read_text(encoding="utf-8")
+          if release.get("name") != expected_title:
+              raise SystemExit("GitHub Release title changed during reconciliation")
+          body = release.get("body")
+          if not isinstance(body, str) or body.rstrip("\n") != expected_notes.rstrip("\n"):
+              raise SystemExit("GitHub Release notes changed during reconciliation")
+          if release.get("tag_name") != release_tag:
+              raise SystemExit("GitHub Release tag changed during reconciliation")
+          if release.get("draft") is not True:
+              raise SystemExit(
+                  "GitHub Release was published during draft reconciliation"
+              )
+          expected = set(pathlib.Path(expected_path).read_text().splitlines())
+          names = []
+          for asset in release.get("assets", []):
+              name = asset.get("name") if isinstance(asset, dict) else None
+              if not isinstance(name, str):
+                  raise SystemExit("GitHub Release reported a malformed asset")
+              names.append(name)
+          if len(names) != len(set(names)):
+              raise SystemExit("GitHub Release contains duplicate asset names")
+          actual = set(names)
+          if actual != expected:
+              missing = sorted(expected - actual)
+              extra = sorted(actual - expected)
+              raise SystemExit(
+                  f"GitHub Release asset set disagrees; missing={missing}, extra={extra}"
+              )
+          PY
+
+          remote_assets=$(mktemp -d)
+          gh release download "$RELEASE_TAG" --dir "$remote_assets"
+          diff -u \
+            <(cd release-assets && sha256sum * | LC_ALL=C sort) \
+            <(cd "$remote_assets" && sha256sum * | LC_ALL=C sort)
+          is_draft=$(python3 -c \
+            'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' \
+            "$release_json_file")
+          if [[ "$is_draft" != true ]]; then
+            echo "GitHub Release is no longer a draft" >&2
+            exit 1
+          fi
+          echo "Draft is complete. Publish it with the Marketplace checkbox, then approve the marketplace environment."
+
+  verify-marketplace:
+    name: Verify immutable Release and Marketplace publication
+    runs-on: ubuntu-latest
+    needs: [verify-release, verify-testpypi, prepare-release-draft]
+    environment: marketplace
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_sha }}
+
+      - name: Download exact distribution and release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Download exact GitHub Release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
+          path: release-assets
+
+      - name: Reverify TestPyPI candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py verify \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --attempts 1 \
+            --delay-seconds 0
+
+      - name: Require public immutable Release and Marketplace version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          verification_alias="$COMPATIBILITY_ALIAS"
+          if [[ "$verification_alias" == none ]]; then
+            # The marketplace phase does not resolve the alias, but the surface
+            # verifier still validates the release-line-shaped argument.
+            verification_alias="v${version%.*}"
+          fi
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 scripts/verify_release_surfaces.py \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$verification_alias" \
+            --dist-dir dist \
+            --release-notes "$RUNNER_TEMP/release-notes.md" \
+            --release-assets-dir release-assets \
+            --phase marketplace \
+            --attempts 18 \
+            --delay-seconds 10
+
+  pypi-preflight:
+    name: Reject conflicting production PyPI state
+    runs-on: ubuntu-latest
+    needs: verify-release
+    permissions:
+      contents: read
+    outputs:
+      upload-required: ${{ steps.preflight.outputs.upload-required }}
+      missing-files: ${{ steps.preflight.outputs.missing-files }}
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Download exact Python distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Accept only a missing, exact, or exact-partial PyPI release
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py preflight \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --api-base https://pypi.org/pypi \
+            --download-origin https://files.pythonhosted.org \
+            --github-output "$GITHUB_OUTPUT"
+
+  publish-pypi:
+    name: Promote verified candidate to PyPI
+    runs-on: ubuntu-latest
+    needs: [verify-release, verify-marketplace, pypi-preflight]
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Download the same Python distributions by artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Refresh exact production state for this upload attempt
+        id: fresh-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py preflight \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --api-base https://pypi.org/pypi \
+            --download-origin https://files.pythonhosted.org \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Publish missing candidate files to PyPI
+        if: steps.fresh-preflight.outputs.upload-required == 'true'
+        shell: bash
+        env:
+          MISSING_FILES: ${{ steps.fresh-preflight.outputs.missing-files }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          source = Path("dist")
+          target = Path("upload-dist")
+          target.mkdir()
+          names = os.environ["MISSING_FILES"].split(",")
+          if not names or any(not name or Path(name).name != name for name in names):
+              raise SystemExit("production upload file list is malformed")
+          for name in names:
+              path = source / name
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"missing immutable candidate file: {name}")
+              shutil.copy2(path, target / name)
+          PY
+
+      - name: Upload only missing candidate files to PyPI
+        if: steps.fresh-preflight.outputs.upload-required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          packages-dir: upload-dist
+          attestations: true
+
+  verify-pypi:
+    name: Verify PyPI bytes, installation, and provenance
+    runs-on: ubuntu-latest
+    needs: [verify-release, publish-pypi]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Download exact Python distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Verify exact PyPI files and obtain hash-pinned URLs
+        id: verify-pypi
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_testpypi_release.py verify \
+            --dist dist \
+            --project boundver \
+            --version "${RELEASE_TAG#v}" \
+            --api-base https://pypi.org/pypi \
+            --download-origin https://files.pythonhosted.org \
+            --attempts 18 \
+            --delay-seconds 10 \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Install only the verified PyPI wheel
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.release_tag }}
+          PYPI_WHEEL_URL: ${{ steps.verify-pypi.outputs.wheel-url }}
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_NO_INDEX: "1"
+        run: |
+          set -euo pipefail
+          case "$PYPI_WHEEL_URL" in
+            https://files.pythonhosted.org/*#sha256=*) ;;
+            *) echo "Verifier returned a non-PyPI wheel URL" >&2; exit 1 ;;
+          esac
+          install_root=$(mktemp -d)
+          python3 -m venv "$install_root/venv"
+          "$install_root/venv/bin/python" -m pip install \
+            --no-index --no-deps "$PYPI_WHEEL_URL"
+          actual=$(cd "$RUNNER_TEMP" && \
+            "$install_root/venv/bin/python" -c \
+              'import importlib.metadata; print(importlib.metadata.version("boundver"))')
+          test "v$actual" = "$EXPECTED_VERSION"
+          cd "$RUNNER_TEMP"
+          "$install_root/venv/bin/python" -m boundver --version
+
+      - name: Cryptographically verify PyPI trusted-publisher provenance
+        shell: bash
+        env:
+          PYPI_WHEEL_URL: ${{ steps.verify-pypi.outputs.wheel-url }}
+          PYPI_SDIST_URL: ${{ steps.verify-pypi.outputs.sdist-url }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check pypi-attestations
+          wheel_url=${PYPI_WHEEL_URL%%#*}
+          sdist_url=${PYPI_SDIST_URL%%#*}
+          pypi-attestations verify pypi \
+            --repository https://github.com/yzm1/boundver "$wheel_url"
+          pypi-attestations verify pypi \
+            --repository https://github.com/yzm1/boundver "$sdist_url"
+
+  advance-compatibility-alias:
+    name: Apply the explicit Action alias decision
+    runs-on: ubuntu-latest
+    needs: verify-pypi
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.release_sha }}
+
+      - name: Record the explicit no-alias decision
+        if: inputs.compatibility_alias == 'none'
+        shell: bash
+        run: echo "No compatibility alias was approved for $RELEASE_TAG."
+
+      - name: Advance the approved vX.Y alias without rollback or races
+        if: inputs.compatibility_alias != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          expected_alias="v${version%.*}"
+          if [[ "$COMPATIBILITY_ALIAS" != "$expected_alias" ]]; then
+            echo "Compatibility alias must be $expected_alias, got $COMPATIBILITY_ALIAS" >&2
+            exit 1
+          fi
+          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Exact release tag moved before alias update" >&2
+            exit 1
+          fi
+
+          alias_ref="refs/tags/$COMPATIBILITY_ALIAS"
+          expected_current=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
+          if [[ "$expected_current" == "$RELEASE_SHA" ]]; then
+            echo "$COMPATIBILITY_ALIAS already resolves to $RELEASE_SHA"
+            exit 0
+          fi
+
+          if [[ -n "$expected_current" ]]; then
+            git fetch --no-tags origin \
+              "$alias_ref:refs/boundver-release/compatibility-alias-before"
+            if ! git merge-base --is-ancestor "$expected_current" "$RELEASE_SHA"; then
+              echo "Refusing non-ancestral or rollback alias move: $expected_current -> $RELEASE_SHA" >&2
+              exit 1
+            fi
+
+            same_line_tags=$(mktemp)
+            git ls-remote --tags --refs origin \
+              "refs/tags/$COMPATIBILITY_ALIAS.*" > "$same_line_tags"
+            python3 - \
+              "$COMPATIBILITY_ALIAS" \
+              "$RELEASE_TAG" \
+              "$expected_current" \
+              "$same_line_tags" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          alias, release_tag, current_sha, tags_path = sys.argv[1:]
+          release_match = re.fullmatch(re.escape(alias) + r"\.([0-9]+)", release_tag)
+          if release_match is None:
+              raise SystemExit("release tag is outside the approved compatibility line")
+          release_patch = int(release_match.group(1))
+          current_patches = []
+          for line in pathlib.Path(tags_path).read_text().splitlines():
+              sha, ref = line.split("\t", 1)
+              match = re.fullmatch(r"refs/tags/" + re.escape(alias) + r"\.([0-9]+)", ref)
+              if match is not None and sha == current_sha:
+                  current_patches.append(int(match.group(1)))
+          if not current_patches:
+              raise SystemExit(
+                  "existing compatibility alias does not point to an exact same-line release"
+              )
+          current_patch = max(current_patches)
+          if current_patch >= release_patch:
+              raise SystemExit(
+                  f"refusing compatibility alias rollback from patch {current_patch} "
+                  f"to patch {release_patch}"
+              )
+          PY
+            lease="--force-with-lease=$alias_ref:$expected_current"
+          else
+            # Empty expected value means the ref must still be absent at push.
+            lease="--force-with-lease=$alias_ref:"
+          fi
+
+          # Revalidate the immutable anchor at the mutation boundary. The lease
+          # rejects any concurrent alias update after expected_current was read.
+          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Exact release tag moved at the alias mutation boundary" >&2
+            exit 1
+          fi
+          git push "$lease" origin "$RELEASE_SHA:$alias_ref"
+          remote_sha=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
+          test "$remote_sha" = "$RELEASE_SHA"
+
+  verify-public-surfaces:
+    name: Verify every public release surface
+    runs-on: ubuntu-latest
+    needs: [verify-release, advance-compatibility-alias]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Download exact Python distributions
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
+          path: dist
+
+      - name: Download exact GitHub Release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
+          path: release-assets
+
+      - name: Compare all public services with the exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          verification_alias_args=()
+          if [[ "$COMPATIBILITY_ALIAS" == none ]]; then
+            # Alias-free promotion still verifies both registries and every
+            # immutable surface; only alias resolution is intentionally skipped.
+            verification_alias="v${version%.*}"
+            verification_alias_args=(--skip-alias)
+          else
+            verification_alias="$COMPATIBILITY_ALIAS"
+          fi
+          python3 scripts/verify_release_surfaces.py \
+              --tag "$RELEASE_TAG" \
+              --sha "$RELEASE_SHA" \
+              --alias "$verification_alias" \
+              --dist-dir dist \
+              --release-notes "$RUNNER_TEMP/release-notes.md" \
+              --release-assets-dir release-assets \
+              --phase complete \
+              "${verification_alias_args[@]}" \
+              --attempts 18 \
+              --delay-seconds 10

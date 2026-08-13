@@ -2,20 +2,16 @@
 batch-cat malformed headers, custom provider name validation, symlink paths,
 PathHashProvider sort stability, and why_component source=index."""
 
-import hashlib
-import os
-import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from boundver._git import (
     _GitignoreRules,
     _git_batch_cat,
-    _gitignore_pattern_to_regex,
 )
 
 
@@ -242,15 +238,11 @@ class TestTomlFallbackEdgeCases(unittest.TestCase):
         result = self._v._extract_toml_from_text('name = "foo"', "version")
         self.assertIsNone(result)
 
-    def test_dotted_key_syntax(self):
-        # project.version = "1.0.0" style in TOML
+    def test_dotted_key_syntax_is_not_supported_by_regex_fallback(self):
         result = self._v._extract_toml_from_text(
             'project.version = "1.0.0"', "project.version"
         )
-        # Depending on implementation, this may or may not be supported
-        # At minimum it should not crash
-        # self.assertEqual(result, "1.0.0")  — depends on fallback support
-        self.assertIsNotNone(result) if result else None  # no crash check
+        self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +341,6 @@ class TestReadPathContent(unittest.TestCase):
 
     def test_crlf_normalized_to_lf(self):
         from boundver._hashing import _read_path_content
-        from boundver._git import _to_posix
-
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             f = repo_root / "file.txt"
@@ -416,60 +406,6 @@ class TestPathHashProviderSortDeterminism(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Custom provider name validation
-# ---------------------------------------------------------------------------
-
-
-class TestCustomProviderNameValidation(unittest.TestCase):
-    """Custom providers must have names starting with 'custom.'."""
-
-    def test_custom_prefix_required(self):
-        from boundver._config import validate_config
-        config = {
-            "version": 1,
-            "components": [
-                {
-                    "name": "svc",
-                    "path": "src/svc",
-                    "boundary": {
-                        "provider": "badname",
-                        "module": "some_module",
-                        "class": "SomeClass",
-                    },
-                }
-            ],
-        }
-        # Should raise or return issues for invalid provider name
-        issues = validate_config(config, Path("."))
-        # If it returns issues, check there are some
-        if isinstance(issues, list):
-            self.assertTrue(len(issues) > 0)
-
-    def test_custom_dot_prefix_accepted(self):
-        from boundver._config import validate_config
-        config = {
-            "version": 1,
-            "components": [
-                {
-                    "name": "svc",
-                    "path": "src/svc",
-                    "boundary": {
-                        "provider": "custom.myprovider",
-                        "module": "valid_module",
-                        "class": "ValidClass",
-                    },
-                }
-            ],
-        }
-        issues = validate_config(config, Path("."))
-        if isinstance(issues, list):
-            # Should have no issues about provider naming
-            name_issues = [i for i in issues if "custom" in str(i).lower()]
-            # may or may not exist depending on implementation
-            pass
-
-
-# ---------------------------------------------------------------------------
 # source_tree_digest — sort consistency
 # ---------------------------------------------------------------------------
 
@@ -517,13 +453,13 @@ class TestIsWithin(unittest.TestCase):
     """_is_within correctly checks path containment."""
 
     def test_child_is_within_parent(self):
-        from boundver._hashing import _is_within
+        from boundver._utils import _is_within
         parent = Path(tempfile.gettempdir())
         child = parent / "sub" / "file.txt"
         self.assertTrue(_is_within(parent, child))
 
     def test_unrelated_path_not_within(self):
-        from boundver._hashing import _is_within
+        from boundver._utils import _is_within
         a = Path(tempfile.gettempdir()) / "a"
         b = Path(tempfile.gettempdir()) / "b"
         # Only one of these can be True

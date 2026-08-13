@@ -27,15 +27,22 @@ strict behavior over implicit fallback to avoid surprising CI behavior.
 
 ## Maintainer releases
 
-After the version, changelog, and v2 lockfiles are updated, merge the release PR
-only after its full CI matrix passes. Then create a branch named
-`release/vX.Y.Z` at the tested `main` commit. The release-tag workflow verifies
-that the branch points to current `main` and matches `pyproject.toml` before it
-creates the immutable version tag. The dispatched publish workflow retests
-and builds the package, publishes the verified artifacts to PyPI, creates the
-GitHub Release, and advances the stable major tag.
+From a full repository checkout, follow the complete
+[release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md).
+A release is not just
+a PyPI upload: the exact commit, docs, changelog, TestPyPI rehearsal, production
+PyPI files, immutable GitHub Release, Marketplace version, release assets, and
+explicitly approved Action aliases must agree. Breaking releases do not move a
+broader alias automatically.
 
-Publishing the Action in GitHub Marketplace is a separate owner-only step.
-Edit the new GitHub Release, select **Publish this Action to the GitHub
-Marketplace**, confirm the categories, update the release, and complete 2FA.
-Verify that the public Marketplace page marks the new version as **Latest**.
+The maintainer tooling is repository-only and is intentionally omitted from the
+source distribution. In a clean, current `main` checkout, run
+`python3 scripts/publish_release.py check --tag vX.Y.Z`. Start promotion only
+through the script's explicitly confirmed `start` command; do not dispatch
+`publish.yml` or create release tags by hand.
+
+Publishing an Action release to Marketplace is an owner-only consent step that
+must happen while publishing the prepared GitHub Release draft. An immutable
+release cannot be published automatically and edited afterward to add the
+Marketplace opt-in. Do not advance stable tags until all public surfaces have
+been verified.

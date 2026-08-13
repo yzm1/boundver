@@ -1,0 +1,888 @@
+"""Focused tests for shipped installation and release interfaces."""
+
+from __future__ import annotations
+
+import email.parser
+import importlib.util
+import io
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+import unittest
+from argparse import Namespace
+from pathlib import Path
+from unittest import mock
+from zipfile import ZipFile
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_testpypi_verifier():
+    path = REPO_ROOT / "scripts" / "verify_testpypi_release.py"
+    spec = importlib.util.spec_from_file_location("testpypi_verifier", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise AssertionError(f"cannot import {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_fake_distributions(dist: Path, version: str = "0.11.0") -> None:
+    dist.mkdir()
+    metadata = (
+        "Metadata-Version: 2.4\n"
+        "Name: boundver\n"
+        f"Version: {version}\n\n"
+    ).encode()
+    wheel = dist / f"boundver-{version}-py3-none-any.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr(f"boundver-{version}.dist-info/METADATA", metadata)
+
+    sdist = dist / f"boundver-{version}.tar.gz"
+    with tarfile.open(sdist, "w:gz") as archive:
+        member = tarfile.TarInfo(f"boundver-{version}/PKG-INFO")
+        member.size = len(metadata)
+        archive.addfile(member, io.BytesIO(metadata))
+
+
+def _release_changelog(version: str, notes: str = "- Shipped safely.\n") -> str:
+    return (
+        "# Changelog\n\n"
+        "## [Unreleased]\n\nNo changes yet.\n\n"
+        f"## [{version}] - 2026-08-12\n\n{notes}\n"
+        "## [0.10.0] - 2026-08-11\n\n- Previous release.\n\n"
+        f"[Unreleased]: https://github.com/yzm1/boundver/compare/v{version}...HEAD\n"
+        f"[{version}]: https://github.com/yzm1/boundver/compare/v0.10.0...v{version}\n"
+        "[0.10.0]: https://github.com/yzm1/boundver/releases/tag/v0.10.0\n"
+    )
+
+
+def _project_version() -> str:
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r'(?ms)^\[project\]\s*$.*?^version\s*=\s*["\']([^"\']+)["\']',
+        text,
+    )
+    if match is None:  # pragma: no cover - release metadata invariant
+        raise AssertionError("static project.version not found")
+    return match.group(1)
+
+
+class StandaloneDistributionTests(unittest.TestCase):
+    def test_zipapp_has_version_metadata_license_and_unique_staging(self):
+        expected_version = _project_version()
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td)
+            legacy_stage = output_dir / "_stage_boundver"
+            legacy_stage.mkdir()
+            sentinel = legacy_stage / "do-not-delete.txt"
+            sentinel.write_text("owned by caller", encoding="utf-8")
+            output = output_dir / "boundver.pyz"
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_standalone.py"),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "owned by caller")
+            self.assertFalse(any(output_dir.glob(".boundver-standalone-*")))
+            with ZipFile(output) as archive:
+                names = set(archive.namelist())
+                metadata_name = next(
+                    name for name in names if name.endswith(".dist-info/METADATA")
+                )
+                metadata = email.parser.BytesParser().parsebytes(
+                    archive.read(metadata_name)
+                )
+                self.assertEqual(metadata["Name"], "boundver")
+                self.assertEqual(metadata["Version"], expected_version)
+                self.assertEqual(
+                    archive.read("LICENSE"), (REPO_ROOT / "LICENSE").read_bytes()
+                )
+                self.assertTrue(
+                    any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
+                )
+
+            result = subprocess.run(
+                [sys.executable, str(output), "--version"],
+                cwd=output_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertTrue(result.stdout.strip().endswith(f" {expected_version}"))
+
+
+class AutomationContractTests(unittest.TestCase):
+    def test_manifest_explicitly_prunes_repository_only_content(self):
+        manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        for directory in ("tests", "scripts", ".github"):
+            self.assertIn(f"prune {directory}", manifest)
+        for path in (
+            ".pre-commit-hooks.yaml",
+            "Dockerfile",
+            "action.yml",
+            "boundary.config.json",
+            "boundary.lock.json",
+        ):
+            self.assertIn(f"exclude {path}", manifest)
+
+    def test_packaging_smoke_removes_stale_build_outputs(self):
+        script = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("rm -rf -- dist build src/boundver.egg-info", script)
+
+    def test_release_workflow_orders_marketplace_before_production_and_uses_explicit_alias(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        self.assertIn("prepare-release-draft", jobs["verify-marketplace"]["needs"])
+        self.assertEqual(jobs["pypi-preflight"]["needs"], "verify-release")
+        self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
+        self.assertIn("verify-marketplace", jobs["publish-pypi"]["needs"])
+        self.assertIn("publish-pypi", jobs["verify-pypi"]["needs"])
+        self.assertEqual(
+            jobs["advance-compatibility-alias"]["needs"], "verify-pypi"
+        )
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("compatibility_alias:", workflow)
+        self.assertIn("COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}", workflow)
+        self.assertIn("inputs.compatibility_alias == 'none'", workflow)
+        self.assertIn("inputs.compatibility_alias != 'none'", workflow)
+        self.assertIn("verification_alias_args=(--skip-alias)", workflow)
+        self.assertIn("--phase complete", workflow)
+        self.assertNotIn("refs/tags/v0", workflow)
+
+    def test_publish_requires_dispatch_main_ancestry_and_distribution_smoke(self):
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("\n  push:\n", workflow)
+        self.assertIn("refs/heads/main", workflow)
+        self.assertIn("merge-base", workflow)
+        self.assertIn("release commit is not on main", workflow.lower())
+        self.assertIn("Version tag moved or disappeared", workflow)
+        self.assertIn("bash scripts/packaging_smoke.sh", workflow)
+        self.assertIn("dist/*.whl", workflow)
+        self.assertIn("dist/*.tar.gz", workflow)
+        self.assertGreaterEqual(
+            workflow.count("scripts/release_changelog.py"), 2
+        )
+        self.assertIn("scripts/verify_release_readiness.py", workflow)
+        self.assertIn('--notes-file "$notes_file"', workflow)
+        self.assertIn('case "$lookup_status" in', workflow)
+        self.assertIn("404)", workflow)
+        self.assertIn("--draft", workflow)
+        self.assertIn("SHA256SUMS", workflow)
+        self.assertIn("environment: marketplace", workflow)
+        self.assertIn("pypi-attestations verify pypi", workflow)
+        self.assertNotIn("--generate-notes", workflow)
+        self.assertNotIn("--clobber", workflow)
+        self.assertNotIn("git tag --force v0 ", workflow)
+        self.assertEqual(workflow.count("retention-days: 90"), 2)
+
+    def test_publish_is_bound_to_exact_tag_sha_and_serializes_all_promotions(self):
+        import yaml
+
+        workflow_text = (
+            REPO_ROOT / ".github/workflows/publish.yml"
+        ).read_text(encoding="utf-8")
+        workflow = yaml.safe_load(workflow_text)
+        self.assertEqual(
+            workflow["concurrency"]["group"], "boundver-release-promotion"
+        )
+        self.assertIs(workflow["concurrency"]["cancel-in-progress"], False)
+        first_step = workflow["jobs"]["verify-release"]["steps"][0]
+        self.assertEqual(
+            first_step["name"],
+            "Bind this dispatch to the exact version tag and commit",
+        )
+        binding = first_step["run"]
+        self.assertIn('"$DISPATCH_REF_TYPE" != tag', binding)
+        self.assertIn('"$DISPATCH_REF_NAME" != "$RELEASE_TAG"', binding)
+        self.assertIn(
+            '"$DISPATCH_REF" != "refs/tags/$RELEASE_TAG"', binding
+        )
+        self.assertIn('"$DISPATCH_SHA" != "$RELEASE_SHA"', binding)
+        self.assertIn(
+            '"$COMPATIBILITY_ALIAS" != none', binding
+        )
+        self.assertNotIn("publish-${{ inputs.release_tag }}", workflow_text)
+        create_workflow = yaml.safe_load(
+            (
+                REPO_ROOT / ".github/workflows/create-release-tag.yml"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            create_workflow["concurrency"]["group"],
+            "boundver-release-promotion",
+        )
+
+    def test_release_draft_lookup_and_asset_resume_fail_closed(self):
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("lookup_status=$(curl", workflow)
+        self.assertIn("API lookup failed before returning an HTTP status", workflow)
+        self.assertIn("API lookup failed with HTTP $lookup_status", workflow)
+        self.assertIn("GitHub Release contains unexpected assets", workflow)
+        self.assertIn("GitHub Release asset conflicts with candidate bytes", workflow)
+        self.assertIn('gh release upload "$RELEASE_TAG"', workflow)
+        self.assertIn("Public GitHub Release is missing assets", workflow)
+        self.assertIn(
+            "GitHub Release already published; draft preparation cannot continue",
+            workflow,
+        )
+        self.assertIn(
+            "GitHub Release was published during draft reconciliation",
+            workflow,
+        )
+        self.assertIn("GitHub Release is no longer a draft", workflow)
+        self.assertLess(
+            workflow.index("cmp --silent"),
+            workflow.index('gh release upload "$RELEASE_TAG"'),
+        )
+        self.assertNotIn('if ! gh release view "$RELEASE_TAG"', workflow)
+
+    def test_publish_promotes_one_artifact_id_through_testpypi(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        jobs = workflow["jobs"]
+        artifact_id = "${{ needs.verify-release.outputs.python-dist-artifact-id }}"
+        upload = next(
+            step
+            for step in jobs["verify-release"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+        )
+        self.assertEqual(upload["id"], "upload-python-dist")
+        self.assertEqual(
+            jobs["verify-release"]["outputs"]["python-dist-artifact-id"],
+            "${{ steps.upload-python-dist.outputs.artifact-id }}",
+        )
+        self.assertEqual(
+            jobs["verify-release"]["outputs"]["python-dist-artifact-digest"],
+            "${{ steps.upload-python-dist.outputs.artifact-digest }}",
+        )
+        self.assertIn("dist/*.whl", upload["with"]["path"])
+        self.assertIn("dist/*.tar.gz", upload["with"]["path"])
+        self.assertNotIn("pyz", upload["with"]["path"])
+
+        consuming_jobs = [
+            "testpypi-preflight",
+            "publish-testpypi",
+            "verify-testpypi",
+            "verify-marketplace",
+            "pypi-preflight",
+            "publish-pypi",
+            "verify-pypi",
+        ]
+        for job_name in consuming_jobs:
+            downloads = [
+                step
+                for step in jobs[job_name]["steps"]
+                if str(step.get("uses", "")).startswith(
+                    "actions/download-artifact@"
+                )
+            ]
+            matching = [
+                item
+                for item in downloads
+                if item["with"]["artifact-ids"] == artifact_id
+            ]
+            self.assertEqual(len(matching), 1, job_name)
+            self.assertNotIn("name", matching[0]["with"])
+
+        self.assertEqual(jobs["publish-testpypi"]["environment"], "testpypi")
+        self.assertEqual(
+            jobs["publish-testpypi"]["permissions"]["id-token"], "write"
+        )
+        test_publish = next(
+            step
+            for step in jobs["publish-testpypi"]["steps"]
+            if str(step.get("uses", "")).startswith(
+                "pypa/gh-action-pypi-publish@"
+            )
+        )
+        self.assertEqual(
+            test_publish["with"]["repository-url"],
+            "https://test.pypi.org/legacy/",
+        )
+        self.assertIs(test_publish["with"]["skip-existing"], True)
+        self.assertEqual(
+            test_publish["if"],
+            "needs.testpypi-preflight.outputs.upload-required == 'true'",
+        )
+        self.assertEqual(jobs["verify-marketplace"]["environment"], "marketplace")
+        self.assertIn("prepare-release-draft", jobs["verify-marketplace"]["needs"])
+        self.assertEqual(jobs["publish-pypi"]["environment"], "pypi")
+        self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
+        self.assertEqual(
+            jobs["publish-pypi"]["permissions"]["id-token"], "write"
+        )
+        production_publish = next(
+            step
+            for step in jobs["publish-pypi"]["steps"]
+            if str(step.get("uses", "")).startswith(
+                "pypa/gh-action-pypi-publish@"
+            )
+        )
+        self.assertNotIn("skip-existing", production_publish["with"])
+        self.assertEqual(production_publish["with"]["packages-dir"], "upload-dist")
+        self.assertEqual(
+            production_publish["if"],
+            "steps.fresh-preflight.outputs.upload-required == 'true'",
+        )
+        fresh = next(
+            step
+            for step in jobs["publish-pypi"]["steps"]
+            if step.get("id") == "fresh-preflight"
+        )
+        self.assertIn("verify_testpypi_release.py preflight", fresh["run"])
+        self.assertIn("https://pypi.org/pypi", fresh["run"])
+
+    def test_testpypi_install_cannot_resolve_boundver_from_pypi(self):
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertGreaterEqual(
+            workflow.count("scripts/verify_testpypi_release.py"), 3
+        )
+        self.assertIn("https://test-files.pythonhosted.org/*#sha256=*", workflow)
+        self.assertIn('--no-index --no-deps "$TESTPYPI_WHEEL_URL"', workflow)
+        self.assertIn('PIP_NO_INDEX: "1"', workflow)
+        self.assertIn("Reverify TestPyPI candidate", workflow)
+        self.assertIn("https://files.pythonhosted.org/*#sha256=*", workflow)
+        self.assertIn("pypi-attestations verify pypi", workflow)
+
+    def test_release_candidate_is_tested_before_tag_job(self):
+        workflow = (
+            REPO_ROOT / ".github/workflows/create-release-tag.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("verify-candidate:", workflow)
+        self.assertIn("needs: verify-candidate", workflow)
+        self.assertIn("pytest -q", workflow)
+        self.assertIn("bash scripts/packaging_smoke.sh", workflow)
+        self.assertIn("uses: ./", workflow)
+        self.assertIn("No successful CI push run found", workflow)
+        self.assertIn("Require completed reviews since the previous release", workflow)
+        self.assertGreaterEqual(
+            workflow.count("scripts/audit_release_reviews.sh"), 2
+        )
+        self.assertIn("Main advanced before the final review audit", workflow)
+        self.assertGreaterEqual(
+            workflow.count("scripts/release_changelog.py"), 2
+        )
+        self.assertLess(
+            workflow.rindex("scripts/audit_release_reviews.sh"),
+            workflow.index('git push origin "refs/tags/$RELEASE_TAG"'),
+        )
+        final_audit = workflow.rindex("scripts/audit_release_reviews.sh")
+        final_main_check = workflow.index(
+            "Main advanced at the tag mutation boundary", final_audit
+        )
+        tag_mutation = workflow.index('git tag "$RELEASE_TAG" "$RELEASE_SHA"')
+        self.assertLess(final_audit, final_main_check)
+        self.assertLess(final_main_check, tag_mutation)
+        self.assertIn(
+            "Another release promotion became active", workflow[final_audit:tag_mutation]
+        )
+        self.assertIn('--ref "$RELEASE_TAG"', workflow)
+        self.assertLess(workflow.index("verify-candidate:"), workflow.index("\n  tag:"))
+
+    def test_action_and_container_install_complete_public_extras(self):
+        action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("[schema,yaml]", action)
+        self.assertIn(".[schema,yaml]", dockerfile)
+        self.assertNotIn("--no-deps", dockerfile)
+        self.assertIn("git config --system --add safe.directory /repo", dockerfile)
+        self.assertRegex(dockerfile, r"(?m)^USER\s+boundver\s*$")
+
+    def test_container_and_sdist_exclude_repository_only_material(self):
+        dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+        manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        smoke = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertGreaterEqual(dockerfile.count("FROM python:3.12-slim"), 2)
+        self.assertNotIn("COPY . .", dockerfile)
+        self.assertIn("COPY src ./src", dockerfile)
+        for ignored in ("tests/", "scripts/", ".github/"):
+            self.assertIn(ignored, dockerignore)
+        self.assertNotIn("recursive-include tests", manifest)
+        self.assertIn("exclude docs/PROJECT_REVIEW.md", manifest)
+        self.assertIn("exclude docs/RELEASING.md", manifest)
+        for excluded in ("tests", "scripts", ".github", "Dockerfile", "action.yml"):
+            self.assertIn(f'sdist contains repository-only material', smoke)
+            self.assertIn(excluded, smoke)
+
+    def test_ci_executes_docker_and_both_published_pre_commit_hooks(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        )["jobs"]
+        public = jobs["public-installations"]
+        script = "\n".join(
+            str(step.get("run", "")) for step in public["steps"]
+        )
+        self.assertIn("pre-commit try-repo . boundver-verify --all-files", script)
+        self.assertIn("boundver-verify-push", script)
+        self.assertIn("--hook-stage pre-push", script)
+        self.assertIn("docker build", script)
+        self.assertIn("verify --source head --facets exact", script)
+
+    def test_compatibility_alias_update_is_monotonic_ancestral_and_leased(self):
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        ancestry = workflow.index("merge-base --is-ancestor")
+        monotonic = workflow.index("refusing compatibility alias rollback")
+        mutation = workflow.index('git push "$lease" origin')
+        self.assertLess(ancestry, mutation)
+        self.assertLess(monotonic, mutation)
+        self.assertIn('--force-with-lease=$alias_ref:$expected_current', workflow)
+        self.assertIn('--force-with-lease=$alias_ref:', workflow)
+        self.assertIn("expected_current=$(git ls-remote", workflow)
+        self.assertNotRegex(workflow, r"git push[^\n]*\s--force(?:\s|$)")
+
+    def test_action_honors_configured_facet_policy_by_default(self):
+        import yaml
+
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertEqual(action["inputs"]["facets"]["default"], "")
+        self.assertEqual(action["inputs"]["transitive"]["default"], "false")
+        script = action["runs"]["steps"][-1]["run"]
+        self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
+        self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
+        self.assertIn('command+=(--transitive)', script)
+
+    def test_pre_commit_and_pre_push_use_matching_snapshots_and_portable_exact_gate(self):
+        import yaml
+
+        hooks = yaml.safe_load(
+            (REPO_ROOT / ".pre-commit-hooks.yaml").read_text(encoding="utf-8")
+        )
+        by_id = {hook["id"]: hook for hook in hooks}
+        pre_commit = by_id["boundver-verify"]
+        pre_push = by_id["boundver-verify-push"]
+        self.assertEqual(pre_commit["stages"], ["pre-commit"])
+        self.assertEqual(pre_push["stages"], ["pre-push"])
+        self.assertIn(
+            "boundver generate --source index", pre_commit["description"]
+        )
+        self.assertEqual(pre_commit["args"][:3], ["verify", "--source", "index"])
+        self.assertEqual(pre_push["args"][:3], ["verify", "--source", "head"])
+        for hook in (pre_commit, pre_push):
+            self.assertIn("exact", hook["args"])
+            self.assertNotIn("exact,behavior,boundary,compat", hook["args"])
+            self.assertIn("jsonschema>=4", hook["additional_dependencies"])
+            self.assertIn("PyYAML>=6", hook["additional_dependencies"])
+
+
+class TestPyPIReleaseVerificationTests(unittest.TestCase):
+    def setUp(self):
+        self.verifier = _load_testpypi_verifier()
+
+    def _candidate(self, root: Path):
+        dist = root / "dist"
+        _write_fake_distributions(dist)
+        return dist, self.verifier._load_candidate(dist, "boundver", "0.11.0")
+
+    def _remote(self, candidate):
+        return {
+            filename: self.verifier.DistributionFile(
+                filename=filename,
+                sha256=item.sha256,
+                size=item.size,
+                url=f"https://test-files.pythonhosted.org/packages/{filename}",
+            )
+            for filename, item in candidate.items()
+        }
+
+    def test_candidate_requires_exact_wheel_and_sdist_metadata(self):
+        with tempfile.TemporaryDirectory() as td:
+            dist, candidate = self._candidate(Path(td))
+            self.assertEqual(len(candidate), 2)
+            (dist / "unexpected.txt").write_text("not publishable", encoding="utf-8")
+            with self.assertRaisesRegex(
+                self.verifier.ReleaseVerificationError,
+                "exactly one wheel and one",
+            ):
+                self.verifier._load_candidate(dist, "boundver", "0.11.0")
+
+    def test_remote_release_must_be_exact_or_an_exact_subset(self):
+        with tempfile.TemporaryDirectory() as td:
+            _, candidate = self._candidate(Path(td))
+            remote = self._remote(candidate)
+            self.assertTrue(self.verifier._compare_release(candidate, remote))
+            partial = {next(iter(remote)): next(iter(remote.values()))}
+            self.assertFalse(self.verifier._compare_release(candidate, partial))
+
+            first_name = next(iter(remote))
+            first = remote[first_name]
+            conflicting = dict(remote)
+            conflicting[first_name] = self.verifier.DistributionFile(
+                first.filename,
+                "0" * 64,
+                first.size,
+                first.url,
+            )
+            with self.assertRaisesRegex(
+                self.verifier.ReleaseVerificationError,
+                "does not match the candidate",
+            ):
+                self.verifier._compare_release(candidate, conflicting)
+
+            unexpected = dict(remote)
+            unexpected["extra.whl"] = self.verifier.DistributionFile(
+                "extra.whl", "0" * 64, 0, "https://example.invalid/extra.whl"
+            )
+            with self.assertRaisesRegex(
+                self.verifier.ReleaseVerificationError, "unexpected files"
+            ):
+                self.verifier._compare_release(candidate, unexpected)
+
+    def test_preflight_is_idempotent_only_for_identical_existing_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dist, candidate = self._candidate(root)
+            remote = self._remote(candidate)
+            output = root / "github-output"
+            args = Namespace(
+                dist=dist,
+                project="boundver",
+                version="0.11.0",
+                api_base=self.verifier.DEFAULT_API_BASE,
+                download_origin=self.verifier.DEFAULT_DOWNLOAD_ORIGIN,
+                github_output=output,
+            )
+            with mock.patch.object(
+                self.verifier, "_query_release", return_value=remote
+            ), mock.patch.object(self.verifier, "_download_and_verify"):
+                self.verifier._preflight(args)
+            self.assertEqual(
+                output.read_text(encoding="utf-8"),
+                "upload-required=false\nmissing-files=\n",
+            )
+
+            output.write_text("", encoding="utf-8")
+            partial = {next(iter(remote)): next(iter(remote.values()))}
+            with mock.patch.object(
+                self.verifier, "_query_release", return_value=partial
+            ), mock.patch.object(self.verifier, "_download_and_verify"):
+                self.verifier._preflight(args)
+            self.assertRegex(
+                output.read_text(encoding="utf-8"),
+                r"^upload-required=true\nmissing-files=boundver-0\.11\.0\.(?:tar\.gz|.+\.whl)\n$",
+            )
+
+    def test_verifier_emits_only_hash_pinned_testpypi_wheel_url(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            dist, candidate = self._candidate(root)
+            remote = self._remote(candidate)
+            output = root / "github-output"
+            args = Namespace(
+                dist=dist,
+                project="boundver",
+                version="0.11.0",
+                api_base=self.verifier.DEFAULT_API_BASE,
+                download_origin=self.verifier.DEFAULT_DOWNLOAD_ORIGIN,
+                github_output=output,
+                attempts=1,
+                delay_seconds=0,
+            )
+            with mock.patch.object(
+                self.verifier, "_query_release", return_value=remote
+            ), mock.patch.object(self.verifier, "_download_and_verify"):
+                self.verifier._verify(args)
+            value = output.read_text(encoding="utf-8")
+            self.assertRegex(
+                value,
+                r"(?m)^wheel-url=https://test-files\.pythonhosted\.org/.+"
+                r"#sha256=[0-9a-f]{64}$",
+            )
+            self.assertRegex(
+                value,
+                r"(?m)^sdist-url=https://test-files\.pythonhosted\.org/.+"
+                r"#sha256=[0-9a-f]{64}$",
+            )
+            with self.assertRaisesRegex(
+                self.verifier.ReleaseVerificationError,
+                "outside https://test-files.pythonhosted.org",
+            ):
+                self.verifier._validate_download_url(
+                    "https://files.pythonhosted.org/boundver.whl",
+                    self.verifier.DEFAULT_DOWNLOAD_ORIGIN,
+                )
+
+
+class ReleaseChangelogTests(unittest.TestCase):
+    def _run(self, changelog: str, tag: str):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "CHANGELOG.md"
+            output = Path(td) / "notes.md"
+            path.write_text(changelog, encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "release_changelog.py"),
+                    "--tag",
+                    tag,
+                    "--changelog",
+                    str(path),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            return result, output.read_text(encoding="utf-8") if output.exists() else None
+
+    def test_extracts_exact_newest_release_section(self):
+        result, notes = self._run(_release_changelog("0.11.0"), "v0.11.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(notes, "- Shipped safely.\n")
+
+    def test_unreleased_only_version_intent_cannot_be_tagged(self):
+        changelog = (
+            "# Changelog\n\n## [Unreleased]\n\n"
+            "These changes target 0.11.0.\n\n"
+            "## [0.10.0] - 2026-08-11\n\n- Old.\n\n"
+            "[0.10.0]: https://example.invalid/v0.10.0\n"
+        )
+        result, notes = self._run(changelog, "v0.11.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(notes)
+        self.assertIn("release section for 0.11.0", result.stderr)
+
+    def test_version_section_must_be_newest_and_nonempty(self):
+        stale = _release_changelog("0.10.1").replace(
+            "## [0.10.1] - 2026-08-12\n\n- Shipped safely.\n\n",
+            "## [0.11.0] - 2026-08-12\n\n- Newer.\n\n"
+            "## [0.10.1] - 2026-08-11\n\n- Shipped safely.\n\n",
+        )
+        result, _ = self._run(stale, "v0.10.1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("newest release is 0.11.0", result.stderr)
+
+        result, _ = self._run(
+            _release_changelog("0.11.0", notes="No changes yet.\n"),
+            "v0.11.0",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is empty", result.stderr)
+
+    def test_release_heading_and_date_must_be_exact(self):
+        malformed = _release_changelog("0.11.0").replace(
+            "## [0.11.0] - 2026-08-12",
+            "## [0.11.0] upcoming",
+        )
+        result, _ = self._run(malformed, "v0.11.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must include an ISO date", result.stderr)
+
+        impossible_date = _release_changelog("0.11.0").replace(
+            "2026-08-12", "2026-99-99", 1
+        )
+        result, _ = self._run(impossible_date, "v0.11.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid ISO date", result.stderr)
+
+    def test_release_and_unreleased_compare_links_are_exact(self):
+        changelog = _release_changelog("0.11.0").replace(
+            "https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0",
+            "https://example.invalid/v0.11.0",
+        )
+        result, _ = self._run(changelog, "v0.11.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("previous release", result.stderr)
+
+        changelog = _release_changelog("0.11.0").replace(
+            "https://github.com/yzm1/boundver/compare/v0.11.0...HEAD",
+            "https://example.invalid/HEAD",
+        )
+        result, _ = self._run(changelog, "v0.11.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unreleased link", result.stderr)
+
+
+class ReleaseReviewAuditTests(unittest.TestCase):
+    @unittest.skipIf(
+        os.name == "nt",
+        "Runtime shell/API audit is exercised on Linux release runners",
+    )
+    def test_review_gate_fails_closed_on_api_and_blocking_state(self):
+        script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("< <(\n    gh api", script)
+        self.assertIn("if ! associated_output=$(gh api", script)
+        self.assertIn("if ! decision=$(gh api graphql", script)
+        self.assertIn("if ! unresolved_output=$(gh api graphql --paginate", script)
+        self.assertIn("GitHub API failed while reading review threads", script)
+        self.assertIn("reviewThreads", script)
+        self.assertIn("CHANGES_REQUESTED", script)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "audit_release_reviews.sh").write_bytes(
+                script.encode("utf-8")
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_bytes(
+                """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"/commits/"* ]]; then
+  if [[ "$FAKE_GH_FAILURE" == associated ]]; then exit 73; fi
+  echo 17
+  exit 0
+fi
+if [[ "$*" == *"graphql"* && "$*" != *"--paginate"* ]]; then
+  if [[ "$FAKE_GH_FAILURE" == decision ]]; then exit 73; fi
+  if [[ "${FAKE_DECISION:-APPROVED}" == NONE ]]; then
+    echo ""
+  else
+    echo "${FAKE_DECISION:-APPROVED}"
+  fi
+  exit 0
+fi
+if [[ "$*" == *"graphql"* && "$*" == *"--paginate"* ]]; then
+  if [[ "$FAKE_GH_FAILURE" == threads ]]; then exit 73; fi
+  echo "${FAKE_UNRESOLVED:-0}"
+  exit 0
+fi
+exit 74
+""".encode("utf-8")
+            )
+            fake_gh.chmod(0o755)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Release Test"],
+                cwd=root,
+                check=True,
+            )
+            (root / "file.txt").write_text("release\n", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "release"], cwd=root, check=True)
+            release_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+            subprocess.run(
+                ["git", "remote", "add", "origin", str(root)],
+                cwd=root,
+                check=True,
+            )
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment['PATH']}",
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "owner/repository",
+                }
+            )
+            expected_errors = {
+                "associated": "resolving pull requests",
+                "decision": "reading review decision",
+                "threads": "reading review threads",
+            }
+            for failure, expected_error in expected_errors.items():
+                with self.subTest(failure=failure):
+                    environment["FAKE_GH_FAILURE"] = failure
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "./audit_release_reviews.sh",
+                            release_sha,
+                            "v0.11.0",
+                        ],
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("GitHub API failed", result.stderr)
+                    self.assertIn(expected_error, result.stderr)
+
+            environment["FAKE_GH_FAILURE"] = "none"
+            blocking_states = (
+                ("NONE", "0"),
+                ("CHANGES_REQUESTED", "0"),
+                ("APPROVED", "1"),
+                ("REVIEW_REQUIRED", "0"),
+            )
+            for decision, unresolved in blocking_states:
+                with self.subTest(decision=decision, unresolved=unresolved):
+                    environment["FAKE_DECISION"] = decision
+                    environment["FAKE_UNRESOLVED"] = unresolved
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "./audit_release_reviews.sh",
+                            release_sha,
+                            "v0.11.0",
+                        ],
+                        cwd=root,
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("is not release-ready", result.stderr)
+
+            environment["FAKE_DECISION"] = "APPROVED"
+            environment["FAKE_UNRESOLVED"] = "0"
+            result = subprocess.run(
+                [
+                    "bash",
+                    "./audit_release_reviews.sh",
+                    release_sha,
+                    "v0.11.0",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

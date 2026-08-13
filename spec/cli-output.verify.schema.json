@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.verify.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.verify.schema.json",
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
-  "required": ["ok", "updated", "issues", "observations", "facets", "components_filter"],
+  "required": ["ok", "updated", "issues", "observations", "facets", "facet_policy", "components_filter"],
   "additionalProperties": false,
   "properties": {
     "ok": {
@@ -26,10 +26,65 @@
       "items": { "type": "string" }
     },
     "facets": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "enum": ["exact", "behavior", "boundary", "compat"]
+      "description": "Explicit --facets override, or null when configured policies apply.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["exact", "behavior", "boundary", "compat"]
+          },
+          "uniqueItems": true
+        }
+      ]
+    },
+    "facet_policy": {
+      "type": "object",
+      "required": ["explicit", "defaults", "components", "slices"],
+      "additionalProperties": false,
+      "properties": {
+        "explicit": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "items": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+              "uniqueItems": true
+            }
+          ]
+        },
+        "defaults": {
+          "description": "Configured defaults.verify_facets, or null when the implicit all-available policy applies.",
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array",
+              "items": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+              "uniqueItems": true
+            }
+          ]
+        },
+        "components": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+            "uniqueItems": true
+          }
+        },
+        "slices": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["mode", "gated"],
+            "additionalProperties": false,
+            "properties": {
+              "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+              "gated": {"type": "boolean"}
+            }
+          }
+        }
       }
     },
     "components_filter": {

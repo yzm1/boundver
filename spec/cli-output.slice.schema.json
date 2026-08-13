@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.slice.schema.json",
+  "title": "boundver slice --format json output",
+  "type": "object",
+  "required": ["name", "description", "mode", "fingerprint", "components"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {"type": "string"},
+    "description": {"type": "string"},
+    "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+    "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version", "digest"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "version": {"type": ["string", "null"]},
+          "digest": {
+            "oneOf": [
+              {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              {"type": "null"}
+            ]
+          }
+        }
+      }
+    }
+  }
+}

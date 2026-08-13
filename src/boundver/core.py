@@ -15,7 +15,7 @@ Start here:
     boundver init --discover
     boundver validate-config
     boundver generate --source working-tree
-    boundver verify --source working-tree --facets boundary,compat
+    boundver verify --source working-tree
 
 Common commands:
     boundver generate [--config boundary.config.json] [--out boundary.lock.json]
@@ -39,6 +39,8 @@ from typing import Dict, List, Optional
 
 # Sub-module imports — each group lives in a focused module.
 from ._git import (
+    GitSourceSnapshot,
+    _capture_git_source_snapshot,
     _git_run,
     _is_ignored,
     _list_files_for_source,
@@ -63,11 +65,13 @@ from ._hashing import (
     source_tree_digest,
 )
 from ._utils import (
+    _available_component_facets,
     BoundverError,
     ConfigError,
     GuardrailError,
     LockfileError,
     ProviderError,
+    _issue_facet,
     _short,
 )
 from ._config import (
@@ -90,6 +94,7 @@ from ._lockfile import (
     _recompute_slice_entry,
     generate_lockfile,
     generate_lockfile_for_components,
+    load_lockfile_file,
     migrate_lockfile,
     verify_lockfile,
 )
@@ -115,6 +120,7 @@ from ._completions import (
     _FISH_COMPLETION,
     _ZSH_COMPLETION,
 )
+from ._consumer_graph import resolve_slice_components
 from .versions import (
     _extract_json_field,
     _extract_toml_field,
@@ -161,36 +167,108 @@ def _parse_facets_arg(raw: str, config: dict) -> List[str]:
     return sorted(set(facets or ["exact", "behavior", "boundary", "compat"]))
 
 
+def _facet_policy_payload(
+    config: dict, explicit_facets: Optional[List[str]]
+) -> dict:
+    """Describe effective component and slice gating without hiding overrides."""
+    raw_defaults = config.get("defaults", {})
+    configured_defaults = (
+        raw_defaults.get("verify_facets")
+        if isinstance(raw_defaults, dict) and "verify_facets" in raw_defaults
+        else None
+    )
+    default_facets = (
+        sorted(set(configured_defaults))
+        if isinstance(configured_defaults, list)
+        else None
+    )
+    components = config.get("components", {})
+    effective_components = {
+        name: sorted(
+            set(
+                explicit_facets
+                if explicit_facets is not None
+                else (
+                    component["verify_facets"]
+                    if isinstance(component.get("verify_facets"), list)
+                    else (
+                        default_facets
+                        if default_facets is not None
+                        else _available_component_facets(component)
+                    )
+                )
+            )
+        )
+        for name, component in sorted(components.items())
+        if isinstance(component, dict)
+    }
+    effective_slices = {}
+    for name, definition in sorted(config.get("slices", {}).items()):
+        if not isinstance(definition, dict):
+            continue
+        mode = definition.get("mode", "exact")
+        members = resolve_slice_components(definition, components)
+        gated = (
+            mode in explicit_facets
+            if explicit_facets is not None
+            else any(mode in effective_components.get(member, []) for member in members)
+        )
+        effective_slices[name] = {"mode": mode, "gated": gated}
+    return {
+        "explicit": explicit_facets,
+        "defaults": default_facets,
+        "components": effective_components,
+        "slices": effective_slices,
+    }
+
+
 def _drift_exit_code(issues: List[str]) -> int:
     """Return an exit code for the highest-severity gated fingerprint drift."""
-    joined = "\n".join(issues)
     safety_prefixes = (
         "Config root", "LOCKFILE", "Custom provider loading failed",
+        "Config invalid", "Config unavailable",
+        "Verification error",
         "Unknown verification facet", "Unknown verification component",
         "CURRENT DIGEST ERROR",
         "LOCKED DIGEST ERROR",
+        "UNAVAILABLE FACET",
     )
     if any(issue.startswith(safety_prefixes) for issue in issues):
         return EXIT_USAGE
-    if ".compat:" in joined:
+    facets = {_issue_facet(issue) for issue in issues}
+    if "compat" in facets:
         return EXIT_COMPAT
-    if ".boundary:" in joined:
+    if "boundary" in facets:
         return EXIT_BOUNDARY
-    if ".behavior:" in joined:
+    if "behavior" in facets:
         return EXIT_BEHAVIOR
     return EXIT_DRIFT
 
 
-def _load_lockfile(path: Path) -> dict:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise LockfileError(f"Lockfile is not valid JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise LockfileError(
-            f"Lockfile root must be an object, got {type(value).__name__}"
+def _load_lockfile(
+    path: Path,
+    *,
+    repo_root: Optional[Path] = None,
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> dict:
+    return load_lockfile_file(path, repo_root=repo_root, snapshot=snapshot)
+
+
+def _capture_operation_snapshot(
+    repo_root: Path,
+    source: str,
+) -> Optional[GitSourceSnapshot]:
+    """Capture the one immutable Git source used by an operation."""
+    if source not in {"head", "index", "working-tree"}:
+        raise ConfigError(
+            f"Unknown source mode {source!r}; expected head, index, or working-tree"
         )
-    return value
+    if source == "working-tree":
+        return None
+    try:
+        return _capture_git_source_snapshot(repo_root, source)
+    except ValueError as exc:
+        raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
 
 
 def _require_valid_lockfile(lockfile: dict) -> None:
@@ -307,8 +385,10 @@ def _cmd_diff(args) -> None:
     try:
         old = _load_lockfile(Path(args.old))
         new = _load_lockfile(Path(args.new))
+        _require_valid_lockfile(old)
+        _require_valid_lockfile(new)
     except LockfileError as exc:
-        print(f"ERROR: Failed to parse lockfile: {exc}", file=sys.stderr)
+        print(f"ERROR: Invalid lockfile: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     result = diff_lockfiles(old, new)
     if args.format == "json":
@@ -318,13 +398,15 @@ def _cmd_diff(args) -> None:
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
-    config_path = find_config_file(repo_root, args.config)
-    if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
-    except ValueError as exc:
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(
+            repo_root, args.config, snapshot=snapshot
+        )
+        config = load_config_file(
+            config_path, repo_root=repo_root, snapshot=snapshot
+        )
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
@@ -333,6 +415,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
         repo_root,
         allow_custom_providers=allow_custom,
         source=args.source,
+        snapshot=snapshot,
     )
     if config_errors:
         print(f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr)
@@ -374,11 +457,13 @@ def _cmd_generate(args, repo_root: Path) -> None:
                 source=args.source,
                 strict=(not args.allow_partial),
                 allow_custom_providers=allow_custom,
+                snapshot=snapshot,
             )
         else:
             lockfile = generate_lockfile(
                 config, repo_root, source=args.source, strict=(not args.allow_partial),
                 allow_custom_providers=allow_custom,
+                snapshot=snapshot,
             )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -410,7 +495,13 @@ def _cmd_generate(args, repo_root: Path) -> None:
 
 def _cmd_verify(args, repo_root: Path) -> None:
     try:
-        config = load_config_file(find_config_file(repo_root, args.config))
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(
+            repo_root, args.config, snapshot=snapshot
+        )
+        config = load_config_file(
+            config_path, repo_root=repo_root, snapshot=snapshot
+        )
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -420,6 +511,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         repo_root,
         allow_custom_providers=allow_custom,
         source=args.source,
+        snapshot=snapshot,
     )
     if config_errors:
         print(f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr)
@@ -432,15 +524,15 @@ def _cmd_verify(args, repo_root: Path) -> None:
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    if not lock_path.exists():
-        print(f"ERROR: Lockfile not found: {lock_path} \u2014 run 'boundver generate' first.", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
     try:
-        lockfile = _load_lockfile(lock_path)
-    except LockfileError as exc:
+        lockfile = _load_lockfile(
+            lock_path, repo_root=repo_root, snapshot=snapshot
+        )
+    except (FileNotFoundError, LockfileError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components_filter = _parse_components_arg(args.components)
+    requested_components_filter = list(components_filter)
     unknown = [
         name for name in components_filter
         if name not in config.get("components", {})
@@ -452,6 +544,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     gated_facets = _parse_facets_arg(args.facets, config)
+    explicit_gated_facets = gated_facets if args.facets.strip() else None
+    facet_policy = _facet_policy_payload(config, explicit_gated_facets)
     unknown_facets = sorted(
         set(gated_facets) - {"exact", "behavior", "boundary", "compat"}
     )
@@ -503,10 +597,24 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     )
     if preflight_issues and args.update and not structural_issues:
         try:
-            updated = generate_lockfile(
-                config, repo_root, source=args.source, strict=True,
-                allow_custom_providers=allow_custom,
-            )
+            if requested_components_filter:
+                updated = generate_lockfile_for_components(
+                    config,
+                    repo_root,
+                    selected_components=requested_components_filter,
+                    out_path=lock_path,
+                    source=args.source,
+                    strict=True,
+                    allow_custom_providers=allow_custom,
+                    snapshot=snapshot,
+                    existing_lockfile=lockfile,
+                )
+            else:
+                updated = generate_lockfile(
+                    config, repo_root, source=args.source, strict=True,
+                    allow_custom_providers=allow_custom,
+                    snapshot=snapshot,
+                )
         except ValueError as exc:
             print(f"ERROR: update failed: {exc}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
@@ -517,7 +625,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 "updated": True,
                 "issues": preflight_issues,
                 "observations": [],
-                "facets": gated_facets,
+                "facets": explicit_gated_facets,
+                "facet_policy": facet_policy,
                 "components_filter": components_filter,
             })
         elif not args.quiet:
@@ -530,7 +639,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 "updated": False,
                 "issues": preflight_issues,
                 "observations": [],
-                "facets": gated_facets,
+                "facets": explicit_gated_facets,
+                "facet_policy": facet_policy,
                 "components_filter": components_filter,
             })
         else:
@@ -572,13 +682,19 @@ def _cmd_verify(args, repo_root: Path) -> None:
             config, lockfile, repo_root, source=args.source, components_filter=components_filter,
             allow_custom_providers=allow_custom,
             fail_fast=getattr(args, "fail_fast", False),
-            facets=gated_facets,
+            facets=explicit_gated_facets,
             observations=observations,
+            snapshot=snapshot,
+            transitive_consumers=args.transitive,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     if issues:
+        unavailable_issues = [
+            issue for issue in issues
+            if issue.startswith("UNAVAILABLE FACET ")
+        ]
         if args.format != "json" and not args.quiet:
             print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):") + "\n")
             for issue in issues:
@@ -589,12 +705,41 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     print(f"  {observation}")
             if not args.update:
                 print("\nInspect with `boundver why <component>`, then run `boundver verify --update` after review.")
+        # Regeneration cannot manufacture a facet that the configuration does
+        # not define. Treat this as a controlled policy/input error and leave
+        # the reviewed lock bytes untouched even when --update was requested.
+        if args.update and unavailable_issues:
+            if args.format == "json":
+                _print_json({
+                    "ok": False,
+                    "updated": False,
+                    "issues": issues,
+                    "observations": observations,
+                    "facets": explicit_gated_facets,
+                    "facet_policy": facet_policy,
+                    "components_filter": reported_components_filter,
+                })
+            sys.exit(EXIT_USAGE)
         if args.update:
             try:
-                updated = generate_lockfile(
-                    config, repo_root, source=args.source, strict=True,
-                    allow_custom_providers=allow_custom,
-                )
+                if requested_components_filter:
+                    updated = generate_lockfile_for_components(
+                        config,
+                        repo_root,
+                        selected_components=requested_components_filter,
+                        out_path=lock_path,
+                        source=args.source,
+                        strict=True,
+                        allow_custom_providers=allow_custom,
+                        snapshot=snapshot,
+                        existing_lockfile=lockfile,
+                    )
+                else:
+                    updated = generate_lockfile(
+                        config, repo_root, source=args.source, strict=True,
+                        allow_custom_providers=allow_custom,
+                        snapshot=snapshot,
+                    )
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
@@ -605,7 +750,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     "updated": True,
                     "issues": issues,
                     "observations": observations,
-                    "facets": gated_facets,
+                    "facets": explicit_gated_facets,
+                    "facet_policy": facet_policy,
                     "components_filter": reported_components_filter,
                 })
             if args.format != "json" and not args.quiet:
@@ -617,17 +763,32 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 "updated": False,
                 "issues": issues,
                 "observations": observations,
-                "facets": gated_facets,
+                "facets": explicit_gated_facets,
+                "facet_policy": facet_policy,
                 "components_filter": reported_components_filter,
             })
         sys.exit(_drift_exit_code(issues))
     else:
         if args.update and observations:
             try:
-                updated = generate_lockfile(
-                    config, repo_root, source=args.source, strict=True,
-                    allow_custom_providers=allow_custom,
-                )
+                if requested_components_filter:
+                    updated = generate_lockfile_for_components(
+                        config,
+                        repo_root,
+                        selected_components=requested_components_filter,
+                        out_path=lock_path,
+                        source=args.source,
+                        strict=True,
+                        allow_custom_providers=allow_custom,
+                        snapshot=snapshot,
+                        existing_lockfile=lockfile,
+                    )
+                else:
+                    updated = generate_lockfile(
+                        config, repo_root, source=args.source, strict=True,
+                        allow_custom_providers=allow_custom,
+                        snapshot=snapshot,
+                    )
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
@@ -638,7 +799,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     "updated": True,
                     "issues": [],
                     "observations": observations,
-                    "facets": gated_facets,
+                    "facets": explicit_gated_facets,
+                    "facet_policy": facet_policy,
                     "components_filter": reported_components_filter,
                 })
             elif not args.quiet:
@@ -650,7 +812,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 "updated": False,
                 "issues": [],
                 "observations": observations,
-                "facets": gated_facets,
+                "facets": explicit_gated_facets,
+                "facet_policy": facet_policy,
                 "components_filter": reported_components_filter,
             })
         if args.verbose and not args.quiet:
@@ -683,6 +846,26 @@ def _cmd_slice(args, repo_root: Path) -> None:
         print(f"ERROR: Slice '{args.name}' not found.", file=sys.stderr)
         print(f"Available: {', '.join(lockfile.get('slices', {}).keys())}")
         sys.exit(EXIT_USAGE)
+    if args.format == "json":
+        _print_json(
+            {
+                "name": args.name,
+                "description": sl.get("description", ""),
+                "mode": sl.get("mode", "exact"),
+                "fingerprint": sl["fingerprint"],
+                "components": [
+                    {
+                        "name": cname,
+                        "version": lockfile.get("components", {})
+                        .get(cname, {})
+                        .get("version"),
+                        "digest": sl.get("component_digests", {}).get(cname),
+                    }
+                    for cname in sl.get("components", [])
+                ],
+            }
+        )
+        return
     print(f"\n  Slice: {args.name}")
     print(f"  Mode: {sl.get('mode', 'exact')}")
     print(f"  Fingerprint: {sl['fingerprint']}")
@@ -734,12 +917,14 @@ def _cmd_init(args, repo_root: Path) -> None:
     discovered = discover_components(repo_root) if args.discover else {}
     if args.discover and not discovered:
         print(
-            "WARNING: No tracked nested manifests were discovered. "
-            "Creating an empty config; add a real component before generation.",
+            "ERROR: No tracked component could be discovered. Root manifests "
+            "need a tracked src/, lib/, app/, or single Python package directory; "
+            "otherwise run `boundver init` and edit the scaffold.",
             file=sys.stderr,
         )
+        sys.exit(EXIT_USAGE)
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered if args.discover else {
@@ -786,6 +971,20 @@ def _cmd_add(args, repo_root: Path) -> None:
         "boundary": {"provider": args.provider, "paths": boundary_paths},
     }
     config["components"] = components
+    config_errors = validate_config(config, repo_root)
+    if config_errors:
+        print(
+            f"ERROR: Adding '{args.name}' would leave an invalid config:",
+            file=sys.stderr,
+        )
+        for error in config_errors:
+            print(f"  - {error}", file=sys.stderr)
+        print(
+            "Correct the component path, provider, boundary paths, or policy "
+            "before retrying.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
     _write_text_atomic(config_path, json.dumps(config, indent=2) + "\n")
     print(f"Added component '{args.name}' at path '{args.path}'")
     print(f"Run: boundver generate --components {args.name}")
@@ -807,16 +1006,38 @@ def _cmd_remove(args, repo_root: Path) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components = config.get("components", {})
+    if not isinstance(components, dict):
+        print("ERROR: Config field 'components' must be an object.", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     if args.name not in components:
         print(f"ERROR: Component '{args.name}' not found in config.", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     del components[args.name]
     config["components"] = components
-    # Also remove from slices
-    for slice_name, slice_def in config.get("slices", {}).items():
+    # Explicit slices can drop the removed member automatically. A graph
+    # closure seed or incoming consumer edge is semantic and must be repaired
+    # deliberately rather than silently rewritten.
+    for slice_def in config.get("slices", {}).values():
+        if not isinstance(slice_def, dict):
+            continue
         comp_list = slice_def.get("components", [])
-        if args.name in comp_list:
+        if isinstance(comp_list, list) and args.name in comp_list:
             comp_list.remove(args.name)
+
+    config_errors = validate_config(config, repo_root)
+    if config_errors:
+        print(
+            f"ERROR: Removing '{args.name}' would leave an invalid config:",
+            file=sys.stderr,
+        )
+        for error in config_errors:
+            print(f"  - {error}", file=sys.stderr)
+        print(
+            "Update incoming consumers, closure slices, or retain at least one "
+            "component before retrying.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
     _write_text_atomic(config_path, json.dumps(config, indent=2) + "\n")
     print(f"Removed component '{args.name}'")
     print("Run: boundver generate")
@@ -835,12 +1056,15 @@ def _cmd_discover(args, repo_root: Path) -> None:
 
 def _cmd_status(args, repo_root: Path) -> None:
     lock_path = repo_root / args.lock
-    if lock_path.exists():
-        try:
-            lockfile = _load_lockfile(lock_path)
-        except LockfileError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            sys.exit(EXIT_USAGE)
+    try:
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        lockfile = _load_lockfile(
+            lock_path, repo_root=repo_root, snapshot=snapshot
+        )
+    except (FileNotFoundError, LockfileError, ConfigError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    if lockfile is not None:
         structure_issues = [
             *_lockfile_schema_issues(lockfile),
             *_lockfile_structure_issues(lockfile),
@@ -880,37 +1104,43 @@ def _cmd_status(args, repo_root: Path) -> None:
                     status_payload["warnings"].append(f"{name}: {label} error - {e}")
                     has_warnings = True
         # Also verify if config exists
-        config_path = find_config_file(repo_root, args.config)
-        if config_path.exists():
-            try:
-                config = load_config_file(config_path)
-            except ValueError as exc:
-                print(f"WARNING: Config parse error: {exc}", file=sys.stderr)
-                config = None
-            if config is not None and not structure_issues:
-                allow_custom = _resolve_allow_custom(args, config)
-                config_errors = validate_config(
-                    config,
-                    repo_root,
-                    allow_custom_providers=allow_custom,
-                    source=args.source,
-                )
-                if config_errors:
-                    issues = [f"Config invalid: {error}" for error in config_errors]
-                else:
-                    try:
-                        issues = verify_lockfile(
-                            config, lockfile, repo_root, source=args.source,
-                            allow_custom_providers=allow_custom,
-                        )
-                    except ValueError as exc:
-                        issues = [f"Verification error: {exc}"]
-                status_payload["issues"].extend(issues)
-                if issues:
-                    if not args.quiet and args.format != "json":
-                        print(f"\n  DRIFT DETECTED ({len(issues)} issues):")
-                        for issue in issues:
-                            print(f"    {issue}")
+        try:
+            config_path = find_config_file(
+                repo_root, args.config, snapshot=snapshot
+            )
+            config = load_config_file(
+                config_path, repo_root=repo_root, snapshot=snapshot
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"WARNING: Config parse error: {exc}", file=sys.stderr)
+            status_payload["issues"].append(f"Config unavailable: {exc}")
+            config = None
+        if config is not None and not structure_issues:
+            allow_custom = _resolve_allow_custom(args, config)
+            config_errors = validate_config(
+                config,
+                repo_root,
+                allow_custom_providers=allow_custom,
+                source=args.source,
+                snapshot=snapshot,
+            )
+            if config_errors:
+                issues = [f"Config invalid: {error}" for error in config_errors]
+            else:
+                try:
+                    issues = verify_lockfile(
+                        config, lockfile, repo_root, source=args.source,
+                        allow_custom_providers=allow_custom,
+                        snapshot=snapshot,
+                    )
+                except ValueError as exc:
+                    issues = [f"Verification error: {exc}"]
+            status_payload["issues"].extend(issues)
+            if issues:
+                if not args.quiet and args.format != "json":
+                    print(f"\n  DRIFT DETECTED ({len(issues)} issues):")
+                    for issue in issues:
+                        print(f"    {issue}")
         if args.format == "json":
             _print_json(status_payload)
         # --strict: exit non-zero if any drift or warnings
@@ -923,32 +1153,42 @@ def _cmd_status(args, repo_root: Path) -> None:
 
 def _cmd_explain(args, repo_root: Path) -> None:
     try:
-        config = load_config_file(find_config_file(repo_root, args.config))
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(
+            repo_root, args.config, snapshot=snapshot
+        )
+        config = load_config_file(
+            config_path, repo_root=repo_root, snapshot=snapshot
+        )
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    rc = explain_component_changes(config, repo_root, args.component, base_ref=args.base_ref, source=args.source)
+    rc = explain_component_changes(
+        config,
+        repo_root,
+        args.component,
+        base_ref=args.base_ref,
+        source=args.source,
+        snapshot=snapshot,
+    )
     if rc != 0:
         sys.exit(rc)
 
 
 def _cmd_why(args, repo_root: Path) -> None:
-    config_path = find_config_file(repo_root, args.config)
     lock_path = repo_root / args.lock
-    if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
-    if not lock_path.exists():
-        print(f"ERROR: Lockfile not found: {lock_path} \u2014 run 'boundver generate' first.", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
-    try:
-        lockfile = _load_lockfile(lock_path)
-    except LockfileError as exc:
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(
+            repo_root, args.config, snapshot=snapshot
+        )
+        config = load_config_file(
+            config_path, repo_root=repo_root, snapshot=snapshot
+        )
+        lockfile = _load_lockfile(
+            lock_path, repo_root=repo_root, snapshot=snapshot
+        )
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
@@ -957,8 +1197,32 @@ def _cmd_why(args, repo_root: Path) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
-    rc = why_component(config, lockfile, repo_root, args.component, source=args.source,
-                       allow_custom_providers=allow_custom)
+    config_errors = validate_config(
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom,
+        source=args.source,
+        snapshot=snapshot,
+    )
+    if config_errors:
+        print(
+            f"ERROR: Config is invalid ({len(config_errors)} issues):",
+            file=sys.stderr,
+        )
+        for error in config_errors:
+            print(f"  - {error}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    rc = why_component(
+        config,
+        lockfile,
+        repo_root,
+        args.component,
+        source=args.source,
+        allow_custom_providers=allow_custom,
+        snapshot=snapshot,
+        transitive_consumers=args.transitive,
+        output_format=args.format,
+    )
     if rc != 0:
         sys.exit(rc)
 
@@ -1002,7 +1266,11 @@ def main():
         "--source", choices=["head", "index", "working-tree"], default="head",
         help="Snapshot to fingerprint: last commit, staged index, or tracked files on disk",
     )
-    gen.add_argument("--allow-partial", action="store_true", help="Allow missing boundary/compat digests in slices")
+    gen.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Allow intentional null facet inputs in slices (not provider or source errors)",
+    )
     gen.add_argument("--dry-run", action="store_true", help="Compute lockfile and print status without writing output")
     gen.add_argument("--components", default="", help="Comma-separated component names to regenerate")
     gen.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
@@ -1046,7 +1314,14 @@ def main():
                      help="Report only the highest-severity mismatch")
     ver.add_argument(
         "--facets", default="",
-        help="Comma-separated facets that fail the gate (default: config defaults.verify_facets or all)",
+        help=(
+            "Comma-separated CLI-wide gate override (default: component "
+            "verify_facets, then config defaults, then all available facets)"
+        ),
+    )
+    ver.add_argument(
+        "--transitive", action="store_true",
+        help="Report the transitive downstream consumer closure for boundary/compat drift",
     )
     ver.add_argument(
         "--update", action="store_true",
@@ -1068,6 +1343,7 @@ def main():
     sl = sub.add_parser("slice", help="Show fingerprint for a specific slice")
     sl.add_argument("name", help="Slice name")
     sl.add_argument("--lock", default="boundary.lock.json")
+    sl.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
 
     # validate-config (and check-config alias)
     vc = sub.add_parser(
@@ -1173,6 +1449,11 @@ def main():
     why.add_argument("--lock", default="boundary.lock.json")
     why.add_argument("--source", choices=["head", "index", "working-tree"], default="head",
                      help="Fingerprint source to compare against (default: head)")
+    why.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    why.add_argument(
+        "--transitive", action="store_true",
+        help="Report the transitive downstream consumer closure",
+    )
     why.add_argument(
         "--allow-custom-providers", action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
@@ -1184,18 +1465,19 @@ def main():
     # migrate-lock
     ml = sub.add_parser(
         "migrate-lock",
-        help="Upgrade a boundary.lock.json to the current schema",
+        help="Normalize a current lock or explain why regeneration is required",
         description=(
-            "Read an existing boundary.lock.json, apply any pending schema migrations, "
-            "and write the result back in-place.  If the lockfile is already at the "
-            "current schema this is a no-op (exit 0).  Use --dry-run to preview."
+            "Normalize a supported current-schema boundary.lock.json in place. "
+            "Hash-contract v1/v2 locks cannot be upgraded safely and are rejected "
+            "with instructions to regenerate from repository content. Use --dry-run "
+            "to print the normalized current lock without writing it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ml.add_argument("--lock", default="boundary.lock.json",
                     help="Path to lockfile (default: boundary.lock.json)")
     ml.add_argument("--dry-run", action="store_true",
-                    help="Print migrated JSON to stdout without writing the file")
+                    help="Print normalized JSON to stdout without writing the file")
 
     # completions
     comp = sub.add_parser(

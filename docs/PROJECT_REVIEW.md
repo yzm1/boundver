@@ -1,171 +1,301 @@
-# Project review and remediation record
+# Project review: v0.10 retrospective and v0.11 design record
 
-- Date: 2026-08-12
-- Baseline: `55dd961` (`main`, package version `0.9.1`)
-- Released tree: `5664437` (`main`, package version `0.10.0`)
+- Audit date: 2026-08-12
+- Immutable release under review: `v0.10.0` at `5664437`
+- Main baseline at re-audit start: `6e337b10086961a027e1398e44da4df870066e21`
+- Corrective contract: `0.11.0` using `boundary-lock/v3`
 
-This document records the pre-release review of boundver's correctness,
-security, packaging, onboarding, documentation, automation, and public project
-surface. “Resolved” means the repository contains the implementation,
-regression coverage, or repeatable verification named below. The release gate
-records the separate external CI and publication evidence.
+This document supersedes the earlier blanket statement that every finding was
+resolved. It records the published v0.10 behavior, reproduced failures, v0.11
+design responses, and durable product limits. Current release status belongs in
+the automated release gate and its workflow run, not in this retrospective.
+It is a repository-maintainer record and is deliberately excluded from source
+distributions.
 
-## Executive summary
+## Executive conclusion
 
-All findings identified in the baseline review and the subsequent focused
-security/correctness passes are resolved in the current tree. Fingerprint
-generation and verification now fail closed, hashing uses an unambiguous v2
-wire format, Git paths are handled as NUL-delimited literal data, custom Python
-providers require caller-controlled opt-in, and the public Action treats inputs
-as data. Lock/config validation, partial updates, metadata/provider checks,
-source modes, and OpenAPI canonicalization have focused regression coverage.
+The v0.10 review was not reliable enough to support its “all findings resolved”
+claim. Several tests asserted the implementation's behavior instead of an
+independently defined contract. The clearest example was glob matching: the
+README described `*` as non-recursive and `**` as recursive, while v0.10 tests
+blessed whole-string `fnmatch` behavior in which `*` crossed `/` and `**` missed
+the zero-directory case.
 
-The usability and visibility work is also represented in the repository: the
-README has an immediate workflow, examples use the installed CLI, one public
-Action is documented, package metadata and community files are present, and
-the supported Python floor is consistently 3.9. External CI and publication
-completed for `v0.10.0`; the evidence is summarized in the release gate below.
+The re-audit found additional violations in file identity, semantic-config
+identity, behavior/boundary containment, vendored-copy generation, component-
+scoped updates, the consumer model, partial-lock symmetry, heterogeneous facet
+policy, derived-artifact freshness, canonical parsing, root-manifest discovery,
+and release review enforcement. These are correctness issues, not documentation
+polish.
 
-## Baseline findings (BV-001–BV-042)
+The corrective contract changes file hashing, glob selection, provider versions,
+and the lock schema. It therefore belongs in `0.11.0`, not `0.10.1`. The
+published v0.10 tag, release assets, and PyPI artifacts remain immutable.
 
-| ID | Severity | Area | Resolution evidence | Status |
-|---|---|---|---|---|
-| BV-001 | Critical | Generation | Strict generation rejects `version_errors`, `exact_errors`, `behavior_errors`, and boundary errors; missing/oversized/raced-file regressions are in `tests/test_hashing_contract.py` and `tests/test_boundary_lock.py`. | Resolved |
-| BV-002 | Critical | Verification | `changed_components_since_ref` rejects invalid refs and conservatively covers config/unmapped changes and slices; see `test_verify_invalid_changed_from_exits_usage` and changed-from tests in `tests/test_cli_main.py`. | Resolved |
-| BV-003 | Critical | Hashing | `_hash_framed_entries` uses a versioned, domain-separated, length-prefixed binary frame; collision and known-vector tests are in `tests/test_hashing_contract.py`. | Resolved |
-| BV-004 | High | Git paths | Git filenames use NUL-delimited byte output plus filesystem decoding; Unicode, newline, non-UTF-8, and literal-backslash regressions are in `tests/test_hashing_contract.py`. | Resolved |
-| BV-005 | High | Canonical OpenAPI | `_strip_openapi` distinguishes annotation fields from user-named maps; `tests/test_provider_contract.py` covers annotation-looking schema/property names. | Resolved |
-| BV-006 | High | Guardrails | `_git_batch_cat` rejects missing, malformed, truncated, non-blob, and oversized responses; focused tests are in `tests/test_hashing_contract.py` and `tests/test_coverage_gaps.py`. | Resolved |
-| BV-007 | High | Custom providers | `_resolve_allow_custom` accepts only caller flag/environment authorization; `load_custom_providers` validates module/class/name inputs. Coverage is in `tests/test_providers.py`, `tests/test_edge_cases.py`, and `tests/test_cli_main.py`. | Resolved |
-| BV-008 | High | GitHub Actions | Root `action.yml` passes inputs through environment variables and a quoted Bash array, validates enums, and installs from `github.action_path`; `.github/workflows/ci.yml` contains a hostile-input contract check. | Resolved |
-| BV-009 | High | Source modes | `_list_files_for_source` treats the successful Git index as authoritative and working-tree mode as tracked-only; see the corresponding tests in `tests/test_hashing_contract.py`. | Resolved |
-| BV-010 | High | Lock semantics | `COMPONENT_METADATA_FIELDS`, structure validation, and `verify_lockfile` cover path, version, provider identity/version, status, SemVer, consumers, metadata, vendored data, and recorded errors. | Resolved |
-| BV-011 | High | Partial generation | `generate_lockfile_for_components` requires a valid v2 base, recomputes current entries, rejects stale unselected entries, reconciles removals, and recomputes all slices; see partial-generation tests in `tests/test_core_branches.py`. | Resolved |
-| BV-012 | Medium | Installed validation | The config schema is package data under `src/boundver/`; `scripts/packaging_smoke.sh` inspects the wheel and validates an installed copy in an unrelated repository. | Resolved |
-| BV-013 | Medium | Config loading | Config and lock loaders reject non-object roots, and hand validation covers malformed nested data; see `tests/test_core_branches.py`, `tests/test_boundary_lock.py`, and `tests/test_cli_main.py`. | Resolved |
-| BV-014 | Medium | Config mutation | `_ensure_json_mutation_path` prevents `init`, `add`, and `remove` from serializing JSON into YAML/TOML paths. | Resolved |
-| BV-015 | Medium | Discovery | Git-aware discovery uses manifest-specific version sources and deduplicates directories; see `test_discover_components_uses_tracked_manifests_and_deduplicates_dirs`. | Resolved |
-| BV-016 | Medium | First run | `init --discover` discloses an empty result instead of inventing `src`, and working-tree validation rejects missing component roots; covered in discovery/init and config-validation tests. | Resolved |
-| BV-017 | Medium | Status UX | `print_status` shows component identity, path, version, provider/status, short fingerprints, consumers, and all error categories with corrected guidance; status tests cover text and JSON. | Resolved |
-| BV-018 | Medium | Action contract | The duplicate repository-local Action was removed; root `action.yml` is the documented interface and emits command-aware JSON outputs. | Resolved |
-| BV-019 | Medium | CLI protocol | Runtime JSON and schemas agree, including status warnings; `tests/test_cli_output_schemas.py` validates real command payloads. | Resolved |
-| BV-020 | Medium | Provider protocol | Provider metadata, validation, and explanations are wired, and operations use isolated registries; contract tests are in `tests/test_provider_contract.py`. | Resolved |
-| BV-021 | Medium | Completions | Completion scripts cover every parser subcommand and supported options; see completion tests in `tests/test_boundary_lock.py` and `tests/test_cli_main.py`. | Resolved |
-| BV-022 | Medium | Module entry point | `src/boundver/__main__.py` exists, and `scripts/packaging_smoke.sh` exercises installed `python -m boundver --version`. | Resolved |
-| BV-023 | Medium | Python support | `tomli` is conditional for Python below 3.11, and the supported/build/test floor is consistently Python 3.9 in `pyproject.toml`, docs, and workflow matrices. External matrix execution remains a release gate. | Resolved |
-| BV-024 | Medium | Release safety | `.github/workflows/publish.yml` validates exact tag/package-version equality, runs tests, builds, checks distributions, and publishes only the verified artifact job output. | Resolved |
-| BV-025 | Medium | Documentation | `README.md` leads with the canonical workflow; `docs/ci-cookbook.md` uses the public Action or explicit installation, and packaging smoke covers the installed workflow. | Resolved |
-| BV-026 | Medium | Documentation accuracy | README/getting-started/CI guidance pairs source modes and describes declared-artifact drift rather than semantic compatibility proof. | Resolved |
-| BV-027 | Medium | Examples | Example READMEs use `boundver`; `test_examples_expected_lockfiles_are_current` verifies their expected lockfiles. | Resolved |
-| BV-028 | Medium | Package metadata | `pyproject.toml` contains keywords, classifiers, project URLs, and publication-safe documentation links. Rendered PyPI verification remains a publication gate. | Resolved |
-| BV-029 | Medium | Public repository | `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, issue forms, and the pull-request template are present. | Resolved |
-| BV-030 | Low | Test portability | Subprocess tests use the active interpreter (`sys.executable`) or platform-appropriate installed commands instead of assuming a `python` shim. | Resolved |
-| BV-031 | Low | Distribution contents | Package-data/MANIFEST configuration includes runtime schema, type marker, specs, policies, and tests needed by the sdist; `scripts/packaging_smoke.sh` inspects wheel and sdist members. | Resolved |
-| BV-032 | Low | Packaging lifecycle | `pyproject.toml` uses the SPDX `license = "MIT"` form plus `license-files`, and its Python 3.9 floor is compatible with the security-patched `setuptools>=78.1.1` build requirement. | Resolved |
-| BV-033 | Medium | Diff reporting | `_diff.py` compares the shared `COMPONENT_METADATA_FIELDS` as well as fingerprints and reports metadata-only changes. | Resolved |
-| BV-034 | Medium | Shell verifier | The divergent standalone shell verifier was retired; `spec/HASHING.md` and Python v2 hashing are the supported contract. | Resolved |
-| BV-035 | Medium | Line endings | All source modes use the same text CRLF normalization while preserving binary bytes; cross-source and CRLF tests are in `tests/test_hashing.py`, `tests/test_hashing_contract.py`, and `tests/test_providers.py`. | Resolved |
-| BV-036 | High | CI policy | CLI/config `verify_facets`, non-gating observations, JSON output, and Action inputs separate exact-only observations from gated facets; see facet/update tests in `tests/test_cli_main.py`. | Resolved |
-| BV-037 | High | Exit protocol | `core.py` defines distinct usage, behavior, boundary, and compatibility exit codes and chooses the highest gated severity; CLI tests cover boundary, behavior, and compatibility exits. | Resolved |
-| BV-038 | High | Consumer impact | Config validation and lock metadata support `consumers`; verify/why report affected consumers. `MainSeverityAndConsumerTests` provides end-to-end coverage. | Resolved |
-| BV-039 | Medium | Discovery scale | Discovery prefers NUL-safe `git ls-files`, deduplicates directories, excludes known dependency/build/vendor directories, and retains a bounded non-Git fallback; `test_discover_components_excludes_ignored_dirs` covers the exclusions. | Resolved |
-| BV-040 | Medium | Contract additions | Glob behavior is documented and tested for matching, traversal rejection, newly added files, and content changes in `tests/test_providers.py`. | Resolved |
-| BV-041 | Medium | Merge workflow | The unsound merge-driver script was retired; `docs/LOCKFILE_MERGE.md` specifies post-merge full regeneration and verification. | Resolved |
-| BV-042 | Medium | Update UX | `verify --update` recomputes successfully before atomically replacing the lock via `_write_text_atomic`; update behavior is covered in `tests/test_cli_main.py`. | Resolved |
+## Repository and history reconciliation
 
-## Follow-up security and correctness findings (BV-043 onward)
+The re-audit began by separating real content from worktree noise:
 
-These findings were discovered during adversarial re-review after the baseline
-remediation. They are listed separately to preserve the audit trail rather than
-folding them invisibly into the broader baseline items.
+- Twenty-eight tracked paths appeared modified. Two matched `origin/main`
+  exactly, twenty-five differed only by CRLF/LF checkout representation, and
+  one was stat-only. No unique user content was discarded.
+- The audited paths were restored explicitly, the index was refreshed, and a
+  `.gitattributes` rule was added in the corrective tree to make LF checkout
+  normalization explicit.
+- Commit `a337d05496a07883bb960023ee3f86e8e64c3eb5` is not reachable from `main`
+  because it belongs to pre-squash history. Its tree is represented by the
+  squash result at `5664437`; cherry-picking it would duplicate changes rather
+  than recover missing work.
+- Local `v0` had been stale. Only the local tag was removed and fetched again;
+  no remote tag or release was rewritten.
 
-| ID | Severity | Area | Finding and resolution evidence | Status |
-|---|---|---|---|---|
-| BV-043 | High | Changed selection | A component configured at `.` was not selected for root-file changes. `_git.py::changed_components_since_ref` now handles root paths; `ChangedFromRootComponentTests` verifies the mapping. | Resolved |
-| BV-044 | High | Provider path identity | Root-component label slicing could drop the first filename character, making a rename hash-insensitive. `_component_relative_path` now derives exact labels; `RootPathBoundaryIdentityTests` verifies rename sensitivity. | Resolved |
-| BV-045 | High | POSIX filenames | Replacing backslashes in Git-returned paths collapsed distinct POSIX names such as `a\b` and `a/b`. Labels now preserve literal backslashes; `test_literal_backslash_filename_is_not_treated_as_a_separator` covers it. | Resolved |
-| BV-046 | High | Git pathspecs | Component names beginning with Git pathspec magic, such as `:(literal)foo`, could select a different tree. Hashing and diagnostics now pass `--literal-pathspecs` in `_git.py` and `_output.py`. | Resolved |
-| BV-047 | High | Partial locks | Component-scoped generation could create an incomplete first lock or relabel v1 digests as v2. It now requires an existing structurally valid v2 lock; `test_missing_existing_lockfile_requires_full_generation` and `test_non_v2_existing_lockfile_requires_full_generation` cover both cases. | Resolved |
-| BV-048 | High | Partial locks | A valid-looking partial update could retain stale unselected component/config/provider data. Partial generation now recomputes the full current lock and rejects stale unselected entries before merging, then rebuilds every slice. | Resolved |
-| BV-049 | High | Declared paths | Providers treated the declaration set as valid when one path matched even if another literal/glob did not. Raw and canonical providers now track every unmatched declaration and return an error; provider tests cover missing literals and globs. | Resolved |
-| BV-050 | High | Versions | A configured version source that was missing, unparsable, or non-SemVer could produce `null` compatibility data without failing strict generation. `_compute_component_entry` records `version_errors`, and `parse_semver` uses full-string validation; version-source and trailing-junk tests cover it. | Resolved |
-| BV-051 | High | Tag versions | `--changed-from` could omit tag-derived components because tags do not appear in a file diff. `_git.py` always includes components using `git_tag_prefix`; the tagged selector assertion in `test_verify_changed_from_checks_unselected_component_metadata` exercises it. | Resolved |
-| BV-052 | High | Verification preflight | Unknown explicit `--components` entries could be intersected away by `--changed-from` and return clean. `_cmd_verify` validates requested names before selection; `test_verify_unknown_components_exits_2` covers the controlled error. | Resolved |
-| BV-053 | High | Verification preflight | Unknown facets, malformed locks, component/slice set drift, and recorded lock errors could be bypassed by an empty changed set. `_cmd_verify` performs these preflight checks before changed-path scheduling; CLI malformed/facet/ref tests cover the paths. | Resolved |
-| BV-054 | Medium | Malformed locks | Nested v2 fields such as fingerprints, SemVer, consumers, error arrays, vendored metadata, and slice members could crash verify/status/slice/why. `_lockfile_structure_issues` now validates consumed types and command handlers use it; `MainMalformedV2LockTests` verifies controlled errors. | Resolved |
-| BV-055 | Medium | Malformed config | Nested non-object/non-string config values could reach provider/path logic when optional `jsonschema` was absent. Hand validation now guards defaults, providers, components, boundaries, behaviors, versions, consumers, vendored paths, and slices; malformed-config tests run with the schema engine disabled. | Resolved |
-| BV-056 | High | Source modes | Public/core API source typos silently behaved like working-tree mode. `_normalize_source` now accepts only `head`, `index`, or `working-tree`, and all lock operations/accessors call it. | Resolved |
-| BV-057 | High | Self-referential locks | A lock output inside a component, especially a root component, became part of its own exact fingerprint. Config rejects root components and `_ensure_lock_outside_components` guards CLI and public API generate/verify paths. | Resolved |
-| BV-058 | High | Traversal and symlinks | Component, boundary, behavior, version-source, and vendored paths could traverse or follow working-tree symlinks outside the repository. `_config.py`, `_SourceAccessor`, and hashing containment checks reject unsafe paths or hash Git symlink blobs as link text; focused containment tests cover component roots, version files, vendored paths, boundary paths, and cross-source symlink-blob parity. | Resolved |
-| BV-059 | High | Public API | `boundver.generate()` and `boundver.verify()` bypassed full config/source validation, robust lock loading, and self-lock guards. `src/boundver/__init__.py` now shares `validate_config`, `_load_lockfile`, and `_ensure_lock_outside_components` with the CLI. | Resolved |
-| BV-060 | Medium | Source-aware validation | `head`/`index` operations validated required files only against the working disk, rejecting valid committed snapshots after local deletion. `validate_config(source=...)` now defers snapshot existence to Git; `SourceAwareValidationTests` covers a deleted working-tree component still present at HEAD. | Resolved |
-| BV-061 | High | Project metadata | A missing or changed lockfile project could pass when fingerprints matched. Lock structure requires a non-empty project and verification compares it with config before component work. | Resolved |
-| BV-062 | High | Changed-from integrity | With no selected path changes, `--changed-from` returned before current metadata/provider versions were recomputed. It now falls through to full integrity verification; `test_verify_changed_from_no_paths_still_checks_provider_version` covers the failure. | Resolved |
-| BV-063 | High | Changed-from integrity | The first fix still skipped unselected entries whenever any component was selected (for example, a tag-versioned component). Changed paths are now reporting-only while all entries are recomputed; `test_verify_changed_from_checks_unselected_component_metadata` covers the two-component tagged/tampered case. | Resolved |
-| BV-064 | High | Canonical OpenAPI | Additional arbitrary-name maps—including paths/webhooks, component maps, security requirements, callbacks, links, server variables, schema maps, headers, encodings, and mappings—could lose keys named `description`, `example`, or `x-*`. `_OPENAPI_COMPONENT_MAPS` and `_OPENAPI_NAMED_MAP_KEYS` enumerate those contexts; `tests/test_provider_contract.py` explicitly exercises schema/property/definition and callback/link/variable names. | Resolved |
-| BV-065 | Medium | Fail-fast severity | `--fail-fast` could return a lower-severity first component drift while a later component had compatibility drift. Verification now evaluates all selected entries, chooses the global highest-severity issue, and only then limits the report. | Resolved |
-| BV-066 | Medium | Slice exits | Slice mismatches omitted their mode, so the exit-code mapper could not assign behavior/boundary/compatibility severity. Slice messages now include `<slice>.<mode>` and `_drift_exit_code` applies the same severity contract. | Resolved |
-| BV-067 | High | Git failure handling | A Git listing failure inside a real repository could fall back to approximate filesystem enumeration and produce a false-clean fingerprint. `_list_files_for_source` now re-raises in real repositories and reserves the bounded fallback for non-Git/unborn setup. | Resolved |
-| BV-068 | Medium | Diagnostics | Explain/why diagnostics used line-delimited Git names and non-literal pathspecs, corrupting quoted, newline, or pathspec-magic filenames. `_output.py` now uses `--name-status -z`, `_parse_name_status_z`, filesystem decoding, and `--literal-pathspecs`. | Resolved |
-| BV-069 | Medium | Schema-independent identity | Project type and component/slice key types depended on optional `jsonschema`, allowing schema-invalid identities on a base install. Explicit checks were added; `SchemaIndependentConfigValidationTests` patches out the schema engine and verifies rejection. | Resolved |
-| BV-070 | Medium | Build/runtime floor | The earlier Python 3.8 support claim conflicted with the setuptools build-backend floor. `pyproject.toml`, CI matrices, README, maintained guides, and `CHANGELOG.md` now consistently declare Python 3.9+. External matrix execution remains a release gate. | Resolved |
-| BV-071 | Medium | Atomic writes | Direct lock/config replacement could leave truncated JSON if writing failed. `_write_text_atomic` writes and fsyncs a sibling temporary file before `os.replace`, and generate, verify-update, migration, init, add, and remove route mutations through it. | Resolved |
-| BV-072 | Medium | Documentation lifecycle | The historical implementation plan described a retired Action interface and linked deleted design/CI files, while a provider docstring repeated one stale link. The obsolete plan is retired and the provider points to the maintained custom-provider guide. | Resolved |
-| BV-073 | Medium | Release initiation | Tag creation had no repository-enforced link to the tested `main` commit. `.github/workflows/create-release-tag.yml` accepts only `release/vX.Y.Z`, requires the branch SHA to equal current `main`, matches the version to `pyproject.toml`, rejects a conflicting immutable tag, and explicitly dispatches publication with the pinned tag/SHA. This uses GitHub's documented `workflow_dispatch` exception to `GITHUB_TOKEN` recursion suppression. | Resolved |
-| BV-074 | Low | Marketplace release | Publishing a GitHub Release does not automatically select that release for the Actions Marketplace; GitHub requires an owner to use the release form and complete 2FA. `CONTRIBUTING.md` records the post-release step, and the live listing identifies `v0.10.0` as Latest. | Resolved |
+## Audit method
 
-## Verification index
+The second pass used contracts derived before looking at existing tests:
 
-The main repeatable local evidence is grouped here to keep the finding tables
-readable:
+1. State the externally observable invariant in plain language.
+2. Construct the smallest counterexamples, including zero-depth recursion,
+   symlink/mode transitions, missing inputs, equal-current-output config changes,
+   unselected stale components, and malformed canonical documents.
+3. Exercise the invariant across `head`, `index`, and `working-tree` where it
+   applies.
+4. Test the base installation with optional validators unavailable.
+5. Inspect built artifacts and public entry points, not only source imports.
+6. Keep publication facts separate from local or CI intentions.
 
-- `tests/test_hashing_contract.py`: v2 framing, filename byte safety, tracked
-  source semantics, guardrails, malformed Git batch data, and read races.
-- `tests/test_provider_contract.py` and `tests/test_providers.py`: provider
-  framing/metadata/hooks, registry isolation, OpenAPI named maps, declared path
-  matching, canonicalization, and globs.
-- `tests/test_security_regressions.py`: root-path identity and selection,
-  schema-independent identity validation, and source-aware validation.
-- `tests/test_cli_main.py`: verification preflight, changed-from full integrity,
-  malformed nested locks, facets/update behavior, exit severity, and consumers.
-- `tests/test_boundary_lock.py`, `tests/test_core_branches.py`, and
-  `tests/test_edge_cases.py`: lock generation/verification, partial locks,
-  metadata, discovery, versions, config validation, source modes, and commands.
-- `tests/test_cli_output_schemas.py`: real JSON payloads against the published
-  command schemas.
-- `scripts/packaging_smoke.sh`: distribution membership and installed CLI/module
-  entry-point workflow.
+Existing tests were treated as evidence only after their expected behavior was
+checked against the independent invariant.
 
-The committed release candidate passed all 834 unit/integration tests in four
-balanced shards without an environment shim. Fresh wheel and sdist builds from
-that exact commit contained the required runtime/audit assets; the extracted
-wheel passed module-entry-point, config validation, generate, verify, and status
-smoke checks in an unrelated Git repository. The supported-version CI matrix
-and pinned publication workflow subsequently passed for the same tree.
+## First-principles invariant matrix
 
-## Visibility and adoption baseline
+| Area | Required invariant | v0.10 result | v0.11 design response |
+|---|---|---|---|
+| Glob selection | `*`, `?`, and classes stay within one segment; a whole `**` segment matches zero or more directories; every surface uses one matcher | Violated | Shared matcher implemented for config, raw/canonical providers, behavior, and explain; focused regressions added |
+| File identity | A digest changes when path, Git mode/type, or content changes | Violated: v2 omitted mode/type | v3 frame binds label, mode, type, and content |
+| Snapshot identity | One operation uses one captured source identity; unreachable tags do not influence it | Partially met | HEAD commit and index tree capture implemented; tag lookup bound to captured reachable history |
+| Control-file identity | `head`/`index` config and verification lock come from the same captured source as artifacts | Violated: v0.10 could combine staged artifacts with unstaged control files | Config and lock are source-bound; index refreshes must stage source/output/config, generate, then stage the lock |
+| Configuration identity | Every semantic policy choice is lock-bound even when selected bytes currently agree | Violated | v3 `config_contract` and `config_digest` cover effective semantic configuration |
+| Facet containment | A configured boundary change must change behavior | Violated: path coverage was warning-only | Behavior envelope includes the boundary digest |
+| Strict generation | A generated strict lock must immediately be verifiable from the same snapshot | Violated by missing/divergent vendored copies | Vendored absence/divergence is a generation error |
+| Focused update | Updating A must not bless B; selected entries must remain internally coherent | Violated | Full candidate recomputation rejects stale unselected entries; selected entries and slices are rebuilt coherently |
+| Consumer identity | Internal graph edges are validated; external terminal labels remain explicit and opaque | v0.10 validated all `consumers` as configured components while examples mixed internal and external names | `consumers` is a configured-component edge; `external_consumers` is a separate terminal label; unknown internal names fail |
+| Consumer impact | Direct reporting remains stable; CI can request a deterministic downstream closure | Immediate names only | `verify --transitive` and `why --transitive` follow internal edges, include reached external terminals, and handle cycles |
+| Slice membership | Explicit sets and declared graph closures are reviewable and reproducible | Explicit component arrays only | `closure_of` resolves seed plus downstream internal closure and persists the sorted membership |
+| Facet policy | Heterogeneous components can select meaningful gates; unavailable selected facets cannot pass as null equality | Global default/CLI policy only; `compat` could be vacuous without a version source | Precedence is CLI, component, defaults; configured/CLI unavailable facets fail with usage exit 2; an implicit default means all available facets |
+| Partial generation | An escape hatch may relax intentional absence, never bless computation failure | `--allow-partial` could write a lock that normal verification rejected | Only intentional null slice inputs are relaxed; declared/provider/version/vendored errors remain fatal |
+| Derived artifacts | A generated boundary must be checked for freshness before its digest is trusted | No derivation model | Limitation is explicit; generator `--check` is required before verify; executable config commands are deferred pending a safe contract |
+| Configuration validation | Base install rejects unknown fields and unsafe values; checkout files cannot shadow installed rules | Violated in several schema-optional cases | Hand validation and packaged-schema-first loading implemented |
+| Canonical providers | Malformed or unresolved input fails closed; ignored data is narrowly documented | Violated in JSON/OpenAPI edge cases | Duplicate/non-finite JSON, invalid OpenAPI roots/maps/refs/YAML, and extension handling hardened; provider versions advanced |
+| Path safety | Empty, absolute, traversing, backslash, and ambiguous declared paths fail consistently | Inconsistent | Shared normalization is used by config, providers, and explain |
+| Discovery | A generated config has a safe non-root component or no file is written | Violated for root-only/empty discovery cases | Conservative root-manifest mapping and fail-without-write behavior implemented |
+| Severity | Exit classification depends on structured issue type, not component-controlled text | Vulnerable to substring classification | Structured facet extraction implemented, including global highest-severity fail-fast reporting |
+| Distribution | Installed Action, wheel, sdist, `.pyz`, Docker, and hooks contain their required runtime behavior | Partially tested | Distribution contracts and release gates exercise each supported installation surface |
+| Package promotion | Production PyPI receives the byte-identical reviewed distributions only after a real index rehearsal | No TestPyPI gate; downstream jobs selected workflow artifacts by name | One immutable artifact ID carries only the wheel and sdist through TestPyPI, a hash/size/download/install gate, and PyPI; conflicting pre-existing TestPyPI state fails closed |
+| Release review | A release cannot be tagged unless every contributing PR is approved and its review threads are resolved | Violated | The pre-tag workflow finds PRs in the SemVer release range, requires `APPROVED`, paginates review threads, and rejects every unresolved thread |
 
-At review time, the public repository had one star, no forks, no GitHub
-Releases, and an existing Marketplace listing at version `0.9.1`. PyPI's latest
-release was also `0.9.1`, published through trusted publishing. The remediation
-tree configures project links, discovery keywords, clearer outcome-led
-messaging, an immediate copyable workflow, and one canonical Action. Those
-changes are published in PyPI, the GitHub Release, and the Actions Marketplace
-as version `0.10.0`.
+The last column defines the corrective contract. Exact-commit test, review, tag,
+and publication evidence is produced by the release workflows rather than kept
+as mutable prose in this document.
 
-The intended audience is teams maintaining polyglot repositories, services,
-or dynamically typed libraries whose consumer-facing contracts are represented
-by files such as OpenAPI, JSON Schema, or public export modules. Messaging makes
-clear that boundver detects drift in declared artifacts; it does not prove
-semantic or backward compatibility.
+## Reproduced counterexamples
 
-## Release gate
+### Glob grammar
 
-- [x] Every finding above is marked resolved with a verification reference.
-- [x] Unit and integration suites pass without environment shims (834 tests).
-- [x] Supported Python versions pass in external CI (Python 3.9–3.14 on Linux and Windows).
-- [x] Root Action passes its external workflow test with safe input handling.
-- [x] Wheel and sdist inspection plus installed-package smoke tests pass for the exact local release commit.
-- [x] Tags `v0.10.0` and `v0` point to `5664437`, whose package metadata and `boundver.__version__` are `0.10.0`.
-- [x] GitHub branch/PR and post-merge `main` checks pass before the release tag is created.
-- [x] GitHub Release and Marketplace publish `v0.10.0`; PyPI `0.10.0` artifact digests match the attached release artifacts.
+Under v0.10's whole-string matcher:
+
+- `*.yaml` selected root and nested YAML files.
+- `api/*.yaml` selected direct and deeper descendants.
+- `**/*.yaml` omitted root YAML files.
+- `api/**/*.yaml` omitted direct children of `api`.
+
+This contradicted the README and conventional path-glob expectations. The v3
+contract now defines, implements, and tests segment-aware matching explicitly.
+
+### File identity
+
+A regular file whose content was `target.txt` could be replaced with a symlink
+whose target text was also `target.txt` without changing a v2 raw digest. A
+`100644` to `100755` executable-bit transition could also remain clean. Content
+alone is therefore not a sufficient file identity; v3 includes Git mode/type.
+
+### Semantic configuration
+
+Policy changes could preserve current v2 fingerprints when they happened to
+select the same bytes—for example, changing a literal to an equivalent glob,
+changing a version source that currently yielded the same value, adding
+provider options, or weakening a default gate. v3 binds a normalized semantic
+configuration independently of current component output.
+
+### Behavior containment
+
+v0.10 only warned when `behavior.paths` did not cover boundary files. A boundary
+could change while a configured behavior digest stayed equal, allowing a
+behavior-only gate to pass. The corrective behavior envelope incorporates the
+boundary digest, making containment a cryptographic property rather than a
+documentation convention.
+
+### Vendored strictness
+
+Strict generation in v0.10 could write a lock when a configured vendored copy
+was missing or divergent. The same lock could immediately fail verification.
+That violates the minimum generation invariant. The corrective implementation
+treats missing, empty, unreadable, or unequal vendored inputs as unblessable.
+
+### Component-scoped update
+
+`verify --components a --update` could verify `a` and then regenerate broader
+state, silently accepting drift in unselected `b`. The corrected workflow
+computes a complete candidate first, refuses a partial update if any unselected
+entry is stale, writes the complete selected component entries, and recomputes
+all slices.
+
+### Field feedback after the first corrective pass
+
+Testing 0.10 against a production-style service graph exposed several
+assumptions that the earlier re-audit still had not challenged:
+
+- `--allow-partial` could generate null boundary/compat state that the default
+  verifier rejected at preflight. The corrective contract now relaxes only
+  intentional null slice inputs and keeps all extraction failures fatal.
+- Immediate consumer output was insufficient for shared layers. The v3 model
+  now distinguishes validated internal edges from opaque external terminals
+  and offers opt-in transitive impact without changing direct output by
+  default.
+- One global facet policy forced heterogeneous repositories toward the loosest
+  gate. Component policy now overrides defaults, while an explicit CLI policy
+  intentionally overrides all components.
+- A compatibility gate with no version source compared null with null and could
+  appear clean. Selecting an unavailable facet now exits `2`; the implicit
+  fallback means all facets actually available for the component.
+- Explicit slice membership drifted away from the declared graph. `closure_of`
+  now stores the seed and its deterministic downstream component closure.
+- Machine-readable `status` output already existed in 0.10. The new output
+  surfaces are `why --format json` and `slice --format json`.
+
+The largest remaining product gap is derived-artifact freshness. A generated
+OpenAPI document can be internally consistent yet stale relative to its SAM or
+source template. v3 does not execute repository-configured commands or claim to
+prove that relationship. Documentation requires a deterministic generator
+`--check` before boundver and requires index workflows to stage derivation
+source, output, config, and lock coherently. A first-class declarative derivation
+contract remains roadmap work because trust, tool identity, and snapshot
+materialization need a design rather than a shell-string shortcut.
+
+## The 0.10 release record
+
+The former changelog mixed features that already existed in v0.9.1 with actual
+v0.10 additions. The corrected changelog now treats these as the principal
+v0.10 changes:
+
+- facet gates and non-gating observations;
+- severity-specific exit codes;
+- `verify --update`;
+- consumer metadata and reporting;
+- Git-aware hardening of existing discovery;
+- provider metadata, isolated registries, custom-provider opt-in, and additional
+  validation/hardening;
+- the structured verify-only Action interface, Python 3.9 floor, packaging,
+  community, and release-automation work.
+
+Behavior fingerprints, slices, general discovery commands, canonical providers,
+JSON/YAML/TOML support, several CLI commands, Docker, standalone archives,
+pre-commit support, and a Marketplace Action existed before v0.10 and are no
+longer presented as new in that release.
+
+The original squash subject, `Release boundver 0.10.0 (#10)`, was too generic
+for a change of roughly ninety files and obscured the breaking Action, exit-code,
+Python-floor, trust-model, and lock changes. Published commit history must not be
+rewritten. A corrective commit and PR should instead name the contract change,
+for example: `feat!: define v3 path contracts and close 0.10.0 release gaps`.
+
+## Release-process failure
+
+PR #10 was merged and an unresolved high-priority review identified the
+vendored-copy strict-generation failure before the release tag was created. The
+tag workflow checked that the candidate matched current `main` and the package
+version, but it did not inspect unresolved review threads or a changes-requested
+state for pull requests represented by commits since the previous release.
+Consequently the release process allowed a known P1 correctness defect to ship
+while the project review claimed complete resolution.
+
+The corrective pre-tag workflow determines the prior SemVer release, finds
+pull requests associated with commits in the release range, paginates their
+review threads, requires an `APPROVED` decision, and rejects unresolved
+threads. Manual memory is no longer the designed release
+invariant.
+
+Publication now separates the lifecycle invariants correctly: before tagging,
+the fully tested candidate must equal current `main`; publication validates that
+the release SHA remains on `main` and the version tag resolves to that SHA; after
+environment approval and again before the GitHub Release, it revalidates the
+immutable tag/SHA rather than requiring the candidate to remain the branch tip.
+This permits normal forward progress on `main` without stranding a tested tag.
+The wheel, sdist, and standalone archive are built twice from a fixed epoch and
+must be byte-identical before one candidate is retained. The wheel and sdist are
+then uploaded once as one immutable GitHub artifact and every later job selects
+that numeric artifact ID, never its reusable name. A protected
+`testpypi` Trusted Publishing job runs before production: the release must be
+absent, an exact partial upload, or byte-identical on an idempotent rerun. The
+workflow then compares filenames, sizes, API SHA-256 values, and downloaded
+bytes; installs the hash-pinned TestPyPI wheel with `--no-index --no-deps`; and
+prepares a complete checksummed GitHub Release draft. The owner publishes that
+draft with Marketplace consent before production approval; the same Python
+artifact ID then reaches PyPI, where public bytes, clean installation, and
+trusted-publisher provenance are verified. The breaking 0.11 release advances
+only `v0.11`; it deliberately leaves the public `v0` alias on 0.10.
+
+## Usability and visibility findings
+
+Visibility improvements are only credible when the first example is executable
+and limitations are prominent. The maintained docs now:
+
+- lead with an outcome and a short install/init/validate/generate/verify path;
+- identify the v3 contract and its v2 migration boundary without implying that
+  published v0.10 already has v3 behavior;
+- include a four-example glob table that resolves the original contradiction;
+- distinguish validated internal consumer edges from opaque external terminal
+  labels and show direct versus transitive impact;
+- explain per-component facet precedence and fail unavailable selected facets;
+- make generated-artifact freshness checks and the complete index staging
+  workflow explicit;
+- explain source tracking and source consistency before users commit a lock;
+- explain that facets select reporting/gating while updates write coherent
+  entries;
+- provide a v2-to-v3 regeneration path instead of suggesting relabelling; and
+- avoid claiming that canonicalization or fingerprints prove compatibility.
+
+The previous public-star/Marketplace/PyPI visibility snapshot is not reused as
+current evidence. Public counts, listings, and latest-version claims are
+time-sensitive and must be rechecked at the time they are reported.
+
+## Known product limits
+
+- Detection is limited to declared artifacts and tracked source. Untracked files
+  do not enter established-repository fingerprints.
+- `working-tree` cannot be an immutable snapshot; it uses a captured tracked
+  path set and fails when reads become invalid, but concurrent disk edits remain
+  an environmental race. Use `head` or `index` for reproducible gates.
+- Canonical JSON/OpenAPI output is boundver-specific normalization, not general
+  semantic-diff or compatibility analysis.
+- Trusted custom-provider Python is an installed execution-environment input,
+  not part of the selected Git snapshot; pin its distribution and version.
+- Consumer impact follows only explicitly declared internal edges. Transitive
+  closure is available, but dependency discovery is not.
+- Derived artifacts have no first-class freshness relationship. Run a
+  deterministic generator check before verification.
+- Discovery is intentionally conservative. It cannot infer the correct public
+  boundary or root-package version mapping for every repository layout.
+- A compatibility fingerprint records the configured version family; it does
+  not prove that a version bump is sufficient or that an unchanged version is
+  honest. File and reachable `git_tag_prefix` sources exist; sibling-derived or
+  constant identities remain roadmap possibilities rather than inferred data.
+
+## Release-validation boundary
+
+This retrospective intentionally does not track test totals, working-tree
+state, checklist completion, or service configuration. Those facts change as a
+candidate moves through review and would make a historical design record stale.
+Maintainers use `docs/RELEASING.md` and
+`python3 scripts/publish_release.py check --tag vX.Y.Z` for the current,
+fail-closed gate. The matching workflow run is the evidence for exact-commit CI,
+review state, artifacts, registry rehearsal, publication, and Action aliases.

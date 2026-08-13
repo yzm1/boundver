@@ -22,4 +22,4 @@ boundver verify \
   --source working-tree
 ```
 
-Use `boundver status --lock examples/implicit-and-leaf/expected.boundary.lock.json` to see the provider coverage states.
+Use `boundver status --source working-tree --config examples/implicit-and-leaf/boundary.config.json --lock examples/implicit-and-leaf/expected.boundary.lock.json` to see the provider coverage states.

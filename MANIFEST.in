@@ -7,6 +7,22 @@ include SECURITY.md
 include SUPPORT.md
 include boundary.config.schema.json
 recursive-include docs *.md
+exclude docs/PROJECT_REVIEW.md
+exclude docs/RELEASING.md
 recursive-include examples *.json *.md *.py *.toml *.ts *.yaml
 recursive-include spec *.json *.md
-recursive-include tests *.py
+
+# Setuptools may add conventional test files automatically. Keep the source
+# distribution deliberately user-facing rather than turning it into a partial
+# repository snapshot.
+prune tests
+prune scripts
+prune .github
+exclude .dockerignore
+exclude .gitattributes
+exclude .gitignore
+exclude .pre-commit-hooks.yaml
+exclude Dockerfile
+exclude action.yml
+exclude boundary.config.json
+exclude boundary.lock.json

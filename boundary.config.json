@@ -1,11 +1,11 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
   "project": "boundver",
   "defaults": {
     "compat_mode": "major",
     "verify_facets": [
-      "boundary",
-      "compat"
+      "exact",
+      "boundary"
     ]
   },
   "components": {
@@ -22,6 +22,10 @@
     },
     "spec": {
       "path": "spec",
+      "verify_facets": [
+        "exact",
+        "boundary"
+      ],
       "consumers": [
         "boundver"
       ],

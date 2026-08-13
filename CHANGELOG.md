@@ -1,120 +1,275 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
 No changes yet.
 
-## [0.10.0] - 2026-08-12
+## [0.11.0] - 2026-08-13
+
+This release changes the meaning of stored fingerprints and requires a fresh
+lockfile. It is a minor release rather than a patch to the immutable `v0.10.0`
+release.
 
 ### Breaking changes
 
-- Lockfiles now use `boundary-lock/v2` and a length-delimited, domain-separated
-  hashing format. This removes ambiguous byte framing in v1.
-- **Migration:** v1 fingerprints cannot be converted safely. Regenerate them from
-  repository content with `boundver generate` after upgrading. The
-  `migrate-lock` command reports this requirement instead of relabeling old
-  fingerprints.
-- Git-backed source modes enumerate tracked files only. Untracked working-tree
-  files no longer enter fingerprints implicitly.
+- Lockfiles use `boundary-lock/v3`. File entries now bind Git mode and object
+  type as well as path and content, so executable-bit and regular-file/symlink
+  transitions cannot remain invisible.
+- v1 and v2 fingerprints cannot be relabelled or mechanically migrated. Run a
+  full `boundver generate` from the intended source snapshot after upgrading.
+- Declared path patterns now have conventional, case-sensitive path semantics:
+  `*`, `?`, and character classes match within one path segment, while a whole
+  `**` segment matches zero or more directories. This corrects v0.10 behavior
+  in which `*` crossed `/` and `**` did not match the zero-directory case.
+- Raw path and canonical provider versions are advanced where their selection,
+  parsing, or hash identity changed. Regeneration is required even when current
+  contract bytes are unchanged.
+
+### Added
+
+- A semantic configuration digest in every v3 lock. It binds effective
+  defaults, components, provider declarations and options, path selectors,
+  version sources, vendored copies, typed consumers, component gate policies,
+  and slices.
+- One shared glob engine for boundary providers, behavior paths, config
+  diagnostics, and explain output. Raw and canonical JSON/OpenAPI providers
+  accept the same literal and glob declarations.
+- Snapshot-level Git identity: `head` captures one commit and `index` captures
+  one tree for the complete operation. Tag-derived versions are selected only
+  from tags reachable from the captured commit.
+- Typed impact graphs: `consumers` defines validated configured-component
+  edges, `external_consumers` defines opaque terminals, and `--transitive` on
+  `verify`/`why` reports the downstream closure without changing direct output
+  by default.
+- `closure_of` slice membership, resolved as the seed plus its deterministic,
+  cycle-safe downstream component closure.
+- Per-component `verify_facets`, with precedence CLI override, component,
+  defaults; selecting a configured/CLI facet that is unavailable returns usage
+  exit `2`, while the policy-free fallback gates available facets.
+- Machine-readable `why --format json` and `slice --format json` output.
+  (`status --format json` already existed in 0.10.)
+- Focused first-principles, provider-hardening, hashing-v3, and distribution
+  contract tests for the corrected invariants.
+- A fail-closed maintainer entry point, `scripts/publish_release.py`: `check`
+  inventories and verifies every local and public release surface without
+  mutation, while explicitly confirmed `start` can dispatch only the protected
+  tag-creation workflow with an exact tag, SHA, and compatibility-alias policy.
+- A repository-hygiene gate rejects generated caches, unresolved merges,
+  case-colliding paths, unsafe executable modes, CRLF/trailing-whitespace drift,
+  and conflict markers before CI packaging or release dispatch.
+
+### Changed
+
+- A configured behavior fingerprint cryptographically includes its boundary
+  fingerprint. A boundary change therefore always changes behavior, even when
+  `behavior.paths` was declared incorrectly.
+- `consumers` remains a validated foreign-key graph of direct downstream
+  configured components. External systems now use the separate
+  `external_consumers` field, resolving the contradiction between v0.10's
+  validator and examples without sacrificing typo detection.
+- `generate --allow-partial` now relaxes only intentional null slice inputs.
+  Missing declarations and provider, version, behavior, exact, or vendored-copy
+  computation errors remain fatal.
+- `head` and `index` bind configuration and the verification lock to the same
+  captured source as component artifacts. Index workflows must stage changed
+  source/derived output/config, generate, then stage the lock before verify.
+- Component-scoped generation and `verify --components ... --update` recompute
+  the current lock, refuse to preserve stale unselected entries, replace each
+  selected component as one coherent entry, and recompute all slices.
+  `--facets` remains a reporting and gate policy, not a field-level update mask.
+- Root-manifest discovery maps a single-package repository to one unambiguous
+  tracked package directory or conventional `src`, `lib`, or `app` directory.
+  `init --discover` now exits without writing a config when no safe component
+  root can be inferred.
+- Base-install validation rejects unknown and malformed fields without relying
+  on the optional `jsonschema` package, and installed validation prefers the
+  schema bundled with boundver over a repository-local file.
+- Release candidates are rebuilt and tested before tagging; every contributing
+  PR must be approved with no unresolved review threads; publication
+  accepts only an explicit immutable version tag and SHA; and GitHub release
+  notes come from the matching changelog section. Action, Docker, pre-commit,
+  wheel, sdist, and standalone-archive packaging checks now exercise their
+  installed forms.
+- PyPI publication is gated by a real TestPyPI rehearsal using Trusted
+  Publishing. Every stage downloads one immutable numeric artifact ID; exact
+  filenames, sizes, SHA-256 values, and CDN bytes are checked, and the
+  hash-pinned TestPyPI wheel is installed with index/dependency resolution
+  disabled before the same wheel and sdist can reach production PyPI.
+- Release builds use the tagged commit timestamp, a fixed build toolchain, and
+  canonical archive metadata. Wheel, sdist, and standalone bytes must match a
+  second clean build before any candidate artifact can be uploaded;
+  retained artifact IDs make failed-job retries reuse that accepted candidate.
+- The complete GitHub Release is prepared as a draft with wheel, sdist,
+  versioned standalone archive, and `SHA256SUMS` before the owner publishes it
+  to Marketplace. Production PyPI then receives the same identified
+  distributions, provenance and public bytes are verified, and only the
+  compatible `v0.11` Action alias advances; the breaking release leaves `v0`
+  on the 0.10 line.
+- Release mutation is serialized repository-wide, exact-tag dispatches are
+  bound to their ref and SHA, ambiguous dispatch responses are deduplicated,
+  partial drafts resume only byte-identical missing assets, and compatibility
+  aliases cannot move backward or race an unexpected current target.
+- The source distribution now contains only runtime and user-facing source,
+  specifications, examples, and community documents; repository tests,
+  automation, and maintainer-only audit material remain in GitHub. The runtime
+  container uses a multi-stage wheel build so those repository files are not
+  retained in image layers.
+
+### Fixed
+
+- Missing or divergent vendored copies are fatal during strict generation and
+  cannot be blessed into a lockfile.
+- Structured issue classification prevents component names or message text from
+  spoofing verification severity, including under `--fail-fast`.
+- JSON canonicalization rejects duplicate keys and non-finite numbers and no
+  longer claims RFC 8785 conformance.
+- OpenAPI canonicalization rejects malformed roots, unsafe or external
+  references, ambiguous YAML constructs, and invalid map keys; it retains
+  extension fields as contract data and handles response keys consistently.
+- Empty, absolute, traversing, backslash-separated, and otherwise ambiguous
+  declared paths fail consistently across configuration, hashing, and explain
+  operations.
+- Working-tree normalization is made explicit with repository line-ending
+  attributes, avoiding CRLF-only dirty-tree noise in this project.
+
+### Known limitations
+
+- Generated boundary artifacts still have no first-class freshness relation to
+  their source or generator. Run a deterministic generator `--check` before
+  boundver and stage derivation source/output/config/lock coherently. An
+  executable repository-configured `derived_from` command was not added because
+  trust, tool identity, and snapshot materialization need a separate design.
+- Compatibility fingerprints still require a file or reachable
+  `git_tag_prefix` version source. Sibling-derived and constant identities are
+  roadmap options; configured/CLI `compat` selection now fails instead of
+  comparing null values successfully.
+
+## [0.10.0] - 2026-08-12
+
+`v0.10.0` is immutable. This section describes what the release actually added
+relative to `v0.9.1`; it does not attribute later corrections to that release.
+
+### Breaking changes
+
+- Lockfiles moved to `boundary-lock/v2` and had to be regenerated from repository
+  content because the v1 hash frame was ambiguous. `migrate-lock` refused the
+  conversion and did not relabel old digest bytes.
+- Git-backed source modes became tracked-file-only after a repository's first
+  commit.
+- Verification introduced facet-specific exit codes: `1` for exact/metadata,
+  `3` for behavior, `4` for boundary, and `5` for compatibility drift; `2`
+  remained an input or usage error.
+- The root GitHub Action changed from the free-form `command`, `args`, and
+  `version` interface to structured verify-only inputs and outputs.
+- Repository configuration alone could no longer authorize Python imports for
+  custom providers; trusted callers had to opt in explicitly.
+- The supported Python floor moved from 3.8 to 3.9.
 
 ### Added
 
 - Facet-scoped verification with `verify --facets` and
-  `defaults.verify_facets`. Drift outside the selected gate is reported as an
-  observation instead of failing the gate.
-- Severity-aware verification exit codes: `1` for exact or metadata drift, `3`
-  for behavior drift, `4` for boundary drift, and `5` for compatibility drift;
-  `2` remains reserved for usage or input errors.
-- `verify --update` for reviewing drift and refreshing the lockfile in one
-  command.
-- A `behavior` fingerprint and behavior-mode slices for declared behavioral
-  contracts such as defaults, configuration, and migrations.
-- Glob patterns in `boundary.paths` and `behavior.paths`; newly tracked matching
-  files change the corresponding fingerprint.
-- Validated component `consumers` relationships. Boundary and compatibility
-  drift now identifies declared downstream consumers.
-- Git-aware `discover` and `init --discover` support for npm, Python, Cargo, and
-  Go manifests. Discovery uses tracked files, skips duplicate component
-  directories, and emits ecosystem-specific version fields.
-- Built-in and custom boundary-provider protocols, including JSON canonical and
-  OpenAPI canonical providers, provider validation, metadata, and diff
-  explanations.
-- `why`, `discover`, shell-completion, `validate-config`, `check-config`, and
-  `migrate-lock` commands, plus `--fail-fast` verification.
-- JSON, YAML, and TOML config loading, with a conditional `tomli` dependency for
-  Python 3.9-3.10.
-- JSON schemas for configuration, v2 lockfiles, and machine-readable CLI output.
-- Distribution options for PyPI, a standalone `.pyz`, Docker, pre-commit, and a
-  hardened composite GitHub Action suitable for Marketplace use.
-- Public project metadata and community files for security reports, support,
-  contributions, issue reports, and pull requests.
+  `defaults.verify_facets`; non-selected fingerprint drift was reported as an
+  observation.
+- `verify --update`, severity-aware reporting, and direct-consumer reporting
+  for boundary and compatibility drift.
+- `consumers` metadata on components.
+- Git-aware hardening for existing manifest discovery, including tracked-file
+  enumeration and duplicate-directory suppression.
+- Provider identity/version metadata, isolated provider registries, custom
+  provider hooks, and stricter provider result validation.
+- Installed-package schemas, packaging smoke checks, public project metadata,
+  support/security/community files, and a single documented Marketplace Action.
 
 ### Changed
 
-- Lockfile output is deterministic and no longer includes `generated_at`.
-- Machine-readable commands use `--format json`; color is limited to interactive
-  text output.
-- Partial component generation reconciles removed components and recomputes all
-  configured slices, preventing stale aggregate fingerprints.
-- Config mutation commands refuse YAML or TOML output instead of silently
-  rewriting those files as JSON.
-- Strict config validation uses the schema bundled in installed wheels, not only
-  a schema found in a source checkout.
-- The GitHub Action now accepts structured inputs, installs the tagged action
-  source, preserves JSON output, and exposes issues, observations, and the
-  severity exit code.
-- The supported Python floor is now 3.9. Python 3.8 is upstream-EOL and cannot
-  use the Setuptools version required for modern SPDX package metadata.
+- Generation and verification added stricter config, lock, metadata, digest,
+  removed-component, removed-slice, and changed-ref checks.
+- Partial generation required a valid v2 base, reconciled component removals,
+  and recomputed slice entries.
+- Config mutation commands refused YAML/TOML output instead of serializing JSON
+  into those files.
+- Pre-commit verification moved from `head` to `index`; the unsafe automatic Git
+  merge-driver workflow was replaced with an explicit post-merge regeneration
+  workflow.
+- Action input handling, JSON output, packaging membership, and publication
+  automation were hardened.
 
 ### Fixed
 
-- Generation now fails when exact, behavior, boundary, or compatibility inputs
-  cannot be computed; verification no longer accepts matching null digests.
-- Invalid `--changed-from` refs fail closed, and config-file changes select all
-  components for verification.
-- Hash framing no longer permits different path/content layouts to produce the
-  same digest.
-- NUL-delimited Git parsing preserves non-ASCII and unusual filenames across
-  HEAD, index, status, and diff operations.
-- Missing, malformed, truncated, oversized, and non-blob Git objects are
-  reported instead of being hashed as empty content.
-- OpenAPI canonicalization removes documentation fields only where they are
-  annotations; schema properties named `description`, `example`, or `x-*`
-  remain contract-significant.
-- Verification now checks component metadata, digest errors, filtered slices,
-  removed components, and removed slices as well as fingerprint values.
-- Custom providers use an isolated registry per operation and cannot be enabled
-  by repository configuration alone; callers must opt in explicitly.
-- Malformed non-object config and lockfile roots produce usage errors instead of
-  uncaught attribute errors.
-- Version extraction is source-aware, binary and symlink content remains
-  byte-accurate, and large-file guardrails fail with actionable errors.
-- GitHub Action inputs are passed through environment variables and shell arrays
-  to prevent command injection and JSON/stderr corruption.
+- Hash framing, NUL-delimited Git filename handling, missing/malformed Git
+  objects, source-aware version extraction, byte-accurate symlinks, and bounded
+  file reads received fail-closed handling.
+- Each individual declared path/pattern that matched nothing became fatal
+  (0.9.1 already failed when the overall selection was empty). Malformed
+  config/lock roots, invalid changed refs, self-referential lock paths, unsafe
+  traversal, and stale provider metadata also failed closed.
+- Canonical OpenAPI processing preserved more user-named keys that resembled
+  annotation fields.
+
+### Known issues discovered after release
+
+- The documented glob grammar did not match v0.10: `*` crossed directory
+  separators and `**` did not have conventional zero-or-more-directory
+  behavior. Canonical providers did not share one selector implementation.
+- v2 file hashes did not bind Git mode/type, so executable-bit changes and some
+  regular-file/symlink transitions could verify clean.
+- The lock did not bind all semantic configuration choices, and behavior only
+  relied on a path-coverage warning instead of including the boundary digest.
+- Strict generation could write a lock for a missing or divergent vendored copy
+  that immediately failed verification.
+- `consumers` validation treated every name as a configured-component foreign
+  key, while examples also placed external downstream systems in the field.
+  Unknown-name rejection itself worked; the model and documentation conflicted.
+- `--allow-partial` could emit a null-containing lock that normal verification
+  rejected, and an explicit compatibility gate could pass vacuously for a
+  component with no version source.
+- Impact output stopped at immediate consumers, verification policy was global,
+  and slices could not derive membership from the consumer graph.
+- `head`/`index` artifact reads could be combined with working-tree config or
+  lock content instead of one source-bound control snapshot.
+- There was no first-class derived-artifact freshness check; a stale generated
+  contract could retain its recorded boundary digest.
+- Component-scoped `verify --update` could regenerate outside the requested
+  scope instead of refusing stale unselected entries.
+- Canonical JSON/OpenAPI parsing accepted inputs or discarded contract data in
+  several edge cases, and root-manifest-only discovery could produce no usable
+  component.
+- The release tag gate checked the main SHA and package version, but did not
+  reject unresolved review threads. A high-priority vendored-copy review on
+  PR #10 remained unresolved after merge and before tagging.
 
 ## [0.9.1] - 2026-05-03
 
 ### Fixed
 
-- TOML regex fallback: anchor end-of-line to reject invalid TOML on Python
-  3.8-3.10 when the built-in `tomllib` is unavailable.
-- Symlink hash parity: working-tree access reads `os.readlink()`, matching Git
-  blob storage.
-- Python 3.8 type annotation compatibility in test helpers.
-- CI examples use `source=head` to avoid cross-platform checkout conversion
-  differences.
+- Anchored the TOML regex fallback to reject trailing invalid data on Python
+  versions without `tomllib`.
+- Read working-tree symlinks with `os.readlink()`, matching Git blob storage.
+- Restored Python 3.8 compatibility in test-helper annotations.
+- Used `source=head` in CI examples to avoid checkout line-ending differences.
 
 ### Added
 
-- Boundary extraction status (`ok`, `partial`, or `error`) for generated
+- Boundary extraction status (`ok`, `partial`, or `error`) in generated
   component entries.
-- Basic project governance documents: `LICENSE` and `CONTRIBUTING.md`.
-- Tests for boundary extraction status behavior.
+- Initial `LICENSE` and `CONTRIBUTING.md` governance files and status tests.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.10.0...HEAD
+## [0.9.0] - 2026-05-03
+
+### Added
+
+- Initial public release with Git-backed component fingerprints for exact,
+  behavior, boundary, and compatibility facets.
+- JSON/YAML/TOML configuration, component slices, built-in raw and canonical
+  providers, version sources, discovery, generation, verification, diff/status,
+  GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
+
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yzm1/boundver/releases/tag/v0.10.0
+[0.9.1]: https://github.com/yzm1/boundver/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/yzm1/boundver/releases/tag/v0.9.0

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
   "title": "boundver config",
   "type": "object",
   "required": ["project", "components"],
@@ -43,6 +43,7 @@
     "components": {
       "type": "object",
       "minProperties": 1,
+      "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {
         "type": "object",
         "required": ["path", "boundary"],
@@ -50,7 +51,7 @@
           "path": {
             "type": "string",
             "minLength": 1,
-            "pattern": "^(?!\\.?/?$)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+            "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
           },
           "ecosystem": {"type": "string"},
           "version_source": {
@@ -60,7 +61,7 @@
                 "type": "object",
                 "required": ["file", "field"],
                 "properties": {
-                  "file": {"type": "string", "minLength": 1},
+                  "file": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"},
                   "field": {"type": "string", "minLength": 1}
                 },
                 "additionalProperties": false
@@ -82,7 +83,7 @@
               "provider": {"type": "string", "minLength": 1},
               "paths": {
                 "type": "array",
-                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\).+$"}
+                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"}
               },
               "options": {
                 "type": "object",
@@ -99,7 +100,7 @@
             "properties": {
               "paths": {
                 "type": "array",
-                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\).+$"}
+                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"}
               }
             },
             "additionalProperties": false
@@ -109,12 +110,26 @@
             "items": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
             }
           },
           "consumers": {
             "type": "array",
-            "items": {"type": "string"},
+            "description": "Configured component names directly downstream of this component.",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "external_consumers": {
+            "type": "array",
+            "description": "Opaque terminal labels for downstream systems not configured as components.",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "verify_facets": {
+            "type": "array",
+            "description": "Component-specific gated facets used when --facets is not passed.",
+            "items": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+            "minItems": 1,
             "uniqueItems": true
           }
         },
@@ -123,17 +138,27 @@
     },
     "slices": {
       "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {
         "type": "object",
-        "required": ["components"],
         "properties": {
           "description": {"type": "string"},
           "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
           "components": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "uniqueItems": true
+          },
+          "closure_of": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Include this component and its transitive downstream consumers."
           }
         },
+        "oneOf": [
+          {"required": ["components"]},
+          {"required": ["closure_of"]}
+        ],
         "additionalProperties": false
       }
     }
