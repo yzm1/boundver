@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checka
 from ._hashing import HASH_DOMAIN_BOUNDARY, _ModeAwareBytes, _hash_framed_entries
 from ._utils import (
     ProviderError,
+    _bounded_json_int,
     _is_glob,
     _match_path_glob,
     _normalize_declared_path,
@@ -947,8 +948,14 @@ def _parse_json_strict(text: str, path_label: str) -> Any:
             text,
             object_pairs_hook=_unique_json_object,
             parse_constant=_reject_json_constant,
+            parse_int=_bounded_json_int,
         )
-    except (_json_mod.JSONDecodeError, ProviderError, RecursionError) as exc:
+    except (
+        _json_mod.JSONDecodeError,
+        ProviderError,
+        RecursionError,
+        ValueError,
+    ) as exc:
         raise ProviderError(
             f"JSON parse failed for {path_label}: {_bounded_exception(exc)}"
         ) from exc
@@ -1072,10 +1079,11 @@ def _parse_yaml_or_json(raw: bytes, path_label: str) -> Any:
             text,
             object_pairs_hook=_unique_json_object,
             parse_constant=_reject_json_constant,
+            parse_int=_bounded_json_int,
         )
     except _json_mod.JSONDecodeError:
         return _parse_yaml_strict(text, path_label)
-    except ProviderError as exc:
+    except (ProviderError, ValueError) as exc:
         raise ProviderError(
             f"JSON parse failed for {path_label}: {_bounded_exception(exc)}"
         ) from exc

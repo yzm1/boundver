@@ -341,6 +341,11 @@ class TestJsonCanonicalHardening(unittest.TestCase):
                 self.assertEqual(result.status, "error")
                 self.assertIn("non-finite", result.errors[0])
 
+    def test_rejects_oversized_json_integers(self):
+        result = self._resolve(b'{"value":' + b"9" * 5000 + b"}")
+        self.assertEqual(result.status, "error")
+        self.assertIn("decimal-digit limit", result.errors[0])
+
     def test_rejects_escaped_lone_surrogate_without_raising(self):
         result = self._resolve(b'{"value":"\\ud800"}')
         self.assertEqual(result.status, "error")
@@ -399,6 +404,16 @@ class TestOpenApiCanonicalHardening(unittest.TestCase):
         )
         self.assertEqual(yaml_result.status, "error")
         self.assertIn("duplicate mapping key", yaml_result.errors[0])
+
+    def test_rejects_oversized_json_integers(self):
+        result = self._resolve(
+            b'{"openapi":"3.1.0","paths":{},"x-value":'
+            + b"9" * 5000
+            + b"}",
+            "openapi.json",
+        )
+        self.assertEqual(result.status, "error")
+        self.assertIn("decimal-digit limit", result.errors[0])
 
     def test_rejects_escaped_lone_surrogate_without_raising(self):
         for raw in (

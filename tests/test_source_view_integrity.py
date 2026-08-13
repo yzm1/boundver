@@ -573,6 +573,36 @@ class SourceViewIntegrityTests(unittest.TestCase):
                 issues,
             )
 
+    def test_why_json_lists_one_entry_for_a_staged_working_tree_path(self):
+        from boundver._output import why_component
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _init_repo(root)
+            lockfile = generate_lockfile(config, root, source="head")
+            (root / "svc" / "main.py").write_text(
+                "value = 2\n", encoding="utf-8"
+            )
+            _git(root, "add", "svc/main.py")
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = why_component(
+                    config,
+                    lockfile,
+                    root,
+                    "svc",
+                    source="working-tree",
+                    output_format="json",
+                )
+
+            self.assertEqual(result, 1)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(
+                payload["changed_files"],
+                [{"status": "M", "path": "svc/main.py"}],
+            )
+
 
 class ParserIntegrityTests(unittest.TestCase):
     def test_duplicate_json_keys_are_rejected_for_config_and_lock(self):

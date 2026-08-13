@@ -20,8 +20,10 @@ from ._git import (
     _to_posix,
 )
 from ._utils import (
+    _bounded_json_int,
     _is_glob,
     _is_within,
+    _json_integer_is_bounded,
     _match_path_glob,
     _normalize_declared_path,
     boundary_provider_name,
@@ -89,6 +91,8 @@ def _json_value_issues(value: Any, *, path: str = "config") -> List[str]:
                     item.encode("utf-8")
                 except UnicodeEncodeError:
                     issues.append(f"{item_path} contains invalid Unicode")
+            elif type(item) is int and not _json_integer_is_bounded(item):
+                issues.append(f"{item_path} contains an oversized integer")
             return
         if type(item) is float:
             if not math.isfinite(item):
@@ -137,6 +141,7 @@ def parse_config_text(text: str, path: Path) -> dict:
                 text,
                 object_pairs_hook=_json_object_without_duplicates,
                 parse_constant=_reject_nonfinite_json_constant,
+                parse_int=_bounded_json_int,
             )
         except (ValueError, RecursionError, OverflowError) as exc:
             raise ConfigError(f"JSON parse error in {path}: {exc}") from exc

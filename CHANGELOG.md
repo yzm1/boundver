@@ -89,11 +89,15 @@ release.
   on the optional `jsonschema` package, and installed validation prefers the
   schema bundled with boundver over a repository-local file.
 - Release candidates are rebuilt and tested before tagging; every contributing
-  PR must be approved with no unresolved review threads; publication
-  accepts only an explicit immutable version tag and SHA; and GitHub release
-  notes come from the matching changelog section. Action, Docker, pre-commit,
-  wheel, sdist, and standalone-archive packaging checks now exercise their
-  installed forms.
+  PR needs current exact-commit review evidence with no blocking state,
+  unresolved threads, or pending review requests. The normal gate requires a
+  non-author human approval from a collaborator with push access; an
+  owner-authored PR in this personal repository may use a trusted Codex review
+  whose numeric account ID and latest PR head or merge commit are verified.
+  Publication accepts only an explicit immutable version tag and SHA, and
+  GitHub release notes come from the matching changelog section. Action,
+  Docker, pre-commit, wheel, sdist, and standalone-archive packaging checks now
+  exercise their installed forms.
 - PyPI publication is gated by a real TestPyPI rehearsal using Trusted
   Publishing. Every stage downloads one immutable numeric artifact ID; exact
   filenames, sizes, SHA-256 values, and CDN bytes are checked, and the
@@ -127,6 +131,10 @@ release.
   spoofing verification severity, including under `--fail-fast`.
 - JSON canonicalization rejects duplicate keys and non-finite numbers and no
   longer claims RFC 8785 conformance.
+- JSON config, lock, provider, and version parsing applies the same bounded
+  integer contract on every supported Python version, including Python 3.9.
+- `why --format json` reports each staged working-tree path once instead of
+  duplicating paths present in both the HEAD and cached diffs.
 - OpenAPI canonicalization rejects malformed roots, unsafe or external
   references, ambiguous YAML constructs, and invalid map keys; it retains
   extension fields as contract data and handles response keys consistently.

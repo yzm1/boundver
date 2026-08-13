@@ -8,6 +8,29 @@ from pathlib import Path
 from typing import Mapping, Optional, Set
 
 
+# Python 3.11+ limits decimal-to-int conversion to 4,300 digits by default,
+# while earlier supported interpreters do not.  Enforce one explicit contract
+# so parsing the same JSON cannot depend on the runner's Python version.
+MAX_JSON_INTEGER_DIGITS = 4300
+_MAX_JSON_INTEGER_ABS = 10 ** MAX_JSON_INTEGER_DIGITS
+
+
+def _bounded_json_int(value: str) -> int:
+    """Parse one JSON integer under the cross-version decimal-size limit."""
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            "JSON integer exceeds the "
+            f"{MAX_JSON_INTEGER_DIGITS}-decimal-digit limit"
+        )
+    return int(value)
+
+
+def _json_integer_is_bounded(value: int) -> bool:
+    """Return whether *value* fits the JSON decimal-size contract."""
+    return abs(value) < _MAX_JSON_INTEGER_ABS
+
+
 # ---------------------------------------------------------------------------
 # Source mode enum
 # ---------------------------------------------------------------------------

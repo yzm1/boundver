@@ -34,6 +34,7 @@ from ._hashing import (
     source_tree_digest,
 )
 from ._utils import (
+    _bounded_json_int,
     _available_component_facets,
     _issue_facet,
     _short,
@@ -91,6 +92,7 @@ def parse_lockfile_text(text: str, path_label: object = "lockfile") -> dict:
             text,
             object_pairs_hook=_lock_json_object_without_duplicates,
             parse_constant=_reject_nonfinite_lock_constant,
+            parse_int=_bounded_json_int,
         )
     except (ValueError, RecursionError, OverflowError) as exc:
         raise LockfileError(f"Lockfile is not valid JSON at {path_label}: {exc}") from exc

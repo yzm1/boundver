@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import email.parser
 import importlib.util
 import io
@@ -381,6 +382,8 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("pypi-attestations verify pypi", workflow)
 
     def test_release_candidate_is_tested_before_tag_job(self):
+        import yaml
+
         workflow = (
             REPO_ROOT / ".github/workflows/create-release-tag.yml"
         ).read_text(encoding="utf-8")
@@ -414,6 +417,12 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertIn('--ref "$RELEASE_TAG"', workflow)
         self.assertLess(workflow.index("verify-candidate:"), workflow.index("\n  tag:"))
+        jobs = yaml.safe_load(workflow)["jobs"]
+        for job_name in ("verify-candidate", "tag"):
+            self.assertEqual(jobs[job_name]["permissions"]["issues"], "read")
+            self.assertEqual(
+                jobs[job_name]["permissions"]["pull-requests"], "read"
+            )
 
     def test_action_and_container_install_complete_public_extras(self):
         action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
@@ -737,22 +746,30 @@ class ReleaseChangelogTests(unittest.TestCase):
 
 
 class ReleaseReviewAuditTests(unittest.TestCase):
-    @unittest.skipIf(
-        os.name == "nt",
-        "Runtime shell/API audit is exercised on Linux release runners",
-    )
-    def test_review_gate_fails_closed_on_api_and_blocking_state(self):
+    def _codex_comment(self, commit: str, *, duplicate: bool = False) -> str:
+        marker = f"**Reviewed commit:** `{commit}`"
+        lines = ["Codex Review: Didn't find any issues.", "", marker]
+        if duplicate:
+            lines.extend(("", marker))
+        lines.extend(("", "<sub>About Codex reviews</sub>"))
+        return "\n".join(lines)
+
+    def _comment_record(
+        self,
+        body: str,
+        *,
+        actor_id: str = "199175422",
+        login: str = "chatgpt-codex-connector[bot]",
+        actor_type: str = "Bot",
+    ) -> str:
+        encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
+        return f"{actor_id}|{login}|{actor_type}|{encoded}"
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def _run_audit(self, **overrides: str) -> subprocess.CompletedProcess[str]:
         script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("< <(\n    gh api", script)
-        self.assertIn("if ! associated_output=$(gh api", script)
-        self.assertIn("if ! decision=$(gh api graphql", script)
-        self.assertIn("if ! unresolved_output=$(gh api graphql --paginate", script)
-        self.assertIn("GitHub API failed while reading review threads", script)
-        self.assertIn("reviewThreads", script)
-        self.assertIn("CHANGES_REQUESTED", script)
-
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "audit_release_reviews.sh").write_bytes(
@@ -764,23 +781,65 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             fake_gh.write_bytes(
                 """#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == *"/commits/"* ]]; then
-  if [[ "$FAKE_GH_FAILURE" == associated ]]; then exit 73; fi
+args=" $* "
+endpoint=
+for argument in "$@"; do
+  if [[ "$argument" == repos/* ]]; then endpoint=$argument; fi
+done
+if [[ "$endpoint" == */commits/*/pulls ]]; then
+  if [[ "$FAKE_FAILURE" == associated ]]; then exit 73; fi
   echo 17
   exit 0
 fi
-if [[ "$*" == *"graphql"* && "$*" != *"--paginate"* ]]; then
-  if [[ "$FAKE_GH_FAILURE" == decision ]]; then exit 73; fi
-  if [[ "${FAKE_DECISION:-APPROVED}" == NONE ]]; then
-    echo ""
-  else
-    echo "${FAKE_DECISION:-APPROVED}"
-  fi
+if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY" ]]; then
+  if [[ "$FAKE_FAILURE" == owner ]]; then exit 73; fi
+  echo "$FAKE_OWNER_ID|$FAKE_OWNER_LOGIN|$FAKE_OWNER_TYPE"
   exit 0
 fi
-if [[ "$*" == *"graphql"* && "$*" == *"--paginate"* ]]; then
-  if [[ "$FAKE_GH_FAILURE" == threads ]]; then exit 73; fi
-  echo "${FAKE_UNRESOLVED:-0}"
+if [[ "$endpoint" == */pulls/17 ]]; then
+  if [[ "$FAKE_FAILURE" == metadata ]]; then exit 73; fi
+  echo "$FAKE_AUTHOR_ID|$FAKE_AUTHOR_LOGIN|$FAKE_AUTHOR_TYPE|$FAKE_HEAD_SHA|$FAKE_MERGE_SHA|$FAKE_PENDING_REVIEWERS|$FAKE_PENDING_TEAMS"
+  exit 0
+fi
+if [[ "$args" == *" graphql "* && "$args" != *" --paginate "* ]]; then
+  if [[ "$FAKE_FAILURE" == decision ]]; then exit 73; fi
+  printf '%s' "$FAKE_DECISION"
+  exit 0
+fi
+if [[ "$args" == *" graphql "* && "$args" == *" --paginate "* ]]; then
+  if [[ "$FAKE_FAILURE" == threads ]]; then exit 73; fi
+  printf '%s' "$FAKE_UNRESOLVED"
+  exit 0
+fi
+if [[ "$endpoint" == */pulls/17/reviews* ]]; then
+  if [[ "$FAKE_FAILURE" == reviews ]]; then exit 73; fi
+  printf '%s' "$FAKE_REVIEWS"
+  exit 0
+fi
+if [[ "$endpoint" == */issues/17/comments* ]]; then
+  if [[ "$FAKE_FAILURE" == comments ]]; then exit 73; fi
+  printf '%s' "$FAKE_COMMENTS"
+  exit 0
+fi
+if [[ "$endpoint" == */collaborators/*/permission ]]; then
+  if [[ "$FAKE_FAILURE" == permission ]]; then exit 73; fi
+  printf '%s' "$FAKE_PERMISSION"
+  exit 0
+fi
+if [[ "$endpoint" == */commits/* ]]; then
+  if [[ "$FAKE_FAILURE" == resolve ]]; then exit 73; fi
+  candidate=${endpoint##*/commits/}
+  if [[ "$FAKE_RESOLVE_SHA" != AUTO ]]; then
+    echo "$FAKE_RESOLVE_SHA"
+  elif [[ "$FAKE_HEAD_SHA" == "$candidate"* ]]; then
+    echo "$FAKE_HEAD_SHA"
+  elif [[ -n "$FAKE_MERGE_SHA" && "$FAKE_MERGE_SHA" == "$candidate"* ]]; then
+    echo "$FAKE_MERGE_SHA"
+  elif [[ "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "$candidate"
+  else
+    exit 75
+  fi
   exit 0
 fi
 exit 74
@@ -810,78 +869,190 @@ exit 74
                 check=True,
             )
             environment = dict(os.environ)
+            for name in tuple(environment):
+                if name.startswith("FAKE_"):
+                    del environment[name]
             environment.update(
                 {
                     "PATH": f"{bin_dir}{os.pathsep}{environment['PATH']}",
                     "GH_TOKEN": "test-token",
                     "GITHUB_REPOSITORY": "owner/repository",
+                    "FAKE_FAILURE": "none",
+                    "FAKE_OWNER_ID": "101",
+                    "FAKE_OWNER_LOGIN": "owner",
+                    "FAKE_OWNER_TYPE": "User",
+                    "FAKE_AUTHOR_ID": "101",
+                    "FAKE_AUTHOR_LOGIN": "owner",
+                    "FAKE_AUTHOR_TYPE": "User",
+                    "FAKE_HEAD_SHA": release_sha,
+                    "FAKE_MERGE_SHA": "",
+                    "FAKE_PENDING_REVIEWERS": "0",
+                    "FAKE_PENDING_TEAMS": "0",
+                    "FAKE_DECISION": "REVIEW_REQUIRED",
+                    "FAKE_UNRESOLVED": "0",
+                    "FAKE_REVIEWS": (
+                        "COMMENTED|199175422|chatgpt-codex-connector[bot]|"
+                        f"Bot|{release_sha}"
+                    ),
+                    "FAKE_COMMENTS": "",
+                    "FAKE_PERMISSION": "write",
+                    "FAKE_RESOLVE_SHA": "AUTO",
                 }
             )
-            expected_errors = {
-                "associated": "resolving pull requests",
-                "decision": "reading review decision",
-                "threads": "reading review threads",
-            }
-            for failure, expected_error in expected_errors.items():
-                with self.subTest(failure=failure):
-                    environment["FAKE_GH_FAILURE"] = failure
-                    result = subprocess.run(
-                        [
-                            "bash",
-                            "./audit_release_reviews.sh",
-                            release_sha,
-                            "v0.11.0",
-                        ],
-                        cwd=root,
-                        env=environment,
-                        capture_output=True,
-                        text=True,
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("GitHub API failed", result.stderr)
-                    self.assertIn(expected_error, result.stderr)
-
-            environment["FAKE_GH_FAILURE"] = "none"
-            blocking_states = (
-                ("NONE", "0"),
-                ("CHANGES_REQUESTED", "0"),
-                ("APPROVED", "1"),
-                ("REVIEW_REQUIRED", "0"),
-            )
-            for decision, unresolved in blocking_states:
-                with self.subTest(decision=decision, unresolved=unresolved):
-                    environment["FAKE_DECISION"] = decision
-                    environment["FAKE_UNRESOLVED"] = unresolved
-                    result = subprocess.run(
-                        [
-                            "bash",
-                            "./audit_release_reviews.sh",
-                            release_sha,
-                            "v0.11.0",
-                        ],
-                        cwd=root,
-                        env=environment,
-                        capture_output=True,
-                        text=True,
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("is not release-ready", result.stderr)
-
-            environment["FAKE_DECISION"] = "APPROVED"
-            environment["FAKE_UNRESOLVED"] = "0"
-            result = subprocess.run(
-                [
-                    "bash",
-                    "./audit_release_reviews.sh",
-                    release_sha,
-                    "v0.11.0",
-                ],
+            environment.update(overrides)
+            return subprocess.run(
+                ["bash", "./audit_release_reviews.sh", release_sha, "v0.11.0"],
                 cwd=root,
                 env=environment,
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_owner_authored_pr_accepts_exact_codex_review_or_clean_comment(self):
+        result = self._run_audit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        head = "1" * 40
+        comment = self._comment_record(self._codex_comment(head[:10]))
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=comment,
+            FAKE_RESOLVE_SHA=head,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        merge = "7" * 40
+        comment = self._comment_record(self._codex_comment(merge[:10]))
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_MERGE_SHA=merge,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=comment,
+            FAKE_RESOLVE_SHA=merge,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_human_approval_requires_non_author_push_access_and_current_commit(self):
+        head = "2" * 40
+        approval = f"APPROVED|202|reviewer|User|{head[:12]}"
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=approval,
+            FAKE_RESOLVE_SHA=head,
+            FAKE_DECISION="APPROVED",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        for overrides in (
+            {"FAKE_REVIEWS": f"APPROVED|101|owner|User|{head}"},
+            {"FAKE_REVIEWS": approval, "FAKE_PERMISSION": "read"},
+            {
+                "FAKE_REVIEWS": f"APPROVED|202|reviewer|User|{'3' * 40}",
+                "FAKE_RESOLVE_SHA": "3" * 40,
+            },
+        ):
+            with self.subTest(overrides=overrides):
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_DECISION="APPROVED",
+                    **overrides,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("no current exact-commit review evidence", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_codex_evidence_rejects_spoofed_stale_or_ambiguous_markers(self):
+        head = "4" * 40
+        stale = "5" * 40
+        cases = (
+            {
+                "FAKE_REVIEWS": (
+                    f"COMMENTED|999|chatgpt-codex-connector[bot]|Bot|{head}"
+                )
+            },
+            {
+                "FAKE_REVIEWS": (
+                    f"COMMENTED|199175422|chatgpt-codex-connector[bot]|Bot|{stale}"
+                ),
+                "FAKE_RESOLVE_SHA": stale,
+            },
+            {
+                "FAKE_REVIEWS": "",
+                "FAKE_COMMENTS": self._comment_record(
+                    self._codex_comment(head[:10]), actor_id="999"
+                ),
+                "FAKE_RESOLVE_SHA": head,
+            },
+            {
+                "FAKE_REVIEWS": "",
+                "FAKE_COMMENTS": self._comment_record(
+                    self._codex_comment(stale[:10])
+                ),
+                "FAKE_RESOLVE_SHA": stale,
+            },
+            {
+                "FAKE_REVIEWS": "",
+                "FAKE_COMMENTS": self._comment_record(
+                    self._codex_comment(head[:10], duplicate=True)
+                ),
+                "FAKE_RESOLVE_SHA": head,
+            },
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                result = self._run_audit(FAKE_HEAD_SHA=head, **overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("no current exact-commit review evidence", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_review_gate_fails_closed_on_api_pagination_and_blocking_state(self):
+        script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("< <(\n    gh api", script)
+        self.assertIn("if ! reviews_output=$(gh api --paginate", script)
+        self.assertIn("if ! comments_output=$(gh api --paginate", script)
+        self.assertIn("if ! unresolved_output=$(gh api graphql --paginate", script)
+        self.assertIn("trusted_codex_bot_id=199175422", script)
+
+        for failure in (
+            "associated",
+            "owner",
+            "metadata",
+            "decision",
+            "threads",
+            "reviews",
+            "comments",
+            "resolve",
+        ):
+            with self.subTest(failure=failure):
+                result = self._run_audit(FAKE_FAILURE=failure)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("GitHub API failed", result.stderr)
+
+        human = "APPROVED|202|reviewer|User|6" + "6" * 39
+        result = self._run_audit(
+            FAKE_FAILURE="permission",
+            FAKE_HEAD_SHA="6" * 40,
+            FAKE_REVIEWS=human,
+            FAKE_DECISION="APPROVED",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GitHub API failed", result.stderr)
+
+        for overrides, message in (
+            ({"FAKE_DECISION": "CHANGES_REQUESTED"}, "CHANGES_REQUESTED"),
+            ({"FAKE_UNRESOLVED": "1"}, "unresolvedThreads=1"),
+            ({"FAKE_PENDING_REVIEWERS": "1"}, "pending human review"),
+            ({"FAKE_UNRESOLVED": ""}, "no review-thread page"),
+        ):
+            with self.subTest(overrides=overrides):
+                result = self._run_audit(**overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
 
 
 if __name__ == "__main__":  # pragma: no cover

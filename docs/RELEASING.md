@@ -92,6 +92,17 @@ release wording therefore belongs in the release commit.
 9. Resolve every relevant review thread and blocking review. Merge only after
    the exact release-preparation commit passes required CI.
 
+The pre-tag review audit fails closed on API or pagination errors, unresolved
+threads, changes-requested state, and pending human or team review requests.
+Each contributing PR also needs current, exact-commit evidence: an approval by
+a non-author collaborator with push access, or—only for an owner-authored PR in
+this personal repository—a review from the trusted Codex GitHub App account.
+Codex evidence is accepted from its `COMMENTED` review commit or the single
+`**Reviewed commit:**` marker line in its issue comment. The audit pins the bot's
+numeric account ID, resolves abbreviated commit IDs through GitHub, and rejects
+spoofed identities or evidence that does not match the latest PR head or merge
+commit.
+
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
 subject is:

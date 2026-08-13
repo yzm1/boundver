@@ -91,7 +91,7 @@ checked against the independent invariant.
 | Severity | Exit classification depends on structured issue type, not component-controlled text | Vulnerable to substring classification | Structured facet extraction implemented, including global highest-severity fail-fast reporting |
 | Distribution | Installed Action, wheel, sdist, `.pyz`, Docker, and hooks contain their required runtime behavior | Partially tested | Distribution contracts and release gates exercise each supported installation surface |
 | Package promotion | Production PyPI receives the byte-identical reviewed distributions only after a real index rehearsal | No TestPyPI gate; downstream jobs selected workflow artifacts by name | One immutable artifact ID carries only the wheel and sdist through TestPyPI, a hash/size/download/install gate, and PyPI; conflicting pre-existing TestPyPI state fails closed |
-| Release review | A release cannot be tagged unless every contributing PR is approved and its review threads are resolved | Violated | The pre-tag workflow finds PRs in the SemVer release range, requires `APPROVED`, paginates review threads, and rejects every unresolved thread |
+| Release review | A release cannot be tagged with blocking state, unresolved threads, pending review requests, or stale/missing exact-commit review evidence | Violated | The pre-tag workflow paginates every review surface; it normally requires non-author human approval with push access and permits numeric-ID-pinned Codex evidence only for an owner-authored PR in this personal repository |
 
 The last column defines the corrective contract. Exact-commit test, review, tag,
 and publication evidence is produced by the release workflows rather than kept
@@ -219,10 +219,18 @@ Consequently the release process allowed a known P1 correctness defect to ship
 while the project review claimed complete resolution.
 
 The corrective pre-tag workflow determines the prior SemVer release, finds
-pull requests associated with commits in the release range, paginates their
-review threads, requires an `APPROVED` decision, and rejects unresolved
-threads. Manual memory is no longer the designed release
-invariant.
+pull requests associated with commits in the release range, and paginates
+their reviews, comments, and review threads. It rejects changes-requested
+state, unresolved threads, pending review requests, API failures, and stale or
+missing exact-commit evidence. Normal evidence is a non-author human approval
+from a collaborator with push access. Because the repository is personal and
+its owner cannot approve the owner's own PR, an owner-authored PR may instead
+use a trusted Codex `COMMENTED` review, once any findings are resolved, or a
+clean Codex issue-comment marker anchored to the latest PR head or merge
+commit. That exception pins the GitHub App bot's numeric account ID and
+resolves abbreviated commit markers through GitHub, so a matching display name
+or stale SHA is not sufficient. Manual memory is no longer the designed
+release invariant.
 
 Publication now separates the lifecycle invariants correctly: before tagging,
 the fully tested candidate must equal current `main`; publication validates that

@@ -31,6 +31,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      issues: read
       pull-requests: read
     outputs:
       release-tag: ${{ steps.validate.outputs.tag }}
@@ -168,6 +169,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      issues: read
       pull-requests: read
     steps:
       - name: Checkout the exact candidate

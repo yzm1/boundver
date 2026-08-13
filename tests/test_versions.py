@@ -559,6 +559,11 @@ class ExtractJsonFromTextTests(unittest.TestCase):
     def test_numeric_value_as_string(self):
         self.assertEqual(self._fn('{"v": 42}', "v"), "42")
 
+    def test_oversized_integer_returns_none(self):
+        self.assertIsNone(
+            self._fn('{"v":' + "9" * 5000 + "}", "v")
+        )
+
 
 class ExtractTomlFromTextTests(unittest.TestCase):
     """Tests for _extract_toml_from_text — covers lines 89-122."""

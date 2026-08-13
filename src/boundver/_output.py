@@ -747,6 +747,18 @@ def analyze_component_drift(
                 except subprocess.CalledProcessError:
                     pass
 
+    # ``git diff HEAD`` already includes staged changes, while the additional
+    # cached diff is useful for unborn/fallback cases.  Keep one stable entry
+    # per path so JSON and text views expose the same file set.
+    deduplicated_files: List[Tuple[str, str]] = []
+    seen_paths: set = set()
+    for status, path in changed_files:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        deduplicated_files.append((status, path))
+    changed_files = deduplicated_files
+
     version = current_comp.get("version") or locked_comp.get("version")
 
     return {
