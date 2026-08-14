@@ -823,11 +823,13 @@ if [[ "$endpoint" == */issues/17/comments* ]]; then
 fi
 if [[ "$endpoint" == */collaborators/*/permission ]]; then
   if [[ "$FAKE_FAILURE" == permission ]]; then exit 73; fi
+  if [[ "$FAKE_DRAIN_PERMISSION_STDIN" == 1 ]]; then cat >/dev/null; fi
   printf '%s' "$FAKE_PERMISSION"
   exit 0
 fi
 if [[ "$endpoint" == */commits/* ]]; then
   if [[ "$FAKE_FAILURE" == resolve ]]; then exit 73; fi
+  if [[ "$FAKE_DRAIN_RESOLVE_STDIN" == 1 ]]; then cat >/dev/null; fi
   candidate=${endpoint##*/commits/}
   if [[ "$FAKE_RESOLVE_SHA" != AUTO ]]; then
     echo "$FAKE_RESOLVE_SHA"
@@ -835,6 +837,8 @@ if [[ "$endpoint" == */commits/* ]]; then
     echo "$FAKE_HEAD_SHA"
   elif [[ -n "$FAKE_MERGE_SHA" && "$FAKE_MERGE_SHA" == "$candidate"* ]]; then
     echo "$FAKE_MERGE_SHA"
+  elif [[ -n "$FAKE_STALE_SHA" && "$FAKE_STALE_SHA" == "$candidate"* ]]; then
+    echo "$FAKE_STALE_SHA"
   elif [[ "$candidate" =~ ^[0-9a-f]{40}$ ]]; then
     echo "$candidate"
   else
@@ -897,6 +901,9 @@ exit 74
                     "FAKE_COMMENTS": "",
                     "FAKE_PERMISSION": "write",
                     "FAKE_RESOLVE_SHA": "AUTO",
+                    "FAKE_STALE_SHA": "",
+                    "FAKE_DRAIN_PERMISSION_STDIN": "0",
+                    "FAKE_DRAIN_RESOLVE_STDIN": "0",
                 }
             )
             environment.update(overrides)
@@ -1006,6 +1013,42 @@ exit 74
                 result = self._run_audit(FAKE_HEAD_SHA=head, **overrides)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("no current exact-commit review evidence", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_nested_gh_calls_cannot_consume_later_review_evidence(self):
+        head = "8" * 40
+        stale = "9" * 40
+        comments = "\n".join(
+            (
+                self._comment_record(self._codex_comment(stale[:10])),
+                self._comment_record(self._codex_comment(head[:10])),
+            )
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=comments,
+            FAKE_STALE_SHA=stale,
+            FAKE_DRAIN_RESOLVE_STDIN="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        reviews = "\n".join(
+            (
+                f"APPROVED|202|reviewer|User|{head}",
+                (
+                    "COMMENTED|199175422|chatgpt-codex-connector[bot]|"
+                    f"Bot|{head}"
+                ),
+            )
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=reviews,
+            FAKE_PERMISSION="read",
+            FAKE_DRAIN_PERMISSION_STDIN="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_review_gate_fails_closed_on_api_pagination_and_blocking_state(self):

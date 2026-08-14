@@ -20,10 +20,12 @@ The repository owner must configure these controls before starting a release:
 
 - Enable immutable GitHub Releases.
 - Add an active repository tag ruleset that blocks updates and deletion for
-  exact SemVer tags with `refs/tags/v*.*.*`. It must not target mutable
-  compatibility aliases such as `v0.11`, and it must not restrict initial tag
-  creation. The publishing gate verifies this before creating a version tag;
-  immutable-release protection takes over once the Release is published.
+  exact SemVer tags. In GitHub's **Include by pattern** field, enter
+  `v*.*.*`; GitHub represents that pattern in ruleset API responses as
+  `refs/tags/v*.*.*`, which is the form verified by the publishing gate. It
+  must not target mutable compatibility aliases such as `v0.11`, and it must
+  not restrict initial tag creation. Immutable-release protection takes over
+  once the Release is published.
 - Create protected GitHub environments named `testpypi`, `pypi`, and
   `marketplace`. Require at least one reviewer for every environment; a wait
   timer alone is not approval.

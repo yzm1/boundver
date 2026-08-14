@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 No changes yet.
 
-## [0.11.0] - 2026-08-13
+## [0.11.0] - 2026-08-14
 
 This release changes the meaning of stored fingerprints and requires a fresh
 lockfile. It is a minor release rather than a patch to the immutable `v0.10.0`
@@ -135,6 +135,9 @@ release.
   integer contract on every supported Python version, including Python 3.9.
 - `why --format json` reports each staged working-tree path once instead of
   duplicating paths present in both the HEAD and cached diffs.
+- The release-review audit materializes GitHub review and comment records
+  before nested API lookups, so a Windows GitHub CLI invoked from WSL cannot
+  consume later exact-commit evidence from the audit loop.
 - OpenAPI canonicalization rejects malformed roots, unsafe or external
   references, ambiguous YAML constructs, and invalid map keys; it retains
   extension fields as contract data and handles response keys consistently.
