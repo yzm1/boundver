@@ -212,7 +212,11 @@ for pr_number in "${sorted_prs[@]}"; do
 
   human_evidence=0
   codex_evidence=0
-  while IFS= read -r review_record; do
+  review_records=()
+  if [[ -n "$reviews_output" ]]; then
+    mapfile -t review_records <<< "$reviews_output"
+  fi
+  for review_record in "${review_records[@]}"; do
     [[ -z "$review_record" ]] && continue
     IFS='|' read -r review_state reviewer_id reviewer_login reviewer_type \
       evidence_sha review_extra <<< "$review_record"
@@ -260,7 +264,7 @@ for pr_number in "${sorted_prs[@]}"; do
         codex_evidence=1
       fi
     fi
-  done <<< "$reviews_output"
+  done
 
   if ! comments_output=$(gh api --paginate \
       "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
@@ -268,7 +272,11 @@ for pr_number in "${sorted_prs[@]}"; do
     echo "GitHub API failed while reading issue comments for PR #$pr_number." >&2
     exit 1
   fi
-  while IFS= read -r comment_record; do
+  comment_records=()
+  if [[ -n "$comments_output" ]]; then
+    mapfile -t comment_records <<< "$comments_output"
+  fi
+  for comment_record in "${comment_records[@]}"; do
     [[ -z "$comment_record" ]] && continue
     IFS='|' read -r commenter_id commenter_login commenter_type encoded_body \
       comment_extra <<< "$comment_record"
@@ -303,7 +311,7 @@ for pr_number in "${sorted_prs[@]}"; do
         fi
       fi
     fi
-  done <<< "$comments_output"
+  done
 
   if [[ "$decision" == "CHANGES_REQUESTED" ]]; then
     echo "PR #$pr_number is not release-ready: reviewDecision=CHANGES_REQUESTED." >&2
