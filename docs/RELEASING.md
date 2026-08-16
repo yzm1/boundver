@@ -7,12 +7,16 @@ Action alias that was explicitly approved for that compatibility line.
 
 Do not repair a partial release by rebuilding from a different checkout,
 moving the immutable version tag, replacing release assets, or reusing a PyPI
-version. Use **Re-run failed jobs** on the original workflow run so its
+version. Prefer **Re-run failed jobs** on the original workflow run so its
 successful build job and artifact IDs are retained; do not use **Re-run all
-jobs** or start a fresh dispatch after an index upload. Release artifacts are
-retained for 90 days, but GitHub permits workflow reruns only during the first
-30 days after the initial run. The build also has to prove that the exact
-tagged source is byte-reproducible before its first upload.
+jobs**. If the original run is completed and failed, the `resume` command
+described below is the only supported new dispatch: it proves and reuses that
+run's exact retained artifacts and its logged compatibility-alias policy
+instead of creating another candidate. Never dispatch `publish.yml` directly.
+Release artifacts are retained for 90 days, but GitHub permits workflow reruns
+only during the first 30 days after the initial run. The build also has to
+prove that the exact tagged source is byte-reproducible before its first
+upload.
 
 ## One-time service setup
 
@@ -172,8 +176,50 @@ gates in order:
 If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote
 file has the expected digest and **Re-run failed jobs** reuses the original
-successful build and artifact IDs. A fresh dispatch is a new candidate and is
-not the recovery path for an interrupted promotion.
+successful build and artifact IDs.
+
+If the original `publish.yml` run is completed with conclusion `failure` and
+cannot continue through **Re-run failed jobs**, recover from a clean, current
+`main` checkout with the numeric ID of that original run:
+
+```bash
+release_tag=vX.Y.Z
+release_sha=$(git rev-list -n 1 "$release_tag")
+run_id=123456789
+python3 scripts/publish_release.py resume \
+  --tag "$release_tag" --alias vX.Y --run-id "$run_id" \
+  --confirm "$release_tag@$release_sha#$run_id"
+```
+
+Use `--alias none` only if that was the approved policy for the original
+release. Recovery cannot change that choice in either direction. The
+confirmation binds three independent facts: immutable tag, full lowercase
+release commit, and positive-decimal source run ID. `resume` remains read-only
+until its final workflow dispatch. It requires the checkout to be clean and at
+current remote `main`; confirms that the tagged release commit is on that main
+history; repeats the hygiene, version, exact-main CI, environment, ruleset,
+immutability, and serialization checks; rejects a legacy release branch or an
+already-public GitHub Release; and permits an existing draft for the workflow
+to reconcile. It then proves through the GitHub API that the source was the
+completed failed `publish.yml` `workflow_dispatch` for the exact tag and SHA,
+and that it contains one uniquely identified successful `verify-release` job.
+The command fetches that job's retained log and requires every GitHub-emitted
+`RELEASE_TAG`, `RELEASE_SHA`, and `COMPATIBILITY_ALIAS` environment triple to
+be complete and to match the requested recovery exactly. Missing, malformed,
+or alternate values fail closed. Finally, it requires exactly the two
+expected, unexpired, SHA-256-identified artifacts whose names bind the source
+run and successful verification attempt. If **Re-run failed jobs** advanced
+the run attempt, the earlier successful verification job, its logged input
+policy, and its original two artifacts remain the accepted source; any extra
+rebuilt artifact set is ambiguous and rejected.
+
+Immediately before its only mutation, `resume` re-reads current remote `main`.
+It then dispatches `publish.yml` on `main` with the exact release tag, tagged
+SHA, alias policy, and source run ID. The recovery workflow downloads those
+identified source artifacts. It does not create or move the version tag and
+must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
+unreadable GitHub state fails closed. An ad hoc fresh publication dispatch is
+not a recovery path.
 
 ## Post-release checks
 
