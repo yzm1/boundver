@@ -11,11 +11,12 @@ version. Prefer **Re-run failed jobs** on the original workflow run so its
 successful build job and artifact IDs are retained; do not use **Re-run all
 jobs**. If the original run is completed and failed, the `resume` command
 described below is the only supported new dispatch: it proves and reuses that
-run's exact retained artifacts instead of creating another candidate. Never
-dispatch `publish.yml` directly. Release artifacts are retained for 90 days,
-but GitHub permits workflow reruns only during the first 30 days after the
-initial run. The build also has to prove that the exact tagged source is
-byte-reproducible before its first upload.
+run's exact retained artifacts and its logged compatibility-alias policy
+instead of creating another candidate. Never dispatch `publish.yml` directly.
+Release artifacts are retained for 90 days, but GitHub permits workflow reruns
+only during the first 30 days after the initial run. The build also has to
+prove that the exact tagged source is byte-reproducible before its first
+upload.
 
 ## One-time service setup
 
@@ -190,8 +191,9 @@ python3 scripts/publish_release.py resume \
   --confirm "$release_tag@$release_sha#$run_id"
 ```
 
-Use `--alias none` if that was the approved policy for the original release.
-The confirmation binds three independent facts: immutable tag, full lowercase
+Use `--alias none` only if that was the approved policy for the original
+release. Recovery cannot change that choice in either direction. The
+confirmation binds three independent facts: immutable tag, full lowercase
 release commit, and positive-decimal source run ID. `resume` remains read-only
 until its final workflow dispatch. It requires the checkout to be clean and at
 current remote `main`; confirms that the tagged release commit is on that main
@@ -200,12 +202,16 @@ immutability, and serialization checks; rejects a legacy release branch or an
 already-public GitHub Release; and permits an existing draft for the workflow
 to reconcile. It then proves through the GitHub API that the source was the
 completed failed `publish.yml` `workflow_dispatch` for the exact tag and SHA,
-that its `verify-release` job succeeded, and that it owns exactly the two
+and that it contains one uniquely identified successful `verify-release` job.
+The command fetches that job's retained log and requires every GitHub-emitted
+`RELEASE_TAG`, `RELEASE_SHA`, and `COMPATIBILITY_ALIAS` environment triple to
+be complete and to match the requested recovery exactly. Missing, malformed,
+or alternate values fail closed. Finally, it requires exactly the two
 expected, unexpired, SHA-256-identified artifacts whose names bind the source
 run and successful verification attempt. If **Re-run failed jobs** advanced
-the run attempt, the earlier successful verification job and its original two
-artifacts remain the accepted source; any extra rebuilt artifact set is
-ambiguous and rejected.
+the run attempt, the earlier successful verification job, its logged input
+policy, and its original two artifacts remain the accepted source; any extra
+rebuilt artifact set is ambiguous and rejected.
 
 Immediately before its only mutation, `resume` re-reads current remote `main`.
 It then dispatches `publish.yml` on `main` with the exact release tag, tagged

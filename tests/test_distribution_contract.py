@@ -481,6 +481,7 @@ class AutomationContractTests(unittest.TestCase):
             'artifact_attempt > attempt',
             'type(artifacts_total) is not int',
             'artifacts_total != 2',
+            'f"verification-job-id={verification[\'id\']}"',
             'f"{release_tag}-{source_run_id}-{artifact_attempt}"',
             'f"python-dist-{suffix}"',
             'f"release-assets-{suffix}"',
@@ -492,6 +493,31 @@ class AutomationContractTests(unittest.TestCase):
         ):
             self.assertIn(invariant, recovery_query)
 
+        policy_gate = next(
+            step
+            for step in steps
+            if step["name"] == "Bind recovery policy to the source verification log"
+        )
+        self.assertEqual(policy_gate["if"], "inputs.resume_run_id != ''")
+        self.assertEqual(policy_gate["env"]["GH_TOKEN"], "${{ github.token }}")
+        self.assertEqual(
+            policy_gate["env"]["VERIFICATION_JOB_ID"],
+            "${{ steps.recover-artifacts.outputs.verification-job-id }}",
+        )
+        policy_query = policy_gate["run"]
+        for invariant in (
+            'if [[ ! "$VERIFICATION_JOB_ID" =~ ^[1-9][0-9]*$ ]]',
+            "actions/jobs/$VERIFICATION_JOB_ID/logs",
+            '"RELEASE_TAG", release_tag',
+            '"RELEASE_SHA", release_sha',
+            '"COMPATIBILITY_ALIAS", compatibility_alias',
+            "if not observed:",
+            "len(observed) % len(expected) != 0",
+            "observed[offset : offset + len(expected)] != expected",
+            "does not bind the exact release-policy triple",
+        ):
+            self.assertIn(invariant, policy_query)
+
         select = next(step for step in steps if step.get("id") == "select-artifacts")
         self.assertNotIn("if", select)
         self.assertIn('if os.environ["RESUME_RUN_ID"]', select["run"])
@@ -500,6 +526,8 @@ class AutomationContractTests(unittest.TestCase):
             verify["outputs"]["source-run-id"],
             "${{ steps.select-artifacts.outputs.source-run-id }}",
         )
+        self.assertLess(steps.index(recover), steps.index(policy_gate))
+        self.assertLess(steps.index(policy_gate), steps.index(select))
         for kind in ("python-dist", "release-assets"):
             self.assertEqual(
                 verify["outputs"][f"{kind}-artifact-id"],
@@ -643,6 +671,7 @@ sys.stdout.write((root / fixture).read_text(encoding="utf-8"))
                 for line in output.read_text(encoding="utf-8").splitlines()
             )
             self.assertEqual(selected["source-run-id"], str(source_run_id))
+            self.assertEqual(selected["verification-job-id"], "901")
             self.assertEqual(selected["python-dist-artifact-id"], "701")
             self.assertEqual(selected["release-assets-artifact-id"], "702")
 
@@ -677,6 +706,128 @@ sys.stdout.write((root / fixture).read_text(encoding="utf-8"))
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("exactly two artifacts", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "workflow recovery shell runs on Linux")
+    def test_publish_recovery_rejects_unbound_or_spoofed_source_policy_logs(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        policy_gate = next(
+            step
+            for step in workflow["jobs"]["verify-release"]["steps"]
+            if step["name"] == "Bind recovery policy to the source verification log"
+        )
+        release_tag = "v0.11.0"
+        release_sha = "a" * 40
+        compatibility_alias = "v0.11"
+        timestamp = "2026-08-14T09:20:21.1480329Z"
+
+        def log_triple(tag: str, sha: str, alias: str) -> str:
+            return "\n".join(
+                [
+                    f"{timestamp}   RELEASE_TAG: {tag}",
+                    f"{timestamp}   RELEASE_SHA: {sha}",
+                    f"{timestamp}   COMPATIBILITY_ALIAS: {alias}",
+                ]
+            ) + "\n"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log_path = root / "verification.log"
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+expected = [
+    "api",
+    "repos/yzm1/boundver/actions/jobs/901/logs",
+]
+if sys.argv[1:] != expected:
+    raise SystemExit(f"unexpected gh invocation: {sys.argv[1:]!r}")
+sys.stdout.write(
+    pathlib.Path(os.environ["FAKE_VERIFICATION_LOG"]).read_text(encoding="utf-8")
+)
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    "FAKE_VERIFICATION_LOG": str(log_path),
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "yzm1/boundver",
+                    "RELEASE_TAG": release_tag,
+                    "RELEASE_SHA": release_sha,
+                    "COMPATIBILITY_ALIAS": compatibility_alias,
+                    "VERIFICATION_JOB_ID": "901",
+                }
+            )
+
+            def run_policy_gate(
+                log: str,
+                *,
+                job_id: str = "901",
+                expected_alias: str = compatibility_alias,
+            ):
+                log_path.write_text(log, encoding="utf-8")
+                run_env = env.copy()
+                run_env["VERIFICATION_JOB_ID"] = job_id
+                run_env["COMPATIBILITY_ALIAS"] = expected_alias
+                return subprocess.run(
+                    ["bash", "-c", policy_gate["run"]],
+                    cwd=root,
+                    env=run_env,
+                    capture_output=True,
+                    text=True,
+                )
+
+            exact_log = log_triple(
+                release_tag, release_sha, compatibility_alias
+            ) * 2
+            result = run_policy_gate(exact_log)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            none_log = log_triple(release_tag, release_sha, "none")
+            result = run_policy_gate(none_log, expected_alias="none")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            cases = {
+                "alias mismatch": (
+                    log_triple(release_tag, release_sha, "none"),
+                    "does not bind the exact release-policy triple",
+                ),
+                "alternate spoofed triple": (
+                    exact_log + log_triple(release_tag, release_sha, "none"),
+                    "does not bind the exact release-policy triple",
+                ),
+                "missing alias": (
+                    "\n".join(exact_log.splitlines()[:2]) + "\n",
+                    "incomplete or spoofed release-policy triple",
+                ),
+                "missing triple": (
+                    f"{timestamp} unrelated output\n",
+                    "has no release-policy environment triple",
+                ),
+            }
+            for label, (log, error) in cases.items():
+                with self.subTest(label=label):
+                    result = run_policy_gate(log)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stderr)
+
+            result = run_policy_gate(exact_log, job_id="0")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("must be a positive integer", result.stderr)
 
     def test_publish_recovery_fails_closed_on_archive_or_payload_mismatch(self):
         import yaml

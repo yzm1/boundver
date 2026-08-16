@@ -36,6 +36,12 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 ALIAS_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)")
 RUN_ID_RE = re.compile(r"[1-9]\d*")
 ARTIFACT_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+JOB_LOG_ENV_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z {3}"
+    r"(?P<name>RELEASE_TAG|RELEASE_SHA|COMPATIBILITY_ALIAS)(?P<rest>.*)$"
+)
+JOB_LOG_ENV_VALUE_RE = re.compile(r": (?P<value>\S+)")
+MAX_JOB_LOG_BYTES = 32 * 1024 * 1024
 SURFACES = (
     "repository hygiene",
     "README and documentation",
@@ -219,6 +225,36 @@ def _gh_json(repo: Path, repository: str, endpoint: str) -> object:
         return json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise GateError(f"GitHub API returned invalid JSON for {endpoint}") from error
+
+
+def _gh_job_log(repo: Path, job_id: int) -> str:
+    if not isinstance(job_id, int) or isinstance(job_id, bool) or job_id <= 0:
+        raise GateError("source verify-release job ID is malformed")
+    endpoint = f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"
+    command = ("gh", "api", endpoint)
+    try:
+        result = subprocess.run(
+            list(command),
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise GateError("required command is unavailable: gh") from error
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
+        raise GateError(
+            f"GitHub API failed for {endpoint}: "
+            f"{detail.strip() or 'unknown error'}"
+        )
+    if not result.stdout:
+        raise GateError("source verify-release job log is empty")
+    if len(result.stdout) > MAX_JOB_LOG_BYTES:
+        raise GateError("source verify-release job log exceeds the inspection limit")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise GateError("source verify-release job log is not valid UTF-8") from error
 
 
 def _record(checks: list[Check], name: str, operation) -> object | None:
@@ -476,11 +512,52 @@ def _github_timestamp(value: object, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _require_source_release_inputs(
+    job_log: str,
+    tag: str,
+    sha: str,
+    alias: str,
+) -> str:
+    expected = {
+        "RELEASE_TAG": tag,
+        "RELEASE_SHA": sha,
+        "COMPATIBILITY_ALIAS": alias,
+    }
+    observed: dict[str, list[str]] = {name: [] for name in expected}
+    for line in job_log.splitlines():
+        match = JOB_LOG_ENV_RE.fullmatch(line)
+        if match is None:
+            continue
+        value_match = JOB_LOG_ENV_VALUE_RE.fullmatch(match.group("rest"))
+        if value_match is None:
+            raise GateError(
+                f"source verify-release job log has malformed {match.group('name')} evidence"
+            )
+        observed[match.group("name")].append(value_match.group("value"))
+
+    counts = {name: len(values) for name, values in observed.items()}
+    if not all(counts.values()) or len(set(counts.values())) != 1:
+        raise GateError(
+            "source verify-release job log does not contain complete release input triples"
+        )
+    for name, expected_value in expected.items():
+        values = observed[name]
+        if any(value != expected_value for value in values):
+            raise GateError(
+                f"source verify-release job log does not bind {name} to the expected value"
+            )
+    return (
+        f"verify-release job log binds {counts['RELEASE_TAG']} release input "
+        f"triple(s) to {tag}, {sha}, and alias {alias}"
+    )
+
+
 def _source_release_artifacts(
     repo: Path,
     run_id: int,
     tag: str,
     sha: str,
+    alias: str,
 ) -> str:
     run_endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}"
     run = _gh_json(repo, REPOSITORY, run_endpoint)
@@ -546,6 +623,12 @@ def _source_release_artifacts(
     artifact_attempt = verify_job.get("run_attempt")
     if not isinstance(artifact_attempt, int) or isinstance(artifact_attempt, bool):
         raise GateError("source verify-release attempt is malformed")
+    source_inputs = _require_source_release_inputs(
+        _gh_job_log(repo, verify_job["id"]),
+        tag,
+        sha,
+        alias,
+    )
 
     artifacts_payload = _gh_json(
         repo,
@@ -607,7 +690,8 @@ def _source_release_artifacts(
         raise GateError("source artifact names do not match the release tag, run, and attempt")
     return (
         f"failed publish run {run_id} attempt {attempt} reuses successful "
-        f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts"
+        f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts; "
+        f"{source_inputs}"
     )
 
 
@@ -777,6 +861,7 @@ def _evaluate_resume(
     repo: Path,
     remote: str,
     tag: str,
+    alias: str,
     run_id: int,
     release_sha: str,
 ) -> tuple[str | None, list[Check]]:
@@ -824,7 +909,7 @@ def _evaluate_resume(
                 checks,
                 "source publication artifacts",
                 lambda: _source_release_artifacts(
-                    repo, run_id, tag, release_sha
+                    repo, run_id, tag, release_sha, alias
                 ),
             )
     return control_sha, checks
@@ -928,6 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.repo,
             args.remote,
             args.tag,
+            args.alias,
             args.run_id,
             confirmation_sha,
         )

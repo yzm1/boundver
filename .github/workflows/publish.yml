@@ -432,7 +432,10 @@ jobs:
                   raise SystemExit(f"source artifact has expired: {name!r}")
               selected[expected_names[name]] = (artifact_id, digest)
 
-          lines = [f"source-run-id={source_run_id}"]
+          lines = [
+              f"source-run-id={source_run_id}",
+              f"verification-job-id={verification['id']}",
+          ]
           for label in ("python-dist", "release-assets"):
               artifact_id, digest = selected[label]
               lines.extend(
@@ -443,6 +446,69 @@ jobs:
               )
           with pathlib.Path(output_path).open("a", encoding="utf-8") as output:
               output.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Bind recovery policy to the source verification log
+        if: inputs.resume_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFICATION_JOB_ID: ${{ steps.recover-artifacts.outputs.verification-job-id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERIFICATION_JOB_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Source verification job ID must be a positive integer" >&2
+            exit 1
+          fi
+
+          verification_log=$(mktemp)
+          trap 'rm -f "$verification_log"' EXIT
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/jobs/$VERIFICATION_JOB_ID/logs" \
+            > "$verification_log"
+          if [[ ! -s "$verification_log" ]]; then
+            echo "Source verification job log is empty" >&2
+            exit 1
+          fi
+
+          python3 - \
+            "$verification_log" \
+            "$RELEASE_TAG" \
+            "$RELEASE_SHA" \
+            "$COMPATIBILITY_ALIAS" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          log_path, release_tag, release_sha, compatibility_alias = sys.argv[1:]
+          line_pattern = re.compile(
+              r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z   "
+              r"(RELEASE_TAG|RELEASE_SHA|COMPATIBILITY_ALIAS): (.*)$"
+          )
+          observed = []
+          for line in pathlib.Path(log_path).read_text(encoding="utf-8").splitlines():
+              match = line_pattern.fullmatch(line)
+              if match is not None:
+                  observed.append(match.groups())
+
+          expected = [
+              ("RELEASE_TAG", release_tag),
+              ("RELEASE_SHA", release_sha),
+              ("COMPATIBILITY_ALIAS", compatibility_alias),
+          ]
+          if not observed:
+              raise SystemExit(
+                  "source verification log has no release-policy environment triple"
+              )
+          if len(observed) % len(expected) != 0:
+              raise SystemExit(
+                  "source verification log has an incomplete or spoofed release-policy triple"
+              )
+          for offset in range(0, len(observed), len(expected)):
+              if observed[offset : offset + len(expected)] != expected:
+                  raise SystemExit(
+                      "source verification log does not bind the exact release-policy triple"
+                  )
           PY
 
       - name: Select the immutable artifact source

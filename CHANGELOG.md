@@ -11,9 +11,11 @@ All notable changes to this project are documented here. The format follows
 - A fail-closed `publish_release.py resume` recovery path can resume one
   completed failed publication from its exact tagged commit and original
   retained artifacts. It validates the source run, successful verification
-  job, artifact names, SHA-256 identities, expiry, and run association before
-  dispatching the protected publication workflow once from current `main`;
-  it never moves the release tag or rebuilds and replaces the candidate.
+  job, the job log's exact tag/SHA/compatibility-alias policy, artifact names,
+  SHA-256 identities, expiry, and run association before dispatching the
+  protected publication workflow once from current `main`; it never changes
+  the approved alias policy, moves the release tag, or rebuilds and replaces
+  the candidate.
 
 ## [0.11.0] - 2026-08-14
 

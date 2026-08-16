@@ -26,6 +26,7 @@ SHA = "1" * 40
 CONTROL_SHA = "2" * 40
 RUN_ID = 7654321
 RUN_ATTEMPT = 3
+ALIAS = "v0.11"
 
 
 def _load_script():
@@ -137,6 +138,26 @@ def _resume_api_payloads(
             ],
         },
     }
+
+
+def _verify_release_job_log(
+    *,
+    tag: str = TAG,
+    sha: str = SHA,
+    alias: str = ALIAS,
+    repetitions: int = 2,
+) -> str:
+    lines: list[str] = []
+    for index in range(repetitions):
+        timestamp = f"2026-08-14T09:20:{21 + index:02d}.1234567Z"
+        lines.extend(
+            (
+                f"{timestamp}   RELEASE_TAG: {tag}",
+                f"{timestamp}   RELEASE_SHA: {sha}",
+                f"{timestamp}   COMPATIBILITY_ALIAS: {alias}",
+            )
+        )
+    return "\n".join(lines) + "\n"
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
@@ -359,6 +380,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             ) as runner,
             mock.patch("builtins.print") as output,
         ):
+            resolved_repo = Path(td).resolve()
             result = publisher.main(
                 [
                     "resume",
@@ -378,9 +400,11 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        evaluate.assert_called_once_with(Path(td), "origin", TAG, RUN_ID, SHA)
+        evaluate.assert_called_once_with(
+            Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
+        )
         start_evaluate.assert_not_called()
-        revalidate.assert_called_once_with(Path(td), "origin", CONTROL_SHA)
+        revalidate.assert_called_once_with(resolved_repo, "origin", CONTROL_SHA)
         runner.assert_called_once()
         self.assertEqual(
             runner.call_args.args[0],
@@ -438,22 +462,25 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ] as tag_state, patches[7] as ancestry, patches[8] as controls, patches[
             9
         ] as artifacts:
+            resolved_repo = Path(td).resolve()
             control_sha, checks = publisher._evaluate_resume(
-                Path(td), "origin", TAG, RUN_ID, SHA
+                Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
             )
 
         self.assertEqual(control_sha, CONTROL_SHA)
         self.assertTrue(all(check.status == "passed" for check in checks))
-        main.assert_called_once_with(Path(td), "origin", CONTROL_SHA)
-        tag_state.assert_called_once_with(Path(td), "origin", TAG, SHA)
-        ancestry.assert_called_once_with(Path(td), SHA, CONTROL_SHA)
+        main.assert_called_once_with(resolved_repo, "origin", CONTROL_SHA)
+        tag_state.assert_called_once_with(resolved_repo, "origin", TAG, SHA)
+        ancestry.assert_called_once_with(resolved_repo, SHA, CONTROL_SHA)
         controls.assert_called_once_with(
-            Path(td), CONTROL_SHA, TAG, allow_draft_release=True
+            resolved_repo, CONTROL_SHA, TAG, allow_draft_release=True
         )
-        artifacts.assert_called_once_with(Path(td), RUN_ID, TAG, SHA)
+        artifacts.assert_called_once_with(
+            resolved_repo, RUN_ID, TAG, SHA, ALIAS
+        )
         for called in (surfaces, identity, clean, hygiene, project):
             called.assert_called_once()
-        project.assert_called_once_with(Path(td), SHA, TAG)
+        project.assert_called_once_with(resolved_repo, SHA, TAG)
 
     def test_resume_reads_version_from_release_commit_not_current_main(self):
         publisher = _load_script()
@@ -794,14 +821,33 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         def response(_repo, _repository, endpoint):
             return copy.deepcopy(payloads[endpoint])
 
-        with mock.patch.object(publisher, "_gh_json", side_effect=response) as api:
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ) as api, mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ) as job_log:
             detail = publisher._source_release_artifacts(
-                Path("."), RUN_ID, TAG, SHA
+                Path("."), RUN_ID, TAG, SHA, ALIAS
             )
 
         self.assertIn(str(RUN_ID), detail)
         self.assertIn(str(RUN_ATTEMPT), detail)
+        self.assertIn(ALIAS, detail)
         self.assertEqual(api.call_count, 3)
+        job_log.assert_called_once_with(Path("."), 31)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ), self.assertRaisesRegex(publisher.GateError, "COMPATIBILITY_ALIAS"):
+            publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA, "none"
+            )
 
     def test_resume_reuses_verified_artifact_attempt_after_failed_job_rerun(self):
         publisher = _load_script()
@@ -810,13 +856,117 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         def response(_repo, _repository, endpoint):
             return copy.deepcopy(payloads[endpoint])
 
-        with mock.patch.object(publisher, "_gh_json", side_effect=response):
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ):
             detail = publisher._source_release_artifacts(
-                Path("."), RUN_ID, TAG, SHA
+                Path("."), RUN_ID, TAG, SHA, ALIAS
             )
 
         self.assertIn("attempt 2", detail)
         self.assertIn("verify-release attempt 1", detail)
+
+    def test_resume_source_log_binds_the_exact_original_release_inputs(self):
+        publisher = _load_script()
+        detail = publisher._require_source_release_inputs(
+            _verify_release_job_log(repetitions=3), TAG, SHA, ALIAS
+        )
+        self.assertIn("3 release input triple(s)", detail)
+        self.assertIn(ALIAS, detail)
+        none_detail = publisher._require_source_release_inputs(
+            _verify_release_job_log(alias="none", repetitions=1),
+            TAG,
+            SHA,
+            "none",
+        )
+        self.assertIn("alias none", none_detail)
+
+        base = _verify_release_job_log(repetitions=1)
+        missing_sha = "\n".join(
+            line for line in base.splitlines() if "RELEASE_SHA" not in line
+        )
+        malformed_alias = base.replace(
+            f"COMPATIBILITY_ALIAS: {ALIAS}",
+            f"COMPATIBILITY_ALIAS={ALIAS}",
+        )
+        alternate_triple = base + _verify_release_job_log(
+            alias="none", repetitions=1
+        )
+        cases = (
+            (
+                "requested alias differs",
+                _verify_release_job_log(alias="none", repetitions=1),
+                "expected value",
+            ),
+            ("missing SHA", missing_sha, "complete release input triples"),
+            ("malformed alias", malformed_alias, "malformed"),
+            ("spoofed alternate triple", alternate_triple, "expected value"),
+        )
+        for label, job_log, message in cases:
+            with self.subTest(label=label), self.assertRaisesRegex(
+                publisher.GateError, message
+            ):
+                publisher._require_source_release_inputs(
+                    job_log, TAG, SHA, ALIAS
+                )
+
+    def test_resume_fetches_only_the_selected_verify_release_job_log(self):
+        publisher = _load_script()
+        expected_log = _verify_release_job_log(repetitions=1)
+        result = subprocess.CompletedProcess(
+            args=(),
+            returncode=0,
+            stdout=expected_log.encode("utf-8"),
+            stderr=b"",
+        )
+        with mock.patch.object(
+            publisher.subprocess, "run", return_value=result
+        ) as runner:
+            actual = publisher._gh_job_log(Path("repo"), 31)
+
+        self.assertEqual(actual, expected_log)
+        runner.assert_called_once_with(
+            ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
+            cwd=Path("repo"),
+            capture_output=True,
+            check=False,
+        )
+
+        for invalid_job_id in (0, -1, True, "31"):
+            with self.subTest(job_id=invalid_job_id), self.assertRaisesRegex(
+                publisher.GateError, "job ID is malformed"
+            ):
+                publisher._gh_job_log(Path("repo"), invalid_job_id)
+
+        failures = (
+            (
+                subprocess.CompletedProcess((), 1, b"", b"forbidden"),
+                "GitHub API failed",
+            ),
+            (subprocess.CompletedProcess((), 0, b"", b""), "job log is empty"),
+            (
+                subprocess.CompletedProcess((), 0, b"\x81", b""),
+                "not valid UTF-8",
+            ),
+        )
+        for response, message in failures:
+            with self.subTest(message=message), mock.patch.object(
+                publisher.subprocess, "run", return_value=response
+            ), self.assertRaisesRegex(publisher.GateError, message):
+                publisher._gh_job_log(Path("repo"), 31)
+
+        with mock.patch.object(
+            publisher.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess((), 0, b"12345", b""),
+        ), mock.patch.object(
+            publisher, "MAX_JOB_LOG_BYTES", 4
+        ), self.assertRaisesRegex(publisher.GateError, "inspection limit"):
+            publisher._gh_job_log(Path("repo"), 31)
 
     def test_resume_requires_the_existing_exact_tag_and_no_legacy_branch(self):
         publisher = _load_script()
@@ -898,8 +1048,14 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
             with self.subTest(label=label), mock.patch.object(
                 publisher, "_gh_json", side_effect=response
+            ), mock.patch.object(
+                publisher,
+                "_gh_job_log",
+                return_value=_verify_release_job_log(),
             ), self.assertRaisesRegex(publisher.GateError, message):
-                publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+                publisher._source_release_artifacts(
+                    Path("."), RUN_ID, TAG, SHA, ALIAS
+                )
 
     def test_resume_fails_closed_on_source_api_errors_or_incomplete_pages(self):
         publisher = _load_script()
@@ -908,7 +1064,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "_gh_json",
             side_effect=publisher.GateError("GitHub API unavailable"),
         ), self.assertRaisesRegex(publisher.GateError, "API unavailable"):
-            publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+            publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA, ALIAS
+            )
 
         payloads = _resume_api_payloads()
         jobs_endpoint = (
@@ -923,7 +1081,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         with mock.patch.object(
             publisher, "_gh_json", side_effect=response
         ), self.assertRaisesRegex(publisher.GateError, "completely inspect"):
-            publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+            publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA, ALIAS
+            )
 
     def test_resume_accepts_only_absent_or_draft_github_release(self):
         publisher = _load_script()
@@ -1123,6 +1283,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertIn("--alias", runbook)
         self.assertIn("--run-id", runbook)
         self.assertIn("#$run_id", runbook)
+        self.assertIn("COMPATIBILITY_ALIAS", runbook)
+        self.assertIn("Missing, malformed,\nor alternate values fail closed", runbook)
         self.assertIn("read-only", runbook.lower())
         self.assertNotIn("gh workflow run publish.yml", runbook)
 
