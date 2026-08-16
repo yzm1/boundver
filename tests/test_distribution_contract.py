@@ -284,11 +284,11 @@ class AutomationContractTests(unittest.TestCase):
         self.assertEqual(upload["id"], "upload-python-dist")
         self.assertEqual(
             jobs["verify-release"]["outputs"]["python-dist-artifact-id"],
-            "${{ steps.upload-python-dist.outputs.artifact-id }}",
+            "${{ steps.select-artifacts.outputs.python-dist-artifact-id }}",
         )
         self.assertEqual(
             jobs["verify-release"]["outputs"]["python-dist-artifact-digest"],
-            "${{ steps.upload-python-dist.outputs.artifact-digest }}",
+            "${{ steps.select-artifacts.outputs.python-dist-artifact-digest }}",
         )
         self.assertIn("dist/*.whl", upload["with"]["path"])
         self.assertIn("dist/*.tar.gz", upload["with"]["path"])
@@ -366,6 +366,437 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertIn("verify_testpypi_release.py preflight", fresh["run"])
         self.assertIn("https://pypi.org/pypi", fresh["run"])
+
+    def test_publish_recovery_binds_current_main_before_exact_release_checkout(self):
+        import yaml
+
+        workflow_text = (
+            REPO_ROOT / ".github/workflows/publish.yml"
+        ).read_text(encoding="utf-8")
+        workflow = yaml.safe_load(workflow_text)
+        resume_input = workflow[True]["workflow_dispatch"]["inputs"][
+            "resume_run_id"
+        ]
+        self.assertIs(resume_input["required"], False)
+        self.assertEqual(resume_input["default"], "")
+        self.assertEqual(resume_input["type"], "string")
+
+        verify = workflow["jobs"]["verify-release"]
+        self.assertEqual(verify["permissions"]["actions"], "read")
+        self.assertEqual(verify["permissions"]["issues"], "read")
+        self.assertEqual(verify["permissions"]["pull-requests"], "read")
+        steps = verify["steps"]
+        binding = steps[0]["run"]
+        self.assertIn('if [[ -z "$RESUME_RUN_ID" ]]', binding)
+        self.assertIn('"$DISPATCH_REF_TYPE" != tag', binding)
+        self.assertIn('"$DISPATCH_REF" != "refs/tags/$RELEASE_TAG"', binding)
+        self.assertIn('"$DISPATCH_SHA" != "$RELEASE_SHA"', binding)
+        self.assertIn('"$DISPATCH_REF_TYPE" != branch', binding)
+        self.assertIn('"$DISPATCH_REF_NAME" != main', binding)
+        self.assertIn('"$DISPATCH_REF" != refs/heads/main', binding)
+        self.assertIn("git/ref/heads/main", binding)
+        self.assertIn('"$DISPATCH_SHA" != "$remote_main"', binding)
+
+        by_name = {step["name"]: step for step in steps}
+        recovery_checkout = by_name["Checkout the recovery control commit"]
+        self.assertEqual(recovery_checkout["if"], "inputs.resume_run_id != ''")
+        self.assertEqual(recovery_checkout["with"]["ref"], "${{ github.sha }}")
+        ci_gate = by_name[
+            "Require successful CI for the exact recovery control commit"
+        ]
+        self.assertEqual(ci_gate["if"], "inputs.resume_run_id != ''")
+        self.assertIn("actions/workflows/ci.yml/runs", ci_gate["run"])
+        self.assertIn("head_sha=$CONTROL_SHA&event=push", ci_gate["run"])
+        self.assertIn('.head_branch == "main"', ci_gate["run"])
+        review_gate = by_name[
+            "Require current reviews for the recovery control commit"
+        ]
+        self.assertIn(
+            'scripts/audit_release_reviews.sh "$CONTROL_SHA" "$RELEASE_TAG"',
+            review_gate["run"],
+        )
+        rebind = by_name["Rebind recovery to current main after its control audit"]
+        self.assertIn('"$current_main" != "$CONTROL_SHA"', rebind["run"])
+        release_checkout = by_name["Checkout the released commit"]
+        self.assertEqual(release_checkout["with"]["ref"], "${{ inputs.release_sha }}")
+        self.assertLess(steps.index(recovery_checkout), steps.index(ci_gate))
+        self.assertLess(steps.index(ci_gate), steps.index(review_gate))
+        self.assertLess(steps.index(review_gate), steps.index(rebind))
+        self.assertLess(steps.index(rebind), steps.index(release_checkout))
+
+        fresh_only = {
+            "Test source and exact distributions",
+            "Upload verified distributions",
+            "Assemble standalone and checksummed GitHub Release assets",
+            "Upload verified GitHub Release assets",
+        }
+        self.assertEqual(
+            {
+                step["name"]
+                for step in steps
+                if step.get("if") == "inputs.resume_run_id == ''"
+            },
+            fresh_only,
+        )
+        for step in steps:
+            if (
+                str(step.get("uses", "")).startswith("actions/upload-artifact@")
+                or "packaging_smoke.sh" in step.get("run", "")
+            ):
+                self.assertEqual(step.get("if"), "inputs.resume_run_id == ''")
+
+    def test_publish_recovery_selects_only_exact_unexpired_source_artifacts(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        verify = workflow["jobs"]["verify-release"]
+        steps = verify["steps"]
+        recover = next(step for step in steps if step.get("id") == "recover-artifacts")
+        self.assertEqual(recover["if"], "inputs.resume_run_id != ''")
+        recovery_query = recover["run"]
+        for endpoint in (
+            'actions/runs/$RESUME_RUN_ID"',
+            "actions/runs/$RESUME_RUN_ID/jobs?filter=all&per_page=100",
+            "actions/runs/$RESUME_RUN_ID/artifacts?per_page=100",
+        ):
+            self.assertIn(endpoint, recovery_query)
+        for invariant in (
+            '"event": "workflow_dispatch"',
+            '"status": "completed"',
+            '"conclusion": "failure"',
+            '"path": ".github/workflows/publish.yml"',
+            '"head_branch": release_tag',
+            '"head_sha": release_sha',
+            'job.get("name") == "verify-release"',
+            'job.get("conclusion") == "success"',
+            'verification.get("run_id") != source_run_id',
+            'verification.get("head_sha") != release_sha',
+            'type(attempt) is not int',
+            'type(jobs_total) is not int',
+            'type(artifact_attempt) is not int',
+            'artifact_attempt > attempt',
+            'type(artifacts_total) is not int',
+            'artifacts_total != 2',
+            'f"{release_tag}-{source_run_id}-{artifact_attempt}"',
+            'f"python-dist-{suffix}"',
+            'f"release-assets-{suffix}"',
+            'artifact.get("expired") is not False',
+            'artifact["size_in_bytes"] < 1',
+            're.fullmatch(r"sha256:[0-9a-f]{64}", digest)',
+            'workflow_run.get("id") != source_run_id',
+            'expiry <= now',
+        ):
+            self.assertIn(invariant, recovery_query)
+
+        select = next(step for step in steps if step.get("id") == "select-artifacts")
+        self.assertNotIn("if", select)
+        self.assertIn('if os.environ["RESUME_RUN_ID"]', select["run"])
+        self.assertIn('"source-run-id": os.environ["CURRENT_RUN_ID"]', select["run"])
+        self.assertEqual(
+            verify["outputs"]["source-run-id"],
+            "${{ steps.select-artifacts.outputs.source-run-id }}",
+        )
+        for kind in ("python-dist", "release-assets"):
+            self.assertEqual(
+                verify["outputs"][f"{kind}-artifact-id"],
+                f"${{{{ steps.select-artifacts.outputs.{kind}-artifact-id }}}}",
+            )
+            self.assertEqual(
+                verify["outputs"][f"{kind}-artifact-digest"],
+                f"${{{{ steps.select-artifacts.outputs.{kind}-artifact-digest }}}}",
+            )
+
+    @unittest.skipIf(os.name == "nt", "workflow recovery shell runs on Linux")
+    def test_publish_recovery_reuses_artifacts_from_preceding_successful_attempt(self):
+        import json
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        recover = next(
+            step
+            for step in workflow["jobs"]["verify-release"]["steps"]
+            if step.get("id") == "recover-artifacts"
+        )
+        source_run_id = 321
+        release_tag = "v0.11.0"
+        release_sha = "a" * 40
+        run = {
+            "id": source_run_id,
+            "run_attempt": 2,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "failure",
+            "path": ".github/workflows/publish.yml",
+            "head_branch": release_tag,
+            "head_sha": release_sha,
+        }
+        jobs = {
+            "total_count": 2,
+            "jobs": [
+                {
+                    "id": 901,
+                    "run_id": source_run_id,
+                    "name": "verify-release",
+                    "run_attempt": 1,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "head_sha": release_sha,
+                },
+                {
+                    "id": 902,
+                    "run_id": source_run_id,
+                    "name": "Reject conflicting TestPyPI release state",
+                    "run_attempt": 2,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "head_sha": release_sha,
+                },
+            ],
+        }
+
+        def artifact(artifact_id: int, name: str, digest_char: str) -> dict:
+            return {
+                "id": artifact_id,
+                "name": name,
+                "expired": False,
+                "size_in_bytes": 100,
+                "digest": f"sha256:{digest_char * 64}",
+                "expires_at": "2099-01-01T00:00:00Z",
+                "workflow_run": {
+                    "id": source_run_id,
+                    "head_branch": release_tag,
+                    "head_sha": release_sha,
+                },
+            }
+
+        suffix = f"{release_tag}-{source_run_id}-1"
+        artifacts = {
+            "total_count": 2,
+            "artifacts": [
+                artifact(701, f"python-dist-{suffix}", "b"),
+                artifact(702, f"release-assets-{suffix}", "c"),
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            (fixtures / "run.json").write_text(json.dumps(run), encoding="utf-8")
+            (fixtures / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
+            artifacts_path = fixtures / "artifacts.json"
+            artifacts_path.write_text(json.dumps(artifacts), encoding="utf-8")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+endpoint = sys.argv[2]
+root = pathlib.Path(os.environ["FAKE_GH_FIXTURES"])
+if "/jobs?" in endpoint:
+    fixture = "jobs.json"
+elif "/artifacts?" in endpoint:
+    fixture = "artifacts.json"
+else:
+    fixture = "run.json"
+sys.stdout.write((root / fixture).read_text(encoding="utf-8"))
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            output = root / "github-output"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    "FAKE_GH_FIXTURES": str(fixtures),
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "yzm1/boundver",
+                    "GITHUB_OUTPUT": str(output),
+                    "RESUME_RUN_ID": str(source_run_id),
+                    "RELEASE_TAG": release_tag,
+                    "RELEASE_SHA": release_sha,
+                }
+            )
+            result = subprocess.run(
+                ["bash", "-c", recover["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            selected = dict(
+                line.split("=", 1)
+                for line in output.read_text(encoding="utf-8").splitlines()
+            )
+            self.assertEqual(selected["source-run-id"], str(source_run_id))
+            self.assertEqual(selected["python-dist-artifact-id"], "701")
+            self.assertEqual(selected["release-assets-artifact-id"], "702")
+
+            rerun_all_artifacts = artifacts["artifacts"] + [
+                artifact(
+                    703,
+                    f"python-dist-{release_tag}-{source_run_id}-2",
+                    "d",
+                ),
+                artifact(
+                    704,
+                    f"release-assets-{release_tag}-{source_run_id}-2",
+                    "e",
+                ),
+            ]
+            artifacts_path.write_text(
+                json.dumps(
+                    {
+                        "total_count": len(rerun_all_artifacts),
+                        "artifacts": rerun_all_artifacts,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            output.write_text("", encoding="utf-8")
+            result = subprocess.run(
+                ["bash", "-c", recover["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("exactly two artifacts", result.stderr)
+
+    def test_publish_recovery_fails_closed_on_archive_or_payload_mismatch(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        steps = workflow["jobs"]["verify-release"]["steps"]
+        recovery_downloads = [
+            step
+            for step in steps
+            if str(step.get("uses", "")).startswith("actions/download-artifact@")
+        ]
+        self.assertEqual(len(recovery_downloads), 2)
+        for download in recovery_downloads:
+            self.assertEqual(download["if"], "inputs.resume_run_id != ''")
+            self.assertEqual(
+                download["with"]["github-token"], "${{ github.token }}"
+            )
+            self.assertEqual(
+                download["with"]["repository"], "${{ github.repository }}"
+            )
+            self.assertEqual(
+                download["with"]["run-id"],
+                "${{ steps.select-artifacts.outputs.source-run-id }}",
+            )
+            self.assertIs(download["with"]["merge-multiple"], True)
+            self.assertIn(
+                download["with"]["path"],
+                {"recovered-python-dist", "recovered-release-assets"},
+            )
+
+        archive_gate = next(
+            step
+            for step in steps
+            if step["name"] == "Fail on any recovered artifact archive digest mismatch"
+        )["run"]
+        for check in (
+            "actions/artifacts/$artifact_id/zip",
+            'actual_digest="sha256:$(sha256sum',
+            '"$actual_digest" != "$expected_digest"',
+            "artifact archive is not a unique flat file set",
+            "download action output disagrees with artifact archive",
+            "download action changed artifact bytes",
+        ):
+            self.assertIn(check, archive_gate)
+
+        payload_gate = next(
+            step
+            for step in steps
+            if step["name"] == "Validate the exact recovered release payload"
+        )["run"]
+        for check in (
+            'require_exact("recovered-python-dist", [wheel, sdist])',
+            'require_exact("recovered-release-assets", '
+            '[wheel, sdist, pyz, "SHA256SUMS"])',
+            "SHA256SUMS does not cover the exact release payload",
+            "sha256sum --check --strict SHA256SUMS",
+            "cmp --silent",
+            "python3 -m twine check",
+        ):
+            self.assertIn(check, payload_gate)
+        self.assertEqual(payload_gate.count("cmp --silent"), 2)
+
+    def test_every_downstream_artifact_download_uses_selected_source_run(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        jobs = workflow["jobs"]
+        downstream = []
+        for job_name, job in jobs.items():
+            if job_name == "verify-release":
+                continue
+            downloads = [
+                step
+                for step in job.get("steps", [])
+                if str(step.get("uses", "")).startswith(
+                    "actions/download-artifact@"
+                )
+            ]
+            if not downloads:
+                continue
+            self.assertEqual(job["permissions"]["actions"], "read", job_name)
+            for download in downloads:
+                options = download["with"]
+                self.assertEqual(
+                    options["run-id"],
+                    "${{ needs.verify-release.outputs.source-run-id }}",
+                    job_name,
+                )
+                self.assertEqual(
+                    options["github-token"], "${{ github.token }}", job_name
+                )
+                self.assertEqual(
+                    options["repository"], "${{ github.repository }}", job_name
+                )
+                self.assertIs(options["merge-multiple"], True, job_name)
+                self.assertIn(options["path"], {"dist", "release-assets"})
+                self.assertNotIn("name", options)
+                self.assertIn(
+                    options["artifact-ids"],
+                    {
+                        "${{ needs.verify-release.outputs.python-dist-artifact-id }}",
+                        "${{ needs.verify-release.outputs."
+                        "release-assets-artifact-id }}",
+                    },
+                )
+                downstream.append((job_name, download))
+        self.assertEqual(len(downstream), 11)
+        self.assertEqual(jobs["publish-testpypi"]["environment"], "testpypi")
+        self.assertEqual(jobs["publish-testpypi"]["permissions"]["id-token"], "write")
+        self.assertEqual(jobs["verify-marketplace"]["environment"], "marketplace")
+        self.assertEqual(jobs["publish-pypi"]["environment"], "pypi")
+        self.assertEqual(jobs["publish-pypi"]["permissions"]["id-token"], "write")
 
     def test_testpypi_install_cannot_resolve_boundver_from_pypi(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(

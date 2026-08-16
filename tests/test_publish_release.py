@@ -7,6 +7,7 @@ workflows after this command has proved exactly which commit is being released.
 
 from __future__ import annotations
 
+import copy
 import json
 import importlib.util
 import re
@@ -22,6 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "publish_release.py"
 TAG = "v0.11.0"
 SHA = "1" * 40
+CONTROL_SHA = "2" * 40
+RUN_ID = 7654321
+RUN_ATTEMPT = 3
 
 
 def _load_script():
@@ -70,11 +74,76 @@ def _refs(root: Path) -> str:
     ).stdout
 
 
+def _resume_api_payloads(
+    *,
+    run_attempt: int = RUN_ATTEMPT,
+    artifact_attempt: int | None = None,
+) -> dict[str, object]:
+    if artifact_attempt is None:
+        artifact_attempt = run_attempt
+    run_endpoint = f"repos/yzm1/boundver/actions/runs/{RUN_ID}"
+    association = {
+        "id": RUN_ID,
+        "head_branch": TAG,
+        "head_sha": SHA,
+    }
+    return {
+        run_endpoint: {
+            "id": RUN_ID,
+            "repository": {"full_name": "yzm1/boundver"},
+            "path": ".github/workflows/publish.yml",
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_branch": TAG,
+            "head_sha": SHA,
+            "run_attempt": run_attempt,
+        },
+        f"{run_endpoint}/jobs?filter=all&per_page=100": {
+            "total_count": 1,
+            "jobs": [
+                {
+                    "id": 31,
+                    "name": "verify-release",
+                    "run_id": RUN_ID,
+                    "run_attempt": artifact_attempt,
+                    "head_sha": SHA,
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            ],
+        },
+        f"{run_endpoint}/artifacts?per_page=100": {
+            "total_count": 2,
+            "artifacts": [
+                {
+                    "id": 41,
+                    "size_in_bytes": 100,
+                    "name": f"python-dist-{TAG}-{RUN_ID}-{artifact_attempt}",
+                    "expired": False,
+                    "expires_at": "2999-01-01T00:00:00Z",
+                    "digest": f"sha256:{'a' * 64}",
+                    "workflow_run": dict(association),
+                },
+                {
+                    "id": 42,
+                    "size_in_bytes": 200,
+                    "name": f"release-assets-{TAG}-{RUN_ID}-{artifact_attempt}",
+                    "expired": False,
+                    "expires_at": "2999-01-01T00:00:00Z",
+                    "digest": f"sha256:{'b' * 64}",
+                    "workflow_run": dict(association),
+                },
+            ],
+        },
+    }
+
+
 class PublishReleaseInterfaceTests(unittest.TestCase):
-    def test_check_and_start_are_explicit_subcommands(self):
+    def test_check_start_and_resume_are_explicit_subcommands(self):
         top = _run("--help")
         self.assertEqual(top.returncode, 0, top.stderr)
-        self.assertRegex(top.stdout, r"\{check,start\}")
+        self.assertRegex(top.stdout, r"\{check,start,resume\}")
 
         check = _run("check", "--help")
         self.assertEqual(check.returncode, 0, check.stderr)
@@ -92,6 +161,19 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "--format",
         ):
             self.assertIn(option, start.stdout)
+
+        resume = _run("resume", "--help")
+        self.assertEqual(resume.returncode, 0, resume.stderr)
+        for option in (
+            "--tag",
+            "--confirm",
+            "--alias",
+            "--run-id",
+            "--repo",
+            "--remote",
+            "--format",
+        ):
+            self.assertIn(option, resume.stdout)
 
     def test_start_requires_an_explicit_compatibility_alias_policy(self):
         result = _run(
@@ -159,6 +241,46 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         revalidate.assert_not_called()
         runner.assert_not_called()
 
+    def test_resume_rejects_malformed_run_ids_before_evaluation(self):
+        for run_id in ("0", "-1", "+1", "01", "1.0", "abc"):
+            with self.subTest(run_id=run_id):
+                result = _run(
+                    "resume",
+                    "--tag",
+                    TAG,
+                    "--alias",
+                    "v0.11",
+                    "--run-id",
+                    run_id,
+                    "--confirm",
+                    f"{TAG}@{SHA}#{run_id}",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("run-id", result.stderr.lower())
+
+    def test_resume_confirmation_binds_tag_sha_and_run_id_before_evaluation(self):
+        confirmations = (
+            f"{TAG}@{'A' * 40}#{RUN_ID}",
+            f"{TAG}@{SHA}",
+            f"{TAG}@{SHA}#{RUN_ID + 1}",
+            f"v0.11.1@{SHA}#{RUN_ID}",
+        )
+        for confirmation in confirmations:
+            with self.subTest(confirmation=confirmation):
+                result = _run(
+                    "resume",
+                    "--tag",
+                    TAG,
+                    "--alias",
+                    "v0.11",
+                    "--run-id",
+                    str(RUN_ID),
+                    "--confirm",
+                    confirmation,
+                )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("confirm", result.stderr.lower())
+
     def test_successful_start_performs_only_the_one_workflow_dispatch(self):
         publisher = _load_script()
         checks = [publisher.Check("all release gates", "passed", "passed")]
@@ -216,6 +338,145 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertEqual(payload["status"], "dispatched")
         self.assertEqual(payload["dispatch"]["workflow"], "create-release-tag.yml")
         self.assertEqual(payload["dispatch"]["ref"], "main")
+
+    def test_successful_resume_performs_only_the_exact_publish_dispatch(self):
+        publisher = _load_script()
+        checks = [publisher.Check("resume release gates", "passed", "passed")]
+        dispatch_result = subprocess.CompletedProcess(
+            args=(), returncode=0, stdout="dispatch accepted\n", stderr=""
+        )
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(
+                publisher, "_evaluate_resume", return_value=(CONTROL_SHA, checks)
+            ) as evaluate,
+            mock.patch.object(publisher, "_evaluate") as start_evaluate,
+            mock.patch.object(
+                publisher, "_main_identity", return_value=CONTROL_SHA
+            ) as revalidate,
+            mock.patch.object(
+                publisher, "_run", return_value=dispatch_result
+            ) as runner,
+            mock.patch("builtins.print") as output,
+        ):
+            result = publisher.main(
+                [
+                    "resume",
+                    "--tag",
+                    TAG,
+                    "--alias",
+                    "v0.11",
+                    "--run-id",
+                    str(RUN_ID),
+                    "--confirm",
+                    f"{TAG}@{SHA}#{RUN_ID}",
+                    "--repo",
+                    td,
+                    "--format",
+                    "json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        evaluate.assert_called_once_with(Path(td), "origin", TAG, RUN_ID, SHA)
+        start_evaluate.assert_not_called()
+        revalidate.assert_called_once_with(Path(td), "origin", CONTROL_SHA)
+        runner.assert_called_once()
+        self.assertEqual(
+            runner.call_args.args[0],
+            (
+                "gh",
+                "workflow",
+                "run",
+                "publish.yml",
+                "--repo",
+                "yzm1/boundver",
+                "--ref",
+                "main",
+                "--field",
+                f"release_tag={TAG}",
+                "--field",
+                f"release_sha={SHA}",
+                "--field",
+                "compatibility_alias=v0.11",
+                "--field",
+                f"resume_run_id={RUN_ID}",
+            ),
+        )
+        payload = json.loads(output.call_args.args[0])
+        self.assertEqual(payload["phase"], "resume")
+        self.assertEqual(payload["sha"], SHA)
+        self.assertEqual(payload["status"], "dispatched")
+        self.assertEqual(payload["dispatch"]["workflow"], "publish.yml")
+        self.assertEqual(payload["dispatch"]["ref"], "main")
+        self.assertEqual(payload["dispatch"]["resume_run_id"], str(RUN_ID))
+
+    def test_resume_keeps_current_main_separate_from_the_tagged_release(self):
+        publisher = _load_script()
+        passing = {
+            "_surface_inventory": "surfaces",
+            "_repo_identity": "repository",
+            "_clean": "clean",
+            "_repository_hygiene": "hygiene",
+            "_project_at_commit": "version",
+            "_main_identity": CONTROL_SHA,
+            "_resume_release_state": "tag",
+            "_release_is_on_main": "ancestor",
+            "_github_controls": "controls",
+            "_source_release_artifacts": "artifacts",
+        }
+        patches = [
+            mock.patch.object(publisher, name, return_value=value)
+            for name, value in passing.items()
+        ]
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            publisher, "_head", return_value=CONTROL_SHA
+        ), patches[0] as surfaces, patches[1] as identity, patches[2] as clean, patches[
+            3
+        ] as hygiene, patches[4] as project, patches[5] as main, patches[
+            6
+        ] as tag_state, patches[7] as ancestry, patches[8] as controls, patches[
+            9
+        ] as artifacts:
+            control_sha, checks = publisher._evaluate_resume(
+                Path(td), "origin", TAG, RUN_ID, SHA
+            )
+
+        self.assertEqual(control_sha, CONTROL_SHA)
+        self.assertTrue(all(check.status == "passed" for check in checks))
+        main.assert_called_once_with(Path(td), "origin", CONTROL_SHA)
+        tag_state.assert_called_once_with(Path(td), "origin", TAG, SHA)
+        ancestry.assert_called_once_with(Path(td), SHA, CONTROL_SHA)
+        controls.assert_called_once_with(
+            Path(td), CONTROL_SHA, TAG, allow_draft_release=True
+        )
+        artifacts.assert_called_once_with(Path(td), RUN_ID, TAG, SHA)
+        for called in (surfaces, identity, clean, hygiene, project):
+            called.assert_called_once()
+        project.assert_called_once_with(Path(td), SHA, TAG)
+
+    def test_resume_reads_version_from_release_commit_not_current_main(self):
+        publisher = _load_script()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            release_sha = _init_repo(root)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "boundver"\nversion = "0.12.0"\n',
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "pyproject.toml"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "advance development version"],
+                cwd=root,
+                check=True,
+            )
+
+            detail = publisher._project_at_commit(root, release_sha, TAG)
+            with self.assertRaisesRegex(publisher.GateError, "does not match"):
+                publisher._project(root, TAG)
+
+        self.assertIn(TAG[1:], detail)
+        self.assertIn(release_sha, detail)
 
     def test_json_failures_keep_stdout_machine_readable(self):
         with tempfile.TemporaryDirectory() as td:
@@ -526,6 +787,235 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             with self.assertRaisesRegex(publisher.GateError, "cannot prove"):
                 publisher._github_controls(Path("."), SHA, TAG)
 
+    def test_resume_source_run_and_artifacts_are_bound_to_exact_identity(self):
+        publisher = _load_script()
+        payloads = _resume_api_payloads()
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(publisher, "_gh_json", side_effect=response) as api:
+            detail = publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA
+            )
+
+        self.assertIn(str(RUN_ID), detail)
+        self.assertIn(str(RUN_ATTEMPT), detail)
+        self.assertEqual(api.call_count, 3)
+
+    def test_resume_reuses_verified_artifact_attempt_after_failed_job_rerun(self):
+        publisher = _load_script()
+        payloads = _resume_api_payloads(run_attempt=2, artifact_attempt=1)
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(publisher, "_gh_json", side_effect=response):
+            detail = publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA
+            )
+
+        self.assertIn("attempt 2", detail)
+        self.assertIn("verify-release attempt 1", detail)
+
+    def test_resume_requires_the_existing_exact_tag_and_no_legacy_branch(self):
+        publisher = _load_script()
+        with mock.patch.object(
+            publisher,
+            "_remote_ref",
+            side_effect=(SHA, None),
+        ):
+            detail = publisher._resume_release_state(Path("."), "origin", TAG, SHA)
+        self.assertIn(SHA, detail)
+
+        for tag_sha, branch, message in (
+            (None, None, "absent"),
+            ("2" * 40, None, "not release SHA"),
+            (SHA, "3" * 40, "legacy release branch"),
+        ):
+            with self.subTest(message=message), mock.patch.object(
+                publisher,
+                "_remote_ref",
+                side_effect=(tag_sha, branch),
+            ), self.assertRaisesRegex(publisher.GateError, message):
+                publisher._resume_release_state(Path("."), "origin", TAG, SHA)
+
+    def test_resume_rejects_stale_or_spoofed_source_evidence(self):
+        publisher = _load_script()
+        run_endpoint = f"repos/yzm1/boundver/actions/runs/{RUN_ID}"
+        cases = {}
+
+        stale = _resume_api_payloads()
+        stale[run_endpoint]["head_sha"] = "2" * 40
+        cases["stale source SHA"] = (stale, "exact release tag and SHA")
+
+        malformed = _resume_api_payloads()
+        malformed[run_endpoint] = []
+        cases["malformed source run"] = (malformed, "malformed")
+
+        future_attempt = _resume_api_payloads(artifact_attempt=RUN_ATTEMPT + 1)
+        cases["future verification attempt"] = (future_attempt, "successful exact")
+
+        malformed_job = _resume_api_payloads()
+        malformed_job[
+            f"{run_endpoint}/jobs?filter=all&per_page=100"
+        ]["jobs"][0]["id"] = True
+        cases["malformed verification job"] = (malformed_job, "successful exact")
+
+        expired = _resume_api_payloads()
+        expired[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
+            "expires_at"
+        ] = "2000-01-01T00:00:00Z"
+        cases["expired artifact"] = (expired, "expired")
+
+        spoofed_run = _resume_api_payloads()
+        spoofed_run[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
+            "workflow_run"
+        ]["id"] = RUN_ID + 1
+        cases["spoofed artifact association"] = (spoofed_run, "association")
+
+        spoofed_digest = _resume_api_payloads()
+        spoofed_digest[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
+            "digest"
+        ] = "sha256:not-a-digest"
+        cases["spoofed artifact digest"] = (spoofed_digest, "digest")
+
+        empty_artifact = _resume_api_payloads()
+        empty_artifact[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
+            "size_in_bytes"
+        ] = 0
+        cases["empty artifact"] = (empty_artifact, "identity")
+
+        wrong_name = _resume_api_payloads()
+        wrong_name[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
+            "name"
+        ] = f"python-dist-{TAG}-{RUN_ID + 1}-{RUN_ATTEMPT}"
+        cases["artifact name from another run"] = (wrong_name, "names")
+
+        for label, (payloads, message) in cases.items():
+            def response(_repo, _repository, endpoint):
+                return copy.deepcopy(payloads[endpoint])
+
+            with self.subTest(label=label), mock.patch.object(
+                publisher, "_gh_json", side_effect=response
+            ), self.assertRaisesRegex(publisher.GateError, message):
+                publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+
+    def test_resume_fails_closed_on_source_api_errors_or_incomplete_pages(self):
+        publisher = _load_script()
+        with mock.patch.object(
+            publisher,
+            "_gh_json",
+            side_effect=publisher.GateError("GitHub API unavailable"),
+        ), self.assertRaisesRegex(publisher.GateError, "API unavailable"):
+            publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+
+        payloads = _resume_api_payloads()
+        jobs_endpoint = (
+            f"repos/yzm1/boundver/actions/runs/{RUN_ID}"
+            "/jobs?filter=all&per_page=100"
+        )
+        payloads[jobs_endpoint]["total_count"] = 101
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), self.assertRaisesRegex(publisher.GateError, "completely inspect"):
+            publisher._source_release_artifacts(Path("."), RUN_ID, TAG, SHA)
+
+    def test_resume_accepts_only_absent_or_draft_github_release(self):
+        publisher = _load_script()
+
+        def response(_repo, _repository, endpoint):
+            if endpoint.endswith(f"/releases/tags/{TAG}"):
+                return {"tag_name": TAG, "draft": True}
+            if endpoint == "repos/yzm1/boundver":
+                return {
+                    "full_name": "yzm1/boundver",
+                    "default_branch": "main",
+                    "archived": False,
+                    "visibility": "public",
+                    "homepage": "https://github.com/marketplace/actions/boundver",
+                    "description": "Contract change detection",
+                    "topics": [
+                        "api-compatibility",
+                        "ci",
+                        "openapi",
+                        "semantic-versioning",
+                    ],
+                }
+            if endpoint.endswith("/environments"):
+                return {
+                    "environments": [
+                        {
+                            "name": name,
+                            "protection_rules": [
+                                {
+                                    "type": "required_reviewers",
+                                    "reviewers": [{"type": "User"}],
+                                }
+                            ],
+                        }
+                        for name in ("testpypi", "pypi", "marketplace")
+                    ]
+                }
+            if endpoint.endswith("/immutable-releases"):
+                return {"enabled": True}
+            if endpoint.endswith("/rulesets?includes_parents=true"):
+                return [{"id": 7, "target": "tag", "enforcement": "active"}]
+            if endpoint.endswith("/rulesets/7"):
+                return {
+                    "rules": [{"type": "update"}, {"type": "deletion"}],
+                    "conditions": {
+                        "ref_name": {
+                            "include": ["refs/tags/v*.*.*"],
+                            "exclude": [],
+                        }
+                    },
+                }
+            if "actions/workflows/ci.yml/runs" in endpoint:
+                return {
+                    "workflow_runs": [
+                        {
+                            "head_sha": SHA,
+                            "head_branch": "main",
+                            "event": "push",
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ]
+                }
+            if "actions/workflows/" in endpoint:
+                return {"workflow_runs": []}
+            raise AssertionError(endpoint)
+
+        present = subprocess.CompletedProcess(
+            ["gh", "api"], 0, "HTTP/2.0 200 OK\n{}\n", ""
+        )
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(publisher, "_run", return_value=present):
+            publisher._github_controls(
+                Path("."), SHA, TAG, allow_draft_release=True
+            )
+
+        def public_response(repo, repository, endpoint):
+            value = response(repo, repository, endpoint)
+            if endpoint.endswith(f"/releases/tags/{TAG}"):
+                value["draft"] = False
+            return value
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=public_response
+        ), mock.patch.object(
+            publisher, "_run", return_value=present
+        ), self.assertRaisesRegex(publisher.GateError, "already public"):
+            publisher._github_controls(
+                Path("."), SHA, TAG, allow_draft_release=True
+            )
+
     def test_version_tag_ruleset_does_not_capture_mutable_minor_alias(self):
         publisher = _load_script()
         self.assertTrue(
@@ -618,17 +1108,21 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ):
             self.assertIn(workflow_contract, source)
 
-    def test_runbook_routes_maintainers_through_check_then_confirmed_start(self):
+    def test_runbook_routes_maintainers_through_start_and_supported_resume(self):
         runbook = (REPO_ROOT / "docs" / "RELEASING.md").read_text(
             encoding="utf-8"
         )
         check_command = "scripts/publish_release.py check --tag"
         start_command = "scripts/publish_release.py start --tag"
+        resume_command = "scripts/publish_release.py resume"
         self.assertIn(check_command, runbook)
         self.assertIn(start_command, runbook)
+        self.assertIn(resume_command, runbook)
         self.assertLess(runbook.index(check_command), runbook.index(start_command))
         self.assertIn("--confirm", runbook)
         self.assertIn("--alias", runbook)
+        self.assertIn("--run-id", runbook)
+        self.assertIn("#$run_id", runbook)
         self.assertIn("read-only", runbook.lower())
         self.assertNotIn("gh workflow run publish.yml", runbook)
 

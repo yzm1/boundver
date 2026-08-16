@@ -15,6 +15,11 @@ on:
         description: Explicit vMAJOR.MINOR Action alias to advance, or none.
         required: true
         type: string
+      resume_run_id:
+        description: Completed publication run whose verified artifacts should be reused.
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   # Promotion mutates repository-wide release state (Releases, registries, and
@@ -28,17 +33,22 @@ env:
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
+  RESUME_RUN_ID: ${{ inputs.resume_run_id }}
 
 jobs:
   verify-release:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
+      issues: read
+      pull-requests: read
     outputs:
-      python-dist-artifact-id: ${{ steps.upload-python-dist.outputs.artifact-id }}
-      python-dist-artifact-digest: ${{ steps.upload-python-dist.outputs.artifact-digest }}
-      release-assets-artifact-id: ${{ steps.upload-release-assets.outputs.artifact-id }}
-      release-assets-artifact-digest: ${{ steps.upload-release-assets.outputs.artifact-digest }}
+      source-run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
+      python-dist-artifact-id: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
+      python-dist-artifact-digest: ${{ steps.select-artifacts.outputs.python-dist-artifact-digest }}
+      release-assets-artifact-id: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
+      release-assets-artifact-digest: ${{ steps.select-artifacts.outputs.release-assets-artifact-digest }}
     steps:
       - name: Bind this dispatch to the exact version tag and commit
         shell: bash
@@ -48,6 +58,7 @@ jobs:
           DISPATCH_REF_NAME: ${{ github.ref_name }}
           DISPATCH_REF_TYPE: ${{ github.ref_type }}
           DISPATCH_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ "$DISPATCH_EVENT" != workflow_dispatch ]]; then
@@ -62,21 +73,88 @@ jobs:
             echo "Invalid release SHA: $RELEASE_SHA" >&2
             exit 1
           fi
-          if [[ "$DISPATCH_REF_TYPE" != tag || \
-                "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
-                "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" ]]; then
-            echo "Publish workflow must execute from exact tag ref refs/tags/$RELEASE_TAG" >&2
-            exit 1
-          fi
-          if [[ "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
-            echo "Dispatch SHA $DISPATCH_SHA does not match release SHA $RELEASE_SHA" >&2
-            exit 1
+          if [[ -z "$RESUME_RUN_ID" ]]; then
+            if [[ "$DISPATCH_REF_TYPE" != tag || \
+                  "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
+                  "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+              echo "Fresh publication must execute from exact tag ref refs/tags/$RELEASE_TAG" >&2
+              exit 1
+            fi
+            if [[ "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
+              echo "Dispatch SHA $DISPATCH_SHA does not match release SHA $RELEASE_SHA" >&2
+              exit 1
+            fi
+          else
+            if [[ ! "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Recovery source run ID must be a positive integer" >&2
+              exit 1
+            fi
+            if [[ "$DISPATCH_REF_TYPE" != branch || \
+                  "$DISPATCH_REF_NAME" != main || \
+                  "$DISPATCH_REF" != refs/heads/main ]]; then
+              echo "Recovery must execute from refs/heads/main" >&2
+              exit 1
+            fi
+            remote_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+              --jq '.object.sha')
+            if [[ ! "$remote_main" =~ ^[0-9a-f]{40}$ || \
+                  "$DISPATCH_SHA" != "$remote_main" ]]; then
+              echo "Recovery workflow SHA is not current remote main: $DISPATCH_SHA != $remote_main" >&2
+              exit 1
+            fi
           fi
           expected_alias="v${RELEASE_TAG#v}"
           expected_alias="${expected_alias%.*}"
           if [[ "$COMPATIBILITY_ALIAS" != none && \
                 "$COMPATIBILITY_ALIAS" != "$expected_alias" ]]; then
             echo "Compatibility alias must be $expected_alias or none" >&2
+            exit 1
+          fi
+
+      - name: Checkout the recovery control commit
+        if: inputs.resume_run_id != ''
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Require successful CI for the exact recovery control commit
+        if: inputs.resume_run_id != ''
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          matching_runs=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$CONTROL_SHA&event=push&per_page=100" \
+            --jq '[.workflow_runs[] | select(.head_branch == "main" and .head_sha == env.CONTROL_SHA and .event == "push" and .status == "completed" and .conclusion == "success")] | length')
+          if [[ ! "$matching_runs" =~ ^[0-9]+$ || "$matching_runs" -lt 1 ]]; then
+            echo "Recovery requires successful CI for current main $CONTROL_SHA" >&2
+            exit 1
+          fi
+
+      - name: Require current reviews for the recovery control commit
+        if: inputs.resume_run_id != ''
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/audit_release_reviews.sh "$CONTROL_SHA" "$RELEASE_TAG"
+
+      - name: Rebind recovery to current main after its control audit
+        if: inputs.resume_run_id != ''
+        shell: bash
+        env:
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          current_main=$(git rev-parse FETCH_HEAD)
+          if [[ "$current_main" != "$CONTROL_SHA" ]]; then
+            echo "Main advanced during recovery control validation: $CONTROL_SHA != $current_main" >&2
             exit 1
           fi
 
@@ -144,6 +222,7 @@ jobs:
           python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
 
       - name: Test source and exact distributions
+        if: inputs.resume_run_id == ''
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
@@ -154,6 +233,7 @@ jobs:
           python -m twine check dist/*.whl dist/*.tar.gz
 
       - name: Upload verified distributions
+        if: inputs.resume_run_id == ''
         id: upload-python-dist
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -165,6 +245,7 @@ jobs:
           retention-days: 90
 
       - name: Assemble standalone and checksummed GitHub Release assets
+        if: inputs.resume_run_id == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -180,6 +261,7 @@ jobs:
           )
 
       - name: Upload verified GitHub Release assets
+        if: inputs.resume_run_id == ''
         id: upload-release-assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -188,11 +270,395 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+      - name: Locate the exact source-run artifacts for recovery
+        if: inputs.resume_run_id != ''
+        id: recover-artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_json=$(mktemp)
+          jobs_json=$(mktemp)
+          artifacts_json=$(mktemp)
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" \
+            > "$run_json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/jobs?filter=all&per_page=100" \
+            > "$jobs_json"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts?per_page=100" \
+            > "$artifacts_json"
+          python3 - \
+            "$RESUME_RUN_ID" \
+            "$RELEASE_TAG" \
+            "$RELEASE_SHA" \
+            "$run_json" \
+            "$jobs_json" \
+            "$artifacts_json" \
+            "$GITHUB_OUTPUT" <<'PY'
+          import datetime
+          import json
+          import pathlib
+          import re
+          import sys
+
+          (
+              source_run_text,
+              release_tag,
+              release_sha,
+              run_path,
+              jobs_path,
+              artifacts_path,
+              output_path,
+          ) = sys.argv[1:]
+          if re.fullmatch(r"[1-9][0-9]*", source_run_text) is None:
+              raise SystemExit("source publication run ID is not numeric")
+          source_run_id = int(source_run_text)
+          run = json.loads(pathlib.Path(run_path).read_text(encoding="utf-8"))
+          if type(run.get("id")) is not int or run["id"] != source_run_id:
+              raise SystemExit("source publication run identity disagrees")
+          attempt = run.get("run_attempt")
+          if type(attempt) is not int or attempt < 1:
+              raise SystemExit("source publication run attempt is invalid")
+          expected_run = {
+              "event": "workflow_dispatch",
+              "status": "completed",
+              "conclusion": "failure",
+              "path": ".github/workflows/publish.yml",
+              "head_branch": release_tag,
+              "head_sha": release_sha,
+          }
+          disagreements = [
+              key for key, value in expected_run.items() if run.get(key) != value
+          ]
+          if disagreements:
+              raise SystemExit(
+                  "source publication run disagrees: " + ", ".join(disagreements)
+              )
+
+          jobs_payload = json.loads(
+              pathlib.Path(jobs_path).read_text(encoding="utf-8")
+          )
+          jobs = jobs_payload.get("jobs")
+          jobs_total = jobs_payload.get("total_count")
+          if (
+              not isinstance(jobs, list)
+              or type(jobs_total) is not int
+              or jobs_total < 0
+              or jobs_total != len(jobs)
+              or len(jobs) > 100
+              or any(not isinstance(job, dict) for job in jobs)
+          ):
+              raise SystemExit("source publication jobs response is incomplete")
+          verification_jobs = [
+              job
+              for job in jobs
+              if job.get("name") == "verify-release"
+              and job.get("status") == "completed"
+              and job.get("conclusion") == "success"
+          ]
+          if len(verification_jobs) != 1:
+              raise SystemExit(
+                  "source publication must have exactly one successful exact verify-release job"
+              )
+          verification = verification_jobs[0]
+          artifact_attempt = verification.get("run_attempt")
+          if (
+              type(verification.get("id")) is not int
+              or verification["id"] < 1
+              or type(verification.get("run_id")) is not int
+              or verification.get("run_id") != source_run_id
+              or verification.get("head_sha") != release_sha
+              or type(artifact_attempt) is not int
+              or artifact_attempt < 1
+              or artifact_attempt > attempt
+          ):
+              raise SystemExit("source verify-release artifact attempt is invalid")
+
+          artifacts_payload = json.loads(
+              pathlib.Path(artifacts_path).read_text(encoding="utf-8")
+          )
+          artifacts = artifacts_payload.get("artifacts")
+          artifacts_total = artifacts_payload.get("total_count")
+          if (
+              not isinstance(artifacts, list)
+              or type(artifacts_total) is not int
+              or artifacts_total != 2
+              or len(artifacts) != 2
+          ):
+              raise SystemExit("source run must contain exactly two artifacts")
+          suffix = f"{release_tag}-{source_run_id}-{artifact_attempt}"
+          expected_names = {
+              f"python-dist-{suffix}": "python-dist",
+              f"release-assets-{suffix}": "release-assets",
+          }
+          if {artifact.get("name") for artifact in artifacts} != set(expected_names):
+              raise SystemExit("source artifact names do not match tag, run, and attempt")
+
+          now = datetime.datetime.now(datetime.timezone.utc)
+          selected = {}
+          for artifact in artifacts:
+              name = artifact.get("name")
+              artifact_id = artifact.get("id")
+              digest = artifact.get("digest")
+              expires_at = artifact.get("expires_at")
+              workflow_run = artifact.get("workflow_run")
+              if (
+                  type(artifact_id) is not int
+                  or artifact_id < 1
+                  or artifact.get("expired") is not False
+                  or type(artifact.get("size_in_bytes")) is not int
+                  or artifact["size_in_bytes"] < 1
+                  or not isinstance(digest, str)
+                  or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+                  or not isinstance(expires_at, str)
+                  or not isinstance(workflow_run, dict)
+                  or type(workflow_run.get("id")) is not int
+                  or workflow_run.get("id") != source_run_id
+                  or workflow_run.get("head_branch") != release_tag
+                  or workflow_run.get("head_sha") != release_sha
+              ):
+                  raise SystemExit(f"source artifact metadata is invalid: {name!r}")
+              try:
+                  expiry = datetime.datetime.fromisoformat(
+                      expires_at.replace("Z", "+00:00")
+                  )
+              except ValueError as error:
+                  raise SystemExit(
+                      f"source artifact expiry is invalid: {name!r}"
+                  ) from error
+              if expiry <= now:
+                  raise SystemExit(f"source artifact has expired: {name!r}")
+              selected[expected_names[name]] = (artifact_id, digest)
+
+          lines = [f"source-run-id={source_run_id}"]
+          for label in ("python-dist", "release-assets"):
+              artifact_id, digest = selected[label]
+              lines.extend(
+                  [
+                      f"{label}-artifact-id={artifact_id}",
+                      f"{label}-artifact-digest={digest}",
+                  ]
+              )
+          with pathlib.Path(output_path).open("a", encoding="utf-8") as output:
+              output.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Select the immutable artifact source
+        id: select-artifacts
+        shell: bash
+        env:
+          CURRENT_RUN_ID: ${{ github.run_id }}
+          FRESH_PYTHON_ID: ${{ steps.upload-python-dist.outputs.artifact-id }}
+          FRESH_PYTHON_DIGEST: ${{ steps.upload-python-dist.outputs.artifact-digest }}
+          FRESH_RELEASE_ID: ${{ steps.upload-release-assets.outputs.artifact-id }}
+          FRESH_RELEASE_DIGEST: ${{ steps.upload-release-assets.outputs.artifact-digest }}
+          RECOVERED_RUN_ID: ${{ steps.recover-artifacts.outputs.source-run-id }}
+          RECOVERED_PYTHON_ID: ${{ steps.recover-artifacts.outputs.python-dist-artifact-id }}
+          RECOVERED_PYTHON_DIGEST: ${{ steps.recover-artifacts.outputs.python-dist-artifact-digest }}
+          RECOVERED_RELEASE_ID: ${{ steps.recover-artifacts.outputs.release-assets-artifact-id }}
+          RECOVERED_RELEASE_DIGEST: ${{ steps.recover-artifacts.outputs.release-assets-artifact-digest }}
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
+
+          if os.environ["RESUME_RUN_ID"]:
+              values = {
+                  "source-run-id": os.environ["RECOVERED_RUN_ID"],
+                  "python-dist-artifact-id": os.environ["RECOVERED_PYTHON_ID"],
+                  "python-dist-artifact-digest": os.environ["RECOVERED_PYTHON_DIGEST"],
+                  "release-assets-artifact-id": os.environ["RECOVERED_RELEASE_ID"],
+                  "release-assets-artifact-digest": os.environ["RECOVERED_RELEASE_DIGEST"],
+              }
+              if values["source-run-id"] != os.environ["RESUME_RUN_ID"]:
+                  raise SystemExit("selected recovery run ID disagrees")
+          else:
+              values = {
+                  "source-run-id": os.environ["CURRENT_RUN_ID"],
+                  "python-dist-artifact-id": os.environ["FRESH_PYTHON_ID"],
+                  "python-dist-artifact-digest": os.environ["FRESH_PYTHON_DIGEST"],
+                  "release-assets-artifact-id": os.environ["FRESH_RELEASE_ID"],
+                  "release-assets-artifact-digest": os.environ["FRESH_RELEASE_DIGEST"],
+              }
+          for key in (
+              "source-run-id",
+              "python-dist-artifact-id",
+              "release-assets-artifact-id",
+          ):
+              if re.fullmatch(r"[1-9][0-9]*", values[key]) is None:
+                  raise SystemExit(f"selected {key} is invalid")
+          for key in (
+              "python-dist-artifact-digest",
+              "release-assets-artifact-digest",
+          ):
+              digest = values[key]
+              if re.fullmatch(r"[0-9a-f]{64}", digest):
+                  digest = f"sha256:{digest}"
+              if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+                  raise SystemExit(f"selected {key} is invalid")
+              values[key] = digest
+          with pathlib.Path(sys.argv[1]).open("a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+
+      - name: Download recovered Python distributions
+        if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
+          path: recovered-python-dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
+          merge-multiple: true
+
+      - name: Download recovered GitHub Release assets
+        if: inputs.resume_run_id != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
+          path: recovered-release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
+          merge-multiple: true
+
+      - name: Fail on any recovered artifact archive digest mismatch
+        if: inputs.resume_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHON_ARTIFACT_ID: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
+          PYTHON_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.python-dist-artifact-digest }}
+          RELEASE_ARTIFACT_ID: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
+          RELEASE_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.release-assets-artifact-digest }}
+        run: |
+          set -euo pipefail
+          verify_archive() {
+            local artifact_id=$1
+            local expected_digest=$2
+            local output_path=$3
+            local extracted_path=$4
+            curl --fail-with-body --location --silent --show-error \
+              --connect-timeout 15 --max-time 180 \
+              --proto '=https' --tlsv1.2 \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              --output "$output_path" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+            actual_digest="sha256:$(sha256sum "$output_path" | awk '{print $1}')"
+            if [[ "$actual_digest" != "$expected_digest" ]]; then
+              echo "Recovered artifact archive digest mismatch for $artifact_id" >&2
+              exit 1
+            fi
+            python3 - "$output_path" "$extracted_path" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+          import zipfile
+
+          archive_path, extracted_path = map(pathlib.Path, sys.argv[1:])
+          with zipfile.ZipFile(archive_path) as archive:
+              entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+              names = [entry.filename for entry in entries]
+              if (
+                  len(entries) != len(archive.infolist())
+                  or len(names) != len(set(names))
+                  or any(pathlib.PurePosixPath(name).name != name for name in names)
+              ):
+                  raise SystemExit("artifact archive is not a unique flat file set")
+              extracted = list(extracted_path.iterdir())
+              if {path.name for path in extracted} != set(names):
+                  raise SystemExit("download action output disagrees with artifact archive")
+              for entry in entries:
+                  path = extracted_path / entry.filename
+                  if not path.is_file() or path.is_symlink():
+                      raise SystemExit("downloaded artifact entry is not a regular file")
+                  archived_hash = hashlib.sha256(archive.read(entry)).digest()
+                  extracted_hash = hashlib.sha256(path.read_bytes()).digest()
+                  if archived_hash != extracted_hash:
+                      raise SystemExit(
+                          f"download action changed artifact bytes: {entry.filename}"
+                      )
+          PY
+          }
+          verify_archive \
+            "$PYTHON_ARTIFACT_ID" "$PYTHON_ARTIFACT_DIGEST" \
+            "$RUNNER_TEMP/python-dist.zip" recovered-python-dist
+          verify_archive \
+            "$RELEASE_ARTIFACT_ID" "$RELEASE_ARTIFACT_DIGEST" \
+            "$RUNNER_TEMP/release-assets.zip" recovered-release-assets
+
+      - name: Validate the exact recovered release payload
+        if: inputs.resume_run_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          wheel="boundver-$version-py3-none-any.whl"
+          sdist="boundver-$version.tar.gz"
+          pyz="boundver-$version.pyz"
+          python3 - "$wheel" "$sdist" "$pyz" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          wheel, sdist, pyz = sys.argv[1:]
+
+          def require_exact(root_name, expected):
+              root = pathlib.Path(root_name)
+              entries = list(root.iterdir())
+              if {entry.name for entry in entries} != set(expected):
+                  raise SystemExit(
+                      f"{root_name} is not the expected flat payload: "
+                      + ", ".join(sorted(entry.name for entry in entries))
+                  )
+              if any(not entry.is_file() or entry.is_symlink() for entry in entries):
+                  raise SystemExit(f"{root_name} contains a non-regular file")
+
+          require_exact("recovered-python-dist", [wheel, sdist])
+          require_exact("recovered-release-assets", [wheel, sdist, pyz, "SHA256SUMS"])
+          checksum_lines = pathlib.Path(
+              "recovered-release-assets/SHA256SUMS"
+          ).read_text(encoding="utf-8").splitlines()
+          checksum_names = []
+          for line in checksum_lines:
+              match = re.fullmatch(r"[0-9a-f]{64}  ([^/]+)", line)
+              if match is None:
+                  raise SystemExit("SHA256SUMS contains a malformed entry")
+              checksum_names.append(match.group(1))
+          if len(checksum_names) != 3 or set(checksum_names) != {wheel, sdist, pyz}:
+              raise SystemExit("SHA256SUMS does not cover the exact release payload")
+          PY
+          (
+            cd recovered-release-assets
+            sha256sum --check --strict SHA256SUMS
+          )
+          cmp --silent \
+            "recovered-python-dist/$wheel" \
+            "recovered-release-assets/$wheel"
+          cmp --silent \
+            "recovered-python-dist/$sdist" \
+            "recovered-release-assets/$sdist"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install twine
+          python3 -m twine check \
+            "recovered-python-dist/$wheel" \
+            "recovered-python-dist/$sdist"
+
   testpypi-preflight:
     name: Reject conflicting TestPyPI release state
     runs-on: ubuntu-latest
     needs: verify-release
     permissions:
+      actions: read
       contents: read
     outputs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
@@ -213,6 +679,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Accept only a missing, exact, or exact-partial TestPyPI release
         id: preflight
@@ -231,6 +701,7 @@ jobs:
     needs: [verify-release, testpypi-preflight]
     environment: testpypi
     permissions:
+      actions: read
       id-token: write
       contents: read
     steps:
@@ -239,6 +710,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Publish missing candidate files to TestPyPI
         if: needs.testpypi-preflight.outputs.upload-required == 'true'
@@ -254,6 +729,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-release, publish-testpypi]
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Checkout the released commit
@@ -271,6 +747,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Verify TestPyPI filenames, sizes, hashes, and downloaded bytes
         id: verify-testpypi
@@ -355,6 +835,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-release, verify-testpypi]
     permissions:
+      actions: read
       contents: write
     steps:
       - name: Checkout the released commit
@@ -368,6 +849,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Create or reconcile the exact release draft
         shell: bash
@@ -586,6 +1071,7 @@ jobs:
     needs: [verify-release, verify-testpypi, prepare-release-draft]
     environment: marketplace
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Checkout the released commit
@@ -599,12 +1085,20 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Download exact GitHub Release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Reverify TestPyPI candidate
         shell: bash
@@ -646,6 +1140,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: verify-release
     permissions:
+      actions: read
       contents: read
     outputs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
@@ -666,6 +1161,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Accept only a missing, exact, or exact-partial PyPI release
         id: preflight
@@ -686,6 +1185,7 @@ jobs:
     needs: [verify-release, verify-marketplace, pypi-preflight]
     environment: pypi
     permissions:
+      actions: read
       id-token: write
       contents: read
     steps:
@@ -699,6 +1199,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Refresh exact production state for this upload attempt
         id: fresh-preflight
@@ -750,6 +1254,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-release, publish-pypi]
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Checkout the released commit
@@ -767,6 +1272,10 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Verify exact PyPI files and obtain hash-pinned URLs
         id: verify-pypi
@@ -928,6 +1437,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [verify-release, advance-compatibility-alias]
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Checkout the released commit
@@ -940,12 +1450,20 @@ jobs:
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Download exact GitHub Release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
 
       - name: Compare all public services with the exact candidate
         shell: bash

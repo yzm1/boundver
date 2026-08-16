@@ -2,8 +2,11 @@
 """Fail-closed maintainer gate and dispatcher for a boundver release.
 
 ``check`` is read-only.  ``start`` repeats every check and then performs one
-mutation: it dispatches ``create-release-tag.yml``.  The protected workflows,
-not this local process, own tag, Release, Marketplace, and package-index writes.
+mutation: it dispatches ``create-release-tag.yml``.  ``resume`` validates and
+reuses the retained artifacts from one failed publication run before its one
+mutation: dispatching ``publish.yml`` in explicit recovery mode.  The protected
+workflows, not this local process, own tag, Release, Marketplace, and
+package-index writes.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -30,6 +34,8 @@ REPOSITORY = "yzm1/boundver"
 TAG_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 ALIAS_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)")
+RUN_ID_RE = re.compile(r"[1-9]\d*")
+ARTIFACT_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 SURFACES = (
     "repository hygiene",
     "README and documentation",
@@ -237,6 +243,21 @@ def _project(repo: Path, tag: str) -> str:
     return f"boundver {project['version']}"
 
 
+def _project_at_commit(repo: Path, sha: str, tag: str) -> str:
+    try:
+        metadata = _git(repo, "show", f"{sha}:pyproject.toml")
+        project = tomllib.loads(metadata)["project"]
+    except (OSError, UnicodeError, KeyError, TypeError, tomllib.TOMLDecodeError) as error:
+        raise GateError(
+            f"cannot read pyproject.toml metadata at release commit {sha}: {error}"
+        ) from error
+    if project.get("name") != "boundver" or project.get("version") != tag[1:]:
+        raise GateError(
+            "release-commit pyproject name/version does not match boundver and the release tag"
+        )
+    return f"boundver {project['version']} at {sha}"
+
+
 def _clean(repo: Path) -> str:
     state = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     if state:
@@ -288,7 +309,13 @@ def _remote_release_state(repo: Path, remote: str, tag: str) -> str:
     return "exact tag and legacy release branch are absent"
 
 
-def _github_controls(repo: Path, sha: str, tag: str) -> str:
+def _github_controls(
+    repo: Path,
+    sha: str,
+    tag: str,
+    *,
+    allow_draft_release: bool = False,
+) -> str:
     metadata = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}")
     if not isinstance(metadata, dict) or metadata.get("full_name") != REPOSITORY:
         raise GateError("authenticated GitHub repository identity disagrees")
@@ -385,10 +412,203 @@ def _github_controls(repo: Path, sha: str, tag: str) -> str:
     release_output = release.stdout + release.stderr
     status_match = re.search(r"(?m)^HTTP/\S+\s+(\d{3})\b", release_output)
     if release.returncode == 0 and status_match and status_match.group(1) == "200":
-        raise GateError("a GitHub Release already exists; use the original run to resume")
+        if not allow_draft_release:
+            raise GateError("a GitHub Release already exists; use the original run to resume")
+        release_detail = _gh_json(
+            repo, REPOSITORY, f"repos/{REPOSITORY}/releases/tags/{tag}"
+        )
+        if (
+            not isinstance(release_detail, dict)
+            or release_detail.get("tag_name") != tag
+            or not isinstance(release_detail.get("draft"), bool)
+        ):
+            raise GateError("GitHub Release state is malformed or disagrees with the tag")
+        if release_detail["draft"] is not True:
+            raise GateError("the GitHub Release is already public and cannot be resumed")
     if status_match is None or status_match.group(1) != "404":
-        raise GateError("cannot prove that the GitHub Release is absent")
+        if not (
+            allow_draft_release
+            and release.returncode == 0
+            and status_match is not None
+            and status_match.group(1) == "200"
+        ):
+            if allow_draft_release:
+                raise GateError("cannot prove that the GitHub Release is absent or a draft")
+            raise GateError("cannot prove that the GitHub Release is absent")
     return "repository, exact CI, environments, immutability, and promotion state verified"
+
+
+def _resume_release_state(repo: Path, remote: str, tag: str, sha: str) -> str:
+    tag_sha = _remote_ref(repo, remote, f"refs/tags/{tag}")
+    if tag_sha is None:
+        raise GateError(f"exact tag {tag} is absent; only the original start path may create it")
+    if tag_sha != sha:
+        raise GateError(f"exact tag {tag} resolves to {tag_sha}, not release SHA {sha}")
+    branch = _remote_ref(repo, remote, f"refs/heads/release/{tag}")
+    if branch is not None:
+        raise GateError(f"legacy release branch already exists at {branch}; inspect its run")
+    return f"exact tag resolves to {sha}; legacy release branch is absent"
+
+
+def _release_is_on_main(repo: Path, release_sha: str, main_sha: str) -> str:
+    result = _run(
+        ("git", "merge-base", "--is-ancestor", release_sha, main_sha),
+        cwd=repo,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        if result.returncode == 1:
+            detail = "release commit is not an ancestor of current main"
+        raise GateError(detail or "cannot prove that the release commit is on main")
+    return f"release commit {release_sha} is an ancestor of current main {main_sha}"
+
+
+def _github_timestamp(value: object, field: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise GateError(f"source artifact has invalid {field}")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise GateError(f"source artifact has invalid {field}") from error
+    if parsed.tzinfo is None:
+        raise GateError(f"source artifact has invalid {field}")
+    return parsed.astimezone(timezone.utc)
+
+
+def _source_release_artifacts(
+    repo: Path,
+    run_id: int,
+    tag: str,
+    sha: str,
+) -> str:
+    run_endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}"
+    run = _gh_json(repo, REPOSITORY, run_endpoint)
+    if not isinstance(run, dict):
+        raise GateError("source publication run response is malformed")
+    repository = run.get("repository")
+    attempt = run.get("run_attempt")
+    if (
+        run.get("id") != run_id
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != REPOSITORY
+        or run.get("path") != ".github/workflows/publish.yml"
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "failure"
+        or run.get("head_branch") != tag
+        or run.get("head_sha") != sha
+        or not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or attempt <= 0
+    ):
+        raise GateError(
+            "source run must be the completed failed publish.yml workflow_dispatch "
+            "for the exact release tag and SHA"
+        )
+
+    jobs_payload = _gh_json(
+        repo,
+        REPOSITORY,
+        f"{run_endpoint}/jobs?filter=all&per_page=100",
+    )
+    jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
+    total_jobs = jobs_payload.get("total_count") if isinstance(jobs_payload, dict) else None
+    if (
+        not isinstance(jobs, list)
+        or not isinstance(total_jobs, int)
+        or isinstance(total_jobs, bool)
+        or total_jobs != len(jobs)
+        or len(jobs) > 100
+    ):
+        raise GateError("cannot completely inspect jobs from the source publication run")
+    verify_jobs = [
+        job
+        for job in jobs
+        if isinstance(job, dict)
+        and job.get("name") == "verify-release"
+        and isinstance(job.get("id"), int)
+        and not isinstance(job.get("id"), bool)
+        and job["id"] > 0
+        and job.get("run_id") == run_id
+        and job.get("head_sha") == sha
+        and job.get("status") == "completed"
+        and job.get("conclusion") == "success"
+        and isinstance(job.get("run_attempt"), int)
+        and not isinstance(job.get("run_attempt"), bool)
+        and 0 < job["run_attempt"] <= attempt
+    ]
+    if len(verify_jobs) != 1:
+        raise GateError(
+            "source run must contain exactly one successful exact verify-release job"
+        )
+    verify_job = verify_jobs[0]
+    artifact_attempt = verify_job.get("run_attempt")
+    if not isinstance(artifact_attempt, int) or isinstance(artifact_attempt, bool):
+        raise GateError("source verify-release attempt is malformed")
+
+    artifacts_payload = _gh_json(
+        repo,
+        REPOSITORY,
+        f"{run_endpoint}/artifacts?per_page=100",
+    )
+    artifacts = (
+        artifacts_payload.get("artifacts")
+        if isinstance(artifacts_payload, dict)
+        else None
+    )
+    total_artifacts = (
+        artifacts_payload.get("total_count")
+        if isinstance(artifacts_payload, dict)
+        else None
+    )
+    if (
+        not isinstance(total_artifacts, int)
+        or isinstance(total_artifacts, bool)
+        or total_artifacts != 2
+        or not isinstance(artifacts, list)
+        or len(artifacts) != 2
+    ):
+        raise GateError("source run must have exactly two retained release artifacts")
+    expected_names = {
+        f"python-dist-{tag}-{run_id}-{artifact_attempt}",
+        f"release-assets-{tag}-{run_id}-{artifact_attempt}",
+    }
+    actual_names: set[str] = set()
+    now = datetime.now(timezone.utc)
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            raise GateError("source artifact response is malformed")
+        artifact_id = artifact.get("id")
+        artifact_size = artifact.get("size_in_bytes")
+        name = artifact.get("name")
+        association = artifact.get("workflow_run")
+        if (
+            not isinstance(artifact_id, int)
+            or isinstance(artifact_id, bool)
+            or artifact_id <= 0
+            or not isinstance(artifact_size, int)
+            or isinstance(artifact_size, bool)
+            or artifact_size <= 0
+            or not isinstance(name, str)
+            or name in actual_names
+            or artifact.get("expired") is not False
+            or ARTIFACT_DIGEST_RE.fullmatch(str(artifact.get("digest"))) is None
+            or not isinstance(association, dict)
+            or association.get("id") != run_id
+            or association.get("head_branch") != tag
+            or association.get("head_sha") != sha
+        ):
+            raise GateError("source artifact identity, digest, or run association is invalid")
+        if _github_timestamp(artifact.get("expires_at"), "expires_at") <= now:
+            raise GateError("source publication artifact has expired")
+        actual_names.add(name)
+    if actual_names != expected_names:
+        raise GateError("source artifact names do not match the release tag, run, and attempt")
+    return (
+        f"failed publish run {run_id} attempt {attempt} reuses successful "
+        f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts"
+    )
 
 
 def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
@@ -553,6 +773,63 @@ def _evaluate(repo: Path, remote: str, tag: str) -> tuple[str | None, list[Check
     return sha, checks
 
 
+def _evaluate_resume(
+    repo: Path,
+    remote: str,
+    tag: str,
+    run_id: int,
+    release_sha: str,
+) -> tuple[str | None, list[Check]]:
+    repo = repo.resolve()
+    checks: list[Check] = []
+    control_sha = _head(repo)
+    _record(checks, "release surface inventory", lambda: _surface_inventory(repo))
+    _record(checks, "repository identity", lambda: _repo_identity(repo, remote))
+    _record(checks, "clean repository", lambda: _clean(repo))
+    _record(checks, "repository hygiene", lambda: _repository_hygiene(repo))
+    _record(
+        checks,
+        "release project version",
+        lambda: _project_at_commit(repo, release_sha, tag),
+    )
+    local_ready = all(item.status == "passed" for item in checks)
+    if control_sha is None:
+        checks.append(Check("main identity", "failed", "HEAD is not a full commit SHA"))
+    elif local_ready:
+        _record(
+            checks,
+            "main identity",
+            lambda: _main_identity(repo, remote, control_sha),
+        )
+        _record(
+            checks,
+            "existing release tag",
+            lambda: _resume_release_state(repo, remote, tag, release_sha),
+        )
+        _record(
+            checks,
+            "release commit ancestry",
+            lambda: _release_is_on_main(repo, release_sha, control_sha),
+        )
+        if all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "GitHub controls",
+                lambda: _github_controls(
+                    repo, control_sha, tag, allow_draft_release=True
+                ),
+            )
+        if all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "source publication artifacts",
+                lambda: _source_release_artifacts(
+                    repo, run_id, tag, release_sha
+                ),
+            )
+    return control_sha, checks
+
+
 def _emit(
     args: argparse.Namespace,
     sha: str | None,
@@ -562,7 +839,7 @@ def _emit(
     ok = all(item.status == "passed" for item in checks)
     status = "failed"
     if ok:
-        status = "dispatched" if args.command == "start" else "ready"
+        status = "dispatched" if args.command in {"start", "resume"} else "ready"
     payload = {
         "schema_version": 1,
         "phase": args.command,
@@ -585,17 +862,27 @@ def _emit(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Check and start a gated boundver release.")
+    parser = argparse.ArgumentParser(
+        description="Check, start, or safely resume a gated boundver release."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("check", "start"):
+    for command in ("check", "start", "resume"):
         child = subparsers.add_parser(command)
         child.add_argument("--tag", required=True, help="Exact vMAJOR.MINOR.PATCH tag")
         child.add_argument("--repo", type=Path, default=Path("."))
         child.add_argument("--remote", default="origin")
         child.add_argument("--format", choices=("text", "json"), default="text")
-        if command == "start":
+        if command in {"start", "resume"}:
             child.add_argument("--alias", required=True, help="Explicit vMAJOR.MINOR alias or none")
-            child.add_argument("--confirm", required=True, help="Exact TAG@40-character-SHA confirmation")
+            confirmation_help = "Exact TAG@40-character-SHA confirmation"
+            if command == "resume":
+                child.add_argument(
+                    "--run-id",
+                    required=True,
+                    help="Positive decimal ID of the failed original publish run",
+                )
+                confirmation_help += " followed by #RUNID"
+            child.add_argument("--confirm", required=True, help=confirmation_help)
     return parser
 
 
@@ -604,18 +891,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if TAG_RE.fullmatch(args.tag) is None:
         parser.error("--tag must be an exact vMAJOR.MINOR.PATCH release")
-    if args.command == "start":
+    confirmation_sha: str | None = None
+    if args.command in {"start", "resume"}:
         expected_alias = args.tag.rsplit(".", 1)[0]
         if args.alias != "none" and (
             ALIAS_RE.fullmatch(args.alias) is None or args.alias != expected_alias
         ):
             parser.error(f"--alias must be {expected_alias} or none")
-        confirmation = args.confirm.partition("@")
-        if confirmation[0] != args.tag or confirmation[1] != "@" or SHA_RE.fullmatch(confirmation[2]) is None:
-            parser.error("--confirm must be the exact TAG@lowercase-40-character-SHA")
+        if args.command == "start":
+            confirmation = args.confirm.partition("@")
+            if (
+                confirmation[0] != args.tag
+                or confirmation[1] != "@"
+                or SHA_RE.fullmatch(confirmation[2]) is None
+            ):
+                parser.error("--confirm must be the exact TAG@lowercase-40-character-SHA")
+            confirmation_sha = confirmation[2]
+        else:
+            if RUN_ID_RE.fullmatch(args.run_id) is None:
+                parser.error("--run-id must be a positive decimal with no leading zero")
+            args.run_id = int(args.run_id)
+            match = re.fullmatch(
+                rf"{re.escape(args.tag)}@(?P<sha>[0-9a-f]{{40}})#(?P<run_id>[1-9]\d*)",
+                args.confirm,
+            )
+            if match is None or int(match.group("run_id")) != args.run_id:
+                parser.error(
+                    "--confirm must be the exact TAG@lowercase-40-character-SHA#RUNID"
+                )
+            confirmation_sha = match.group("sha")
 
-    sha, checks = _evaluate(args.repo, args.remote, args.tag)
-    if args.command == "start" and sha != args.confirm.partition("@")[2]:
+    control_sha: str | None = None
+    if args.command == "resume":
+        assert confirmation_sha is not None
+        control_sha, checks = _evaluate_resume(
+            args.repo,
+            args.remote,
+            args.tag,
+            args.run_id,
+            confirmation_sha,
+        )
+        sha = confirmation_sha
+    else:
+        sha, checks = _evaluate(args.repo, args.remote, args.tag)
+    if args.command == "start" and sha != confirmation_sha:
         checks.append(Check("explicit confirmation", "failed", "confirmation SHA does not equal HEAD"))
     if any(item.status == "failed" for item in checks):
         return _emit(args, sha, checks, None)
@@ -625,29 +944,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     assert sha is not None
     # Re-read remote main immediately before the command's only mutation.
     try:
-        _main_identity(args.repo.resolve(), args.remote, sha)
-        command = (
-            "gh", "workflow", "run", "create-release-tag.yml",
-            "--repo", REPOSITORY,
-            "--ref", "main",
+        dispatch_control_sha = control_sha if args.command == "resume" else sha
+        assert dispatch_control_sha is not None
+        _main_identity(args.repo.resolve(), args.remote, dispatch_control_sha)
+        workflow = "create-release-tag.yml"
+        fields = (
             "--field", f"release_tag={args.tag}",
             "--field", f"release_sha={sha}",
             "--field", f"compatibility_alias={args.alias}",
+        )
+        if args.command == "resume":
+            workflow = "publish.yml"
+            fields += ("--field", f"resume_run_id={args.run_id}")
+        command = (
+            "gh", "workflow", "run", workflow,
+            "--repo", REPOSITORY,
+            "--ref", "main",
+            *fields,
         )
         result = _run(command, cwd=args.repo.resolve())
     except GateError as error:
         checks.append(Check("workflow dispatch", "failed", str(error)))
         return _emit(args, sha, checks, None)
-    detail = result.stdout.strip() or "create-release-tag.yml dispatch accepted"
+    detail = result.stdout.strip() or f"{workflow} dispatch accepted"
     checks.append(Check("workflow dispatch", "passed", detail))
     dispatch = {
-        "workflow": "create-release-tag.yml",
+        "workflow": workflow,
         "ref": "main",
         "tag": args.tag,
         "sha": sha,
         "alias": args.alias,
         "detail": detail,
     }
+    if args.command == "resume":
+        dispatch["resume_run_id"] = str(args.run_id)
     return _emit(args, sha, checks, dispatch)
 
 
