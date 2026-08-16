@@ -241,6 +241,15 @@ def _gh_job_log(repo: Path, job_id: int) -> str:
         )
     except FileNotFoundError as error:
         raise GateError("required command is unavailable: gh") from error
+    refusal = (result.stderr or b"") + (result.stdout or b"")
+    if result.returncode != 0 and b"--allow-escape-sequences" in refusal:
+        command = ("gh", "api", "--allow-escape-sequences", endpoint)
+        result = subprocess.run(
+            list(command),
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
         raise GateError(

@@ -936,6 +936,46 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             check=False,
         )
 
+        refusal = subprocess.CompletedProcess(
+            args=(),
+            returncode=1,
+            stdout=b"",
+            stderr=(
+                b"the response contains terminal escape sequences; pass "
+                b"--allow-escape-sequences to output it anyway"
+            ),
+        )
+        with mock.patch.object(
+            publisher.subprocess,
+            "run",
+            side_effect=[refusal, result],
+        ) as retry_runner:
+            retried = publisher._gh_job_log(Path("repo"), 31)
+
+        self.assertEqual(retried, expected_log)
+        self.assertEqual(
+            retry_runner.call_args_list,
+            [
+                mock.call(
+                    ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
+                    cwd=Path("repo"),
+                    capture_output=True,
+                    check=False,
+                ),
+                mock.call(
+                    [
+                        "gh",
+                        "api",
+                        "--allow-escape-sequences",
+                        "repos/yzm1/boundver/actions/jobs/31/logs",
+                    ],
+                    cwd=Path("repo"),
+                    capture_output=True,
+                    check=False,
+                ),
+            ],
+        )
+
         for invalid_job_id in (0, -1, True, "31"):
             with self.subTest(job_id=invalid_job_id), self.assertRaisesRegex(
                 publisher.GateError, "job ID is malformed"
