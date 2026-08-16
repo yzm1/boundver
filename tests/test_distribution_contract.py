@@ -507,6 +507,7 @@ class AutomationContractTests(unittest.TestCase):
         policy_query = policy_gate["run"]
         for invariant in (
             'if [[ ! "$VERIFICATION_JOB_ID" =~ ^[1-9][0-9]*$ ]]',
+            "--allow-escape-sequences",
             "actions/jobs/$VERIFICATION_JOB_ID/logs",
             '"RELEASE_TAG", release_tag',
             '"RELEASE_SHA", release_sha',
@@ -749,6 +750,7 @@ import sys
 
 expected = [
     "api",
+    "--allow-escape-sequences",
     "repos/yzm1/boundver/actions/jobs/901/logs",
 ]
 if sys.argv[1:] != expected:
