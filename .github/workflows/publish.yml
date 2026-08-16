@@ -463,8 +463,12 @@ jobs:
 
           verification_log=$(mktemp)
           trap 'rm -f "$verification_log"' EXIT
-          gh api \
-            --allow-escape-sequences \
+          gh_api_help=$(gh api --help)
+          gh_api=(gh api)
+          if [[ "$gh_api_help" == *"--allow-escape-sequences"* ]]; then
+            gh_api+=(--allow-escape-sequences)
+          fi
+          "${gh_api[@]}" \
             "repos/$GITHUB_REPOSITORY/actions/jobs/$VERIFICATION_JOB_ID/logs" \
             > "$verification_log"
           if [[ ! -s "$verification_log" ]]; then

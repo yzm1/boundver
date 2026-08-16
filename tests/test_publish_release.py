@@ -923,41 +923,54 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             stdout=expected_log.encode("utf-8"),
             stderr=b"",
         )
-        with mock.patch.object(
-            publisher.subprocess, "run", return_value=result
-        ) as runner:
-            actual = publisher._gh_job_log(Path("repo"), 31)
-
-        self.assertEqual(actual, expected_log)
-        runner.assert_called_once_with(
-            ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
-            cwd=Path("repo"),
-            capture_output=True,
-            check=False,
+        help_without_flag = subprocess.CompletedProcess(
+            args=(), returncode=0, stdout=b"USAGE: gh api", stderr=b""
         )
-
-        refusal = subprocess.CompletedProcess(
+        help_with_flag = subprocess.CompletedProcess(
             args=(),
-            returncode=1,
-            stdout=b"",
-            stderr=(
-                b"the response contains terminal escape sequences; pass "
-                b"--allow-escape-sequences to output it anyway"
-            ),
+            returncode=0,
+            stdout=b"--allow-escape-sequences",
+            stderr=b"",
         )
         with mock.patch.object(
             publisher.subprocess,
             "run",
-            side_effect=[refusal, result],
-        ) as retry_runner:
-            retried = publisher._gh_job_log(Path("repo"), 31)
+            side_effect=[help_without_flag, result],
+        ) as runner:
+            actual = publisher._gh_job_log(Path("repo"), 31)
 
-        self.assertEqual(retried, expected_log)
+        self.assertEqual(actual, expected_log)
         self.assertEqual(
-            retry_runner.call_args_list,
+            runner.call_args_list,
             [
                 mock.call(
+                    ["gh", "api", "--help"],
+                    cwd=Path("repo"),
+                    capture_output=True,
+                    check=False,
+                ),
+                mock.call(
                     ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
+                    cwd=Path("repo"),
+                    capture_output=True,
+                    check=False,
+                ),
+            ],
+        )
+
+        with mock.patch.object(
+            publisher.subprocess,
+            "run",
+            side_effect=[help_with_flag, result],
+        ) as guarded_runner:
+            guarded = publisher._gh_job_log(Path("repo"), 31)
+
+        self.assertEqual(guarded, expected_log)
+        self.assertEqual(
+            guarded_runner.call_args_list,
+            [
+                mock.call(
+                    ["gh", "api", "--help"],
                     cwd=Path("repo"),
                     capture_output=True,
                     check=False,
@@ -975,6 +988,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 ),
             ],
         )
+
+        with mock.patch.object(
+            publisher.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                (), 1, b"", b"help unavailable"
+            ),
+        ), self.assertRaisesRegex(publisher.GateError, "API capabilities"):
+            publisher._gh_job_log(Path("repo"), 31)
 
         for invalid_job_id in (0, -1, True, "31"):
             with self.subTest(job_id=invalid_job_id), self.assertRaisesRegex(
@@ -995,14 +1017,19 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         for response, message in failures:
             with self.subTest(message=message), mock.patch.object(
-                publisher.subprocess, "run", return_value=response
+                publisher.subprocess,
+                "run",
+                side_effect=[help_without_flag, response],
             ), self.assertRaisesRegex(publisher.GateError, message):
                 publisher._gh_job_log(Path("repo"), 31)
 
         with mock.patch.object(
             publisher.subprocess,
             "run",
-            return_value=subprocess.CompletedProcess((), 0, b"12345", b""),
+            side_effect=[
+                help_without_flag,
+                subprocess.CompletedProcess((), 0, b"12345", b""),
+            ],
         ), mock.patch.object(
             publisher, "MAX_JOB_LOG_BYTES", 4
         ), self.assertRaisesRegex(publisher.GateError, "inspection limit"):
