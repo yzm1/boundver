@@ -507,6 +507,10 @@ class AutomationContractTests(unittest.TestCase):
         policy_query = policy_gate["run"]
         for invariant in (
             'if [[ ! "$VERIFICATION_JOB_ID" =~ ^[1-9][0-9]*$ ]]',
+            "gh_api_help=$(gh api --help)",
+            "gh_api=(gh api)",
+            'if [[ "$gh_api_help" == *"--allow-escape-sequences"* ]]',
+            "--allow-escape-sequences",
             "actions/jobs/$VERIFICATION_JOB_ID/logs",
             '"RELEASE_TAG", release_tag',
             '"RELEASE_SHA", release_sha',
@@ -747,11 +751,16 @@ import os
 import pathlib
 import sys
 
-expected = [
-    "api",
-    "repos/yzm1/boundver/actions/jobs/901/logs",
-]
-if sys.argv[1:] != expected:
+arguments = sys.argv[1:]
+if arguments == ["api", "--help"]:
+    if os.environ.get("FAKE_GH_SUPPORTS_ESCAPE") == "1":
+        print("--allow-escape-sequences")
+    raise SystemExit(0)
+expected = ["api"]
+if os.environ.get("FAKE_GH_SUPPORTS_ESCAPE") == "1":
+    expected.append("--allow-escape-sequences")
+expected.append("repos/yzm1/boundver/actions/jobs/901/logs")
+if arguments != expected:
     raise SystemExit(f"unexpected gh invocation: {sys.argv[1:]!r}")
 sys.stdout.write(
     pathlib.Path(os.environ["FAKE_VERIFICATION_LOG"]).read_text(encoding="utf-8")
@@ -795,6 +804,9 @@ sys.stdout.write(
             exact_log = log_triple(
                 release_tag, release_sha, compatibility_alias
             ) * 2
+            result = run_policy_gate(exact_log)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            env["FAKE_GH_SUPPORTS_ESCAPE"] = "1"
             result = run_policy_gate(exact_log)
             self.assertEqual(result.returncode, 0, result.stderr)
             none_log = log_triple(release_tag, release_sha, "none")

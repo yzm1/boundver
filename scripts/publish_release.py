@@ -231,16 +231,34 @@ def _gh_job_log(repo: Path, job_id: int) -> str:
     if not isinstance(job_id, int) or isinstance(job_id, bool) or job_id <= 0:
         raise GateError("source verify-release job ID is malformed")
     endpoint = f"repos/{REPOSITORY}/actions/jobs/{job_id}/logs"
-    command = ("gh", "api", endpoint)
     try:
-        result = subprocess.run(
-            list(command),
+        help_result = subprocess.run(
+            ["gh", "api", "--help"],
             cwd=repo,
             capture_output=True,
             check=False,
         )
     except FileNotFoundError as error:
         raise GateError("required command is unavailable: gh") from error
+    if help_result.returncode != 0:
+        detail = (help_result.stderr or help_result.stdout).decode(
+            "utf-8", errors="replace"
+        )
+        raise GateError(
+            "cannot inspect GitHub CLI API capabilities: "
+            f"{detail.strip() or 'unknown error'}"
+        )
+    help_output = (help_result.stdout or b"") + (help_result.stderr or b"")
+    command = ["gh", "api"]
+    if b"--allow-escape-sequences" in help_output:
+        command.append("--allow-escape-sequences")
+    command.append(endpoint)
+    result = subprocess.run(
+        command,
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
         raise GateError(
