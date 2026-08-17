@@ -941,44 +941,80 @@ jobs:
           python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
             --output "$notes_file"
 
-          # A failed API request is not evidence that the release is absent.
-          # Capture the HTTP status explicitly so only a real 404 permits create.
           release_json_file=$(mktemp)
-          api_error_file=$(mktemp)
-          release_url="${GITHUB_API_URL:-https://api.github.com}/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
-          if ! lookup_status=$(curl --silent --show-error \
-            --connect-timeout 15 --max-time 60 \
-            --output "$release_json_file" \
-            --write-out '%{http_code}' \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "$release_url" 2>"$api_error_file"); then
-            cat "$api_error_file" >&2
-            echo "GitHub Release API lookup failed before returning an HTTP status" >&2
+
+          # GitHub's release-by-tag endpoint does not return draft releases.
+          # Search the authenticated, paginated release list and bind every
+          # later read to the unique numeric release ID instead.
+          find_release_id() {
+            local releases_file
+            releases_file=$(mktemp)
+            if ! gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              > "$releases_file"; then
+              echo "GitHub Release list lookup failed" >&2
+              return 1
+            fi
+            python3 - "$RELEASE_TAG" "$releases_file" <<'PY'
+          # release-list-selector:start
+          import json
+          import pathlib
+          import sys
+
+          release_tag, releases_path = sys.argv[1:]
+          pages = json.loads(pathlib.Path(releases_path).read_text(encoding="utf-8"))
+          if not isinstance(pages, list) or any(
+              not isinstance(page, list) for page in pages
+          ):
+              raise SystemExit("GitHub Release list response is malformed")
+
+          matches = []
+          for page in pages:
+              for release in page:
+                  if not isinstance(release, dict):
+                      raise SystemExit("GitHub Release list entry is malformed")
+                  if release.get("tag_name") != release_tag:
+                      continue
+                  release_id = release.get("id")
+                  if type(release_id) is not int or release_id <= 0:
+                      raise SystemExit("GitHub Release has a malformed ID")
+                  matches.append(release_id)
+
+          if len(matches) > 1:
+              raise SystemExit("multiple GitHub Releases use the version tag")
+          if matches:
+              print(matches[0])
+          # release-list-selector:end
+          PY
+          }
+
+          if ! release_id=$(find_release_id); then
             exit 1
           fi
-          case "$lookup_status" in
-            200)
-              ;;
-            404)
-              gh release create "$RELEASE_TAG" \
+          if [[ -z "$release_id" ]]; then
+            gh release create "$RELEASE_TAG" \
               --draft \
               --verify-tag \
               --title "boundver ${RELEASE_TAG#v}" \
               --notes-file "$notes_file"
-              if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-                > "$release_json_file"; then
-                echo "GitHub Release was created but its exact state cannot be read" >&2
-                exit 1
-              fi
-              ;;
-            *)
-              cat "$release_json_file" >&2
-              echo "GitHub Release API lookup failed with HTTP $lookup_status" >&2
+            if ! release_id=$(find_release_id); then
+              echo "GitHub Release was created but the release list cannot be read" >&2
               exit 1
-              ;;
-          esac
+            fi
+            if [[ -z "$release_id" ]]; then
+              echo "GitHub Release was created but is absent from the release list" >&2
+              exit 1
+            fi
+          fi
+          if [[ ! "$release_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "GitHub Release ID is malformed: $release_id" >&2
+            exit 1
+          fi
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            > "$release_json_file"; then
+            echo "GitHub Release state cannot be read by ID" >&2
+            exit 1
+          fi
 
           expected_assets=$(mktemp)
           missing_assets=$(mktemp)
@@ -1075,7 +1111,7 @@ jobs:
 
           # Re-read after upload: concurrent extras, omissions, and metadata
           # changes must all fail closed.
-          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" \
             > "$release_json_file"; then
             echo "GitHub Release API failed during final draft verification" >&2
             exit 1

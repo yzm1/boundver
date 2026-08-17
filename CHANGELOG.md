@@ -147,6 +147,10 @@ release.
 - The release-review audit materializes GitHub review and comment records
   before nested API lookups, so a Windows GitHub CLI invoked from WSL cannot
   consume later exact-commit evidence from the audit loop.
+- GitHub Release draft recovery discovers private drafts through the
+  authenticated paginated release list and reconciles them by numeric ID;
+  draft-only 404 responses from the public tag endpoint no longer strand a
+  verified release candidate.
 - OpenAPI canonicalization rejects malformed roots, unsafe or external
   references, ambiguous YAML constructs, and invalid map keys; it retains
   extension fields as contract data and handles response keys consistently.

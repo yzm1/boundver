@@ -6,12 +6,14 @@ import base64
 import email.parser
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -192,8 +194,9 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertIn("scripts/verify_release_readiness.py", workflow)
         self.assertIn('--notes-file "$notes_file"', workflow)
-        self.assertIn('case "$lookup_status" in', workflow)
-        self.assertIn("404)", workflow)
+        self.assertIn("gh api --paginate --slurp", workflow)
+        self.assertIn("releases?per_page=100", workflow)
+        self.assertIn('releases/$release_id', workflow)
         self.assertIn("--draft", workflow)
         self.assertIn("SHA256SUMS", workflow)
         self.assertIn("environment: marketplace", workflow)
@@ -244,9 +247,11 @@ class AutomationContractTests(unittest.TestCase):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("lookup_status=$(curl", workflow)
-        self.assertIn("API lookup failed before returning an HTTP status", workflow)
-        self.assertIn("API lookup failed with HTTP $lookup_status", workflow)
+        self.assertIn("find_release_id()", workflow)
+        self.assertIn("GitHub Release list lookup failed", workflow)
+        self.assertIn("multiple GitHub Releases use the version tag", workflow)
+        self.assertIn("GitHub Release state cannot be read by ID", workflow)
+        self.assertNotIn("releases/tags/$RELEASE_TAG", workflow)
         self.assertIn("GitHub Release contains unexpected assets", workflow)
         self.assertIn("GitHub Release asset conflicts with candidate bytes", workflow)
         self.assertIn('gh release upload "$RELEASE_TAG"', workflow)
@@ -265,6 +270,56 @@ class AutomationContractTests(unittest.TestCase):
             workflow.index('gh release upload "$RELEASE_TAG"'),
         )
         self.assertNotIn('if ! gh release view "$RELEASE_TAG"', workflow)
+
+    def test_release_list_selector_finds_drafts_and_rejects_ambiguity(self):
+        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r"# release-list-selector:start\n(?P<code>.*?)"
+            r"\n\s*# release-list-selector:end",
+            workflow,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        selector = textwrap.dedent(match.group("code"))
+
+        def select(pages):
+            with tempfile.TemporaryDirectory() as td:
+                releases = Path(td) / "releases.json"
+                releases.write_text(json.dumps(pages), encoding="utf-8")
+                return subprocess.run(
+                    [sys.executable, "-c", selector, "v0.11.0", str(releases)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+
+        found = select(
+            [
+                [{"id": 7, "tag_name": "v0.10.0", "draft": False}],
+                [{"id": 371554563, "tag_name": "v0.11.0", "draft": True}],
+            ]
+        )
+        self.assertEqual(found.returncode, 0, found.stderr)
+        self.assertEqual(found.stdout.strip(), "371554563")
+
+        missing = select([[{"id": 7, "tag_name": "v0.10.0"}]])
+        self.assertEqual(missing.returncode, 0, missing.stderr)
+        self.assertEqual(missing.stdout, "")
+
+        duplicate = select(
+            [[
+                {"id": 11, "tag_name": "v0.11.0"},
+                {"id": 12, "tag_name": "v0.11.0"},
+            ]]
+        )
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("multiple GitHub Releases", duplicate.stderr)
+
+        malformed = select([[{"id": True, "tag_name": "v0.11.0"}]])
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("malformed ID", malformed.stderr)
 
     def test_publish_promotes_one_artifact_id_through_testpypi(self):
         import yaml
