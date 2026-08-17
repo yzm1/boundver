@@ -200,8 +200,11 @@ current remote `main`; confirms that the tagged release commit is on that main
 history; repeats the hygiene, version, exact-main CI, environment, ruleset,
 immutability, and serialization checks; rejects a legacy release branch or an
 already-public GitHub Release; and permits an existing draft for the workflow
-to reconcile. It then proves through the GitHub API that the source was the
-completed failed `publish.yml` `workflow_dispatch` for the exact tag and SHA,
+to reconcile. Draft discovery uses the authenticated paginated release list
+and binds subsequent reads to the unique numeric release ID because GitHub's
+release-by-tag endpoint does not expose drafts. It then proves through the
+GitHub API that the source was the completed failed `publish.yml`
+`workflow_dispatch` for the exact tag and SHA,
 and that it contains one uniquely identified successful `verify-release` job.
 The command fetches that job's retained log and requires every GitHub-emitted
 `RELEASE_TAG`, `RELEASE_SHA`, and `COMPATIBILITY_ALIAS` environment triple to
