@@ -540,6 +540,12 @@ def _validate_github_download_url(
         )
 
 
+def _normalized_release_notes(value: str) -> str:
+    """Normalize only transport-level newline spelling for exact note checks."""
+
+    return value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+
 def _verify_github(
     fetch: Fetcher,
     repository: str,
@@ -570,7 +576,9 @@ def _verify_github(
     if release.get("name") != f"{PROJECT} {version}":
         raise ReleaseVerificationError("GitHub Release title disagrees")
     body = release.get("body")
-    if not isinstance(body, str) or body.rstrip("\n") != release_notes.rstrip("\n"):
+    if not isinstance(body, str) or _normalized_release_notes(
+        body
+    ) != _normalized_release_notes(release_notes):
         raise ReleaseVerificationError("GitHub Release notes disagree")
     if release.get("draft") is not False:
         raise ReleaseVerificationError("GitHub Release is still a draft")

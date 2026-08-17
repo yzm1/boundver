@@ -243,7 +243,7 @@ class AutomationContractTests(unittest.TestCase):
             "boundver-release-promotion",
         )
 
-    def test_release_draft_lookup_and_asset_resume_fail_closed(self):
+    def test_release_lookup_and_asset_resume_fail_closed(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
             encoding="utf-8"
         )
@@ -257,19 +257,60 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn('gh release upload "$RELEASE_TAG"', workflow)
         self.assertIn("Public GitHub Release is missing assets", workflow)
         self.assertIn(
-            "GitHub Release already published; draft preparation cannot continue",
+            "Public GitHub Release must be immutable and have a publication timestamp",
             workflow,
         )
         self.assertIn(
-            "GitHub Release was published during draft reconciliation",
+            "Public immutable GitHub Release exactly matches the retained candidate",
             workflow,
         )
-        self.assertIn("GitHub Release is no longer a draft", workflow)
+        self.assertIn(
+            'value.replace("\\r\\n", "\\n").replace("\\r", "\\n")',
+            workflow,
+        )
         self.assertLess(
             workflow.index("cmp --silent"),
             workflow.index('gh release upload "$RELEASE_TAG"'),
         )
         self.assertNotIn('if ! gh release view "$RELEASE_TAG"', workflow)
+
+    def test_public_surface_verifiers_use_reviewed_control_code(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        control_checkouts = []
+        for job_name, job in jobs.items():
+            for step in job.get("steps", []):
+                if step.get("name") == "Checkout the reviewed release-control commit":
+                    control_checkouts.append(job_name)
+        self.assertEqual(
+            control_checkouts,
+            ["verify-marketplace", "verify-public-surfaces"],
+        )
+
+        for job_name in control_checkouts:
+            steps = jobs[job_name]["steps"]
+            checkout = next(
+                step
+                for step in steps
+                if step.get("name") == "Checkout the reviewed release-control commit"
+            )
+            self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+            self.assertEqual(checkout["with"]["path"], ".release-control")
+            verifier = next(
+                step
+                for step in steps
+                if ".release-control/scripts/verify_release_surfaces.py"
+                in str(step.get("run", ""))
+            )
+            self.assertIn(
+                "python3 scripts/release_changelog.py",
+                verifier["run"],
+            )
 
     def test_release_list_selector_finds_drafts_and_rejects_ambiguity(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(

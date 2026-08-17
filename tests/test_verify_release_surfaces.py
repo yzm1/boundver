@@ -386,6 +386,19 @@ def test_github_may_omit_only_the_release_notes_final_newline(candidate):
     _verify(candidate, FakeFetcher(routes))
 
 
+@pytest.mark.parametrize("newline", ["\r\n", "\r"])
+def test_github_release_notes_accept_transport_newline_normalization(
+    candidate, newline: str
+):
+    routes = _surface_routes(candidate[2])
+    url = f"https://api.github.com/repos/yzm1/boundver/releases/tags/{TAG}"
+    payload = json.loads(routes[url])
+    payload["body"] = RELEASE_NOTES.replace("\n", newline)
+    routes[url] = json.dumps(payload).encode("utf-8")
+
+    _verify(candidate, FakeFetcher(routes))
+
+
 def test_annotated_release_tag_is_dereferenced_to_exact_commit(candidate):
     routes = _surface_routes(candidate[2])
     ref_url = f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{TAG}"

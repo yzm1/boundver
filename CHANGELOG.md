@@ -17,6 +17,14 @@ All notable changes to this project are documented here. The format follows
   the approved alias policy, moves the release tag, or rebuilds and replaces
   the candidate.
 
+### Fixed
+
+- Publication recovery can continue after the exact GitHub Release has already
+  become public and immutable, but only after reconciling its metadata and
+  retained asset bytes. Public-surface verification runs reviewed control code
+  from the recovery commit and treats LF, CRLF, and CR as equivalent transport
+  spellings in otherwise exact release notes.
+
 ## [0.11.0] - 2026-08-14
 
 This release changes the meaning of stored fingerprints and requires a fresh

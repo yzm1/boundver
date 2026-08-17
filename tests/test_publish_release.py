@@ -473,7 +473,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         tag_state.assert_called_once_with(resolved_repo, "origin", TAG, SHA)
         ancestry.assert_called_once_with(resolved_repo, SHA, CONTROL_SHA)
         controls.assert_called_once_with(
-            resolved_repo, CONTROL_SHA, TAG, allow_draft_release=True
+            resolved_repo, CONTROL_SHA, TAG, allow_resumable_release=True
         )
         artifacts.assert_called_once_with(
             resolved_repo, RUN_ID, TAG, SHA, ALIAS
@@ -1152,7 +1152,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 Path("."), RUN_ID, TAG, SHA, ALIAS
             )
 
-    def test_resume_accepts_only_absent_or_draft_github_release(self):
+    def test_resume_accepts_absent_draft_or_exact_immutable_github_release(self):
         publisher = _load_script()
 
         def response(_repo, _repository, endpoint):
@@ -1225,23 +1225,47 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             publisher, "_gh_json", side_effect=response
         ), mock.patch.object(publisher, "_run", return_value=present):
             publisher._github_controls(
-                Path("."), SHA, TAG, allow_draft_release=True
+                Path("."), SHA, TAG, allow_resumable_release=True
             )
 
         def public_response(repo, repository, endpoint):
             value = response(repo, repository, endpoint)
             if endpoint.endswith(f"/releases/tags/{TAG}"):
                 value["draft"] = False
+                value["immutable"] = True
+                value["prerelease"] = False
+                value["published_at"] = "2026-08-17T13:19:01Z"
             return value
 
         with mock.patch.object(
             publisher, "_gh_json", side_effect=public_response
         ), mock.patch.object(
             publisher, "_run", return_value=present
-        ), self.assertRaisesRegex(publisher.GateError, "already public"):
+        ):
             publisher._github_controls(
-                Path("."), SHA, TAG, allow_draft_release=True
+                Path("."), SHA, TAG, allow_resumable_release=True
             )
+
+        for field, value in (
+            ("immutable", False),
+            ("prerelease", True),
+            ("published_at", ""),
+        ):
+
+            def invalid_public_response(repo, repository, endpoint):
+                result = public_response(repo, repository, endpoint)
+                if endpoint.endswith(f"/releases/tags/{TAG}"):
+                    result[field] = value
+                return result
+
+            with self.subTest(field=field), mock.patch.object(
+                publisher, "_gh_json", side_effect=invalid_public_response
+            ), mock.patch.object(
+                publisher, "_run", return_value=present
+            ), self.assertRaisesRegex(publisher.GateError, "stable and immutable"):
+                publisher._github_controls(
+                    Path("."), SHA, TAG, allow_resumable_release=True
+                )
 
     def test_version_tag_ruleset_does_not_capture_mutable_minor_alias(self):
         publisher = _load_script()

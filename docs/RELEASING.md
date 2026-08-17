@@ -199,11 +199,16 @@ until its final workflow dispatch. It requires the checkout to be clean and at
 current remote `main`; confirms that the tagged release commit is on that main
 history; repeats the hygiene, version, exact-main CI, environment, ruleset,
 immutability, and serialization checks; rejects a legacy release branch or an
-already-public GitHub Release; and permits an existing draft for the workflow
-to reconcile. Draft discovery uses the authenticated paginated release list
-and binds subsequent reads to the unique numeric release ID because GitHub's
-release-by-tag endpoint does not expose drafts. It then proves through the
-GitHub API that the source was the completed failed `publish.yml`
+unsafe public GitHub Release; and permits either an existing draft or an
+already-public stable, immutable Release for the workflow to reconcile. Release
+discovery uses the authenticated paginated release list and binds subsequent
+reads to the unique numeric release ID because GitHub's release-by-tag endpoint
+does not expose drafts. A public Release must already be complete: recovery
+will not add missing assets to it or edit it. The workflow compares its title,
+tag, notes, exact asset set, and every downloaded asset byte with the retained
+candidate before continuing. LF, CRLF, and CR are treated only as equivalent
+transport spellings in release notes; all other text remains exact. It then
+proves through the GitHub API that the source was the completed failed `publish.yml`
 `workflow_dispatch` for the exact tag and SHA,
 and that it contains one uniquely identified successful `verify-release` job.
 The command fetches that job's retained log and requires every GitHub-emitted
@@ -221,8 +226,10 @@ It then dispatches `publish.yml` on `main` with the exact release tag, tagged
 SHA, alias policy, and source run ID. The recovery workflow downloads those
 identified source artifacts. It does not create or move the version tag and
 must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
-unreadable GitHub state fails closed. An ad hoc fresh publication dispatch is
-not a recovery path.
+unreadable GitHub state fails closed. Public-surface checks use the reviewed
+recovery-control implementation from current `main`, while release notes and
+artifact identity remain bound to the immutable tagged source. An ad hoc fresh
+publication dispatch is not a recovery path.
 
 ## Post-release checks
 
