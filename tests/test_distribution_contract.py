@@ -243,7 +243,7 @@ class AutomationContractTests(unittest.TestCase):
             "boundver-release-promotion",
         )
 
-    def test_release_draft_lookup_and_asset_resume_fail_closed(self):
+    def test_release_lookup_and_asset_resume_fail_closed(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
             encoding="utf-8"
         )
@@ -251,25 +251,243 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("GitHub Release list lookup failed", workflow)
         self.assertIn("multiple GitHub Releases use the version tag", workflow)
         self.assertIn("GitHub Release state cannot be read by ID", workflow)
-        self.assertNotIn("releases/tags/$RELEASE_TAG", workflow)
+        self.assertEqual(workflow.count("releases/tags/$RELEASE_TAG"), 2)
         self.assertIn("GitHub Release contains unexpected assets", workflow)
         self.assertIn("GitHub Release asset conflicts with candidate bytes", workflow)
         self.assertIn('gh release upload "$RELEASE_TAG"', workflow)
         self.assertIn("Public GitHub Release is missing assets", workflow)
         self.assertIn(
-            "GitHub Release already published; draft preparation cannot continue",
+            "Public GitHub Release must be immutable and have a publication timestamp",
             workflow,
         )
         self.assertIn(
-            "GitHub Release was published during draft reconciliation",
+            "Public immutable GitHub Release exactly matches the retained candidate",
             workflow,
         )
-        self.assertIn("GitHub Release is no longer a draft", workflow)
+        self.assertIn(
+            'value.replace("\\r\\n", "\\n").replace("\\r", "\\n")',
+            workflow,
+        )
         self.assertLess(
             workflow.index("cmp --silent"),
             workflow.index('gh release upload "$RELEASE_TAG"'),
         )
         self.assertNotIn('if ! gh release view "$RELEASE_TAG"', workflow)
+
+    def test_public_release_checks_use_reviewed_control_code(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        control_checkouts = []
+        for job_name, job in jobs.items():
+            for step in job.get("steps", []):
+                if step.get("name") == "Checkout the reviewed release-control commit":
+                    control_checkouts.append(job_name)
+        self.assertEqual(
+            control_checkouts,
+            [
+                "testpypi-preflight",
+                "publish-testpypi",
+                "verify-marketplace",
+                "verify-public-surfaces",
+            ],
+        )
+
+        for job_name in control_checkouts:
+            steps = jobs[job_name]["steps"]
+            checkout = next(
+                step
+                for step in steps
+                if step.get("name") == "Checkout the reviewed release-control commit"
+            )
+            self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
+            self.assertEqual(checkout["with"]["path"], ".release-control")
+            verifier = next(
+                step
+                for step in steps
+                if ".release-control/scripts/verify_release_surfaces.py"
+                in str(step.get("run", ""))
+            )
+            self.assertIn(
+                "python3 scripts/release_changelog.py",
+                verifier["run"],
+            )
+
+    def test_public_release_conflicts_block_testpypi_mutation(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        steps = jobs["testpypi-preflight"]["steps"]
+        public_gate = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Reject a conflicting public GitHub Release before registry mutation"
+        )
+        registry_gate = next(
+            step
+            for step in steps
+            if step.get("name")
+            == "Accept only a missing, exact, or exact-partial TestPyPI release"
+        )
+        self.assertLess(steps.index(public_gate), steps.index(registry_gate))
+        self.assertIn("--phase github", public_gate["run"])
+        self.assertIn("releases/tags/$RELEASE_TAG", public_gate["run"])
+        self.assertIn('"$http_status" == 404', public_gate["run"])
+        self.assertIn('"$api_exit" -ne 0', public_gate["run"])
+        self.assertIn('"$release_state" == draft', public_gate["run"])
+        self.assertIn('"$release_state" != public', public_gate["run"])
+        self.assertIn("testpypi-preflight", jobs["publish-testpypi"]["needs"])
+
+        publish_steps = jobs["publish-testpypi"]["steps"]
+        mutation_gate = next(
+            step
+            for step in publish_steps
+            if step.get("name")
+            == "Revalidate the GitHub Release at the TestPyPI mutation boundary"
+        )
+        publisher = next(
+            step
+            for step in publish_steps
+            if str(step.get("uses", "")).startswith(
+                "pypa/gh-action-pypi-publish@"
+            )
+        )
+        self.assertLess(
+            publish_steps.index(mutation_gate), publish_steps.index(publisher)
+        )
+        self.assertEqual(mutation_gate["run"], public_gate["run"])
+        self.assertEqual(mutation_gate["if"], publisher["if"])
+
+    @unittest.skipIf(os.name == "nt", "workflow shell runs on Linux")
+    def test_public_release_preflight_allows_drafts_and_verifies_only_public_releases(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        public_gate = next(
+            step
+            for step in jobs["testpypi-preflight"]["steps"]
+            if step.get("name")
+            == "Reject a conflicting public GitHub Release before registry mutation"
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+expected = [
+    "api",
+    "--include",
+    "repos/yzm1/boundver/releases/tags/v0.11.0",
+]
+if sys.argv[1:] != expected:
+    raise SystemExit(f"unexpected gh invocation: {sys.argv[1:]!r}")
+draft = os.environ["FAKE_RELEASE_DRAFT"]
+payload = {} if draft == "missing" else {"draft": draft == "true"}
+sys.stdout.write(
+    "HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n"
+    + json.dumps(payload)
+    + "\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            scripts = root / "scripts"
+            scripts.mkdir()
+            (scripts / "release_changelog.py").write_text(
+                """import pathlib
+import sys
+
+output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+output.write_text("release notes\\n", encoding="utf-8")
+""",
+                encoding="utf-8",
+            )
+            control_scripts = root / ".release-control" / "scripts"
+            control_scripts.mkdir(parents=True)
+            (control_scripts / "verify_release_surfaces.py").write_text(
+                """import os
+import pathlib
+import sys
+
+pathlib.Path(os.environ["FAKE_VERIFIER_LOG"]).write_text(
+    " ".join(sys.argv[1:]), encoding="utf-8"
+)
+""",
+                encoding="utf-8",
+            )
+
+            verifier_log = root / "verifier.log"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "yzm1/boundver",
+                    "RELEASE_TAG": "v0.11.0",
+                    "RELEASE_SHA": "d" * 40,
+                    "COMPATIBILITY_ALIAS": "v0.11",
+                    "RUNNER_TEMP": str(root),
+                    "FAKE_VERIFIER_LOG": str(verifier_log),
+                }
+            )
+
+            env["FAKE_RELEASE_DRAFT"] = "true"
+            draft = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(draft.returncode, 0, draft.stderr)
+            self.assertIn("draft GitHub Release exists", draft.stdout)
+            self.assertFalse(verifier_log.exists())
+
+            env["FAKE_RELEASE_DRAFT"] = "false"
+            public = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(public.returncode, 0, public.stderr)
+            self.assertIn("--phase github", verifier_log.read_text(encoding="utf-8"))
+
+            verifier_log.unlink()
+            env["FAKE_RELEASE_DRAFT"] = "missing"
+            malformed = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("malformed", malformed.stderr)
+            self.assertFalse(verifier_log.exists())
 
     def test_release_list_selector_finds_drafts_and_rejects_ambiguity(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
@@ -1009,7 +1227,7 @@ sys.stdout.write(
                     },
                 )
                 downstream.append((job_name, download))
-        self.assertEqual(len(downstream), 11)
+        self.assertEqual(len(downstream), 13)
         self.assertEqual(jobs["publish-testpypi"]["environment"], "testpypi")
         self.assertEqual(jobs["publish-testpypi"]["permissions"]["id-token"], "write")
         self.assertEqual(jobs["verify-marketplace"]["environment"], "marketplace")

@@ -368,7 +368,7 @@ def _github_controls(
     sha: str,
     tag: str,
     *,
-    allow_draft_release: bool = False,
+    allow_resumable_release: bool = False,
 ) -> str:
     metadata = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}")
     if not isinstance(metadata, dict) or metadata.get("full_name") != REPOSITORY:
@@ -466,7 +466,7 @@ def _github_controls(
     release_output = release.stdout + release.stderr
     status_match = re.search(r"(?m)^HTTP/\S+\s+(\d{3})\b", release_output)
     if release.returncode == 0 and status_match and status_match.group(1) == "200":
-        if not allow_draft_release:
+        if not allow_resumable_release:
             raise GateError("a GitHub Release already exists; use the original run to resume")
         release_detail = _gh_json(
             repo, REPOSITORY, f"repos/{REPOSITORY}/releases/tags/{tag}"
@@ -477,17 +477,28 @@ def _github_controls(
             or not isinstance(release_detail.get("draft"), bool)
         ):
             raise GateError("GitHub Release state is malformed or disagrees with the tag")
-        if release_detail["draft"] is not True:
-            raise GateError("the GitHub Release is already public and cannot be resumed")
+        if release_detail["draft"] is False and (
+            release_detail.get("immutable") is not True
+            or release_detail.get("prerelease") is not False
+            or not isinstance(release_detail.get("published_at"), str)
+            or not release_detail["published_at"]
+        ):
+            raise GateError(
+                "an existing public GitHub Release must be stable and immutable "
+                "before recovery"
+            )
     if status_match is None or status_match.group(1) != "404":
         if not (
-            allow_draft_release
+            allow_resumable_release
             and release.returncode == 0
             and status_match is not None
             and status_match.group(1) == "200"
         ):
-            if allow_draft_release:
-                raise GateError("cannot prove that the GitHub Release is absent or a draft")
+            if allow_resumable_release:
+                raise GateError(
+                    "cannot prove that the GitHub Release is absent, a draft, or "
+                    "an immutable public release"
+                )
             raise GateError("cannot prove that the GitHub Release is absent")
     return "repository, exact CI, environments, immutability, and promotion state verified"
 
@@ -919,7 +930,7 @@ def _evaluate_resume(
                 checks,
                 "GitHub controls",
                 lambda: _github_controls(
-                    repo, control_sha, tag, allow_draft_release=True
+                    repo, control_sha, tag, allow_resumable_release=True
                 ),
             )
         if all(item.status == "passed" for item in checks):
