@@ -342,7 +342,131 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("releases/tags/$RELEASE_TAG", public_gate["run"])
         self.assertIn('"$http_status" == 404', public_gate["run"])
         self.assertIn('"$api_exit" -ne 0', public_gate["run"])
+        self.assertIn('"$release_state" == draft', public_gate["run"])
+        self.assertIn('"$release_state" != public', public_gate["run"])
         self.assertIn("testpypi-preflight", jobs["publish-testpypi"]["needs"])
+
+    @unittest.skipIf(os.name == "nt", "workflow shell runs on Linux")
+    def test_public_release_preflight_allows_drafts_and_verifies_only_public_releases(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        public_gate = next(
+            step
+            for step in jobs["testpypi-preflight"]["steps"]
+            if step.get("name")
+            == "Reject a conflicting public GitHub Release before registry mutation"
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+expected = [
+    "api",
+    "--include",
+    "repos/yzm1/boundver/releases/tags/v0.11.0",
+]
+if sys.argv[1:] != expected:
+    raise SystemExit(f"unexpected gh invocation: {sys.argv[1:]!r}")
+draft = os.environ["FAKE_RELEASE_DRAFT"]
+payload = {} if draft == "missing" else {"draft": draft == "true"}
+sys.stdout.write(
+    "HTTP/2.0 200 OK\\r\\nContent-Type: application/json\\r\\n\\r\\n"
+    + json.dumps(payload)
+    + "\\n"
+)
+""",
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+
+            scripts = root / "scripts"
+            scripts.mkdir()
+            (scripts / "release_changelog.py").write_text(
+                """import pathlib
+import sys
+
+output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+output.write_text("release notes\\n", encoding="utf-8")
+""",
+                encoding="utf-8",
+            )
+            control_scripts = root / ".release-control" / "scripts"
+            control_scripts.mkdir(parents=True)
+            (control_scripts / "verify_release_surfaces.py").write_text(
+                """import os
+import pathlib
+import sys
+
+pathlib.Path(os.environ["FAKE_VERIFIER_LOG"]).write_text(
+    " ".join(sys.argv[1:]), encoding="utf-8"
+)
+""",
+                encoding="utf-8",
+            )
+
+            verifier_log = root / "verifier.log"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+                    "GH_TOKEN": "test-token",
+                    "GITHUB_REPOSITORY": "yzm1/boundver",
+                    "RELEASE_TAG": "v0.11.0",
+                    "RELEASE_SHA": "d" * 40,
+                    "COMPATIBILITY_ALIAS": "v0.11",
+                    "RUNNER_TEMP": str(root),
+                    "FAKE_VERIFIER_LOG": str(verifier_log),
+                }
+            )
+
+            env["FAKE_RELEASE_DRAFT"] = "true"
+            draft = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(draft.returncode, 0, draft.stderr)
+            self.assertIn("draft GitHub Release exists", draft.stdout)
+            self.assertFalse(verifier_log.exists())
+
+            env["FAKE_RELEASE_DRAFT"] = "false"
+            public = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(public.returncode, 0, public.stderr)
+            self.assertIn("--phase github", verifier_log.read_text(encoding="utf-8"))
+
+            verifier_log.unlink()
+            env["FAKE_RELEASE_DRAFT"] = "missing"
+            malformed = subprocess.run(
+                ["bash", "-c", public_gate["run"]],
+                cwd=root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("malformed", malformed.stderr)
+            self.assertFalse(verifier_log.exists())
 
     def test_release_list_selector_finds_drafts_and_rejects_ambiguity(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(

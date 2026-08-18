@@ -783,24 +783,61 @@ jobs:
             > "$response" 2>&1
           api_exit=$?
           set -e
-          http_status=$(python3 - "$response" <<'PY'
+          if ! release_probe=$(python3 - "$response" <<'PY'
+          import json
           import pathlib
           import re
           import sys
 
           response = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          response = response.replace("\r\n", "\n").replace("\r", "\n")
           statuses = re.findall(r"(?m)^HTTP/\S+\s+(\d{3})\b", response)
           if not statuses:
               raise SystemExit("GitHub Release probe returned no HTTP status")
-          print(statuses[-1])
+          status = statuses[-1]
+          if status == "404":
+              state = "absent"
+          elif status == "200":
+              status_lines = list(
+                  re.finditer(r"(?m)^HTTP/\S+\s+200\b", response)
+              )
+              body_start = response.find("\n\n", status_lines[-1].end())
+              if body_start < 0:
+                  raise SystemExit("GitHub Release probe returned no response body")
+              try:
+                  payload = json.loads(response[body_start + 2 :])
+              except (TypeError, ValueError) as exc:
+                  raise SystemExit(
+                      f"GitHub Release probe returned invalid JSON: {exc}"
+                  ) from exc
+              if not isinstance(payload, dict) or type(payload.get("draft")) is not bool:
+                  raise SystemExit(
+                      "GitHub Release probe returned no boolean draft state"
+                  )
+              state = "draft" if payload["draft"] else "public"
+          else:
+              state = "error"
+          print(f"{status}|{state}")
           PY
-          )
+          ); then
+            echo "GitHub Release probe response was malformed" >&2
+            exit 1
+          fi
+          IFS='|' read -r http_status release_state <<< "$release_probe"
           if [[ "$http_status" == 404 ]]; then
-            echo "No public GitHub Release exists yet; draft reconciliation remains downstream."
+            echo "No GitHub Release exists yet; draft reconciliation remains downstream."
             exit 0
           fi
           if [[ "$api_exit" -ne 0 || "$http_status" != 200 ]]; then
             echo "GitHub Release probe failed with HTTP $http_status" >&2
+            exit 1
+          fi
+          if [[ "$release_state" == draft ]]; then
+            echo "A draft GitHub Release exists; exact draft reconciliation remains downstream."
+            exit 0
+          fi
+          if [[ "$release_state" != public ]]; then
+            echo "GitHub Release probe returned unexpected state: $release_state" >&2
             exit 1
           fi
 
