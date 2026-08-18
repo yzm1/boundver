@@ -251,7 +251,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("GitHub Release list lookup failed", workflow)
         self.assertIn("multiple GitHub Releases use the version tag", workflow)
         self.assertIn("GitHub Release state cannot be read by ID", workflow)
-        self.assertEqual(workflow.count("releases/tags/$RELEASE_TAG"), 1)
+        self.assertEqual(workflow.count("releases/tags/$RELEASE_TAG"), 2)
         self.assertIn("GitHub Release contains unexpected assets", workflow)
         self.assertIn("GitHub Release asset conflicts with candidate bytes", workflow)
         self.assertIn('gh release upload "$RELEASE_TAG"', workflow)
@@ -291,6 +291,7 @@ class AutomationContractTests(unittest.TestCase):
             control_checkouts,
             [
                 "testpypi-preflight",
+                "publish-testpypi",
                 "verify-marketplace",
                 "verify-public-surfaces",
             ],
@@ -345,6 +346,26 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn('"$release_state" == draft', public_gate["run"])
         self.assertIn('"$release_state" != public', public_gate["run"])
         self.assertIn("testpypi-preflight", jobs["publish-testpypi"]["needs"])
+
+        publish_steps = jobs["publish-testpypi"]["steps"]
+        mutation_gate = next(
+            step
+            for step in publish_steps
+            if step.get("name")
+            == "Revalidate the GitHub Release at the TestPyPI mutation boundary"
+        )
+        publisher = next(
+            step
+            for step in publish_steps
+            if str(step.get("uses", "")).startswith(
+                "pypa/gh-action-pypi-publish@"
+            )
+        )
+        self.assertLess(
+            publish_steps.index(mutation_gate), publish_steps.index(publisher)
+        )
+        self.assertEqual(mutation_gate["run"], public_gate["run"])
+        self.assertEqual(mutation_gate["if"], publisher["if"])
 
     @unittest.skipIf(os.name == "nt", "workflow shell runs on Linux")
     def test_public_release_preflight_allows_drafts_and_verifies_only_public_releases(self):
@@ -1206,7 +1227,7 @@ sys.stdout.write(
                     },
                 )
                 downstream.append((job_name, download))
-        self.assertEqual(len(downstream), 12)
+        self.assertEqual(len(downstream), 13)
         self.assertEqual(jobs["publish-testpypi"]["environment"], "testpypi")
         self.assertEqual(jobs["publish-testpypi"]["permissions"]["id-token"], "write")
         self.assertEqual(jobs["verify-marketplace"]["environment"], "marketplace")

@@ -880,6 +880,22 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Checkout the released commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.release_sha }}
+
+      - name: Checkout the reviewed release-control commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
       - name: Download the immutable Python distributions by artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -889,6 +905,105 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ needs.verify-release.outputs.source-run-id }}
           merge-multiple: true
+
+      - name: Download exact GitHub Release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
+          path: release-assets
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.verify-release.outputs.source-run-id }}
+          merge-multiple: true
+
+      - name: Revalidate the GitHub Release at the TestPyPI mutation boundary
+        if: needs.testpypi-preflight.outputs.upload-required == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          response=$(mktemp)
+          set +e
+          gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+            > "$response" 2>&1
+          api_exit=$?
+          set -e
+          if ! release_probe=$(python3 - "$response" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          response = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          response = response.replace("\r\n", "\n").replace("\r", "\n")
+          statuses = re.findall(r"(?m)^HTTP/\S+\s+(\d{3})\b", response)
+          if not statuses:
+              raise SystemExit("GitHub Release probe returned no HTTP status")
+          status = statuses[-1]
+          if status == "404":
+              state = "absent"
+          elif status == "200":
+              status_lines = list(
+                  re.finditer(r"(?m)^HTTP/\S+\s+200\b", response)
+              )
+              body_start = response.find("\n\n", status_lines[-1].end())
+              if body_start < 0:
+                  raise SystemExit("GitHub Release probe returned no response body")
+              try:
+                  payload = json.loads(response[body_start + 2 :])
+              except (TypeError, ValueError) as exc:
+                  raise SystemExit(
+                      f"GitHub Release probe returned invalid JSON: {exc}"
+                  ) from exc
+              if not isinstance(payload, dict) or type(payload.get("draft")) is not bool:
+                  raise SystemExit(
+                      "GitHub Release probe returned no boolean draft state"
+                  )
+              state = "draft" if payload["draft"] else "public"
+          else:
+              state = "error"
+          print(f"{status}|{state}")
+          PY
+          ); then
+            echo "GitHub Release probe response was malformed" >&2
+            exit 1
+          fi
+          IFS='|' read -r http_status release_state <<< "$release_probe"
+          if [[ "$http_status" == 404 ]]; then
+            echo "No GitHub Release exists yet; draft reconciliation remains downstream."
+            exit 0
+          fi
+          if [[ "$api_exit" -ne 0 || "$http_status" != 200 ]]; then
+            echo "GitHub Release probe failed with HTTP $http_status" >&2
+            exit 1
+          fi
+          if [[ "$release_state" == draft ]]; then
+            echo "A draft GitHub Release exists; exact draft reconciliation remains downstream."
+            exit 0
+          fi
+          if [[ "$release_state" != public ]]; then
+            echo "GitHub Release probe returned unexpected state: $release_state" >&2
+            exit 1
+          fi
+
+          version=${RELEASE_TAG#v}
+          verification_alias="$COMPATIBILITY_ALIAS"
+          if [[ "$verification_alias" == none ]]; then
+            verification_alias="v${version%.*}"
+          fi
+          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 .release-control/scripts/verify_release_surfaces.py \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$verification_alias" \
+            --dist-dir dist \
+            --release-notes "$RUNNER_TEMP/release-notes.md" \
+            --release-assets-dir release-assets \
+            --phase github \
+            --attempts 1 \
+            --delay-seconds 0
 
       - name: Publish missing candidate files to TestPyPI
         if: needs.testpypi-preflight.outputs.upload-required == 'true'
