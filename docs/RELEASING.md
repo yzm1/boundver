@@ -207,8 +207,10 @@ does not expose drafts. A public Release must already be complete: recovery
 will not add missing assets to it or edit it. The workflow compares its title,
 tag, notes, exact asset set, and every downloaded asset byte with the retained
 candidate before continuing. LF, CRLF, and CR are treated only as equivalent
-transport spellings in release notes; all other text remains exact. It then
-proves through the GitHub API that the source was the completed failed `publish.yml`
+transport spellings in release notes; all other text remains exact. This public
+Release reconciliation runs before any TestPyPI or PyPI upload, so an immutable
+conflict cannot strand registry files. It then proves through the GitHub API
+that the source was the completed failed `publish.yml`
 `workflow_dispatch` for the exact tag and SHA,
 and that it contains one uniquely identified successful `verify-release` job.
 The command fetches that job's retained log and requires every GitHub-emitted

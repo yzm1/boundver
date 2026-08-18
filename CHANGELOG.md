@@ -23,7 +23,8 @@ All notable changes to this project are documented here. The format follows
   become public and immutable, but only after reconciling its metadata and
   retained asset bytes. Public-surface verification runs reviewed control code
   from the recovery commit and treats LF, CRLF, and CR as equivalent transport
-  spellings in otherwise exact release notes.
+  spellings in otherwise exact release notes. A conflicting public Release is
+  rejected before any TestPyPI or PyPI mutation.
 
 ## [0.11.0] - 2026-08-14
 

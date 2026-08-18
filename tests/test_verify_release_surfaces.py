@@ -251,6 +251,28 @@ def test_marketplace_phase_defers_production_pypi_and_alias(candidate):
     assert f"https://test.pypi.org/pypi/boundver/{VERSION}/json" in requested
 
 
+def test_github_phase_verifies_only_the_immutable_release(candidate):
+    routes = _surface_routes(candidate[2])
+    allowed_prefixes = (
+        "https://api.github.com/repos/yzm1/boundver/releases/",
+        "https://api.github.com/repos/yzm1/boundver/git/ref/tags/v0.11.0",
+    )
+    routes = {
+        url: response
+        for url, response in routes.items()
+        if url.startswith(allowed_prefixes)
+    }
+    fetch = FakeFetcher(routes)
+
+    _verify(candidate, fetch, phase="github")
+
+    requested = {url for url, _ in fetch.requests}
+    assert requested
+    assert not any("pypi.org" in url for url in requested)
+    assert not any("marketplace/actions" in url for url in requested)
+    assert f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}" not in requested
+
+
 def test_complete_phase_can_skip_only_the_compatibility_alias(candidate):
     routes = _surface_routes(candidate[2])
     routes.pop(

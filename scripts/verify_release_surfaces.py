@@ -39,7 +39,7 @@ REPOSITORY_RE = re.compile(
 )
 SLUG_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 CHECKSUM_LINE_RE = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)")
-PHASES = frozenset({"marketplace", "complete"})
+PHASES = frozenset({"github", "marketplace", "complete"})
 REQUIRED_PROJECT_URLS = {
     "Homepage": "https://github.com/yzm1/boundver",
     "Documentation": "https://github.com/yzm1/boundver/tree/main/docs",
@@ -779,7 +779,12 @@ def _verify_prepared_surfaces(
     distributions: Mapping[str, LocalArtifact],
     release_assets: Mapping[str, LocalArtifact],
 ) -> None:
-    registries = REGISTRIES if phase == "complete" else (REGISTRIES[1],)
+    if phase == "complete":
+        registries = REGISTRIES
+    elif phase == "marketplace":
+        registries = (REGISTRIES[1],)
+    else:
+        registries = ()
     for registry in registries:
         _verify_registry(fetch, registry, version, distributions)
     _verify_github(
@@ -793,7 +798,8 @@ def _verify_prepared_surfaces(
         release_assets,
         verify_alias=verify_alias,
     )
-    _verify_marketplace(fetch, repository, marketplace_slug, tag)
+    if phase != "github":
+        _verify_marketplace(fetch, repository, marketplace_slug, tag)
 
 
 def verify_release_surfaces(
