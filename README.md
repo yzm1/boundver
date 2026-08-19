@@ -225,6 +225,7 @@ GitLab, pre-commit, and caching.
 
 | Provider | Selection and meaning |
 |---|---|
+| `path-hash` | Raw bytes for arbitrary declared artifacts |
 | `openapi` / `openapi-raw` | Raw OpenAPI or Swagger bytes |
 | `openapi-canonical` | Parsed OpenAPI contract with selected documentation noise removed |
 | `json-file` / `json-file-raw` | Raw JSON contract bytes |

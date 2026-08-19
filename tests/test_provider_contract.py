@@ -1,12 +1,16 @@
 """Focused regression tests for the public provider contract."""
 
 import json
+import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
 
+from boundver._config import validate_config
 from boundver._hashing import HASH_DOMAIN_BOUNDARY, _hash_framed_entries
+from boundver._lockfile import generate_lockfile
 from boundver.providers import (
     OpenApiCanonicalProvider,
     ProviderContext,
@@ -311,6 +315,52 @@ class TestProviderRegistryIsolation(unittest.TestCase):
         registry = create_registry()
         self.assertIs(registry["openapi"], registry["openapi-raw"])
         self.assertIs(registry["json-file"], registry["json-file-raw"])
+
+    def test_path_hash_validates_and_generates_a_format_neutral_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.invalid"],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=root,
+                check=True,
+            )
+            database = root / "database"
+            database.mkdir()
+            (database / "schema.sql").write_text(
+                "CREATE TABLE widgets (id INTEGER PRIMARY KEY);\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "database/schema.sql"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "fixture"], cwd=root, check=True
+            )
+            config = {
+                "project": "provider-contract",
+                "components": {
+                    "database": {
+                        "path": "database",
+                        "boundary": {
+                            "provider": "path-hash",
+                            "paths": ["schema.sql"],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+
+            self.assertEqual(validate_config(config, root, source="head"), [])
+            lockfile = generate_lockfile(config, root, source="head", strict=True)
+            component = lockfile["components"]["database"]
+            self.assertEqual(component["boundary_provider"], "path-hash")
+            self.assertEqual(component["boundary_provider_version"], "3")
+            self.assertEqual(component["boundary_status"], "ok")
+            self.assertIsNotNone(component["fingerprints"]["boundary"])
 
     def test_custom_loader_registers_only_in_supplied_registry(self):
         module_name = "_boundver_provider_contract_fixture"

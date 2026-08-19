@@ -8,6 +8,7 @@ means that value changed. It is not, by itself, a compatibility judgment.
 
 | Provider | Interpretation |
 |---|---|
+| `path-hash` | Hash arbitrary selected artifacts without format-specific parsing |
 | `openapi` / `openapi-raw` | Hash selected OpenAPI/Swagger artifacts without parsing them |
 | `json-file` / `json-file-raw` | Hash selected JSON artifacts without parsing them |
 | `python-exports` / `python-exports-raw` | Hash selected Python export files |

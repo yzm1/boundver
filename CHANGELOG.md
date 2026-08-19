@@ -61,6 +61,8 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
 
 ### Fixed
 
+- The public `path-hash` v3 provider is registered as a built-in and documented
+  as the format-neutral raw provider for arbitrary declared artifacts.
 - Local and protected workflow dispatches bind deduplication to the exact tag,
   release/control commit, compatibility-alias policy, and recovery run. The
   local launcher discovers an accepted exact run even when the CLI response is

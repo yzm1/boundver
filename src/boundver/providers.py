@@ -1673,6 +1673,7 @@ class OpenApiCanonicalProvider:
 # ---------------------------------------------------------------------------
 
 _BUILTIN_PROVIDER_TYPES = (
+    PathHashProvider,
     OpenApiProvider,
     JsonFileProvider,
     PythonExportsProvider,

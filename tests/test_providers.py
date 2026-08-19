@@ -341,7 +341,15 @@ class TestRegistry(unittest.TestCase):
         _p._REGISTRY.update(self._registry_snapshot)
 
     def test_builtin_providers_registered(self):
-        for name in ("implicit", "leaf", "openapi", "json-file", "python-exports", "typescript-exports"):
+        for name in (
+            "path-hash",
+            "implicit",
+            "leaf",
+            "openapi",
+            "json-file",
+            "python-exports",
+            "typescript-exports",
+        ):
             self.assertIsNotNone(get_provider(name), f"Provider {name!r} not registered")
 
     def test_get_unknown_returns_none(self):
