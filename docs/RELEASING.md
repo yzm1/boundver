@@ -158,8 +158,10 @@ this personal repository—a review from the trusted Codex GitHub App account.
 Codex evidence is accepted only from one authenticated current-commit bot
 record whose verdict line is exactly
 `Codex Review: Didn't find any major issues.`, optionally followed by the
-finite `Breezy!` or `Hooray!` status used by the app. A `COMMENTED` review
-binds that clean body to its review commit; an
+finite app status `Breezy!`, `Hooray!`, `Keep it up!`, `Keep them coming!`,
+`Already looking forward to the next diff.`, or
+`More of your lovely PRs please.` A `COMMENTED` review binds that clean body
+to its review commit; an
 issue comment must also contain exactly one `**Reviewed commit:**` marker. The
 audit permits only the bot's recognized informational footer after that
 evidence, pins the bot's numeric account ID, resolves abbreviated commit IDs,
