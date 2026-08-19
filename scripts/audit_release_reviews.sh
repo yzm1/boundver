@@ -27,9 +27,11 @@ readonly max_records=50000
 capture_temp_dir=$(mktemp -d)
 capture_index=0
 cleanup_capture_temp() {
+  local status=$?
   rm -f -- "$capture_temp_dir"/capture-* "$capture_temp_dir/merged-tags" \
     "$capture_temp_dir/release-prs"
   rmdir -- "$capture_temp_dir" 2>/dev/null || true
+  exit "$status"
 }
 trap cleanup_capture_temp EXIT
 
@@ -128,7 +130,7 @@ if [[ -z "$commit_output" ]]; then
 fi
 release_commits=()
 while IFS= read -r commit_sha; do
-  release_commits[${#release_commits[@]}]=$commit_sha
+  release_commits+=("$commit_sha")
 done <<< "$commit_output"
 if (( ${#release_commits[@]} > max_records )); then
   echo "Release range contains too many commits to audit." >&2
@@ -147,7 +149,7 @@ for commit_sha in "${release_commits[@]}"; do
   associated_prs=()
   if [[ -n "$associated_output" ]]; then
     while IFS= read -r associated_pr; do
-      associated_prs[${#associated_prs[@]}]=$associated_pr
+      associated_prs+=("$associated_pr")
     done <<< "$associated_output"
   fi
   if (( ${#associated_prs[@]} > max_records )); then
@@ -322,12 +324,14 @@ if ! capture_bounded sorted_output "sorted release pull requests" \
   exit 1
 fi
 rm -f -- "$release_prs_file"
-sorted_prs=()
-if [[ -n "$sorted_output" ]]; then
-  while IFS= read -r sorted_pr; do
-    sorted_prs[${#sorted_prs[@]}]=$sorted_pr
-  done <<< "$sorted_output"
+if [[ -z "$sorted_output" ]]; then
+  echo "Sorting associated pull requests produced no records." >&2
+  exit 1
 fi
+sorted_prs=()
+while IFS= read -r sorted_pr; do
+  sorted_prs+=("$sorted_pr")
+done <<< "$sorted_output"
 for pr_number in "${sorted_prs[@]}"; do
   if ! capture_bounded pr_metadata "metadata for PR #$pr_number" \
     "$max_small_capture_bytes" \
@@ -428,13 +432,14 @@ for pr_number in "${sorted_prs[@]}"; do
   review_records=()
   if [[ -n "$reviews_output" ]]; then
     while IFS= read -r review_record; do
-      review_records[${#review_records[@]}]=$review_record
+      review_records+=("$review_record")
     done <<< "$reviews_output"
   fi
   if (( ${#review_records[@]} > max_records )); then
     echo "GitHub API returned too many reviews for PR #$pr_number." >&2
     exit 1
   fi
+  if (( ${#review_records[@]} > 0 )); then
   for review_record in "${review_records[@]}"; do
     [[ -z "$review_record" ]] && continue
     IFS='|' read -r review_state reviewer_id reviewer_login reviewer_type \
@@ -497,6 +502,7 @@ for pr_number in "${sorted_prs[@]}"; do
       fi
     fi
   done
+  fi
 
   if ! capture_bounded comments_output "issue comments for PR #$pr_number" \
       "$max_capture_bytes" gh api --paginate \
@@ -508,13 +514,14 @@ for pr_number in "${sorted_prs[@]}"; do
   comment_records=()
   if [[ -n "$comments_output" ]]; then
     while IFS= read -r comment_record; do
-      comment_records[${#comment_records[@]}]=$comment_record
+      comment_records+=("$comment_record")
     done <<< "$comments_output"
   fi
   if (( ${#comment_records[@]} > max_records )); then
     echo "GitHub API returned too many issue comments for PR #$pr_number." >&2
     exit 1
   fi
+  if (( ${#comment_records[@]} > 0 )); then
   for comment_record in "${comment_records[@]}"; do
     [[ -z "$comment_record" ]] && continue
     IFS='|' read -r commenter_id commenter_login commenter_type encoded_body \
@@ -553,6 +560,7 @@ for pr_number in "${sorted_prs[@]}"; do
       fi
     fi
   done
+  fi
 
   if [[ "$codex_current_records" -eq 1 && \
         "$codex_clean_records" -eq 1 && "$codex_conflict" -eq 0 ]]; then

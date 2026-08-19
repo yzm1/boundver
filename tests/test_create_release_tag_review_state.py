@@ -109,6 +109,10 @@ def _publication_state_helpers() -> dict:
 
 
 class CreateTagReviewStateContracts(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "runtime integer digit limit requires Python 3.11+",
+    )
     def test_snapshot_json_parser_is_strict_and_int_limit_independent(self):
         helpers = _review_state_runner()
         parse_integer = helpers["bounded_json_int"]
@@ -167,6 +171,10 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         self.assertIn("clean_python_cwd=$(mktemp -d)", dispatch_script)
         self.assertIn("python3 -I -c", dispatch_script)
 
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "runtime integer digit limit requires Python 3.11+",
+    )
     def test_publication_json_integer_parser_is_runtime_setting_independent(self):
         helpers = _publication_state_helpers()
         parse_integer = helpers["parse_integer"]
@@ -432,6 +440,13 @@ class CreateTagReviewStateContracts(unittest.TestCase):
             '"$pr_base_repository_lower" != "$github_repository_lower"',
             source,
         )
+        self.assertIn('if (( ${#review_records[@]} > 0 )); then', source)
+        self.assertIn('if (( ${#comment_records[@]} > 0 )); then', source)
+        cleanup_helper = source.split("cleanup_capture_temp() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertIn("local status=$?", cleanup_helper)
+        self.assertIn('exit "$status"', cleanup_helper)
         capture_helper = source.split("capture_bounded() {", 1)[1].split("\n}", 1)[0]
         self.assertGreaterEqual(capture_helper.count('rm -f -- "$target"'), 3)
 

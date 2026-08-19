@@ -228,6 +228,10 @@ class StandaloneDistributionTests(unittest.TestCase):
 
 
 class AutomationContractTests(unittest.TestCase):
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "runtime integer digit limit requires Python 3.11+",
+    )
     def test_inline_project_toml_parsing_is_digit_limit_independent(self):
         locations = (
             (
