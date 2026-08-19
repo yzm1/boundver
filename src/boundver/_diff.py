@@ -3,14 +3,28 @@
 from typing import Dict
 
 from ._lockfile import COMPONENT_METADATA_FIELDS
+from ._utils import FACETS
+
+
+LOCKFILE_METADATA_FIELDS = ("project", "config_digest")
 
 
 def diff_lockfiles(old: dict, new: dict) -> dict:
     """Produce a human-readable diff between two lockfiles."""
     result: Dict[str, dict] = {
+        "changed_metadata": {},
         "components": {"added": [], "removed": [], "changed": [], "unchanged": []},
         "slices": {"added": [], "removed": [], "changed": [], "unchanged": []},
     }
+
+    for field in LOCKFILE_METADATA_FIELDS:
+        old_value = old.get(field)
+        new_value = new.get(field)
+        if old_value != new_value:
+            result["changed_metadata"][field] = {
+                "old": old_value,
+                "new": new_value,
+            }
 
     old_comps = old.get("components") or {}
     new_comps = new.get("components") or {}
@@ -37,7 +51,7 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
             old_fp = old_entry.get("fingerprints", {})
             new_fp = new_entry.get("fingerprints", {})
             changes: Dict[str, dict] = {}
-            for facet in ("exact", "behavior", "boundary", "compat"):
+            for facet in FACETS:
                 ov = old_fp.get(facet)
                 nv = new_fp.get(facet)
                 if ov != nv:
@@ -88,11 +102,24 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
         else:
             old_fp = old_s.get("fingerprint")
             new_fp = new_s.get("fingerprint")
-            if old_fp != new_fp:
+            metadata_changes: Dict[str, dict] = {}
+            metadata_fields = sorted(
+                (set(old_s) | set(new_s)) - {"fingerprint"}
+            )
+            for field in metadata_fields:
+                old_value = old_s.get(field)
+                new_value = new_s.get(field)
+                if old_value != new_value:
+                    metadata_changes[field] = {
+                        "old": old_value,
+                        "new": new_value,
+                    }
+            if old_fp != new_fp or metadata_changes:
                 result["slices"]["changed"].append({
                     "name": sname,
                     "old": old_fp,
                     "new": new_fp,
+                    "changed_metadata": metadata_changes,
                 })
             else:
                 result["slices"]["unchanged"].append(sname)

@@ -1,28 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "title": "boundver lockfile schema",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableSha256": {
+      "oneOf": [
+        {"$ref": "#/$defs/sha256"},
+        {"type": "null"}
+      ]
+    }
+  },
   "type": "object",
   "required": ["schema", "config_contract", "config_digest", "project", "components", "slices"],
   "properties": {
     "$schema": {"type": "string", "format": "uri"},
     "schema": {"const": "boundary-lock/v3"},
-    "config_contract": {"const": "boundver-semantic-config/v1"},
+    "config_contract": {"const": "boundver-semantic-config/v2"},
     "config_digest": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$",
+      "$ref": "#/$defs/sha256",
       "description": "SHA-256 of the canonical semantic configuration."
     },
-    "project": {"type": "string"},
+    "project": {"type": "string", "minLength": 1},
     "components": {
       "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {
         "type": "object",
         "required": ["version", "path", "boundary_provider", "boundary_provider_version", "boundary_status", "consumers", "external_consumers", "fingerprints", "semver"],
         "properties": {
           "version": {"type": ["string", "null"]},
-          "path": {"type": "string"},
-          "boundary_provider": {"type": "string"},
+          "path": {"type": "string", "minLength": 1},
+          "boundary_provider": {"type": "string", "minLength": 1},
           "boundary_provider_version": {"type": ["string", "null"]},
           "boundary_status": {"type": "string", "enum": ["ok", "partial", "error"]},
           "consumers": {
@@ -39,10 +48,10 @@
             "type": "object",
             "required": ["exact", "behavior", "boundary", "compat"],
             "properties": {
-              "exact": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
-              "behavior": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
-              "boundary": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
-              "compat": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
+              "exact": {"$ref": "#/$defs/nullableSha256"},
+              "behavior": {"$ref": "#/$defs/nullableSha256"},
+              "boundary": {"$ref": "#/$defs/nullableSha256"},
+              "compat": {"$ref": "#/$defs/nullableSha256"}
             },
             "additionalProperties": false
           },
@@ -64,13 +73,14 @@
           "warnings": {"type": "array", "items": {"type": "string"}},
           "vendored_errors": {"type": "array", "items": {"type": "string"}},
           "vendored_copies": {"type": "array", "items": {"type": "string"}},
-          "vendored_digests": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+          "vendored_digests": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}}
         },
-        "additionalProperties": true
+        "additionalProperties": false
       }
     },
     "slices": {
       "type": "object",
+      "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {
         "type": "object",
         "required": ["description", "mode", "components", "fingerprint", "component_digests"],
@@ -78,10 +88,10 @@
           "description": {"type": "string"},
           "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
           "components": {"type": "array", "items": {"type": "string"}},
-          "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "fingerprint": {"$ref": "#/$defs/sha256"},
           "component_digests": {
             "type": "object",
-            "additionalProperties": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
+            "additionalProperties": {"$ref": "#/$defs/nullableSha256"}
           }
         },
         "additionalProperties": false

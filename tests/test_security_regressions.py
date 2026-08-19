@@ -12,26 +12,7 @@ from boundver._config import validate_config
 from boundver._git import changed_components_since_ref
 from boundver._lockfile import generate_lockfile
 from boundver.providers import PathHashProvider, ProviderContext, compute_boundary
-
-
-def _init_repo(root: Path) -> None:
-    subprocess.run(
-        ["git", "init"], cwd=root, check=True, capture_output=True, text=True
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test User"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+from tests._repo_fixtures import init_git_repo as _init_repo
 
 
 class ChangedFromRootComponentTests(unittest.TestCase):

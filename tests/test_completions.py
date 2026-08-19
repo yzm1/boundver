@@ -2,14 +2,39 @@
 
 import argparse
 import io
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from boundver import _completions
 from boundver import core
+
+
+def _find_bash():
+    candidates = []
+    if sys.platform == "win32":
+        for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            base = os.environ.get(variable)
+            if base:
+                candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(
+                Path(local_app_data) / "Git" / "bin" / "bash.exe"
+            )
+    resolved = shutil.which("bash")
+    if resolved:
+        candidates.append(Path(resolved))
+    return next((str(candidate) for candidate in candidates if candidate.is_file()), None)
+
+
+_BASH = _find_bash()
 
 
 class _ParserCaptured(Exception):
@@ -146,13 +171,16 @@ class CompletionParserParityTests(unittest.TestCase):
                 self.assertIn("_boundver_completions", stdout.getvalue())
                 self.assertEqual(stderr.getvalue(), "")
 
-    @unittest.skipIf(
-        sys.platform == "win32",
-        "Bash syntax is exercised by the Linux CI matrix",
-    )
+    def test_explain_completes_custom_provider_opt_in(self):
+        self.assertIn(
+            "--allow-custom-providers",
+            _completions._COMMAND_OPTIONS["explain"],
+        )
+
+    @unittest.skipUnless(_BASH, "Bash is unavailable")
     def test_bash_script_has_valid_syntax(self):
         result = subprocess.run(
-            ["bash", "-n"],
+            [_BASH, "-n"],
             input=_completions._BASH_COMPLETION.encode("utf-8"),
             capture_output=True,
             check=False,
@@ -160,6 +188,65 @@ class CompletionParserParityTests(unittest.TestCase):
         self.assertEqual(
             result.returncode, 0, result.stderr.decode("utf-8", "replace")
         )
+
+    @unittest.skipUnless(_BASH, "Bash is unavailable")
+    def test_bash_file_completion_preserves_whitespace(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "config with space.json").write_text("{}\n", encoding="utf-8")
+            probe = _completions._BASH_COMPLETION + r'''
+COMP_WORDS=(boundver generate --config "config w")
+COMP_CWORD=3
+_boundver_completions
+printf '<%s>\n' "${COMPREPLY[@]}"
+'''
+            result = subprocess.run(
+                [_BASH, "-c", probe],
+                cwd=td,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("<config with space.json>", result.stdout.splitlines())
+
+    @unittest.skipUnless(_BASH, "Bash is unavailable")
+    def test_bash_required_value_does_not_fall_back_to_flags(self):
+        probe = _completions._BASH_COMPLETION + r'''
+COMP_WORDS=(boundver verify --facets "")
+COMP_CWORD=3
+_boundver_completions
+printf 'count=%s\n' "${#COMPREPLY[@]}"
+'''
+        result = subprocess.run(
+            [_BASH, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["count=0"])
+
+    @unittest.skipUnless(_BASH, "Bash is unavailable")
+    def test_bash_diff_positional_uses_file_completion(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "bound old.json").write_text("{}\n", encoding="utf-8")
+            probe = _completions._BASH_COMPLETION + r'''
+COMP_WORDS=(boundver diff "bound")
+COMP_CWORD=2
+_boundver_completions
+printf '<%s>\n' "${COMPREPLY[@]}"
+'''
+            result = subprocess.run(
+                [_BASH, "-c", probe],
+                cwd=td,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("<bound old.json>", result.stdout.splitlines())
 
 
 if __name__ == "__main__":

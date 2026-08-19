@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from boundver import _git, _config, _lockfile, core
+from boundver import _config, _lockfile
 from boundver._git import (
     _git_batch_cat,
     _load_gitignore_patterns,
@@ -18,12 +18,7 @@ from boundver._git import (
     git_latest_tag,
     changed_components_since_ref,
 )
-
-
-def _init_git_repo(root: Path) -> None:
-    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+from tests._repo_fixtures import init_git_repo as _init_git_repo
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +302,35 @@ class ConfigValidationEdgeCases(unittest.TestCase):
             "components": {},
             "slices": {},
         }
+
+    def test_custom_provider_declaration_limit_is_dependency_independent(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._base_cfg()
+            cfg["providers"] = [
+                {"module": f"provider_{index}", "class": "Provider"}
+                for index in range(3)
+            ]
+            with patch.object(_config, "MAX_CUSTOM_PROVIDERS", 2):
+                errors = _config.validate_config(cfg, Path(td))
+        self.assertTrue(any("provider limit" in error for error in errors))
+
+    def test_boundary_path_declaration_limit_is_dependency_independent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "svc").mkdir()
+            cfg = self._base_cfg()
+            cfg["components"] = {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {
+                        "provider": "path-hash",
+                        "paths": ["one", "two", "three"],
+                    },
+                }
+            }
+            with patch.object(_config, "MAX_PROVIDER_DECLARATIONS", 2):
+                errors = _config.validate_config(cfg, root)
+        self.assertTrue(any("declaration limit" in error for error in errors))
 
     def test_load_config_file_not_found(self):
         """Loading non-existent config raises FileNotFoundError."""
@@ -692,106 +716,38 @@ class CustomProviderLoadingTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class VersionsFallbackTests(unittest.TestCase):
-    """Tests for version extraction fallback paths (no tomllib/yaml)."""
+class VersionsParserAvailabilityTests(unittest.TestCase):
+    """Missing authoritative version parsers fail closed."""
 
-    def test_toml_extraction_without_tomllib(self):
-        """TOML extraction falls back to regex when tomllib unavailable."""
+    def test_toml_without_tomllib_or_tomli_returns_none(self):
         import boundver.versions as v_mod
-        orig_tomllib = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = v_mod._extract_toml_from_text(
-                '[project]\nversion = "3.2.1"\n',
-                "project.version"
-            )
-            self.assertEqual(result, "3.2.1")
-        finally:
-            v_mod.tomllib = orig_tomllib
 
-    def test_yaml_extraction_without_pyyaml(self):
-        """YAML extraction falls back to regex when PyYAML unavailable."""
-        import boundver.versions as v_mod
-        orig_yaml = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = v_mod._extract_yaml_from_text(
-                "info:\n  version: 4.5.6\n",
-                "info.version"
-            )
-            self.assertEqual(result, "4.5.6")
-        finally:
-            v_mod.yaml = orig_yaml
+        documents = (
+            ('version = "3.2.1"\n', "version"),
+            ('[tool.poetry]\nversion = "0.9.0"\n', "tool.poetry.version"),
+            ("version = '1.5.0'\n", "version"),
+        )
+        with patch.object(v_mod, "tomllib", None):
+            for document, field in documents:
+                with self.subTest(document=document):
+                    self.assertIsNone(
+                        v_mod._extract_toml_from_text(document, field)
+                    )
 
-    def test_toml_nested_table_without_tomllib(self):
-        """TOML nested table extraction without tomllib."""
+    def test_yaml_without_pyyaml_returns_none(self):
         import boundver.versions as v_mod
-        orig_tomllib = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = v_mod._extract_toml_from_text(
-                '[tool.poetry]\nversion = "0.9.0"\n',
-                "tool.poetry.version"
-            )
-            self.assertEqual(result, "0.9.0")
-        finally:
-            v_mod.tomllib = orig_tomllib
 
-    def test_toml_single_quoted_value_without_tomllib(self):
-        """TOML single-quoted value extraction without tomllib."""
-        import boundver.versions as v_mod
-        orig_tomllib = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = v_mod._extract_toml_from_text(
-                "[project]\nversion = '1.5.0'\n",
-                "project.version"
-            )
-            self.assertEqual(result, "1.5.0")
-        finally:
-            v_mod.tomllib = orig_tomllib
-
-    def test_toml_unquoted_value_without_tomllib(self):
-        """TOML unquoted value extraction without tomllib (bare value)."""
-        import boundver.versions as v_mod
-        orig_tomllib = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = v_mod._extract_toml_from_text(
-                "[settings]\ncount = 42\n",
-                "settings.count"
-            )
-            self.assertEqual(result, "42")
-        finally:
-            v_mod.tomllib = orig_tomllib
-
-    def test_yaml_quoted_value_without_pyyaml(self):
-        """YAML quoted value extraction without PyYAML."""
-        import boundver.versions as v_mod
-        orig_yaml = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = v_mod._extract_yaml_from_text(
-                "info:\n  version: '2.3.4'\n",
-                "info.version"
-            )
-            self.assertEqual(result, "2.3.4")
-        finally:
-            v_mod.yaml = orig_yaml
-
-    def test_yaml_with_comment_without_pyyaml(self):
-        """YAML value with inline comment, without PyYAML."""
-        import boundver.versions as v_mod
-        orig_yaml = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = v_mod._extract_yaml_from_text(
-                "version: 5.0.0 # latest\n",
-                "version"
-            )
-            self.assertEqual(result, "5.0.0")
-        finally:
-            v_mod.yaml = orig_yaml
+        documents = (
+            ("version: 4.5.6\n", "version"),
+            ("info:\n  version: '2.3.4'\n", "info.version"),
+            ("version: 5.0.0 # latest\n", "version"),
+        )
+        with patch.object(v_mod, "yaml", None):
+            for document, field in documents:
+                with self.subTest(document=document):
+                    self.assertIsNone(
+                        v_mod._extract_yaml_from_text(document, field)
+                    )
 
 
 # ---------------------------------------------------------------------------

@@ -7,11 +7,32 @@ Thanks for your interest in improving boundver.
 - Python 3.9+
 - Git
 
-Run tests:
+Install the development extras, run the undefined-name/unused-code gate, and
+then run tests:
 
 ```bash
+python -m pip install -e '.[dev]'
+python -m ruff check src tests scripts
 python -m pytest -q
 ```
+
+Repository automation does not use this convenience install. CI and release
+jobs install complete, exact, hash-locked dependency profiles with
+`scripts/install_locked_tools.py`; local project installation then runs
+offline with dependency and build isolation disabled. If a tooling dependency
+changes, update `scripts/release-tool-lock.toml` and regenerate the reviewed
+locks with Python 3.12+:
+
+```bash
+python scripts/lock_release_tools.py generate
+python scripts/lock_release_tools.py verify
+python scripts/lock_release_tools.py check
+```
+
+`generate` and `check` query official PyPI metadata. `verify` is network-free
+and fails on any manifest, artifact-evidence, hash, include, or generated-lock
+drift. Do not edit `scripts/requirements/*.lock` or
+`scripts/release-tool-artifacts.json` by hand.
 
 ## Pull requests
 

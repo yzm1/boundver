@@ -1,4 +1,5 @@
 name: Promote verified release
+run-name: publish:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}:resume=${{ inputs.resume_run_id }}
 
 on:
   workflow_dispatch:
@@ -46,9 +47,7 @@ jobs:
     outputs:
       source-run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
       python-dist-artifact-id: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
-      python-dist-artifact-digest: ${{ steps.select-artifacts.outputs.python-dist-artifact-digest }}
       release-assets-artifact-id: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
-      release-assets-artifact-digest: ${{ steps.select-artifacts.outputs.release-assets-artifact-digest }}
     steps:
       - name: Bind this dispatch to the exact version tag and commit
         shell: bash
@@ -115,6 +114,7 @@ jobs:
         if: inputs.resume_run_id != ''
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ github.sha }}
 
@@ -161,8 +161,18 @@ jobs:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
+
+      - name: Require current reviews for the exact fresh release commit
+        if: inputs.resume_run_id == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
 
       - name: Setup Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -174,14 +184,242 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags origin main
-          python - "$RELEASE_TAG" "$RELEASE_SHA" <<'PY'
+          python -I - "$RELEASE_TAG" "$RELEASE_SHA" <<'PY'
           import pathlib
           import re
           import subprocess
           import sys
           import tomllib
 
-          expected = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          MAX_PROJECT_METADATA_BYTES = 1024 * 1024
+          MAX_TOML_INTEGER_DIGITS = 640
+          MAX_VERSION_BYTES = 1024
+          READ_CHUNK_BYTES = 64 * 1024
+
+          def read_project_text(path):
+              advertised = path.stat().st_size
+              if advertised > MAX_PROJECT_METADATA_BYTES:
+                  raise SystemExit("pyproject.toml exceeds the metadata safety limit")
+              chunks = []
+              total = 0
+              with path.open("rb") as stream:
+                  while total < MAX_PROJECT_METADATA_BYTES:
+                      chunk = stream.read(
+                          min(READ_CHUNK_BYTES, MAX_PROJECT_METADATA_BYTES - total)
+                      )
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      total += len(chunk)
+                  if stream.read(1):
+                      raise SystemExit("pyproject.toml exceeds the metadata safety limit")
+              if total != advertised:
+                  raise SystemExit("pyproject.toml changed while being read")
+              try:
+                  return b"".join(chunks).decode("utf-8")
+              except UnicodeDecodeError as error:
+                  raise SystemExit("pyproject.toml is not UTF-8") from error
+
+          def toml_has_oversized_numeric_token(text):
+              index = 0
+              state = "normal"
+              root_in_value = False
+              table_header_depth = 0
+              at_statement_start = True
+              array_frame = 0
+              inline_key_frame = 1
+              inline_value_frame = 2
+              containers = bytearray()
+
+              def in_key_context():
+                  if table_header_depth:
+                      return True
+                  if containers:
+                      return containers[-1] == inline_key_frame
+                  return not root_in_value
+
+              def reset_line():
+                  nonlocal root_in_value, table_header_depth, at_statement_start
+                  if not containers:
+                      root_in_value = False
+                      table_header_depth = 0
+                      at_statement_start = True
+
+              while index < len(text):
+                  char = text[index]
+                  if state == "comment":
+                      if char in "\r\n":
+                          state = "normal"
+                          reset_line()
+                      index += 1
+                      continue
+                  if state in {"basic", "multiline-basic"}:
+                      if char == "\\":
+                          index += 2
+                          continue
+                      if state == "basic" and char == '"':
+                          state = "normal"
+                          index += 1
+                          continue
+                      if state == "multiline-basic" and char == '"':
+                          end = index
+                          while end < len(text) and text[end] == '"':
+                              end += 1
+                          if end - index >= 3:
+                              state = "normal"
+                          index = end
+                          continue
+                      index += 1
+                      continue
+                  if state in {"literal", "multiline-literal"}:
+                      if state == "literal" and char == "'":
+                          state = "normal"
+                          index += 1
+                          continue
+                      if state == "multiline-literal" and char == "'":
+                          end = index
+                          while end < len(text) and text[end] == "'":
+                              end += 1
+                          if end - index >= 3:
+                              state = "normal"
+                          index = end
+                          continue
+                      index += 1
+                      continue
+                  if char == "#":
+                      state = "comment"
+                      index += 1
+                      continue
+                  if char in "\r\n":
+                      reset_line()
+                      index += 1
+                      continue
+                  if char in " \t":
+                      index += 1
+                      continue
+                  if text.startswith('\"\"\"', index):
+                      state = "multiline-basic"
+                      at_statement_start = False
+                      index += 3
+                      continue
+                  if text.startswith("'''", index):
+                      state = "multiline-literal"
+                      at_statement_start = False
+                      index += 3
+                      continue
+                  if char == '"':
+                      state = "basic"
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "'":
+                      state = "literal"
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "[":
+                      if table_header_depth:
+                          table_header_depth += 1
+                      elif not containers and not root_in_value and at_statement_start:
+                          table_header_depth = 1
+                      else:
+                          containers.append(array_frame)
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "]":
+                      if table_header_depth:
+                          table_header_depth -= 1
+                      elif containers and containers[-1] == array_frame:
+                          containers.pop()
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "{":
+                      containers.append(inline_key_frame)
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "}":
+                      if containers and containers[-1] in {
+                          inline_key_frame,
+                          inline_value_frame,
+                      }:
+                          containers.pop()
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "=":
+                      if containers and containers[-1] == inline_key_frame:
+                          containers[-1] = inline_value_frame
+                      elif not containers and not table_header_depth:
+                          root_in_value = True
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == ",":
+                      if containers and containers[-1] == inline_value_frame:
+                          containers[-1] = inline_key_frame
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if (
+                      not in_key_context()
+                      and char == "0"
+                      and index + 1 < len(text)
+                      and text[index + 1] in "bBoOxX"
+                  ):
+                      valid_digits = {
+                          "b": "01",
+                          "o": "01234567",
+                          "x": "0123456789abcdefABCDEF",
+                      }[text[index + 1].lower()]
+                      index += 2
+                      digits = 0
+                      while index < len(text) and (
+                          text[index] in valid_digits or text[index] == "_"
+                      ):
+                          if text[index] != "_":
+                              digits += 1
+                              if digits > MAX_TOML_INTEGER_DIGITS:
+                                  return True
+                          index += 1
+                      continue
+                  if not in_key_context() and "0" <= char <= "9":
+                      digits = 0
+                      while index < len(text) and (
+                          "0" <= text[index] <= "9" or text[index] == "_"
+                      ):
+                          if text[index] != "_":
+                              digits += 1
+                              if digits > MAX_TOML_INTEGER_DIGITS:
+                                  return True
+                          index += 1
+                      continue
+                  at_statement_start = False
+                  index += 1
+              return False
+
+          def strict_toml_loads(document):
+              if toml_has_oversized_numeric_token(document):
+                  raise SystemExit(
+                      "TOML numeric token exceeds the 640-digit safety limit"
+                  )
+              return tomllib.loads(document)
+
+          document = read_project_text(pathlib.Path("pyproject.toml"))
+          project = strict_toml_loads(document).get("project")
+          expected = project.get("version") if isinstance(project, dict) else None
+          if (
+              not isinstance(expected, str)
+              or len(expected.encode("utf-8")) > MAX_VERSION_BYTES
+              or re.fullmatch(
+                  r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                  expected,
+              )
+              is None
+          ):
+              raise SystemExit("pyproject.toml project.version is not a bounded string")
           actual = sys.argv[1]
           release_sha = sys.argv[2]
           if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
@@ -217,20 +455,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+          python3 -I scripts/release_changelog.py \
+            --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
-          python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+          python3 -I scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
 
-      - name: Test source and exact distributions
+      - name: Install hash-locked release verification tools
         if: inputs.resume_run_id == ''
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]' twine
-          pytest -q
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_SHA") \
-            bash scripts/packaging_smoke.sh
-          python -m twine check dist/*.whl dist/*.tar.gz
+          python -I scripts/install_locked_tools.py release
+          python -I -m pip --isolated install --disable-pip-version-check \
+            --no-index --no-deps --no-build-isolation -e .
+
+      - name: Verify release candidate source and distributions
+        if: inputs.resume_run_id == ''
+        run: >-
+          python -I scripts/verify_release_candidate.py
+          --tag "$RELEASE_TAG"
+          --release-sha "$RELEASE_SHA"
 
       - name: Upload verified distributions
         if: inputs.resume_run_id == ''
@@ -278,48 +521,175 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          run_json=$(mktemp)
-          jobs_json=$(mktemp)
-          artifacts_json=$(mktemp)
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID" \
-            > "$run_json"
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/jobs?filter=all&per_page=100" \
-            > "$jobs_json"
-          gh api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$RESUME_RUN_ID/artifacts?per_page=100" \
-            > "$artifacts_json"
-          python3 - \
+          clean_python_cwd=$(mktemp -d)
+          (cd "$clean_python_cwd" && python3 -I - \
             "$RESUME_RUN_ID" \
             "$RELEASE_TAG" \
             "$RELEASE_SHA" \
-            "$run_json" \
-            "$jobs_json" \
-            "$artifacts_json" \
             "$GITHUB_OUTPUT" <<'PY'
           import datetime
           import json
+          import os
           import pathlib
           import re
+          import shutil
+          import subprocess
           import sys
+          import threading
 
           (
               source_run_text,
               release_tag,
               release_sha,
-              run_path,
-              jobs_path,
-              artifacts_path,
               output_path,
           ) = sys.argv[1:]
-          if re.fullmatch(r"[1-9][0-9]*", source_run_text) is None:
+          if re.fullmatch(r"[1-9][0-9]{0,19}", source_run_text) is None:
               raise SystemExit("source publication run ID is not numeric")
           source_run_id = int(source_run_text)
-          run = json.loads(pathlib.Path(run_path).read_text(encoding="utf-8"))
-          if type(run.get("id")) is not int or run["id"] != source_run_id:
+          if source_run_id > (1 << 64) - 1:
+              raise SystemExit("source publication run ID exceeds the supported range")
+
+          # recovery-bounded-runner:start
+          MAX_GH_RESPONSE_BYTES = 8 * 1024 * 1024
+          MAX_GH_TOTAL_BYTES = 16 * 1024 * 1024
+          MAX_GH_STDERR_BYTES = 64 * 1024
+          READ_CHUNK_BYTES = 64 * 1024
+          consumed_gh_bytes = 0
+
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          gh = pathlib.Path(shutil.which("gh") or "").resolve()
+          if not gh.is_file() or gh == workspace or workspace in gh.parents:
+              raise SystemExit("trusted GitHub CLI is unavailable")
+
+          def kill_process(process):
+              try:
+                  process.kill()
+              except OSError:
+                  pass
+
+          def read_bounded_pipe(
+              process, pipe, label, limit, buffer, overflows, errors
+          ):
+              try:
+                  while True:
+                      remaining_with_sentinel = max(1, limit - len(buffer) + 1)
+                      reader = getattr(pipe, "read1", pipe.read)
+                      chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
+                      if not chunk:
+                          return
+                      if len(buffer) + len(chunk) > limit:
+                          overflows.append(label)
+                          kill_process(process)
+                          return
+                      buffer.extend(chunk)
+              except (OSError, ValueError) as error:
+                  errors.append((label, str(error)))
+                  kill_process(process)
+              finally:
+                  try:
+                      pipe.close()
+                  except OSError:
+                      pass
+
+          def gh_json(endpoint, *, max_bytes=MAX_GH_RESPONSE_BYTES):
+              global consumed_gh_bytes
+              remaining = MAX_GH_TOTAL_BYTES - consumed_gh_bytes
+              stdout_limit = min(max_bytes, remaining)
+              if stdout_limit < 0:
+                  raise SystemExit("recovery API responses exceed the aggregate limit")
+              try:
+                  process = subprocess.Popen(
+                      [str(gh), "api", endpoint],
+                      stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                  )
+              except OSError as error:
+                  raise SystemExit("recovery API command could not start") from error
+              if process.stdout is None or process.stderr is None:
+                  kill_process(process)
+                  raise SystemExit("recovery API command pipes are unavailable")
+              stdout = bytearray()
+              stderr = bytearray()
+              overflows = []
+              errors = []
+              readers = [
+                  threading.Thread(
+                      target=read_bounded_pipe,
+                      args=(process, process.stdout, "stdout", stdout_limit,
+                            stdout, overflows, errors),
+                      daemon=True,
+                  ),
+                  threading.Thread(
+                      target=read_bounded_pipe,
+                      args=(process, process.stderr, "stderr", MAX_GH_STDERR_BYTES,
+                            stderr, overflows, errors),
+                      daemon=True,
+                  ),
+              ]
+              for reader in readers:
+                  reader.start()
+              try:
+                  returncode = process.wait(timeout=90)
+              except subprocess.TimeoutExpired as error:
+                  kill_process(process)
+                  try:
+                      process.wait(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      pass
+                  raise SystemExit("recovery API command timed out") from error
+              finally:
+                  for reader in readers:
+                      reader.join(timeout=5)
+              if any(reader.is_alive() for reader in readers):
+                  kill_process(process)
+                  raise SystemExit("recovery API command pipes did not close")
+              if errors:
+                  raise SystemExit("recovery API response read failed")
+              if overflows:
+                  raise SystemExit("recovery API response exceeds the byte limit")
+              if returncode != 0:
+                  detail = stderr.decode("utf-8", "backslashreplace").strip()
+                  raise SystemExit(f"recovery API request failed: {detail}")
+              consumed_gh_bytes += len(stdout)
+
+              def unique_object(pairs):
+                  result = {}
+                  for key, value in pairs:
+                      if key in result:
+                          raise ValueError("duplicate JSON object key")
+                      result[key] = value
+                  return result
+
+              def reject_constant(_value):
+                  raise ValueError("non-finite JSON constant")
+
+              def parse_integer(value):
+                  if len(value.lstrip("-")) > 20:
+                      raise ValueError("oversized JSON integer")
+                  return int(value)
+
+              try:
+                  return json.loads(
+                      stdout.decode("utf-8", "strict"),
+                      object_pairs_hook=unique_object,
+                      parse_int=parse_integer,
+                      parse_constant=reject_constant,
+                  )
+              except (UnicodeDecodeError, ValueError) as error:
+                  raise SystemExit("recovery API returned malformed JSON") from error
+          # recovery-bounded-runner:end
+
+          run_endpoint = f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{source_run_id}"
+          run = gh_json(run_endpoint, max_bytes=1024 * 1024)
+          if (
+              not isinstance(run, dict)
+              or type(run.get("id")) is not int
+              or run["id"] != source_run_id
+          ):
               raise SystemExit("source publication run identity disagrees")
           attempt = run.get("run_attempt")
-          if type(attempt) is not int or attempt < 1:
+          if type(attempt) is not int or not 1 <= attempt <= (1 << 64) - 1:
               raise SystemExit("source publication run attempt is invalid")
           expected_run = {
               "event": "workflow_dispatch",
@@ -337,11 +707,15 @@ jobs:
                   "source publication run disagrees: " + ", ".join(disagreements)
               )
 
-          jobs_payload = json.loads(
-              pathlib.Path(jobs_path).read_text(encoding="utf-8")
+          jobs_payload = gh_json(
+              f"{run_endpoint}/jobs?filter=all&per_page=100"
           )
-          jobs = jobs_payload.get("jobs")
-          jobs_total = jobs_payload.get("total_count")
+          jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
+          jobs_total = (
+              jobs_payload.get("total_count")
+              if isinstance(jobs_payload, dict)
+              else None
+          )
           if (
               not isinstance(jobs, list)
               or type(jobs_total) is not int
@@ -367,20 +741,30 @@ jobs:
           if (
               type(verification.get("id")) is not int
               or verification["id"] < 1
+              or verification["id"] > (1 << 64) - 1
               or type(verification.get("run_id")) is not int
               or verification.get("run_id") != source_run_id
               or verification.get("head_sha") != release_sha
               or type(artifact_attempt) is not int
               or artifact_attempt < 1
+              or artifact_attempt > (1 << 64) - 1
               or artifact_attempt > attempt
           ):
               raise SystemExit("source verify-release artifact attempt is invalid")
 
-          artifacts_payload = json.loads(
-              pathlib.Path(artifacts_path).read_text(encoding="utf-8")
+          artifacts_payload = gh_json(
+              f"{run_endpoint}/artifacts?per_page=100"
           )
-          artifacts = artifacts_payload.get("artifacts")
-          artifacts_total = artifacts_payload.get("total_count")
+          artifacts = (
+              artifacts_payload.get("artifacts")
+              if isinstance(artifacts_payload, dict)
+              else None
+          )
+          artifacts_total = (
+              artifacts_payload.get("total_count")
+              if isinstance(artifacts_payload, dict)
+              else None
+          )
           if (
               not isinstance(artifacts, list)
               or type(artifacts_total) is not int
@@ -393,7 +777,15 @@ jobs:
               f"python-dist-{suffix}": "python-dist",
               f"release-assets-{suffix}": "release-assets",
           }
-          if {artifact.get("name") for artifact in artifacts} != set(expected_names):
+          if (
+              any(not isinstance(artifact, dict) for artifact in artifacts)
+              or any(
+                  not isinstance(artifact.get("name"), str)
+                  or len(artifact["name"].encode("utf-8")) > 1024
+                  for artifact in artifacts
+              )
+              or {artifact.get("name") for artifact in artifacts} != set(expected_names)
+          ):
               raise SystemExit("source artifact names do not match tag, run, and attempt")
 
           now = datetime.datetime.now(datetime.timezone.utc)
@@ -407,9 +799,11 @@ jobs:
               if (
                   type(artifact_id) is not int
                   or artifact_id < 1
+                  or artifact_id > (1 << 64) - 1
                   or artifact.get("expired") is not False
                   or type(artifact.get("size_in_bytes")) is not int
                   or artifact["size_in_bytes"] < 1
+                  or artifact["size_in_bytes"] > 256 * 1024 * 1024
                   or not isinstance(digest, str)
                   or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
                   or not isinstance(expires_at, str)
@@ -419,17 +813,17 @@ jobs:
                   or workflow_run.get("head_branch") != release_tag
                   or workflow_run.get("head_sha") != release_sha
               ):
-                  raise SystemExit(f"source artifact metadata is invalid: {name!r}")
+                  raise SystemExit("source artifact metadata is invalid")
               try:
                   expiry = datetime.datetime.fromisoformat(
                       expires_at.replace("Z", "+00:00")
                   )
               except ValueError as error:
                   raise SystemExit(
-                      f"source artifact expiry is invalid: {name!r}"
+                      "source artifact expiry is invalid"
                   ) from error
               if expiry <= now:
-                  raise SystemExit(f"source artifact has expired: {name!r}")
+                  raise SystemExit("source artifact has expired")
               selected[expected_names[name]] = (artifact_id, digest)
 
           lines = [
@@ -447,6 +841,7 @@ jobs:
           with pathlib.Path(output_path).open("a", encoding="utf-8") as output:
               output.write("\n".join(lines) + "\n")
           PY
+          )
 
       - name: Bind recovery policy to the source verification log
         if: inputs.resume_run_id != ''
@@ -461,40 +856,153 @@ jobs:
             exit 1
           fi
 
-          verification_log=$(mktemp)
-          trap 'rm -f "$verification_log"' EXIT
-          gh_api_help=$(gh api --help)
-          gh_api=(gh api)
-          if [[ "$gh_api_help" == *"--allow-escape-sequences"* ]]; then
-            gh_api+=(--allow-escape-sequences)
-          fi
-          "${gh_api[@]}" \
-            "repos/$GITHUB_REPOSITORY/actions/jobs/$VERIFICATION_JOB_ID/logs" \
-            > "$verification_log"
-          if [[ ! -s "$verification_log" ]]; then
-            echo "Source verification job log is empty" >&2
-            exit 1
-          fi
-
-          python3 - \
-            "$verification_log" \
+          clean_python_cwd=$(mktemp -d)
+          (cd "$clean_python_cwd" && python3 -I - \
+            "$VERIFICATION_JOB_ID" \
             "$RELEASE_TAG" \
             "$RELEASE_SHA" \
             "$COMPATIBILITY_ALIAS" <<'PY'
+          import io
+          import os
           import pathlib
           import re
+          import shutil
+          import subprocess
           import sys
+          import threading
 
-          log_path, release_tag, release_sha, compatibility_alias = sys.argv[1:]
+          job_id, release_tag, release_sha, compatibility_alias = sys.argv[1:]
+          if re.fullmatch(r"[1-9][0-9]{0,19}", job_id) is None:
+              raise SystemExit("source verification job ID is malformed")
+          if int(job_id) > (1 << 64) - 1:
+              raise SystemExit("source verification job ID exceeds the supported range")
+
+          MAX_HELP_BYTES = 1024 * 1024
+          MAX_LOG_BYTES = 32 * 1024 * 1024
+          MAX_STDERR_BYTES = 64 * 1024
+          MAX_LOG_LINES = 500_000
+          MAX_POLICY_TRIPLES = 10_000
+          READ_CHUNK_BYTES = 64 * 1024
+
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          gh = pathlib.Path(shutil.which("gh") or "").resolve()
+          if not gh.is_file() or gh == workspace or workspace in gh.parents:
+              raise SystemExit("trusted GitHub CLI is unavailable")
+
+          def kill_process(process):
+              try:
+                  process.kill()
+              except OSError:
+                  pass
+
+          def read_pipe(process, pipe, label, limit, buffer, overflows, errors):
+              try:
+                  while True:
+                      remaining_with_sentinel = max(1, limit - len(buffer) + 1)
+                      reader = getattr(pipe, "read1", pipe.read)
+                      chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
+                      if not chunk:
+                          return
+                      if len(buffer) + len(chunk) > limit:
+                          overflows.append(label)
+                          kill_process(process)
+                          return
+                      buffer.extend(chunk)
+              except (OSError, ValueError) as error:
+                  errors.append((label, str(error)))
+                  kill_process(process)
+              finally:
+                  try:
+                      pipe.close()
+                  except OSError:
+                      pass
+
+          def run_bounded(command, stdout_limit):
+              try:
+                  process = subprocess.Popen(
+                      [str(item) for item in command],
+                      stdin=subprocess.DEVNULL,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.PIPE,
+                  )
+              except OSError as error:
+                  raise SystemExit("cannot execute trusted GitHub CLI") from error
+              if process.stdout is None or process.stderr is None:
+                  kill_process(process)
+                  raise SystemExit("GitHub CLI command pipes are unavailable")
+              stdout = bytearray()
+              stderr = bytearray()
+              overflows = []
+              errors = []
+              readers = [
+                  threading.Thread(
+                      target=read_pipe,
+                      args=(process, process.stdout, "stdout", stdout_limit,
+                            stdout, overflows, errors),
+                      daemon=True,
+                  ),
+                  threading.Thread(
+                      target=read_pipe,
+                      args=(process, process.stderr, "stderr", MAX_STDERR_BYTES,
+                            stderr, overflows, errors),
+                      daemon=True,
+                  ),
+              ]
+              for reader in readers:
+                  reader.start()
+              try:
+                  returncode = process.wait(timeout=90)
+              except subprocess.TimeoutExpired as error:
+                  kill_process(process)
+                  try:
+                      process.wait(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      pass
+                  raise SystemExit("GitHub CLI command timed out") from error
+              finally:
+                  for reader in readers:
+                      reader.join(timeout=5)
+              if any(reader.is_alive() for reader in readers):
+                  kill_process(process)
+                  raise SystemExit("GitHub CLI command pipes did not close")
+              if errors:
+                  raise SystemExit("GitHub CLI response read failed")
+              if overflows:
+                  raise SystemExit("GitHub CLI response exceeds the byte limit")
+              if returncode != 0:
+                  detail = stderr.decode("utf-8", "backslashreplace").strip()
+                  raise SystemExit(f"GitHub CLI request failed: {detail}")
+              return bytes(stdout)
+
+          help_output = run_bounded([gh, "api", "--help"], MAX_HELP_BYTES)
+          command = [gh, "api"]
+          if b"--allow-escape-sequences" in help_output:
+              command.append("--allow-escape-sequences")
+          command.append(
+              f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/jobs/{job_id}/logs"
+          )
+          log_bytes = run_bounded(command, MAX_LOG_BYTES)
+          if not log_bytes:
+              raise SystemExit("source verification job log is empty")
+          try:
+              log_text = log_bytes.decode("utf-8", "strict")
+          except UnicodeDecodeError as error:
+              raise SystemExit("source verification job log is not UTF-8") from error
+
           line_pattern = re.compile(
               r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z   "
               r"(RELEASE_TAG|RELEASE_SHA|COMPATIBILITY_ALIAS): (.*)$"
           )
           observed = []
-          for line in pathlib.Path(log_path).read_text(encoding="utf-8").splitlines():
+          for line_number, line in enumerate(io.StringIO(log_text), start=1):
+              if line_number > MAX_LOG_LINES:
+                  raise SystemExit("source verification job log has too many lines")
+              line = line.rstrip("\r\n")
               match = line_pattern.fullmatch(line)
               if match is not None:
                   observed.append(match.groups())
+                  if len(observed) > MAX_POLICY_TRIPLES * 3:
+                      raise SystemExit("source verification job log has too many triples")
 
           expected = [
               ("RELEASE_TAG", release_tag),
@@ -515,6 +1023,7 @@ jobs:
                       "source verification log does not bind the exact release-policy triple"
                   )
           PY
+          )
 
       - name: Select the immutable artifact source
         id: select-artifacts
@@ -532,7 +1041,7 @@ jobs:
           RECOVERED_RELEASE_DIGEST: ${{ steps.recover-artifacts.outputs.release-assets-artifact-digest }}
         run: |
           set -euo pipefail
-          python3 - "$GITHUB_OUTPUT" <<'PY'
+          python3 -I - "$GITHUB_OUTPUT" <<'PY'
           import os
           import pathlib
           import re
@@ -611,6 +1120,8 @@ jobs:
           RELEASE_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.release-assets-artifact-digest }}
         run: |
           set -euo pipefail
+          readonly MAX_RECOVERED_ARCHIVE_BYTES=268435456
+          clean_python_cwd=$(mktemp -d)
           verify_archive() {
             local artifact_id=$1
             local expected_digest=$2
@@ -618,54 +1129,223 @@ jobs:
             local extracted_path=$4
             curl --fail-with-body --location --silent --show-error \
               --connect-timeout 15 --max-time 180 \
+              --max-filesize "$MAX_RECOVERED_ARCHIVE_BYTES" \
               --proto '=https' --tlsv1.2 \
               --header "Accept: application/vnd.github+json" \
               --header "Authorization: Bearer $GH_TOKEN" \
               --header "X-GitHub-Api-Version: 2022-11-28" \
               --output "$output_path" \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+            if [[ ! -f "$output_path" || -L "$output_path" || \
+                  "$(wc -c < "$output_path")" -gt "$MAX_RECOVERED_ARCHIVE_BYTES" ]]; then
+              echo "Recovered artifact archive is unsafe or oversized" >&2
+              exit 1
+            fi
             actual_digest="sha256:$(sha256sum "$output_path" | awk '{print $1}')"
             if [[ "$actual_digest" != "$expected_digest" ]]; then
               echo "Recovered artifact archive digest mismatch for $artifact_id" >&2
               exit 1
             fi
-            python3 - "$output_path" "$extracted_path" <<'PY'
+            (cd "$clean_python_cwd" && python3 -I - \
+              "$output_path" "$extracted_path" <<'PY'
           import hashlib
           import pathlib
+          import stat
+          import struct
           import sys
           import zipfile
 
+          MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+          MAX_ARCHIVE_MEMBERS = 16
+          MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024
+          MAX_ARCHIVE_PATH_BYTES = 1024
+          MAX_ARCHIVE_MEMBER_BYTES = 128 * 1024 * 1024
+          MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024
+          READ_CHUNK_BYTES = 64 * 1024
+
           archive_path, extracted_path = map(pathlib.Path, sys.argv[1:])
+
+          def exact_file_read(stream, size, label):
+              chunks = []
+              total = 0
+              while total < size:
+                  requested = min(READ_CHUNK_BYTES, size - total)
+                  chunk = stream.read(requested)
+                  if not chunk:
+                      raise SystemExit(f"{label} is truncated")
+                  if len(chunk) > requested:
+                      raise SystemExit(f"{label} exceeded a bounded read")
+                  chunks.append(chunk)
+                  total += len(chunk)
+              return b"".join(chunks)
+
+          def valid_flat_name(name):
+              try:
+                  encoded = name.encode("utf-8")
+              except UnicodeEncodeError:
+                  return False
+              return (
+                  bool(name)
+                  and len(encoded) <= MAX_ARCHIVE_PATH_BYTES
+                  and pathlib.PurePosixPath(name).name == name
+                  and "/" not in name
+                  and "\\" not in name
+                  and name not in {".", ".."}
+              )
+
+          def preflight_zip(path):
+              source_size = path.stat().st_size
+              if not 0 < source_size <= MAX_ARCHIVE_BYTES:
+                  raise SystemExit("artifact archive exceeds the compressed-byte limit")
+              tail_size = min(source_size, 65_557)
+              with path.open("rb") as stream:
+                  stream.seek(source_size - tail_size)
+                  tail = exact_file_read(stream, tail_size, "ZIP footer")
+                  eocd_index = tail.rfind(b"PK\x05\x06")
+                  if eocd_index < 0 or len(tail) - eocd_index < 22:
+                      raise SystemExit("artifact archive has no valid ZIP footer")
+                  try:
+                      eocd = struct.unpack_from("<4s4H2LH", tail, eocd_index)
+                  except struct.error as error:
+                      raise SystemExit("artifact archive has a malformed ZIP footer") from error
+                  disk_number, central_disk = eocd[1], eocd[2]
+                  disk_entries, total_entries = eocd[3], eocd[4]
+                  central_size, central_offset = eocd[5], eocd[6]
+                  comment_size = eocd[7]
+                  if eocd_index + 22 + comment_size != len(tail):
+                      raise SystemExit("artifact archive has a malformed ZIP footer")
+                  if (
+                      disk_number != 0
+                      or central_disk != 0
+                      or disk_entries != total_entries
+                      or total_entries == 0xFFFF
+                      or central_size == 0xFFFFFFFF
+                      or central_offset == 0xFFFFFFFF
+                      or central_size > MAX_ARCHIVE_METADATA_BYTES
+                  ):
+                      raise SystemExit("artifact archive uses unsupported ZIP metadata")
+                  if not 1 <= total_entries <= MAX_ARCHIVE_MEMBERS:
+                      raise SystemExit("artifact archive exceeds the member-count limit")
+                  eocd_offset = source_size - tail_size + eocd_index
+                  central_end = central_offset + central_size
+                  if central_end > eocd_offset:
+                      raise SystemExit("artifact archive central directory is malformed")
+                  stream.seek(central_offset)
+                  aggregate = 0
+                  names = set()
+                  for _ in range(total_entries):
+                      header = exact_file_read(stream, 46, "ZIP central directory")
+                      try:
+                          fields = struct.unpack("<4s6H3I5H2I", header)
+                      except struct.error as error:
+                          raise SystemExit("artifact archive central directory is malformed") from error
+                      if fields[0] != b"PK\x01\x02":
+                          raise SystemExit("artifact archive central directory is malformed")
+                      flags = fields[3]
+                      compressed_size = fields[8]
+                      uncompressed_size = fields[9]
+                      filename_size, extra_size, item_comment_size = fields[10:13]
+                      local_offset = fields[16]
+                      if (
+                          flags & 1
+                          or compressed_size == 0xFFFFFFFF
+                          or compressed_size > MAX_ARCHIVE_BYTES
+                          or uncompressed_size == 0xFFFFFFFF
+                          or local_offset == 0xFFFFFFFF
+                          or local_offset >= central_offset
+                          or filename_size > MAX_ARCHIVE_PATH_BYTES
+                      ):
+                          raise SystemExit("artifact archive member metadata is unsupported")
+                      name_bytes = exact_file_read(stream, filename_size, "ZIP member name")
+                      encoding = "utf-8" if flags & 0x800 else "cp437"
+                      try:
+                          name = name_bytes.decode(encoding)
+                      except UnicodeDecodeError as error:
+                          raise SystemExit("artifact archive contains an invalid member name") from error
+                      if not valid_flat_name(name) or name in names:
+                          raise SystemExit("artifact archive is not a unique flat file set")
+                      names.add(name)
+                      if uncompressed_size > MAX_ARCHIVE_MEMBER_BYTES:
+                          raise SystemExit("artifact archive member exceeds the size limit")
+                      aggregate += uncompressed_size
+                      if aggregate > MAX_ARCHIVE_TOTAL_BYTES:
+                          raise SystemExit("artifact archive exceeds the aggregate size limit")
+                      stream.seek(extra_size + item_comment_size, 1)
+                      if stream.tell() > central_end:
+                          raise SystemExit("artifact archive central directory is malformed")
+                  if stream.tell() != central_end:
+                      raise SystemExit("artifact archive central directory is malformed")
+              return total_entries
+
+          def hash_exact(stream, size, label):
+              digest = hashlib.sha256()
+              total = 0
+              while total < size:
+                  requested = min(READ_CHUNK_BYTES, size - total)
+                  chunk = stream.read(requested)
+                  if not chunk:
+                      raise SystemExit(f"{label} is truncated")
+                  if len(chunk) > requested:
+                      raise SystemExit(f"{label} exceeded a bounded read")
+                  digest.update(chunk)
+                  total += len(chunk)
+              if stream.read(1):
+                  raise SystemExit(f"{label} exceeds its advertised size")
+              return digest.digest()
+
+          expected_count = preflight_zip(archive_path)
           with zipfile.ZipFile(archive_path) as archive:
-              entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+              entries = archive.infolist()
+              if len(entries) != expected_count:
+                  raise SystemExit("artifact archive member count changed after preflight")
               names = [entry.filename for entry in entries]
               if (
-                  len(entries) != len(archive.infolist())
+                  any(entry.is_dir() for entry in entries)
                   or len(names) != len(set(names))
-                  or any(pathlib.PurePosixPath(name).name != name for name in names)
+                  or any(not valid_flat_name(name) for name in names)
+                  or any(entry.file_size > MAX_ARCHIVE_MEMBER_BYTES for entry in entries)
+                  or sum(entry.file_size for entry in entries) > MAX_ARCHIVE_TOTAL_BYTES
+                  or any(
+                      ((entry.external_attr >> 16) & 0o170000)
+                      not in {0, stat.S_IFREG}
+                      for entry in entries
+                  )
               ):
                   raise SystemExit("artifact archive is not a unique flat file set")
-              extracted = list(extracted_path.iterdir())
-              if {path.name for path in extracted} != set(names):
+              extracted = []
+              for path in extracted_path.iterdir():
+                  if len(extracted) >= MAX_ARCHIVE_MEMBERS:
+                      raise SystemExit("download action output has too many entries")
+                  extracted.append(path)
+              if {path.name for path in extracted} != set(names) or len(extracted) != len(names):
                   raise SystemExit("download action output disagrees with artifact archive")
               for entry in entries:
                   path = extracted_path / entry.filename
                   if not path.is_file() or path.is_symlink():
                       raise SystemExit("downloaded artifact entry is not a regular file")
-                  archived_hash = hashlib.sha256(archive.read(entry)).digest()
-                  extracted_hash = hashlib.sha256(path.read_bytes()).digest()
+                  if path.stat().st_size != entry.file_size:
+                      raise SystemExit("downloaded artifact entry size disagrees")
+                  with archive.open(entry) as archived_stream:
+                      archived_hash = hash_exact(
+                          archived_stream, entry.file_size, "archived artifact member"
+                      )
+                  with path.open("rb") as extracted_stream:
+                      extracted_hash = hash_exact(
+                          extracted_stream, entry.file_size, "downloaded artifact member"
+                      )
                   if archived_hash != extracted_hash:
                       raise SystemExit(
                           f"download action changed artifact bytes: {entry.filename}"
                       )
           PY
+            )
           }
           verify_archive \
             "$PYTHON_ARTIFACT_ID" "$PYTHON_ARTIFACT_DIGEST" \
-            "$RUNNER_TEMP/python-dist.zip" recovered-python-dist
+            "$RUNNER_TEMP/python-dist.zip" "$GITHUB_WORKSPACE/recovered-python-dist"
           verify_archive \
             "$RELEASE_ARTIFACT_ID" "$RELEASE_ARTIFACT_DIGEST" \
-            "$RUNNER_TEMP/release-assets.zip" recovered-release-assets
+            "$RUNNER_TEMP/release-assets.zip" "$GITHUB_WORKSPACE/recovered-release-assets"
 
       - name: Validate the exact recovered release payload
         if: inputs.resume_run_id != ''
@@ -676,16 +1356,21 @@ jobs:
           wheel="boundver-$version-py3-none-any.whl"
           sdist="boundver-$version.tar.gz"
           pyz="boundver-$version.pyz"
-          python3 - "$wheel" "$sdist" "$pyz" <<'PY'
+          python3 -I - "$wheel" "$sdist" "$pyz" <<'PY'
           import pathlib
           import re
           import sys
 
           wheel, sdist, pyz = sys.argv[1:]
+          MAX_CHECKSUM_BYTES = 4096
 
           def require_exact(root_name, expected):
               root = pathlib.Path(root_name)
-              entries = list(root.iterdir())
+              entries = []
+              for entry in root.iterdir():
+                  entries.append(entry)
+                  if len(entries) > len(expected):
+                      raise SystemExit(f"{root_name} has too many entries")
               if {entry.name for entry in entries} != set(expected):
                   raise SystemExit(
                       f"{root_name} is not the expected flat payload: "
@@ -696,9 +1381,17 @@ jobs:
 
           require_exact("recovered-python-dist", [wheel, sdist])
           require_exact("recovered-release-assets", [wheel, sdist, pyz, "SHA256SUMS"])
-          checksum_lines = pathlib.Path(
-              "recovered-release-assets/SHA256SUMS"
-          ).read_text(encoding="utf-8").splitlines()
+          checksum_path = pathlib.Path("recovered-release-assets/SHA256SUMS")
+          if checksum_path.stat().st_size > MAX_CHECKSUM_BYTES:
+              raise SystemExit("SHA256SUMS exceeds the byte limit")
+          with checksum_path.open("rb") as checksum_stream:
+              checksum_bytes = checksum_stream.read(MAX_CHECKSUM_BYTES + 1)
+          if len(checksum_bytes) > MAX_CHECKSUM_BYTES:
+              raise SystemExit("SHA256SUMS exceeds the byte limit")
+          try:
+              checksum_lines = checksum_bytes.decode("utf-8", "strict").splitlines()
+          except UnicodeDecodeError as error:
+              raise SystemExit("SHA256SUMS is not UTF-8") from error
           checksum_names = []
           for line in checksum_lines:
               match = re.fullmatch(r"[0-9a-f]{64}  ([^/]+)", line)
@@ -718,9 +1411,8 @@ jobs:
           cmp --silent \
             "recovered-python-dist/$sdist" \
             "recovered-release-assets/$sdist"
-          python3 -m pip install --upgrade pip
-          python3 -m pip install twine
-          python3 -m twine check \
+          python3 -I scripts/install_locked_tools.py release
+          python3 -I -m twine check \
             "recovered-python-dist/$wheel" \
             "recovered-python-dist/$sdist"
 
@@ -733,16 +1425,17 @@ jobs:
       contents: read
     outputs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
-      missing-files: ${{ steps.preflight.outputs.missing-files }}
     steps:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
@@ -771,100 +1464,72 @@ jobs:
           run-id: ${{ needs.verify-release.outputs.source-run-id }}
           merge-multiple: true
 
-      - name: Reject a conflicting public GitHub Release before registry mutation
+      - name: Fetch public GitHub Release state without executing repository code
+        id: fetch-github-release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          response=$(mktemp)
+          response=$(mktemp "$RUNNER_TEMP/github-release-response.XXXXXX")
           set +e
           gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
             > "$response" 2>&1
           api_exit=$?
           set -e
-          if ! release_probe=$(python3 - "$response" <<'PY'
-          import json
-          import pathlib
-          import re
-          import sys
+          echo "api-exit=$api_exit" >> "$GITHUB_OUTPUT"
+          echo "response-path=$response" >> "$GITHUB_OUTPUT"
 
-          response = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-          response = response.replace("\r\n", "\n").replace("\r", "\n")
-          statuses = re.findall(r"(?m)^HTTP/\S+\s+(\d{3})\b", response)
-          if not statuses:
-              raise SystemExit("GitHub Release probe returned no HTTP status")
-          status = statuses[-1]
-          if status == "404":
-              state = "absent"
-          elif status == "200":
-              status_lines = list(
-                  re.finditer(r"(?m)^HTTP/\S+\s+200\b", response)
-              )
-              body_start = response.find("\n\n", status_lines[-1].end())
-              if body_start < 0:
-                  raise SystemExit("GitHub Release probe returned no response body")
-              try:
-                  payload = json.loads(response[body_start + 2 :])
-              except (TypeError, ValueError) as exc:
-                  raise SystemExit(
-                      f"GitHub Release probe returned invalid JSON: {exc}"
-                  ) from exc
-              if not isinstance(payload, dict) or type(payload.get("draft")) is not bool:
-                  raise SystemExit(
-                      "GitHub Release probe returned no boolean draft state"
-                  )
-              state = "draft" if payload["draft"] else "public"
-          else:
-              state = "error"
-          print(f"{status}|{state}")
-          PY
-          ); then
-            echo "GitHub Release probe response was malformed" >&2
-            exit 1
-          fi
-          IFS='|' read -r http_status release_state <<< "$release_probe"
-          if [[ "$http_status" == 404 ]]; then
-            echo "No GitHub Release exists yet; draft reconciliation remains downstream."
-            exit 0
-          fi
-          if [[ "$api_exit" -ne 0 || "$http_status" != 200 ]]; then
-            echo "GitHub Release probe failed with HTTP $http_status" >&2
-            exit 1
-          fi
-          if [[ "$release_state" == draft ]]; then
-            echo "A draft GitHub Release exists; exact draft reconciliation remains downstream."
-            exit 0
-          fi
-          if [[ "$release_state" != public ]]; then
-            echo "GitHub Release probe returned unexpected state: $release_state" >&2
-            exit 1
-          fi
+      - name: Parse public GitHub Release state in an isolated interpreter
+        id: github-release-probe
+        shell: bash
+        env:
+          API_EXIT: ${{ steps.fetch-github-release.outputs.api-exit }}
+          RESPONSE_PATH: ${{ steps.fetch-github-release.outputs.response-path }}
+        run: |
+          set -euo pipefail
+          clean_python_cwd=$(mktemp -d)
+          (cd "$clean_python_cwd" && python3 -I \
+            "$GITHUB_WORKSPACE/.release-control/scripts/probe_github_release.py" \
+            --api-exit "$API_EXIT" \
+            --response "$RESPONSE_PATH" \
+            --runner-temp "$RUNNER_TEMP" \
+            --github-output "$GITHUB_OUTPUT")
 
+      - name: Verify an existing public Release without a token
+        if: steps.github-release-probe.outputs.release-state == 'public'
+        shell: bash
+        run: |
+          set -euo pipefail
           version=${RELEASE_TAG#v}
           verification_alias="$COMPATIBILITY_ALIAS"
           if [[ "$verification_alias" == none ]]; then
             verification_alias="v${version%.*}"
           fi
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
-            --output "$RUNNER_TEMP/release-notes.md"
-          python3 .release-control/scripts/verify_release_surfaces.py \
+          clean_python_cwd=$(mktemp -d)
+          (cd "$clean_python_cwd" && python3 -I \
+            "$GITHUB_WORKSPACE/.release-control/scripts/release_changelog.py" \
+            --changelog "$GITHUB_WORKSPACE/CHANGELOG.md" \
+            --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md")
+          (cd "$clean_python_cwd" && python3 -I \
+            "$GITHUB_WORKSPACE/.release-control/scripts/verify_release_surfaces.py" \
             --tag "$RELEASE_TAG" \
             --sha "$RELEASE_SHA" \
             --alias "$verification_alias" \
-            --dist-dir dist \
+            --dist-dir "$GITHUB_WORKSPACE/dist" \
             --release-notes "$RUNNER_TEMP/release-notes.md" \
-            --release-assets-dir release-assets \
+            --release-assets-dir "$GITHUB_WORKSPACE/release-assets" \
             --phase github \
             --attempts 1 \
-            --delay-seconds 0
+            --delay-seconds 0)
 
       - name: Accept only a missing, exact, or exact-partial TestPyPI release
         id: preflight
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify_testpypi_release.py preflight \
+          python3 -I scripts/verify_testpypi_release.py preflight \
             --dist dist \
             --project boundver \
             --version "${RELEASE_TAG#v}" \
@@ -878,25 +1543,9 @@ jobs:
     permissions:
       actions: read
       id-token: write
-      contents: read
     steps:
-      - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ inputs.release_sha }}
-
-      - name: Checkout the reviewed release-control commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ github.sha }}
-          path: .release-control
-
-      - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12"
-
       - name: Download the immutable Python distributions by artifact ID
+        if: needs.testpypi-preflight.outputs.upload-required == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
@@ -905,105 +1554,6 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ needs.verify-release.outputs.source-run-id }}
           merge-multiple: true
-
-      - name: Download exact GitHub Release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
-          path: release-assets
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.verify-release.outputs.source-run-id }}
-          merge-multiple: true
-
-      - name: Revalidate the GitHub Release at the TestPyPI mutation boundary
-        if: needs.testpypi-preflight.outputs.upload-required == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          response=$(mktemp)
-          set +e
-          gh api --include "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
-            > "$response" 2>&1
-          api_exit=$?
-          set -e
-          if ! release_probe=$(python3 - "$response" <<'PY'
-          import json
-          import pathlib
-          import re
-          import sys
-
-          response = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-          response = response.replace("\r\n", "\n").replace("\r", "\n")
-          statuses = re.findall(r"(?m)^HTTP/\S+\s+(\d{3})\b", response)
-          if not statuses:
-              raise SystemExit("GitHub Release probe returned no HTTP status")
-          status = statuses[-1]
-          if status == "404":
-              state = "absent"
-          elif status == "200":
-              status_lines = list(
-                  re.finditer(r"(?m)^HTTP/\S+\s+200\b", response)
-              )
-              body_start = response.find("\n\n", status_lines[-1].end())
-              if body_start < 0:
-                  raise SystemExit("GitHub Release probe returned no response body")
-              try:
-                  payload = json.loads(response[body_start + 2 :])
-              except (TypeError, ValueError) as exc:
-                  raise SystemExit(
-                      f"GitHub Release probe returned invalid JSON: {exc}"
-                  ) from exc
-              if not isinstance(payload, dict) or type(payload.get("draft")) is not bool:
-                  raise SystemExit(
-                      "GitHub Release probe returned no boolean draft state"
-                  )
-              state = "draft" if payload["draft"] else "public"
-          else:
-              state = "error"
-          print(f"{status}|{state}")
-          PY
-          ); then
-            echo "GitHub Release probe response was malformed" >&2
-            exit 1
-          fi
-          IFS='|' read -r http_status release_state <<< "$release_probe"
-          if [[ "$http_status" == 404 ]]; then
-            echo "No GitHub Release exists yet; draft reconciliation remains downstream."
-            exit 0
-          fi
-          if [[ "$api_exit" -ne 0 || "$http_status" != 200 ]]; then
-            echo "GitHub Release probe failed with HTTP $http_status" >&2
-            exit 1
-          fi
-          if [[ "$release_state" == draft ]]; then
-            echo "A draft GitHub Release exists; exact draft reconciliation remains downstream."
-            exit 0
-          fi
-          if [[ "$release_state" != public ]]; then
-            echo "GitHub Release probe returned unexpected state: $release_state" >&2
-            exit 1
-          fi
-
-          version=${RELEASE_TAG#v}
-          verification_alias="$COMPATIBILITY_ALIAS"
-          if [[ "$verification_alias" == none ]]; then
-            verification_alias="v${version%.*}"
-          fi
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
-            --output "$RUNNER_TEMP/release-notes.md"
-          python3 .release-control/scripts/verify_release_surfaces.py \
-            --tag "$RELEASE_TAG" \
-            --sha "$RELEASE_SHA" \
-            --alias "$verification_alias" \
-            --dist-dir dist \
-            --release-notes "$RUNNER_TEMP/release-notes.md" \
-            --release-assets-dir release-assets \
-            --phase github \
-            --attempts 1 \
-            --delay-seconds 0
 
       - name: Publish missing candidate files to TestPyPI
         if: needs.testpypi-preflight.outputs.upload-required == 'true'
@@ -1025,6 +1575,7 @@ jobs:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
@@ -1047,7 +1598,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify_testpypi_release.py verify \
+          python3 -I scripts/verify_testpypi_release.py verify \
             --dist dist \
             --project boundver \
             --version "${RELEASE_TAG#v}" \
@@ -1069,71 +1620,80 @@ jobs:
             *) echo "Verifier returned a non-TestPyPI wheel URL" >&2; exit 1 ;;
           esac
           install_root=$(mktemp -d)
-          python3 -m venv "$install_root/venv"
-          "$install_root/venv/bin/python" -m pip install \
+          python3 -I -m venv "$install_root/venv"
+          "$install_root/venv/bin/python" -I -m pip --isolated install \
             --no-index --no-deps "$TESTPYPI_WHEEL_URL"
           actual=$(cd "$RUNNER_TEMP" && \
-            "$install_root/venv/bin/python" -c \
+            "$install_root/venv/bin/python" -I -c \
               'import importlib.metadata; print(importlib.metadata.version("boundver"))')
           if [[ "v$actual" != "$EXPECTED_VERSION" ]]; then
             echo "Installed TestPyPI version v$actual != $EXPECTED_VERSION" >&2
             exit 1
           fi
           cd "$RUNNER_TEMP"
-          "$install_root/venv/bin/python" -m boundver --version
+          "$install_root/venv/bin/python" -I -m boundver --version
 
       - name: Cryptographically verify TestPyPI trusted-publisher provenance
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check pypi-attestations
+          python3 -I scripts/install_locked_tools.py release
           for artifact in dist/*.whl dist/*.tar.gz; do
             filename=$(basename "$artifact")
             provenance="$RUNNER_TEMP/$filename.provenance"
-            python3 - "$filename" "$provenance" "${RELEASE_TAG#v}" <<'PY'
-          import pathlib
-          import sys
-          import urllib.parse
-          import urllib.request
-
-          filename, output, version = sys.argv[1:]
-          url = (
-              "https://test.pypi.org/integrity/boundver/"
-              f"{urllib.parse.quote(version, safe='')}/"
-              f"{urllib.parse.quote(filename, safe='')}/provenance"
-          )
-          request = urllib.request.Request(
-              url,
-              headers={
-                  "Accept": "application/vnd.pypi.integrity.v1+json",
-                  "User-Agent": "boundver-release-verifier/1",
-              },
-          )
-          with urllib.request.urlopen(request, timeout=30) as response:
-              if response.geturl() != url:
-                  raise SystemExit("TestPyPI provenance request redirected")
-              payload = response.read()
-          pathlib.Path(output).write_bytes(payload)
-          PY
+            python3 -I scripts/verify_testpypi_release.py provenance \
+              --project boundver \
+              --version "${RELEASE_TAG#v}" \
+              --filename "$filename" \
+              --output "$provenance"
             pypi-attestations verify pypi \
               --repository https://github.com/yzm1/boundver \
               --provenance-file "$provenance" "$artifact"
           done
 
-  prepare-release-draft:
-    name: Prepare complete GitHub Release draft
+  prepare-release-notes:
+    name: Prepare immutable release notes without mutation authority
     runs-on: ubuntu-latest
     needs: [verify-release, verify-testpypi]
     permissions:
-      actions: read
-      contents: write
+      contents: read
+    outputs:
+      release-notes-artifact-id: ${{ steps.upload-release-notes.outputs.artifact-id }}
     steps:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          fetch-depth: 0
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
+      - name: Generate release notes without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release_changelog.py \
+            --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          test ! -L "$RUNNER_TEMP/release-notes.md"
+          test -f "$RUNNER_TEMP/release-notes.md"
+          test "$(wc -c < "$RUNNER_TEMP/release-notes.md")" -le 1048576
+
+      - name: Upload the exact release notes
+        id: upload-release-notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes-${{ inputs.release_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          retention-days: 90
+
+  prepare-release-draft:
+    name: Prepare complete GitHub Release draft
+    runs-on: ubuntu-latest
+    needs: [verify-release, verify-testpypi, prepare-release-notes]
+    permissions:
+      actions: read
+      contents: write
+    steps:
       - name: Download release assets by immutable artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -1144,67 +1704,275 @@ jobs:
           run-id: ${{ needs.verify-release.outputs.source-run-id }}
           merge-multiple: true
 
+      - name: Download release notes by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.prepare-release-notes.outputs.release-notes-artifact-id }}
+          path: ${{ runner.temp }}/release-notes
+          merge-multiple: true
+
       - name: Create or reconcile the exact release draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_DRAFT_API_PROGRAM: |
+            import json
+            import os
+            import pathlib
+            import re
+            import shutil
+            import subprocess
+            import sys
+            import threading
+
+            MAX_PAGE_BYTES = 8 * 1024 * 1024
+            MAX_DETAIL_BYTES = 32 * 1024 * 1024
+            MAX_TOTAL_BYTES = 32 * 1024 * 1024
+            MAX_STDERR_BYTES = 64 * 1024
+            MAX_PAGES = 100
+            MAX_ITEMS = 10_000
+            MAX_TAG_BYTES = 1024
+            READ_CHUNK_BYTES = 64 * 1024
+            MAX_UINT64 = (1 << 64) - 1
+
+            mode, repository, *arguments = sys.argv[1:]
+            if mode not in {"find", "capture"}:
+                raise SystemExit("release API lookup mode is invalid")
+            if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+                raise SystemExit("release API repository is malformed")
+            workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+            runner_temp = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
+            gh = pathlib.Path(shutil.which("gh") or "").resolve()
+            if not gh.is_file() or gh == workspace or workspace in gh.parents:
+                raise SystemExit("trusted GitHub CLI is unavailable")
+            consumed_bytes = 0
+
+            def kill_process(process):
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+            def read_pipe(process, pipe, label, limit, buffer, overflows, errors):
+                try:
+                    while True:
+                        remaining_with_sentinel = max(1, limit - len(buffer) + 1)
+                        reader = getattr(pipe, "read1", pipe.read)
+                        chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
+                        if not chunk:
+                            return
+                        if len(buffer) + len(chunk) > limit:
+                            overflows.append(label)
+                            kill_process(process)
+                            return
+                        buffer.extend(chunk)
+                except (OSError, ValueError):
+                    errors.append(label)
+                    kill_process(process)
+                finally:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+
+            def unique_object(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate JSON object key")
+                    result[key] = value
+                return result
+
+            def parse_integer(value):
+                if len(value.lstrip("-")) > 20:
+                    raise ValueError("oversized JSON integer")
+                return int(value)
+
+            def reject_constant(_value):
+                raise ValueError("non-finite JSON constant")
+
+            def api_json(endpoint, limit):
+                global consumed_bytes
+                remaining = MAX_TOTAL_BYTES - consumed_bytes
+                stdout_limit = min(limit, remaining)
+                if stdout_limit < 0:
+                    raise SystemExit("release API responses exceed the aggregate limit")
+                try:
+                    process = subprocess.Popen(
+                        [str(gh), "api", endpoint],
+                        cwd=runner_temp,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                except OSError as error:
+                    raise SystemExit("release API command could not start") from error
+                if process.stdout is None or process.stderr is None:
+                    kill_process(process)
+                    raise SystemExit("release API pipes are unavailable")
+                stdout = bytearray()
+                stderr = bytearray()
+                overflows = []
+                errors = []
+                readers = [
+                    threading.Thread(
+                        target=read_pipe,
+                        args=(process, process.stdout, "stdout", stdout_limit,
+                              stdout, overflows, errors),
+                        daemon=True,
+                    ),
+                    threading.Thread(
+                        target=read_pipe,
+                        args=(process, process.stderr, "stderr", MAX_STDERR_BYTES,
+                              stderr, overflows, errors),
+                        daemon=True,
+                    ),
+                ]
+                for reader in readers:
+                    reader.start()
+                try:
+                    returncode = process.wait(timeout=90)
+                except subprocess.TimeoutExpired as error:
+                    kill_process(process)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise SystemExit("release API command timed out") from error
+                finally:
+                    for reader in readers:
+                        reader.join(timeout=5)
+                if any(reader.is_alive() for reader in readers):
+                    kill_process(process)
+                    raise SystemExit("release API pipes did not close")
+                if errors:
+                    raise SystemExit("release API response read failed")
+                if overflows:
+                    raise SystemExit("release API response exceeds the byte limit")
+                if returncode != 0:
+                    detail = stderr.decode("utf-8", "backslashreplace").strip()
+                    raise SystemExit(f"release API request failed: {detail}")
+                consumed_bytes += len(stdout)
+                try:
+                    payload = json.loads(
+                        stdout.decode("utf-8", "strict"),
+                        object_pairs_hook=unique_object,
+                        parse_int=parse_integer,
+                        parse_constant=reject_constant,
+                    )
+                except (UnicodeDecodeError, ValueError) as error:
+                    raise SystemExit("release API returned malformed JSON") from error
+                return bytes(stdout), payload
+
+            if mode == "find":
+                if len(arguments) != 1:
+                    raise SystemExit("release-list lookup is incomplete")
+                release_tag = arguments[0]
+                if (
+                    re.fullmatch(
+                        r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                        release_tag,
+                    )
+                    is None
+                    or len(release_tag.encode("utf-8")) > MAX_TAG_BYTES
+                ):
+                    raise SystemExit("release-list tag is malformed")
+                endpoint = f"repos/{repository}/releases?per_page=100"
+                matches = []
+                seen_items = 0
+                seen_ids = set()
+                for page_number in range(1, MAX_PAGES + 1):
+                    _raw, page = api_json(
+                        f"{endpoint}&page={page_number}", MAX_PAGE_BYTES
+                    )
+                    if not isinstance(page, list) or len(page) > 100:
+                        raise SystemExit("GitHub Release list page is malformed")
+                    seen_items += len(page)
+                    if seen_items > MAX_ITEMS:
+                        raise SystemExit("GitHub Release list exceeds the item limit")
+                    for release in page:
+                        if not isinstance(release, dict):
+                            raise SystemExit("GitHub Release list entry is malformed")
+                        tag_name = release.get("tag_name")
+                        if (
+                            not isinstance(tag_name, str)
+                            or len(tag_name.encode("utf-8")) > MAX_TAG_BYTES
+                        ):
+                            raise SystemExit("GitHub Release has a malformed tag")
+                        release_id = release.get("id")
+                        if (
+                            type(release_id) is not int
+                            or not 1 <= release_id <= MAX_UINT64
+                            or release_id in seen_ids
+                        ):
+                            raise SystemExit("GitHub Release has a malformed ID")
+                        seen_ids.add(release_id)
+                        if tag_name == release_tag:
+                            matches.append(release_id)
+                    if len(matches) > 1:
+                        raise SystemExit("multiple GitHub Releases use the version tag")
+                    if len(page) < 100:
+                        if matches:
+                            print(matches[0])
+                        break
+                else:
+                    raise SystemExit("GitHub Release list exceeds the page limit")
+            else:
+                if len(arguments) != 2:
+                    raise SystemExit("release-detail capture is incomplete")
+                release_id_text, output_text = arguments
+                if re.fullmatch(r"[1-9][0-9]{0,19}", release_id_text) is None:
+                    raise SystemExit("GitHub Release ID is malformed")
+                release_id = int(release_id_text)
+                if release_id > MAX_UINT64:
+                    raise SystemExit("GitHub Release ID exceeds the supported range")
+                output = pathlib.Path(output_text).resolve()
+                if (
+                    not output.is_file()
+                    or output.is_symlink()
+                    or output.parent != runner_temp
+                ):
+                    raise SystemExit("release-detail output path is unsafe")
+                raw, payload = api_json(
+                    f"repos/{repository}/releases/{release_id}", MAX_DETAIL_BYTES
+                )
+                if not isinstance(payload, dict) or payload.get("id") != release_id:
+                    raise SystemExit("GitHub Release detail disagrees with its identity")
+                output.write_bytes(raw)
         run: |
           set -euo pipefail
-          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          readonly repository_url="https://github.com/$GITHUB_REPOSITORY.git"
+          readonly asset_dir="$GITHUB_WORKSPACE/release-assets"
+          clean_python_cwd=$(mktemp -d)
+          python_clean() {
+            (cd "$clean_python_cwd" && python3 -I "$@")
+          }
+          tag_sha=$(git ls-remote "$repository_url" "refs/tags/$RELEASE_TAG" | awk '{print $1}')
           if [[ -z "$tag_sha" || "$tag_sha" != "$RELEASE_SHA" ]]; then
             echo "Version tag moved or disappeared: $RELEASE_TAG -> $tag_sha (expected $RELEASE_SHA)" >&2
             exit 1
           fi
-          (cd release-assets && sha256sum --check --strict SHA256SUMS)
-          notes_file=$(mktemp)
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
-            --output "$notes_file"
+          (cd "$asset_dir" && sha256sum --check --strict SHA256SUMS)
+          notes_file="$RUNNER_TEMP/release-notes/release-notes.md"
+          if [[ ! -f "$notes_file" || -L "$notes_file" || \
+                "$(wc -c < "$notes_file")" -gt 1048576 ]]; then
+            echo "Release-notes artifact is missing, unsafe, or oversized" >&2
+            exit 1
+          fi
 
-          release_json_file=$(mktemp)
+          release_json_file=$(mktemp "$RUNNER_TEMP/release-json.XXXXXX")
 
           # GitHub's release-by-tag endpoint does not return draft releases.
           # Search the authenticated, paginated release list and bind every
           # later read to the unique numeric release ID instead.
           find_release_id() {
-            local releases_file
-            releases_file=$(mktemp)
-            if ! gh api --paginate --slurp \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              > "$releases_file"; then
-              echo "GitHub Release list lookup failed" >&2
-              return 1
-            fi
-            python3 - "$RELEASE_TAG" "$releases_file" <<'PY'
-          # release-list-selector:start
-          import json
-          import pathlib
-          import sys
-
-          release_tag, releases_path = sys.argv[1:]
-          pages = json.loads(pathlib.Path(releases_path).read_text(encoding="utf-8"))
-          if not isinstance(pages, list) or any(
-              not isinstance(page, list) for page in pages
-          ):
-              raise SystemExit("GitHub Release list response is malformed")
-
-          matches = []
-          for page in pages:
-              for release in page:
-                  if not isinstance(release, dict):
-                      raise SystemExit("GitHub Release list entry is malformed")
-                  if release.get("tag_name") != release_tag:
-                      continue
-                  release_id = release.get("id")
-                  if type(release_id) is not int or release_id <= 0:
-                      raise SystemExit("GitHub Release has a malformed ID")
-                  matches.append(release_id)
-
-          if len(matches) > 1:
-              raise SystemExit("multiple GitHub Releases use the version tag")
-          if matches:
-              print(matches[0])
-          # release-list-selector:end
-          PY
+            python_clean -c "$RELEASE_DRAFT_API_PROGRAM" \
+              find "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          }
+          capture_release_json() {
+            python_clean -c "$RELEASE_DRAFT_API_PROGRAM" \
+              capture "$GITHUB_REPOSITORY" "$1" "$release_json_file"
           }
 
           if ! release_id=$(find_release_id); then
@@ -1229,8 +1997,7 @@ jobs:
             echo "GitHub Release ID is malformed: $release_id" >&2
             exit 1
           fi
-          if ! gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-            > "$release_json_file"; then
+          if ! capture_release_json "$release_id"; then
             echo "GitHub Release state cannot be read by ID" >&2
             exit 1
           fi
@@ -1238,28 +2005,97 @@ jobs:
           expected_assets=$(mktemp)
           missing_assets=$(mktemp)
           common_assets=$(mktemp)
-          python3 - \
+          draft_state=$(mktemp "$RUNNER_TEMP/release-draft-state.XXXXXX")
+          python_clean - \
             "$RELEASE_TAG" \
+            "$asset_dir" \
             "$notes_file" \
             "$release_json_file" \
             "$expected_assets" \
             "$missing_assets" \
-            "$common_assets" <<'PY'
+            "$common_assets" \
+            "$draft_state" <<'PY'
           import json
           import pathlib
           import sys
 
           (
               release_tag,
+              asset_dir_text,
               notes_path,
               release_json_path,
               expected_path,
               missing_path,
               common_path,
+              draft_state_path,
           ) = sys.argv[1:]
-          release = json.loads(pathlib.Path(release_json_path).read_text())
+          MAX_RELEASE_JSON_BYTES = 32 * 1024 * 1024
+          MAX_NOTES_BYTES = 1024 * 1024
+          MAX_RELEASE_ASSETS = 16
+          MAX_ASSET_NAME_BYTES = 1024
+          MAX_ASSET_BYTES = 128 * 1024 * 1024
+          MAX_ASSET_TOTAL_BYTES = 256 * 1024 * 1024
+          READ_CHUNK_BYTES = 64 * 1024
+
+          def read_text_bounded(path_text, limit, label):
+              path = pathlib.Path(path_text)
+              advertised = path.stat().st_size
+              if not 0 <= advertised <= limit:
+                  raise SystemExit(f"{label} exceeds the byte limit")
+              chunks = []
+              total = 0
+              with path.open("rb") as stream:
+                  while total < limit:
+                      requested = min(READ_CHUNK_BYTES, limit - total)
+                      chunk = stream.read(requested)
+                      if not chunk:
+                          break
+                      if len(chunk) > requested:
+                          raise SystemExit(f"{label} exceeded a bounded read")
+                      chunks.append(chunk)
+                      total += len(chunk)
+                  if stream.read(1):
+                      raise SystemExit(f"{label} exceeds the byte limit")
+              if total != advertised:
+                  raise SystemExit(f"{label} changed while being read")
+              try:
+                  return b"".join(chunks).decode("utf-8", "strict")
+              except UnicodeDecodeError as error:
+                  raise SystemExit(f"{label} is not UTF-8") from error
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate JSON object key")
+                  result[key] = value
+              return result
+
+          def parse_integer(value):
+              if len(value.lstrip("-")) > 20:
+                  raise ValueError("oversized JSON integer")
+              return int(value)
+
+          def reject_constant(_value):
+              raise ValueError("non-finite JSON constant")
+
+          try:
+              release = json.loads(
+                  read_text_bounded(
+                      release_json_path, MAX_RELEASE_JSON_BYTES, "GitHub Release response"
+                  ),
+                  object_pairs_hook=unique_object,
+                  parse_int=parse_integer,
+                  parse_constant=reject_constant,
+              )
+          except ValueError as error:
+              raise SystemExit("GitHub Release response is malformed") from error
+          if not isinstance(release, dict):
+              raise SystemExit("GitHub Release response is malformed")
           expected_title = f"boundver {release_tag.removeprefix('v')}"
-          expected_notes = pathlib.Path(notes_path).read_text(encoding="utf-8")
+          expected_notes = read_text_bounded(
+              notes_path, MAX_NOTES_BYTES, "release notes"
+          )
           def normalized_notes(value):
               return value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
 
@@ -1284,20 +2120,56 @@ jobs:
                   "Public GitHub Release must be immutable and have a publication timestamp"
               )
 
-          asset_dir = pathlib.Path("release-assets")
-          local = sorted(
-              path.name
-              for path in asset_dir.iterdir()
-              if path.is_file() and not path.is_symlink()
-          )
-          if len(local) != len(list(asset_dir.iterdir())):
+          asset_dir = pathlib.Path(asset_dir_text)
+          local_entries = list(asset_dir.iterdir())
+          if (
+              len(local_entries) > MAX_RELEASE_ASSETS
+              or any(not path.is_file() or path.is_symlink() for path in local_entries)
+          ):
               raise SystemExit("local release assets must be regular files")
+          local_sizes = {}
+          local_total = 0
+          for path in local_entries:
+              try:
+                  name_size = len(path.name.encode("utf-8"))
+              except UnicodeEncodeError as error:
+                  raise SystemExit("local release asset name is invalid") from error
+              size = path.stat().st_size
+              if (
+                  not path.name
+                  or name_size > MAX_ASSET_NAME_BYTES
+                  or size < 0
+                  or size > MAX_ASSET_BYTES
+              ):
+                  raise SystemExit("local release asset exceeds a safety limit")
+              local_sizes[path.name] = size
+              local_total += size
+          if local_total > MAX_ASSET_TOTAL_BYTES:
+              raise SystemExit("local release assets exceed the aggregate size limit")
+          local = sorted(local_sizes)
           remote = []
-          for asset in release.get("assets", []):
+          remote_assets = release.get("assets")
+          if not isinstance(remote_assets, list) or len(remote_assets) > MAX_RELEASE_ASSETS:
+              raise SystemExit("GitHub Release reported too many assets")
+          remote_total = 0
+          for asset in remote_assets:
               name = asset.get("name") if isinstance(asset, dict) else None
-              if not isinstance(name, str) or not name or pathlib.PurePath(name).name != name:
+              size = asset.get("size") if isinstance(asset, dict) else None
+              if (
+                  not isinstance(name, str)
+                  or not name
+                  or len(name.encode("utf-8")) > MAX_ASSET_NAME_BYTES
+                  or pathlib.PurePath(name).name != name
+                  or type(size) is not int
+                  or not 0 <= size <= MAX_ASSET_BYTES
+              ):
                   raise SystemExit("GitHub Release reported a malformed asset name")
               remote.append(name)
+              remote_total += size
+              if name in local_sizes and size != local_sizes[name]:
+                  raise SystemExit("GitHub Release asset size disagrees with candidate")
+          if remote_total > MAX_ASSET_TOTAL_BYTES:
+              raise SystemExit("GitHub Release assets exceed the aggregate size limit")
           if len(remote) != len(set(remote)):
               raise SystemExit("GitHub Release contains duplicate asset names")
 
@@ -1311,6 +2183,7 @@ jobs:
           pathlib.Path(expected_path).write_text("\n".join(local) + "\n")
           pathlib.Path(missing_path).write_text("\n".join(sorted(expected - actual)) + ("\n" if expected - actual else ""))
           pathlib.Path(common_path).write_text("\n".join(sorted(expected & actual)) + ("\n" if expected & actual else ""))
+          pathlib.Path(draft_state_path).write_text(str(draft).lower() + "\n")
           PY
 
           # Compare every existing byte before performing a resumable upload.
@@ -1320,46 +2193,115 @@ jobs:
             gh release download "$RELEASE_TAG" \
               --dir "$downloaded_existing" \
               --pattern "$asset"
-            if ! cmp --silent "release-assets/$asset" "$downloaded_existing/$asset"; then
+            if ! cmp --silent "$asset_dir/$asset" "$downloaded_existing/$asset"; then
               echo "GitHub Release asset conflicts with candidate bytes: $asset" >&2
               exit 1
             fi
           done < "$common_assets"
 
           if [[ -s "$missing_assets" ]]; then
-            is_draft=$(python3 -c \
-              'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' \
-              "$release_json_file")
+            is_draft=$(<"$draft_state")
             if [[ "$is_draft" != true ]]; then
               echo "Public GitHub Release is missing assets and cannot be resumed safely" >&2
               exit 1
             fi
             while IFS= read -r asset; do
               [[ -n "$asset" ]] || continue
-              gh release upload "$RELEASE_TAG" "release-assets/$asset"
+              gh release upload "$RELEASE_TAG" "$asset_dir/$asset"
             done < "$missing_assets"
           fi
 
           # Re-read after upload: concurrent extras, omissions, and metadata
           # changes must all fail closed.
-          if ! gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-            > "$release_json_file"; then
+          if ! capture_release_json "$release_id"; then
             echo "GitHub Release API failed during final draft verification" >&2
             exit 1
           fi
-          python3 - \
+          python_clean - \
             "$RELEASE_TAG" \
             "$notes_file" \
             "$release_json_file" \
-            "$expected_assets" <<'PY'
+            "$expected_assets" \
+            "$draft_state" <<'PY'
           import json
           import pathlib
           import sys
 
-          release_tag, notes_path, release_json_path, expected_path = sys.argv[1:]
-          release = json.loads(pathlib.Path(release_json_path).read_text())
+          (
+              release_tag,
+              notes_path,
+              release_json_path,
+              expected_path,
+              draft_state_path,
+          ) = sys.argv[1:]
+          MAX_RELEASE_JSON_BYTES = 32 * 1024 * 1024
+          MAX_NOTES_BYTES = 1024 * 1024
+          MAX_EXPECTED_BYTES = 32 * 1024
+          MAX_RELEASE_ASSETS = 16
+          MAX_ASSET_NAME_BYTES = 1024
+          MAX_ASSET_BYTES = 128 * 1024 * 1024
+          MAX_ASSET_TOTAL_BYTES = 256 * 1024 * 1024
+          READ_CHUNK_BYTES = 64 * 1024
+
+          def read_text_bounded(path_text, limit, label):
+              path = pathlib.Path(path_text)
+              advertised = path.stat().st_size
+              if not 0 <= advertised <= limit:
+                  raise SystemExit(f"{label} exceeds the byte limit")
+              chunks = []
+              total = 0
+              with path.open("rb") as stream:
+                  while total < limit:
+                      requested = min(READ_CHUNK_BYTES, limit - total)
+                      chunk = stream.read(requested)
+                      if not chunk:
+                          break
+                      if len(chunk) > requested:
+                          raise SystemExit(f"{label} exceeded a bounded read")
+                      chunks.append(chunk)
+                      total += len(chunk)
+                  if stream.read(1):
+                      raise SystemExit(f"{label} exceeds the byte limit")
+              if total != advertised:
+                  raise SystemExit(f"{label} changed while being read")
+              try:
+                  return b"".join(chunks).decode("utf-8", "strict")
+              except UnicodeDecodeError as error:
+                  raise SystemExit(f"{label} is not UTF-8") from error
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate JSON object key")
+                  result[key] = value
+              return result
+
+          def parse_integer(value):
+              if len(value.lstrip("-")) > 20:
+                  raise ValueError("oversized JSON integer")
+              return int(value)
+
+          def reject_constant(_value):
+              raise ValueError("non-finite JSON constant")
+
+          try:
+              release = json.loads(
+                  read_text_bounded(
+                      release_json_path, MAX_RELEASE_JSON_BYTES, "GitHub Release response"
+                  ),
+                  object_pairs_hook=unique_object,
+                  parse_int=parse_integer,
+                  parse_constant=reject_constant,
+              )
+          except ValueError as error:
+              raise SystemExit("GitHub Release response is malformed") from error
+          if not isinstance(release, dict):
+              raise SystemExit("GitHub Release response is malformed")
           expected_title = f"boundver {release_tag.removeprefix('v')}"
-          expected_notes = pathlib.Path(notes_path).read_text(encoding="utf-8")
+          expected_notes = read_text_bounded(
+              notes_path, MAX_NOTES_BYTES, "release notes"
+          )
           def normalized_notes(value):
               return value.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
 
@@ -1383,13 +2325,33 @@ jobs:
               raise SystemExit(
                   "Public GitHub Release is not immutable or lacks a publication timestamp"
               )
-          expected = set(pathlib.Path(expected_path).read_text().splitlines())
+          expected_lines = read_text_bounded(
+              expected_path, MAX_EXPECTED_BYTES, "expected release assets"
+          ).splitlines()
+          if len(expected_lines) > MAX_RELEASE_ASSETS or len(expected_lines) != len(set(expected_lines)):
+              raise SystemExit("expected release asset set is malformed")
+          expected = set(expected_lines)
           names = []
-          for asset in release.get("assets", []):
+          remote_assets = release.get("assets")
+          if not isinstance(remote_assets, list) or len(remote_assets) > MAX_RELEASE_ASSETS:
+              raise SystemExit("GitHub Release reported too many assets")
+          remote_total = 0
+          for asset in remote_assets:
               name = asset.get("name") if isinstance(asset, dict) else None
-              if not isinstance(name, str):
+              size = asset.get("size") if isinstance(asset, dict) else None
+              if (
+                  not isinstance(name, str)
+                  or not name
+                  or len(name.encode("utf-8")) > MAX_ASSET_NAME_BYTES
+                  or pathlib.PurePath(name).name != name
+                  or type(size) is not int
+                  or not 0 <= size <= MAX_ASSET_BYTES
+              ):
                   raise SystemExit("GitHub Release reported a malformed asset")
               names.append(name)
+              remote_total += size
+          if remote_total > MAX_ASSET_TOTAL_BYTES:
+              raise SystemExit("GitHub Release assets exceed the aggregate size limit")
           if len(names) != len(set(names)):
               raise SystemExit("GitHub Release contains duplicate asset names")
           actual = set(names)
@@ -1399,16 +2361,15 @@ jobs:
               raise SystemExit(
                   f"GitHub Release asset set disagrees; missing={missing}, extra={extra}"
               )
+          pathlib.Path(draft_state_path).write_text(str(draft).lower() + "\n")
           PY
 
           remote_assets=$(mktemp -d)
           gh release download "$RELEASE_TAG" --dir "$remote_assets"
           diff -u \
-            <(cd release-assets && sha256sum * | LC_ALL=C sort) \
+            <(cd "$asset_dir" && sha256sum * | LC_ALL=C sort) \
             <(cd "$remote_assets" && sha256sum * | LC_ALL=C sort)
-          is_draft=$(python3 -c \
-            'import json,sys; print(str(json.load(open(sys.argv[1]))["draft"]).lower())' \
-            "$release_json_file")
+          is_draft=$(<"$draft_state")
           if [[ "$is_draft" == true ]]; then
             echo "Draft is complete. Publish it with the Marketplace checkbox, then approve the marketplace environment."
           elif [[ "$is_draft" == false ]]; then
@@ -1430,12 +2391,14 @@ jobs:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
@@ -1463,7 +2426,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify_testpypi_release.py verify \
+          python3 -I scripts/verify_testpypi_release.py verify \
             --dist dist \
             --project boundver \
             --version "${RELEASE_TAG#v}" \
@@ -1481,9 +2444,10 @@ jobs:
             # verifier still validates the release-line-shaped argument.
             verification_alias="v${version%.*}"
           fi
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+          python3 -I .release-control/scripts/release_changelog.py \
+            --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
-          python3 .release-control/scripts/verify_release_surfaces.py \
+          python3 -I .release-control/scripts/verify_release_surfaces.py \
             --tag "$RELEASE_TAG" \
             --sha "$RELEASE_SHA" \
             --alias "$verification_alias" \
@@ -1497,17 +2461,17 @@ jobs:
   pypi-preflight:
     name: Reject conflicting production PyPI state
     runs-on: ubuntu-latest
-    needs: verify-release
+    needs: [verify-release, verify-marketplace]
     permissions:
       actions: read
       contents: read
     outputs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
-      missing-files: ${{ steps.preflight.outputs.missing-files }}
     steps:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
@@ -1530,7 +2494,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify_testpypi_release.py preflight \
+          python3 -I scripts/verify_testpypi_release.py preflight \
             --dist dist \
             --project boundver \
             --version "${RELEASE_TAG#v}" \
@@ -1546,14 +2510,9 @@ jobs:
     permissions:
       actions: read
       id-token: write
-      contents: read
     steps:
-      - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: ${{ inputs.release_sha }}
-
-      - name: Download the same Python distributions by artifact ID
+      - name: Download the exact immutable candidate by artifact ID
+        if: needs.pypi-preflight.outputs.upload-required == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
@@ -1563,49 +2522,16 @@ jobs:
           run-id: ${{ needs.verify-release.outputs.source-run-id }}
           merge-multiple: true
 
-      - name: Refresh exact production state for this upload attempt
-        id: fresh-preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/verify_testpypi_release.py preflight \
-            --dist dist \
-            --project boundver \
-            --version "${RELEASE_TAG#v}" \
-            --api-base https://pypi.org/pypi \
-            --download-origin https://files.pythonhosted.org \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Publish missing candidate files to PyPI
-        if: steps.fresh-preflight.outputs.upload-required == 'true'
-        shell: bash
-        env:
-          MISSING_FILES: ${{ steps.fresh-preflight.outputs.missing-files }}
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import shutil
-          from pathlib import Path
-
-          source = Path("dist")
-          target = Path("upload-dist")
-          target.mkdir()
-          names = os.environ["MISSING_FILES"].split(",")
-          if not names or any(not name or Path(name).name != name for name in names):
-              raise SystemExit("production upload file list is malformed")
-          for name in names:
-              path = source / name
-              if not path.is_file() or path.is_symlink():
-                  raise SystemExit(f"missing immutable candidate file: {name}")
-              shutil.copy2(path, target / name)
-          PY
-
-      - name: Upload only missing candidate files to PyPI
-        if: steps.fresh-preflight.outputs.upload-required == 'true'
+      # A failed upload may already have made one filename immutable on PyPI.
+      # Re-running failed jobs therefore republishes the same complete, bound
+      # artifact with duplicate tolerance; verify-pypi then requires every
+      # public byte to match that immutable candidate.
+      - name: Upload the exact candidate to PyPI with retry-safe duplicates
+        if: needs.pypi-preflight.outputs.upload-required == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
-          packages-dir: upload-dist
+          packages-dir: dist
+          skip-existing: true
           attestations: true
 
   verify-pypi:
@@ -1619,6 +2545,7 @@ jobs:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
@@ -1641,7 +2568,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/verify_testpypi_release.py verify \
+          python3 -I scripts/verify_testpypi_release.py verify \
             --dist dist \
             --project boundver \
             --version "${RELEASE_TAG#v}" \
@@ -1665,15 +2592,15 @@ jobs:
             *) echo "Verifier returned a non-PyPI wheel URL" >&2; exit 1 ;;
           esac
           install_root=$(mktemp -d)
-          python3 -m venv "$install_root/venv"
-          "$install_root/venv/bin/python" -m pip install \
+          python3 -I -m venv "$install_root/venv"
+          "$install_root/venv/bin/python" -I -m pip --isolated install \
             --no-index --no-deps "$PYPI_WHEEL_URL"
           actual=$(cd "$RUNNER_TEMP" && \
-            "$install_root/venv/bin/python" -c \
+            "$install_root/venv/bin/python" -I -c \
               'import importlib.metadata; print(importlib.metadata.version("boundver"))')
           test "v$actual" = "$EXPECTED_VERSION"
           cd "$RUNNER_TEMP"
-          "$install_root/venv/bin/python" -m boundver --version
+          "$install_root/venv/bin/python" -I -m boundver --version
 
       - name: Cryptographically verify PyPI trusted-publisher provenance
         shell: bash
@@ -1682,7 +2609,7 @@ jobs:
           PYPI_SDIST_URL: ${{ steps.verify-pypi.outputs.sdist-url }}
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check pypi-attestations
+          python3 -I scripts/install_locked_tools.py release
           wheel_url=${PYPI_WHEEL_URL%%#*}
           sdist_url=${PYPI_SDIST_URL%%#*}
           pypi-attestations verify pypi \
@@ -1690,104 +2617,110 @@ jobs:
           pypi-attestations verify pypi \
             --repository https://github.com/yzm1/boundver "$sdist_url"
 
-  advance-compatibility-alias:
-    name: Apply the explicit Action alias decision
+  validate-compatibility-alias:
+    name: Validate the explicit Action alias decision without mutation authority
     runs-on: ubuntu-latest
     needs: verify-pypi
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      update-required: ${{ steps.validate-alias.outputs.update-required }}
+      expected-current: ${{ steps.validate-alias.outputs.expected-current }}
     steps:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
 
+      - name: Checkout the reviewed release-control implementation
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: .release-control
+
+      - name: Validate the approved vX.Y alias without rollback or races
+        id: validate-alias
+        if: inputs.compatibility_alias != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I \
+            "$GITHUB_WORKSPACE/.release-control/scripts/validate_compatibility_alias.py" \
+            --release-tag "$RELEASE_TAG" \
+            --release-sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --repo "$GITHUB_WORKSPACE" \
+            --runner-temp "$RUNNER_TEMP" \
+            --github-output "$GITHUB_OUTPUT"
+
+  advance-compatibility-alias:
+    name: Apply only the validated Action alias decision
+    runs-on: ubuntu-latest
+    needs: [verify-pypi, validate-compatibility-alias]
+    permissions:
+      contents: write
+    steps:
       - name: Record the explicit no-alias decision
         if: inputs.compatibility_alias == 'none'
         shell: bash
         run: echo "No compatibility alias was approved for $RELEASE_TAG."
 
-      - name: Advance the approved vX.Y alias without rollback or races
-        if: inputs.compatibility_alias != 'none'
+      - name: Push only the validated compatibility-alias update
+        if: >-
+          inputs.compatibility_alias != 'none' &&
+          needs.validate-compatibility-alias.outputs.update-required == 'true'
         shell: bash
+        env:
+          EXPECTED_CURRENT: ${{ needs.validate-compatibility-alias.outputs.expected-current }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version=${RELEASE_TAG#v}
-          expected_alias="v${version%.*}"
-          if [[ "$COMPATIBILITY_ALIAS" != "$expected_alias" ]]; then
-            echo "Compatibility alias must be $expected_alias, got $COMPATIBILITY_ALIAS" >&2
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ || \
+                ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+                ! "$COMPATIBILITY_ALIAS" =~ ^v[0-9]+\.[0-9]+$ || \
+                ( -n "$EXPECTED_CURRENT" && \
+                  ! "$EXPECTED_CURRENT" =~ ^[0-9a-f]{40}$ ) ]]; then
+            echo "Validated alias mutation inputs are malformed" >&2
+            exit 1
+          fi
+          readonly repository_url="https://github.com/$GITHUB_REPOSITORY.git"
+          mutation_repo=$(mktemp -d)
+          cd "$mutation_repo"
+          git init --quiet
+          git remote add origin "$repository_url"
+          alias_ref="refs/tags/$COMPATIBILITY_ALIAS"
+          current=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
+          if [[ "$current" != "$EXPECTED_CURRENT" ]]; then
+            echo "Compatibility alias changed before the push boundary" >&2
             exit 1
           fi
           tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
           if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
-            echo "Exact release tag moved before alias update" >&2
+            echo "Exact release tag moved at the alias push boundary" >&2
             exit 1
           fi
-
-          alias_ref="refs/tags/$COMPATIBILITY_ALIAS"
-          expected_current=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
-          if [[ "$expected_current" == "$RELEASE_SHA" ]]; then
-            echo "$COMPATIBILITY_ALIAS already resolves to $RELEASE_SHA"
-            exit 0
-          fi
-
-          if [[ -n "$expected_current" ]]; then
-            git fetch --no-tags origin \
-              "$alias_ref:refs/boundver-release/compatibility-alias-before"
-            if ! git merge-base --is-ancestor "$expected_current" "$RELEASE_SHA"; then
-              echo "Refusing non-ancestral or rollback alias move: $expected_current -> $RELEASE_SHA" >&2
-              exit 1
-            fi
-
-            same_line_tags=$(mktemp)
-            git ls-remote --tags --refs origin \
-              "refs/tags/$COMPATIBILITY_ALIAS.*" > "$same_line_tags"
-            python3 - \
-              "$COMPATIBILITY_ALIAS" \
-              "$RELEASE_TAG" \
-              "$expected_current" \
-              "$same_line_tags" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          alias, release_tag, current_sha, tags_path = sys.argv[1:]
-          release_match = re.fullmatch(re.escape(alias) + r"\.([0-9]+)", release_tag)
-          if release_match is None:
-              raise SystemExit("release tag is outside the approved compatibility line")
-          release_patch = int(release_match.group(1))
-          current_patches = []
-          for line in pathlib.Path(tags_path).read_text().splitlines():
-              sha, ref = line.split("\t", 1)
-              match = re.fullmatch(r"refs/tags/" + re.escape(alias) + r"\.([0-9]+)", ref)
-              if match is not None and sha == current_sha:
-                  current_patches.append(int(match.group(1)))
-          if not current_patches:
-              raise SystemExit(
-                  "existing compatibility alias does not point to an exact same-line release"
-              )
-          current_patch = max(current_patches)
-          if current_patch >= release_patch:
-              raise SystemExit(
-                  f"refusing compatibility alias rollback from patch {current_patch} "
-                  f"to patch {release_patch}"
-              )
-          PY
-            lease="--force-with-lease=$alias_ref:$expected_current"
+          if [[ -n "$EXPECTED_CURRENT" ]]; then
+            lease="--force-with-lease=$alias_ref:$EXPECTED_CURRENT"
           else
-            # Empty expected value means the ref must still be absent at push.
             lease="--force-with-lease=$alias_ref:"
           fi
-
-          # Revalidate the immutable anchor at the mutation boundary. The lease
-          # rejects any concurrent alias update after expected_current was read.
-          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
-          if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
-            echo "Exact release tag moved at the alias mutation boundary" >&2
+          git fetch --no-tags origin \
+            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          fetched_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          if [[ "$fetched_sha" != "$RELEASE_SHA" ]]; then
+            echo "Fetched release tag disagrees at the alias push boundary" >&2
             exit 1
           fi
-          git push "$lease" origin "$RELEASE_SHA:$alias_ref"
+          cleanup_auth() {
+            git config --global --unset-all \
+              credential.https://github.com.helper >/dev/null 2>&1 || true
+          }
+          trap cleanup_auth EXIT
+          gh auth setup-git
+          git push "$lease" origin "refs/tags/$RELEASE_TAG:$alias_ref"
           remote_sha=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
           test "$remote_sha" = "$RELEASE_SHA"
 
@@ -1802,11 +2735,13 @@ jobs:
       - name: Checkout the released commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
@@ -1835,7 +2770,8 @@ jobs:
         run: |
           set -euo pipefail
           version=${RELEASE_TAG#v}
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+          python3 -I .release-control/scripts/release_changelog.py \
+            --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
           verification_alias_args=()
           if [[ "$COMPATIBILITY_ALIAS" == none ]]; then
@@ -1846,7 +2782,7 @@ jobs:
           else
             verification_alias="$COMPATIBILITY_ALIAS"
           fi
-          python3 .release-control/scripts/verify_release_surfaces.py \
+          python3 -I .release-control/scripts/verify_release_surfaces.py \
               --tag "$RELEASE_TAG" \
               --sha "$RELEASE_SHA" \
               --alias "$verification_alias" \

@@ -1,17 +1,20 @@
 """Unit tests for boundver.versions — pure function tests, no git required."""
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from boundver.versions import (
     _extract_json_field,
     _extract_toml_field,
     _extract_yaml_field,
+    MAX_TOML_INTEGER_DIGITS,
     extract_version,
     parse_semver,
 )
+from boundver._utils import GuardrailError
 
 
 class ParseSemverTests(unittest.TestCase):
@@ -60,6 +63,24 @@ class ParseSemverTests(unittest.TestCase):
             ("1", "1.2", "1.2.3"),
         )
 
+    def test_unicode_digits_are_not_semver_numeric_identifiers(self):
+        version = "1.2.\u0663"
+        self.assertEqual(parse_semver(version), (None, None, version))
+
+    def test_numeric_prerelease_identifiers_cannot_have_leading_zeroes(self):
+        for version in ("1.2.3-01", "1.2.3-alpha.01"):
+            with self.subTest(version=version):
+                self.assertEqual(parse_semver(version), (None, None, version))
+        self.assertEqual(parse_semver("1.2.3-0"), ("1", "1.2", "1.2.3"))
+        self.assertEqual(
+            parse_semver("1.2.3-01alpha"),
+            ("1", "1.2", "1.2.3"),
+        )
+
+    def test_long_invalid_prerelease_is_rejected_without_regex_backtracking(self):
+        version = "1.2.3-" + "a" * 100_000 + "!"
+        self.assertEqual(parse_semver(version), (None, None, version))
+
 
 class ExtractJsonFieldTests(unittest.TestCase):
     def _write(self, tmp: Path, content: dict) -> Path:
@@ -102,6 +123,15 @@ class ExtractJsonFieldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             p = self._write(Path(td), {"x": "string-not-dict"})
             self.assertIsNone(_extract_json_field(p, "x.version"))
+
+    def test_bounded_reader_failure_is_a_controlled_missing_version(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = self._write(Path(td), {"version": "1.0.0"})
+            with patch(
+                "boundver.versions._read_bounded_path_bytes",
+                side_effect=GuardrailError("file grew past the limit"),
+            ):
+                self.assertIsNone(_extract_json_field(p, "version"))
 
 
 class ExtractTomlFieldTests(unittest.TestCase):
@@ -186,25 +216,34 @@ class ExtractYamlFieldTests(unittest.TestCase):
             p = self._write(Path(td), "")
             self.assertIsNone(_extract_yaml_field(p, "version"))
 
-    def test_fallback_parser_used_when_yaml_unavailable(self):
+    def test_oversized_implicit_and_explicit_integers_return_none(self):
+        for tagged_value in ("9" * 4301, "!!int " + "9" * 4301):
+            with self.subTest(explicit=tagged_value.startswith("!!int")):
+                with tempfile.TemporaryDirectory() as td:
+                    path = self._write(
+                        Path(td), f"version: {tagged_value}\n"
+                    )
+                    self.assertIsNone(_extract_yaml_field(path, "version"))
+
+    def test_nested_yaml_fails_closed_when_parser_unavailable(self):
         import boundver.versions as versions_mod
         original = versions_mod.yaml
         try:
             versions_mod.yaml = None
             with tempfile.TemporaryDirectory() as td:
                 p = self._write(Path(td), "info:\n  version: 9.8.7\n")
-                self.assertEqual(_extract_yaml_field(p, "info.version"), "9.8.7")
+                self.assertIsNone(_extract_yaml_field(p, "info.version"))
         finally:
             versions_mod.yaml = original
 
-    def test_fallback_parser_top_level(self):
+    def test_top_level_yaml_fails_closed_when_parser_unavailable(self):
         import boundver.versions as versions_mod
         original = versions_mod.yaml
         try:
             versions_mod.yaml = None
             with tempfile.TemporaryDirectory() as td:
                 p = self._write(Path(td), "version: 1.0.0\n")
-                self.assertEqual(_extract_yaml_field(p, "version"), "1.0.0")
+                self.assertIsNone(_extract_yaml_field(p, "version"))
         finally:
             versions_mod.yaml = original
 
@@ -212,6 +251,33 @@ class ExtractYamlFieldTests(unittest.TestCase):
 class ExtractVersionTests(unittest.TestCase):
     def test_no_version_source_returns_none(self):
         self.assertIsNone(extract_version(Path("."), ".", None, None))
+
+    def test_malformed_version_source_and_component_path_fail_closed(self):
+        resolver = MagicMock(return_value="1.2.3")
+        for malformed in ([], "version.json", 1, True):
+            with self.subTest(version_source=malformed):
+                self.assertIsNone(
+                    extract_version(Path("."), "svc", malformed, resolver)
+                )
+        for malformed_prefix in ("", 1, [], True):
+            with self.subTest(git_tag_prefix=malformed_prefix):
+                self.assertIsNone(
+                    extract_version(
+                        Path("."),
+                        "svc",
+                        {"git_tag_prefix": malformed_prefix},
+                        resolver,
+                    )
+                )
+        self.assertIsNone(
+            extract_version(
+                Path("."),
+                1,
+                {"file": "version.json", "field": "version"},
+                resolver,
+            )
+        )
+        resolver.assert_not_called()
 
     def test_git_tag_prefix_without_resolver_returns_none(self):
         self.assertIsNone(
@@ -276,25 +342,22 @@ class ExtractVersionTests(unittest.TestCase):
             p = Path(td) / "bad.toml"
             p.write_text("not = valid [ toml {\n")
             result = _extract_toml_field(p, "not")
-            # Depending on whether tomllib is available, either path should return
-            # None rather than raising an exception.
             self.assertIsNone(result)
 
-    def test_extract_yaml_nested_section_fallback(self):
-        """_extract_yaml_field fallback parser handles nested sections."""
+    def test_extract_yaml_nested_section(self):
+        """The authoritative YAML parser handles nested sections."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "data.yaml"
             p.write_text("outer:\n  inner: found-it\n")
             result = _extract_yaml_field(p, "outer.inner")
             self.assertEqual(result, "found-it")
 
-    def test_extract_toml_top_level_field_fallback(self):
-        """_extract_toml_field fallback parser handles top-level keys (no section)."""
+    def test_extract_toml_without_parser_fails_closed(self):
+        """A missing TOML parser never triggers best-effort extraction."""
         import sys
         import unittest.mock
-        # Patch tomllib to None to force fallback parser
+        # Simulate a broken installation without the required TOML parser.
         with unittest.mock.patch.dict(sys.modules, {"tomllib": None}):
-            import importlib
             import boundver.versions as v_mod
             orig = v_mod.tomllib
             v_mod.tomllib = None
@@ -303,7 +366,7 @@ class ExtractVersionTests(unittest.TestCase):
                     p = Path(td) / "cfg.toml"
                     p.write_text('version = "9.8.7"\n')
                     result = v_mod._extract_toml_field(p, "version")
-                    self.assertEqual(result, "9.8.7")
+                    self.assertIsNone(result)
             finally:
                 v_mod.tomllib = orig
 
@@ -333,8 +396,8 @@ class ExtractVersionTests(unittest.TestCase):
             result = _extract_yaml_field(p, "version")
             self.assertIsNone(result)
 
-    def test_extract_yaml_fallback_parser_nested_section(self):
-        """_extract_yaml_field fallback parser navigates indented sections."""
+    def test_extract_nested_yaml_without_parser_fails_closed(self):
+        """A missing YAML parser never triggers best-effort extraction."""
         import boundver.versions as v_mod
         orig = v_mod.yaml
         v_mod.yaml = None
@@ -343,26 +406,12 @@ class ExtractVersionTests(unittest.TestCase):
                 p = Path(td) / "data.yaml"
                 p.write_text("service:\n  version: 2.0.0\n")
                 result = v_mod._extract_yaml_field(p, "service.version")
-                self.assertEqual(result, "2.0.0")
-        finally:
-            v_mod.yaml = orig
-
-    def test_extract_yaml_fallback_parser_key_not_found(self):
-        """_extract_yaml_field fallback parser returns None when key absent."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "data.yaml"
-                p.write_text("name: svc\n")
-                result = v_mod._extract_yaml_field(p, "version")
                 self.assertIsNone(result)
         finally:
             v_mod.yaml = orig
 
     def test_extract_toml_tomllib_intermediate_not_dict_returns_none(self):
-        """Lines 76-77: tomllib path returns None when intermediate key is not a dict."""
+        """TOML traversal returns None when an intermediate key is not a mapping."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "p.toml"
             # [tool]\npoetry = "string" → tool.poetry is a string, not a dict
@@ -370,79 +419,15 @@ class ExtractVersionTests(unittest.TestCase):
             result = _extract_toml_field(p, "tool.poetry.version")
             self.assertIsNone(result)
 
-    def test_extract_toml_fallback_single_key_top_level(self):
-        """Lines 79-80: fallback parser with single-key path (no section)."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "cfg.toml"
-                p.write_text("name = \"pkg\"\nversion = \"5.6.7\"\n")
-                result = v_mod._extract_toml_field(p, "version")
-                self.assertEqual(result, "5.6.7")
-        finally:
-            v_mod.tomllib = orig
-
-    def test_extract_toml_fallback_multi_key_with_section(self):
-        """Lines 76-77, 86-87: fallback parser with multi-key path needs section headers."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "cfg.toml"
-                # Multi-key path requiring section header traversal
-                p.write_text("[project]\nname = \"pkg\"\nversion = \"9.9.9\"\n")
-                result = v_mod._extract_toml_field(p, "project.version")
-                self.assertEqual(result, "9.9.9")
-        finally:
-            v_mod.tomllib = orig
-
-    def test_extract_toml_fallback_section_not_found(self):
-        """Lines 76-77, 92: fallback parser with multi-key path and wrong section → None."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "cfg.toml"
-                p.write_text("[other]\nversion = \"1.0.0\"\n")
-                result = v_mod._extract_toml_field(p, "project.version")
-                self.assertIsNone(result)
-        finally:
-            v_mod.tomllib = orig
-
-    def test_extract_toml_fallback_single_key_not_found(self):
-        """Line 92: fallback parser single-key path, key not present → None."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "cfg.toml"
-                p.write_text("name = \"pkg\"\n")
-                result = v_mod._extract_toml_field(p, "version")
-                self.assertIsNone(result)
-        finally:
-            v_mod.tomllib = orig
-
-    def test_extract_yaml_invalid_raises_uses_fallback(self):
-        """Lines 101-102: yaml.safe_load raises exception → data=None → fallback parser used."""
+    def test_extract_yaml_invalid_document_returns_none(self):
+        """An invalid tagged YAML value is rejected authoritatively."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "data.yaml"
-            # !invalid_tag causes yaml.safe_load to raise ConstructorError
-            # The fallback parser then processes the raw text
             p.write_text("version: !invalid_tag 1.0.0\n")
-            # The yaml exception path sets data=None, then falls through to fallback parser
-            # Fallback regex won't match "!invalid_tag" but should not raise
-            result = _extract_yaml_field(p, "version")
-            # Fallback may return the raw text after the colon or None
-            # Either way, the important thing is no exception is raised
-            # (the result depends on the fallback regex matching)
+            self.assertIsNone(_extract_yaml_field(p, "version"))
 
     def test_extract_yaml_yaml_intermediate_not_dict_returns_none(self):
-        """Lines 105-106: yaml module path returns None when intermediate key is not a dict."""
+        """YAML traversal returns None when an intermediate key is not a mapping."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "data.yaml"
             # info is a string, not a dict → info.version should return None
@@ -451,60 +436,16 @@ class ExtractVersionTests(unittest.TestCase):
             self.assertIsNone(result)
 
     def test_extract_yaml_yaml_key_not_in_nested_dict(self):
-        """Lines 105-106: yaml module path returns None when key absent in nested dict."""
+        """YAML traversal returns None when a nested key is absent."""
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "data.yaml"
             p.write_text("info:\n  name: svc\n")
             result = _extract_yaml_field(p, "info.version")
             self.assertIsNone(result)
 
-    def test_extract_yaml_fallback_blank_line_ignored(self):
-        """Line 116: fallback parser skips blank lines."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "data.yaml"
-                # Has blank line between sections — should still find the value
-                p.write_text("outer:\n\n  version: 3.2.1\n")
-                result = v_mod._extract_yaml_field(p, "outer.version")
-                self.assertEqual(result, "3.2.1")
-        finally:
-            v_mod.yaml = orig
-
-    def test_extract_yaml_fallback_three_level_nesting(self):
-        """Lines 120-122: fallback parser pops indent stack for multi-level sections."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "data.yaml"
-                p.write_text("outer:\n  inner:\n    version: 7.8.9\n")
-                result = v_mod._extract_yaml_field(p, "outer.inner.version")
-                self.assertEqual(result, "7.8.9")
-        finally:
-            v_mod.yaml = orig
-
-    def test_extract_yaml_fallback_indent_stack_pop(self):
-        """Lines 120-122: indent_stack pops when a shallower indent is encountered."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            with tempfile.TemporaryDirectory() as td:
-                p = Path(td) / "data.yaml"
-                # After going deep, come back out - version is at top level after nested section
-                p.write_text("nested:\n  deep: value\nversion: 1.0.0\n")
-                result = v_mod._extract_yaml_field(p, "version")
-                self.assertEqual(result, "1.0.0")
-        finally:
-            v_mod.yaml = orig
-
 
 class ExtractFieldFromBytesTests(unittest.TestCase):
-    """Tests for _extract_field_from_bytes — covers lines 64-76."""
+    """Format dispatch and decoding behavior in _extract_field_from_bytes."""
 
     def setUp(self):
         from boundver.versions import _extract_field_from_bytes
@@ -538,7 +479,7 @@ class ExtractFieldFromBytesTests(unittest.TestCase):
 
 
 class ExtractJsonFromTextTests(unittest.TestCase):
-    """Tests for _extract_json_from_text — covers lines 79-88."""
+    """JSON field extraction behavior in _extract_json_from_text."""
 
     def setUp(self):
         from boundver.versions import _extract_json_from_text
@@ -559,14 +500,44 @@ class ExtractJsonFromTextTests(unittest.TestCase):
     def test_numeric_value_as_string(self):
         self.assertEqual(self._fn('{"v": 42}', "v"), "42")
 
+    def test_duplicate_keys_and_nonfinite_numbers_are_rejected(self):
+        self.assertIsNone(
+            self._fn('{"v":"1.0.0","v":"2.0.0"}', "v")
+        )
+        for value in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(value=value):
+                self.assertIsNone(self._fn('{"v":' + value + "}", "v"))
+
     def test_oversized_integer_returns_none(self):
         self.assertIsNone(
             self._fn('{"v":' + "9" * 5000 + "}", "v")
         )
 
+    def test_booleans_and_containers_are_not_version_identifiers(self):
+        for value in ("true", "false", "null", "[]", "{}", "[1]", '{"x":1}'):
+            with self.subTest(value=value):
+                self.assertIsNone(self._fn('{"v":' + value + "}", "v"))
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_bounded_integer_result_ignores_runtime_setting(self):
+        digits = "9" * 1000
+        original = sys.get_int_max_str_digits()
+        try:
+            results = []
+            for setting in (640, 0):
+                sys.set_int_max_str_digits(setting)
+                results.append(self._fn('{"v":' + digits + "}", "v"))
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(results, [digits, digits])
+
 
 class ExtractTomlFromTextTests(unittest.TestCase):
-    """Tests for _extract_toml_from_text — covers lines 89-122."""
+    """TOML field extraction behavior in _extract_toml_from_text."""
 
     def setUp(self):
         from boundver.versions import _extract_toml_from_text
@@ -587,53 +558,89 @@ class ExtractTomlFromTextTests(unittest.TestCase):
     def test_nested_key_not_dict_returns_none(self):
         self.assertIsNone(self._fn('project = "string"\n', "project.version"))
 
-    def test_fallback_regex_top_level(self):
-        """TOML fallback regex parser covers lines 103-120 when tomllib is None."""
+    def test_numeric_version_is_rejected_and_must_be_a_string(self):
+        import boundver.versions as v_mod
+
+        real_parser = v_mod.tomllib
+        if real_parser is None:
+            self.skipTest("tomllib/tomli is not installed")
+
+        for parser in (real_parser, None):
+            parser_name = getattr(parser, "__name__", "missing parser")
+            with self.subTest(parser=parser_name):
+                with patch.object(v_mod, "tomllib", parser):
+                    for value in ("42", "-1", "9" * MAX_TOML_INTEGER_DIGITS):
+                        with self.subTest(value_length=len(value)):
+                            self.assertIsNone(
+                                self._fn(f"version = {value}\n", "version")
+                            )
+                    expected = "8080" if parser is not None else None
+                    self.assertEqual(
+                        self._fn('version = "8080"\n', "version"), expected
+                    )
+
+    def test_unrelated_oversized_integer_is_rejected_before_parsing(self):
+        oversized = "9" * (MAX_TOML_INTEGER_DIGITS + 1)
+        text = f'build = {oversized}\nversion = "1.2.3"\n'
+        self.assertIsNone(self._fn(text, "version"))
+
+    def test_long_digits_in_strings_and_comments_do_not_trip_preflight(self):
+        digits = "9" * (MAX_TOML_INTEGER_DIGITS + 1)
+        text = (
+            f'note = "{digits}"\n'
+            f'multiline = """{digits}"""\n'
+            f"# {digits}\n"
+            'version = "1.2.3"\n'
+        )
+        self.assertEqual(self._fn(text, "version"), "1.2.3")
+
+    def test_multiline_closing_quote_content_does_not_hide_later_number(self):
+        oversized = "9" * (MAX_TOML_INTEGER_DIGITS + 1)
+        text = (
+            'note = """content""""\n'
+            f"build = {oversized}\n"
+            'version = "1.2.3"\n'
+        )
+        self.assertIsNone(self._fn(text, "version"))
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_result_is_independent_of_runtime_digit_setting(self):
+        selected_numeric = "version = " + "9" * 1000 + "\n"
+        unrelated_numeric = (
+            "build = " + "9" * 1000 + '\nversion = "1.2.3"\n'
+        )
+        original = sys.get_int_max_str_digits()
+        try:
+            results = []
+            for setting in (640, 0):
+                sys.set_int_max_str_digits(setting)
+                results.append(
+                    (
+                        self._fn(selected_numeric, "version"),
+                        self._fn(unrelated_numeric, "version"),
+                    )
+                )
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(results, [(None, None), (None, None)])
+
+    def test_missing_parser_fails_closed_for_top_level_toml(self):
         import boundver.versions as v_mod
         orig = v_mod.tomllib
         v_mod.tomllib = None
         try:
             result = self._fn('version = "1.0.0"\n', "version")
-            self.assertEqual(result, "1.0.0")
-        finally:
-            v_mod.tomllib = orig
-
-    def test_fallback_regex_section_key(self):
-        """Fallback regex parser handles [section] + key."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = self._fn('[project]\nversion = "3.2.1"\n', "project.version")
-            self.assertEqual(result, "3.2.1")
-        finally:
-            v_mod.tomllib = orig
-
-    def test_fallback_regex_key_not_found_returns_none(self):
-        """Fallback regex returns None when key is absent."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = self._fn('[project]\nname = "x"\n', "project.version")
             self.assertIsNone(result)
-        finally:
-            v_mod.tomllib = orig
-
-    def test_fallback_regex_single_key_no_section(self):
-        """Fallback regex handles single-key (no section) lookup."""
-        import boundver.versions as v_mod
-        orig = v_mod.tomllib
-        v_mod.tomllib = None
-        try:
-            result = self._fn('name = "x"\nversion = "4.0.0"\n', "version")
-            self.assertEqual(result, "4.0.0")
         finally:
             v_mod.tomllib = orig
 
 
 class ExtractYamlFromTextTests(unittest.TestCase):
-    """Tests for _extract_yaml_from_text — covers lines 123-162."""
+    """YAML field extraction behavior in _extract_yaml_from_text."""
 
     def setUp(self):
         from boundver.versions import _extract_yaml_from_text
@@ -651,100 +658,99 @@ class ExtractYamlFromTextTests(unittest.TestCase):
         result = self._fn("name: x\n", "version")
         self.assertIsNone(result)
 
-    def test_yaml_exception_returns_none(self):
-        """yaml.safe_load raising Exception → return None (parse failure is authoritative)."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        # Simulate yaml module that raises on safe_load.
-        class _BadYaml:
-            @staticmethod
-            def safe_load(text):
-                raise RuntimeError("yaml exploded")
-        v_mod.yaml = _BadYaml()
-        try:
-            result = self._fn("version: 1.2.3\n", "version")
-            self.assertIsNone(result)
-        finally:
-            v_mod.yaml = orig
+    def test_oversized_implicit_and_explicit_integers_return_none(self):
+        for tagged_value in ("9" * 4301, "!!int " + "9" * 4301):
+            with self.subTest(explicit=tagged_value.startswith("!!int")):
+                self.assertIsNone(
+                    self._fn(f"version: {tagged_value}\n", "version")
+                )
 
-    def test_yaml_key_found_returns_early(self):
-        """When yaml finds the key, returns immediately without running regex (line 143)."""
+    def test_duplicate_keys_aliases_and_nonfinite_numbers_are_rejected(self):
+        import boundver.versions as v_mod
+
+        if v_mod.yaml is None:
+            self.skipTest("PyYAML not installed")
+        self.assertIsNone(
+            self._fn("version: 1.0.0\nversion: 2.0.0\n", "version")
+        )
+        self.assertIsNone(
+            self._fn("value: &value 1.0.0\nversion: *value\n", "version")
+        )
+        for value in (".nan", ".inf", "-.inf"):
+            with self.subTest(value=value):
+                self.assertIsNone(self._fn(f"version: {value}\n", "version"))
+
+    def test_booleans_nulls_and_containers_are_not_version_identifiers(self):
+        for value in ("true", "false", "null", "[]", "{}", "[1]", "{x: 1}"):
+            with self.subTest(value=value):
+                self.assertIsNone(
+                    self._fn(f"version: {value}\n", "version")
+                )
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_large_integer_inside_container_is_always_rejected(self):
+        digits = "9" * 1000
+        original = sys.get_int_max_str_digits()
+        try:
+            results = []
+            for setting in (640, 4300, 0):
+                sys.set_int_max_str_digits(setting)
+                results.append(
+                    self._fn(f"version:\n  - {digits}\n", "version")
+                )
+        finally:
+            sys.set_int_max_str_digits(original)
+        self.assertEqual(results, [None, None, None])
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_bounded_integer_result_ignores_runtime_setting(self):
+        digits = "9" * 1000
+        original = sys.get_int_max_str_digits()
+        try:
+            results = []
+            for setting in (640, 0):
+                sys.set_int_max_str_digits(setting)
+                results.append(self._fn("version: " + digits + "\n", "version"))
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(results, [digits, digits])
+
+    def test_yaml_exception_returns_none(self):
+        """An authoritative parser failure returns no version."""
+        with patch(
+            "boundver.versions._load_yaml_with_bounded_integers",
+            side_effect=ValueError("yaml exploded"),
+        ):
+            self.assertIsNone(self._fn("version: 1.2.3\n", "version"))
+
+    def test_yaml_key_found_by_authoritative_parser(self):
+        """A key found by PyYAML is returned unchanged."""
         import boundver.versions as v_mod
         if v_mod.yaml is None:
             self.skipTest("PyYAML not installed")
         result = self._fn("version: 5.6.7\n", "version")
         self.assertEqual(result, "5.6.7")
 
-    def test_yaml_none_fallback_regex_top_level(self):
-        """With yaml=None, fallback regex extracts top-level key (lines 147-161)."""
+    def test_yaml_none_fails_closed_for_top_level_value(self):
         import boundver.versions as v_mod
         orig = v_mod.yaml
         v_mod.yaml = None
         try:
             result = self._fn("version: 0.9.1\n", "version")
-            self.assertEqual(result, "0.9.1")
-        finally:
-            v_mod.yaml = orig
-
-    def test_yaml_none_fallback_regex_nested(self):
-        """With yaml=None, fallback regex extracts nested key via section tracking."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = self._fn("info:\n  version: 3.0.0\n", "info.version")
-            self.assertEqual(result, "3.0.0")
-        finally:
-            v_mod.yaml = orig
-
-    def test_yaml_none_key_not_found_returns_none(self):
-        """Fallback regex returns None when key is not present."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = self._fn("name: x\n", "version")
             self.assertIsNone(result)
-        finally:
-            v_mod.yaml = orig
-
-    def test_yaml_none_blank_line_skipped(self):
-        """Blank lines in YAML text are skipped (fallback regex line 143 `continue`)."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = self._fn("\n\nversion: 9.0.0\n", "version")
-            self.assertEqual(result, "9.0.0")
-        finally:
-            v_mod.yaml = orig
-
-    def test_yaml_none_comment_line_skipped(self):
-        """Comment lines in YAML text are skipped (fallback regex `continue` branch)."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            result = self._fn("# a comment\nversion: 8.0.0\n", "version")
-            self.assertEqual(result, "8.0.0")
-        finally:
-            v_mod.yaml = orig
-
-    def test_yaml_none_indent_stack_pop(self):
-        """Going from deep to shallow indent pops the indent stack (lines 147-149)."""
-        import boundver.versions as v_mod
-        orig = v_mod.yaml
-        v_mod.yaml = None
-        try:
-            # 'nested:' section → '  deep: x' → then back out to 'version: ...'
-            result = self._fn("nested:\n  deep: x\nversion: 7.0.0\n", "version")
-            self.assertEqual(result, "7.0.0")
         finally:
             v_mod.yaml = orig
 
 
 class ExtractFileVersionWithReadFnTests(unittest.TestCase):
-    """Tests for extract_version with read_file_fn — covers lines 46-50."""
+    """extract_version behavior with an injected file reader."""
 
     def setUp(self):
         from boundver.versions import extract_version
@@ -766,7 +772,7 @@ class ExtractFileVersionWithReadFnTests(unittest.TestCase):
             read_fn.assert_called_once_with("svc/package.json")
 
     def test_read_file_fn_oserror_returns_none(self):
-        """When read_file_fn raises OSError, extract_version returns None (lines 48-49)."""
+        """extract_version returns None when the injected reader raises OSError."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             read_fn = MagicMock(side_effect=OSError("no such file"))
@@ -778,7 +784,7 @@ class ExtractFileVersionWithReadFnTests(unittest.TestCase):
             self.assertIsNone(result)
 
     def test_read_file_fn_subprocess_error_returns_none(self):
-        """When read_file_fn raises CalledProcessError, returns None (lines 48-49)."""
+        """extract_version returns None when the reader raises CalledProcessError."""
         import subprocess as _sp
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -789,3 +795,25 @@ class ExtractFileVersionWithReadFnTests(unittest.TestCase):
                 read_file_fn=read_fn,
             )
             self.assertIsNone(result)
+
+    def test_read_file_fn_rejects_non_bytes(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = self._fn(
+                Path(td),
+                "svc",
+                version_source={"file": "package.json", "field": "version"},
+                read_file_fn=MagicMock(return_value='{"version": "5.0.1"}'),
+            )
+        self.assertIsNone(result)
+
+    def test_read_file_fn_enforces_the_version_file_limit(self):
+        with tempfile.TemporaryDirectory() as td, patch(
+            "boundver.versions.MAX_VERSION_FILE_BYTES", 4
+        ):
+            result = self._fn(
+                Path(td),
+                "svc",
+                version_source={"file": "package.json", "field": "version"},
+                read_file_fn=MagicMock(return_value=b"12345"),
+            )
+        self.assertIsNone(result)

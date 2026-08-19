@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -18,15 +19,23 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests._project_metadata import (
+    CURRENT_MINOR_TAG,
+    CURRENT_TAG,
+    CURRENT_VERSION,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "publish_release.py"
-TAG = "v0.11.0"
+TAG = CURRENT_TAG
 SHA = "1" * 40
 CONTROL_SHA = "2" * 40
 RUN_ID = 7654321
 RUN_ATTEMPT = 3
-ALIAS = "v0.11"
+ALIAS = CURRENT_MINOR_TAG
+_MAJOR, _MINOR, _PATCH = (int(part) for part in CURRENT_VERSION.split("."))
+OTHER_TAG = f"v{_MAJOR}.{_MINOR}.{_PATCH + 1}"
 
 
 def _load_script():
@@ -59,7 +68,7 @@ def _init_repo(root: Path) -> str:
         ["git", "config", "user.name", "Release Test"], cwd=root, check=True
     )
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "boundver"\nversion = "0.11.0"\n',
+        f'[project]\nname = "boundver"\nversion = "{CURRENT_VERSION}"\n',
         encoding="utf-8",
     )
     subprocess.run(["git", "add", "pyproject.toml"], cwd=root, check=True)
@@ -161,6 +170,167 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    def test_isolated_direct_startup_loads_adjacent_platform_helper(self):
+        result = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gated boundver release", result.stdout.lower())
+
+    def test_subprocess_capture_enforces_independent_stream_limits(self):
+        publisher = _load_script()
+        completed = publisher._run(
+            (sys.executable, "-c", "print('ok', end='')"),
+            cwd=REPO_ROOT,
+            max_stdout_bytes=2,
+            max_stderr_bytes=2,
+        )
+        self.assertEqual(completed.stdout, "ok")
+
+        cases = (
+            ("stdout", "import sys; sys.stdout.write('x' * 64)"),
+            ("stderr", "import sys; sys.stderr.write('x' * 64)"),
+        )
+        for stream, program in cases:
+            with self.subTest(stream=stream), self.assertRaisesRegex(
+                publisher.GateError,
+                rf"{stream} exceeds the 8-byte limit",
+            ):
+                publisher._run(
+                    (sys.executable, "-c", program),
+                    cwd=REPO_ROOT,
+                    max_stdout_bytes=8,
+                    max_stderr_bytes=8,
+                )
+
+    def test_tool_environment_removes_release_credentials(self):
+        publisher = _load_script()
+        credential_path = "C:/maintainer/credentials"
+        with tempfile.TemporaryDirectory() as temporary:
+            sandbox = Path(temporary) / "environment"
+            sanitized = publisher._sanitized_tool_environment(
+                {
+                    "PATH": "safe-tools",
+                    "PATHEXT": ".EXE;.CMD",
+                    "SYSTEMROOT": "C:/Windows",
+                    "LANG": "C.UTF-8",
+                    "GH_TOKEN": "secret",
+                    "BOUNDVER_RELEASE_REVIEW_TOKEN": "read-secret",
+                    "TWINE_PASSWORD": "secret",
+                    "CUSTOM_API_KEY": "secret",
+                    "PIP_EXTRA_INDEX_URL": "https://credentials.invalid/simple",
+                    "PYTHONPATH": "C:/hostile-imports",
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_0": "C:/hostile-hooks",
+                    "VIRTUAL_ENV": "C:/unrelated-environment",
+                    "HOME": credential_path,
+                    "USERPROFILE": credential_path,
+                    "DOCKER_AUTH_CONFIG": "secret-json",
+                    "DOCKER_CONFIG": credential_path,
+                    "KUBECONFIG": f"{credential_path}/kube",
+                    "CI_JOB_JWT": "secret-jwt",
+                    "NETRC": f"{credential_path}/netrc",
+                    "AWS_PROFILE": "production",
+                    "HTTP_PROXY": "https://secret@proxy.invalid",
+                    "UNRELATED": "must-not-survive",
+                },
+                sandbox_root=sandbox,
+            )
+
+            self.assertEqual(sanitized["PATH"], "safe-tools")
+            self.assertEqual(sanitized["PATHEXT"], ".EXE;.CMD")
+            self.assertEqual(sanitized["SYSTEMROOT"], "C:/Windows")
+            self.assertEqual(sanitized["LANG"], "C.UTF-8")
+            self.assertEqual(
+                sanitized["PIP_INDEX_URL"], "https://pypi.org/simple"
+            )
+            self.assertEqual(sanitized["PIP_CONFIG_FILE"], os.devnull)
+            self.assertEqual(Path(sanitized["HOME"]), sandbox.resolve() / "home")
+            self.assertEqual(sanitized["HOME"], sanitized["USERPROFILE"])
+            self.assertEqual(
+                Path(sanitized["DOCKER_CONFIG"]),
+                sandbox.resolve() / "config" / "docker",
+            )
+            self.assertEqual(
+                Path(sanitized["KUBECONFIG"]),
+                sandbox.resolve() / "config" / "kube" / "config",
+            )
+            for directory_name in (
+                "HOME",
+                "TMPDIR",
+                "XDG_CONFIG_HOME",
+                "XDG_CACHE_HOME",
+                "XDG_DATA_HOME",
+                "XDG_RUNTIME_DIR",
+            ):
+                self.assertTrue(Path(sanitized[directory_name]).is_dir())
+
+        for secret in (
+            "GH_TOKEN",
+            "BOUNDVER_RELEASE_REVIEW_TOKEN",
+            "TWINE_PASSWORD",
+            "CUSTOM_API_KEY",
+            "PIP_EXTRA_INDEX_URL",
+            "PYTHONPATH",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "VIRTUAL_ENV",
+            "DOCKER_AUTH_CONFIG",
+            "CI_JOB_JWT",
+            "NETRC",
+            "AWS_PROFILE",
+            "HTTP_PROXY",
+            "UNRELATED",
+        ):
+            self.assertNotIn(secret, sanitized)
+        self.assertNotIn(credential_path, "\n".join(sanitized.values()))
+        self.assertEqual(sanitized["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(sanitized["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(sanitized["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(sanitized["GH_HOST"], "github.com")
+
+    def test_repository_hygiene_executes_without_maintainer_credentials(self):
+        publisher = _load_script()
+        safe_environment = {"PATH": "safe-tools", "GH_HOST": "github.com"}
+        completed = subprocess.CompletedProcess(
+            args=["check_repo_hygiene.py"],
+            returncode=0,
+            stdout="hygiene passed\n",
+            stderr="",
+        )
+        repo = Path("candidate")
+        with mock.patch.object(
+            publisher,
+            "_sanitized_tool_environment",
+            return_value=safe_environment,
+        ) as sanitize, mock.patch.object(
+            publisher,
+            "_run",
+            return_value=completed,
+        ) as run:
+            self.assertEqual(
+                publisher._repository_hygiene(repo),
+                "hygiene passed",
+            )
+
+        sanitize.assert_called_once_with(sandbox_root=mock.ANY)
+        run.assert_called_once_with(
+            (
+                sys.executable,
+                "-I",
+                "scripts/check_repo_hygiene.py",
+                "--repo",
+                ".",
+            ),
+            cwd=repo,
+            env=safe_environment,
+        )
+
     def test_check_start_and_resume_are_explicit_subcommands(self):
         top = _run("--help")
         self.assertEqual(top.returncode, 0, top.stderr)
@@ -220,6 +390,23 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("alias", result.stderr.lower())
 
+    def test_release_tag_and_alias_numeric_identifiers_are_ascii_only(self):
+        invalid_tag = _run("check", "--tag", "v1.2.\u0663")
+        self.assertNotEqual(invalid_tag.returncode, 0)
+        self.assertIn("tag", invalid_tag.stderr.lower())
+
+        invalid_alias = _run(
+            "start",
+            "--tag",
+            TAG,
+            "--alias",
+            "v0.\u0661\u0661",
+            "--confirm",
+            f"{TAG}@{SHA}",
+        )
+        self.assertNotEqual(invalid_alias.returncode, 0)
+        self.assertIn("alias", invalid_alias.stderr.lower())
+
     def test_confirmation_is_the_exact_tag_and_lowercase_commit(self):
         result = _run(
             "start",
@@ -249,7 +436,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     "--tag",
                     TAG,
                     "--alias",
-                    "v0.11",
+                    ALIAS,
                     "--confirm",
                     f"{TAG}@{'2' * 40}",
                     "--repo",
@@ -270,7 +457,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     "--tag",
                     TAG,
                     "--alias",
-                    "v0.11",
+                    ALIAS,
                     "--run-id",
                     run_id,
                     "--confirm",
@@ -284,7 +471,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             f"{TAG}@{'A' * 40}#{RUN_ID}",
             f"{TAG}@{SHA}",
             f"{TAG}@{SHA}#{RUN_ID + 1}",
-            f"v0.11.1@{SHA}#{RUN_ID}",
+            f"{OTHER_TAG}@{SHA}#{RUN_ID}",
         )
         for confirmation in confirmations:
             with self.subTest(confirmation=confirmation):
@@ -293,7 +480,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     "--tag",
                     TAG,
                     "--alias",
-                    "v0.11",
+                    ALIAS,
                     "--run-id",
                     str(RUN_ID),
                     "--confirm",
@@ -305,16 +492,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
     def test_successful_start_performs_only_the_one_workflow_dispatch(self):
         publisher = _load_script()
         checks = [publisher.Check("all release gates", "passed", "passed")]
-        dispatch_result = subprocess.CompletedProcess(
-            args=(), returncode=0, stdout="dispatch accepted\n", stderr=""
-        )
         with (
             tempfile.TemporaryDirectory() as td,
             mock.patch.object(publisher, "_evaluate", return_value=(SHA, checks)),
             mock.patch.object(publisher, "_main_identity", return_value=SHA),
             mock.patch.object(
-                publisher, "_run", return_value=dispatch_result
-            ) as runner,
+                publisher,
+                "_dispatch_workflow",
+                return_value="workflow dispatch accepted at https://github.com/yzm1/boundver/actions/runs/1",
+            ) as dispatch,
             mock.patch("builtins.print") as output,
         ):
             result = publisher.main(
@@ -323,7 +509,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     "--tag",
                     TAG,
                     "--alias",
-                    "v0.11",
+                    ALIAS,
                     "--confirm",
                     f"{TAG}@{SHA}",
                     "--repo",
@@ -334,8 +520,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        runner.assert_called_once()
-        command = runner.call_args.args[0]
+        dispatch.assert_called_once()
+        command = dispatch.call_args.args[1]
         self.assertEqual(
             command,
             (
@@ -352,20 +538,21 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "--field",
                 f"release_sha={SHA}",
                 "--field",
-                "compatibility_alias=v0.11",
+                f"compatibility_alias={ALIAS}",
             ),
         )
         payload = json.loads(output.call_args.args[0])
         self.assertEqual(payload["status"], "dispatched")
         self.assertEqual(payload["dispatch"]["workflow"], "create-release-tag.yml")
         self.assertEqual(payload["dispatch"]["ref"], "main")
+        self.assertEqual(payload["dispatch"]["control_sha"], SHA)
+        self.assertEqual(
+            payload["dispatch"]["title"], f"release-tag:{TAG}@{SHA}:alias={ALIAS}"
+        )
 
     def test_successful_resume_performs_only_the_exact_publish_dispatch(self):
         publisher = _load_script()
         checks = [publisher.Check("resume release gates", "passed", "passed")]
-        dispatch_result = subprocess.CompletedProcess(
-            args=(), returncode=0, stdout="dispatch accepted\n", stderr=""
-        )
         with (
             tempfile.TemporaryDirectory() as td,
             mock.patch.object(
@@ -376,8 +563,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 publisher, "_main_identity", return_value=CONTROL_SHA
             ) as revalidate,
             mock.patch.object(
-                publisher, "_run", return_value=dispatch_result
-            ) as runner,
+                publisher,
+                "_dispatch_workflow",
+                return_value="workflow dispatch accepted at https://github.com/yzm1/boundver/actions/runs/2",
+            ) as dispatch,
             mock.patch("builtins.print") as output,
         ):
             resolved_repo = Path(td).resolve()
@@ -387,7 +576,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     "--tag",
                     TAG,
                     "--alias",
-                    "v0.11",
+                    ALIAS,
                     "--run-id",
                     str(RUN_ID),
                     "--confirm",
@@ -405,9 +594,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         start_evaluate.assert_not_called()
         revalidate.assert_called_once_with(resolved_repo, "origin", CONTROL_SHA)
-        runner.assert_called_once()
+        dispatch.assert_called_once()
         self.assertEqual(
-            runner.call_args.args[0],
+            dispatch.call_args.args[1],
             (
                 "gh",
                 "workflow",
@@ -422,7 +611,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "--field",
                 f"release_sha={SHA}",
                 "--field",
-                "compatibility_alias=v0.11",
+                f"compatibility_alias={ALIAS}",
                 "--field",
                 f"resume_run_id={RUN_ID}",
             ),
@@ -434,6 +623,57 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertEqual(payload["dispatch"]["workflow"], "publish.yml")
         self.assertEqual(payload["dispatch"]["ref"], "main")
         self.assertEqual(payload["dispatch"]["resume_run_id"], str(RUN_ID))
+        self.assertEqual(payload["dispatch"]["control_sha"], CONTROL_SHA)
+        self.assertEqual(
+            payload["dispatch"]["title"],
+            f"publish:{TAG}@{SHA}:alias={ALIAS}:resume={RUN_ID}",
+        )
+
+    def test_dispatch_recovers_an_accepted_run_after_ambiguous_cli_failure(self):
+        publisher = _load_script()
+        accepted = {
+            "id": 123,
+            "html_url": "https://github.com/yzm1/boundver/actions/runs/123",
+        }
+        failed = subprocess.CompletedProcess(
+            ["gh", "workflow", "run"], 1, "", "connection closed"
+        )
+        with mock.patch.object(
+            publisher, "_find_dispatch_run", side_effect=(None, accepted)
+        ) as find, mock.patch.object(
+            publisher, "_run", return_value=failed
+        ) as run, mock.patch.object(publisher.time, "sleep") as sleep:
+            detail = publisher._dispatch_workflow(
+                Path("."),
+                ("gh", "workflow", "run", "publish.yml"),
+                workflow="publish.yml",
+                control_sha=CONTROL_SHA,
+                title=f"publish:{TAG}@{SHA}:alias={ALIAS}:resume={RUN_ID}",
+            )
+
+        self.assertIn(accepted["html_url"], detail)
+        self.assertEqual(find.call_count, 2)
+        run.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_dispatch_reuses_one_exact_existing_run_without_mutation(self):
+        publisher = _load_script()
+        accepted = {
+            "id": 123,
+            "html_url": "https://github.com/yzm1/boundver/actions/runs/123",
+        }
+        with mock.patch.object(
+            publisher, "_find_dispatch_run", return_value=accepted
+        ), mock.patch.object(publisher, "_run") as run:
+            detail = publisher._dispatch_workflow(
+                Path("."),
+                ("gh", "workflow", "run", "create-release-tag.yml"),
+                workflow="create-release-tag.yml",
+                control_sha=SHA,
+                title=f"release-tag:{TAG}@{SHA}:alias={ALIAS}",
+            )
+        self.assertIn("already exists", detail)
+        run.assert_not_called()
 
     def test_resume_keeps_current_main_separate_from_the_tagged_release(self):
         publisher = _load_script()
@@ -488,7 +728,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             root = Path(td)
             release_sha = _init_repo(root)
             (root / "pyproject.toml").write_text(
-                '[project]\nname = "boundver"\nversion = "0.12.0"\n',
+                f'[project]\nname = "boundver"\nversion = "{OTHER_TAG[1:]}"\n',
                 encoding="utf-8",
             )
             subprocess.run(["git", "add", "pyproject.toml"], cwd=root, check=True)
@@ -504,6 +744,101 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         self.assertIn(TAG[1:], detail)
         self.assertIn(release_sha, detail)
+
+    def test_release_control_reads_and_distribution_copies_are_bounded(self):
+        publisher = _load_script()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            metadata = root / "pyproject.toml"
+            metadata.write_text(
+                f'[project]\nname = "boundver"\nversion = "{CURRENT_VERSION}"\n',
+                encoding="utf-8",
+            )
+            with mock.patch.object(
+                publisher, "MAX_RELEASE_METADATA_BYTES", 8
+            ), self.assertRaisesRegex(publisher.GateError, "8-byte limit"):
+                publisher._project(root, TAG)
+
+            source = root / "candidate.whl"
+            source.write_bytes(b"12345")
+            with mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_FILE_BYTES", 4
+            ), mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_TOTAL_BYTES", 8
+            ), self.assertRaisesRegex(publisher.GateError, "file limit"):
+                publisher._copy_bounded_distribution(
+                    source,
+                    root / "too-large.whl",
+                    copied_bytes=0,
+                )
+
+            with mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_FILE_BYTES", 8
+            ), mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_TOTAL_BYTES", 4
+            ), self.assertRaisesRegex(publisher.GateError, "aggregate limit"):
+                publisher._copy_bounded_distribution(
+                    source,
+                    root / "aggregate.whl",
+                    copied_bytes=0,
+                )
+
+            destination = root / "bounded.whl"
+            with mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_FILE_BYTES", 8
+            ), mock.patch.object(
+                publisher, "MAX_DISTRIBUTION_TOTAL_BYTES", 8
+            ):
+                copied = publisher._copy_bounded_distribution(
+                    source,
+                    destination,
+                    copied_bytes=0,
+                )
+            self.assertEqual(copied, 5)
+            self.assertEqual(destination.read_bytes(), b"12345")
+
+    def test_candidate_git_metadata_and_workflow_reads_use_specific_caps(self):
+        publisher = _load_script()
+        metadata = f'[project]\nname = "boundver"\nversion = "{CURRENT_VERSION}"\n'
+        with mock.patch.object(
+            publisher, "_git", return_value=metadata
+        ) as git:
+            publisher._project_at_commit(Path("repo"), SHA, TAG)
+        git.assert_called_once_with(
+            Path("repo"),
+            "show",
+            f"{SHA}:pyproject.toml",
+            max_stdout_bytes=publisher.MAX_RELEASE_METADATA_BYTES,
+        )
+
+        workflow = "\n".join(
+            f"  {name}:"
+            for name in (
+                "testpypi-preflight",
+                "publish-testpypi",
+                "verify-testpypi",
+                "prepare-release-notes",
+                "prepare-release-draft",
+                "verify-marketplace",
+                "pypi-preflight",
+                "publish-pypi",
+                "verify-pypi",
+                "validate-compatibility-alias",
+                "advance-compatibility-alias",
+                "verify-public-surfaces",
+            )
+        )
+        with mock.patch.object(
+            publisher.Path, "exists", return_value=True
+        ), mock.patch.object(
+            publisher, "_read_bounded_text", return_value=workflow
+        ) as read:
+            publisher._surface_inventory(Path("repo"))
+        read.assert_called_once_with(
+            Path("repo/.github/workflows/publish.yml"),
+            ".github/workflows/publish.yml",
+            max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
+        )
 
     def test_json_failures_keep_stdout_machine_readable(self):
         with tempfile.TemporaryDirectory() as td:
@@ -561,7 +896,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "ref": "main",
             "tag": TAG,
             "sha": SHA,
-            "alias": "v0.11",
+            "alias": ALIAS,
             "detail": "dispatch accepted",
         }
         with mock.patch("builtins.print") as output:
@@ -673,16 +1008,41 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         gate = source[source.index("def _disposable_gate") : source.index("def _surface_inventory")]
         self.assertIn("TemporaryDirectory", gate)
         self.assertIn('"clone"', gate)
+        self.assertIn('source = f"https://github.com/{REPOSITORY}.git"', gate)
         self.assertIn('"checkout", "--quiet", "--detach", sha', gate)
-        self.assertIn('env["GITHUB_REPOSITORY"] = REPOSITORY', gate)
-        self.assertRegex(
-            gate,
-            r"_run\(\(\"bash\", \"scripts/packaging_smoke\.sh\"\), cwd=checkout",
-        )
+        self.assertGreaterEqual(gate.count('"-I"'), 4)
+        self.assertIn('audit_env["GITHUB_REPOSITORY"] = REPOSITORY', gate)
+        self.assertIn('audit_env["PYTHON"]', gate)
+        self.assertIn("bash = resolve_bash", gate)
+        self.assertIn("cwd=repo", gate)
+        self.assertNotIn('("bash", "scripts/audit_release_reviews.sh"', gate)
+        self.assertNotIn('("gh", "auth", "token"', gate)
+        self.assertIn("scripts/install_locked_tools.py", gate)
+        self.assertIn("scripts/verify_release_candidate.py", gate)
+        self.assertNotIn("scripts/packaging_smoke.sh", gate)
         self.assertNotRegex(
             gate,
             r"packaging_smoke\.sh[^\n]*cwd=repo",
         )
+
+    def test_review_audit_uses_explicit_python_override(self):
+        script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("python_command=${PYTHON:-python3}", script)
+        self.assertIn("capture_bounded previous_tag", script)
+        self.assertIn(
+            '"$python_command" -I - "$release_tag" "$merged_tags_file"',
+            script,
+        )
+
+    def test_disposable_gate_requires_explicit_read_token(self):
+        publisher = _load_script()
+        with mock.patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(
+            publisher.GateError,
+            "BOUNDVER_RELEASE_REVIEW_TOKEN",
+        ):
+            publisher._disposable_gate(Path("candidate"), "origin", SHA, TAG)
 
     def test_start_dispatch_contract_is_main_and_never_publish_workflow(self):
         source = SCRIPT.read_text(encoding="utf-8")
@@ -717,11 +1077,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8").lower()
         for helper in (
             "check_repo_hygiene.py",
-            "verify_release_readiness.py",
             "audit_release_reviews.sh",
-            "packaging_smoke.sh",
+            "verify_release_candidate.py",
         ):
             self.assertIn(helper, source)
+        verifier = (
+            REPO_ROOT / "scripts" / "verify_release_candidate.py"
+        ).read_text(encoding="utf-8").lower()
+        self.assertIn("verify_release_readiness.py", verifier)
+        self.assertIn("packaging_smoke.sh", verifier)
         for surface in (
             "readme",
             "documentation",
@@ -796,23 +1160,113 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        absent = subprocess.CompletedProcess(
-            ["gh", "api"], 1, "HTTP/2.0 404 Not Found\n", ""
-        )
-        with mock.patch.object(publisher, "_gh_json", side_effect=response), mock.patch.object(
-            publisher, "_run", return_value=absent
+        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+
+        def paginated(_repo, endpoint, *, collection=None):
+            if endpoint.endswith("/environments?per_page=100"):
+                self.assertEqual(collection, "environments")
+                return response(None, None, "repos/yzm1/boundver/environments")[
+                    "environments"
+                ]
+            if "/rulesets?" in endpoint:
+                self.assertIsNone(collection)
+                return rulesets
+            if "actions/workflows/ci.yml/runs" in endpoint:
+                self.assertEqual(collection, "workflow_runs")
+                return response(None, None, endpoint)["workflow_runs"]
+            if "actions/workflows/" in endpoint:
+                self.assertEqual(collection, "workflow_runs")
+                return []
+            raise AssertionError(endpoint)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
         ):
             detail = publisher._github_controls(Path("."), SHA, TAG)
         self.assertIn("environments", detail)
 
-        forbidden = subprocess.CompletedProcess(
-            ["gh", "api"], 1, "HTTP/2.0 403 Forbidden\n", ""
-        )
-        with mock.patch.object(publisher, "_gh_json", side_effect=response), mock.patch.object(
-            publisher, "_run", return_value=forbidden
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=paginated
+        ), mock.patch.object(
+            publisher,
+            "_github_release_for_tag",
+            side_effect=publisher.GateError("GitHub API failed for releases"),
         ):
-            with self.assertRaisesRegex(publisher.GateError, "cannot prove"):
+            with self.assertRaisesRegex(publisher.GateError, "GitHub API failed"):
                 publisher._github_controls(Path("."), SHA, TAG)
+
+    def test_paginated_github_list_flattens_all_pages_and_rejects_bad_shape(self):
+        publisher = _load_script()
+        complete = subprocess.CompletedProcess(
+            ["gh", "api"],
+            0,
+            '[[{"id": 1}], [{"id": 2}]]',
+            "",
+        )
+        with mock.patch.object(publisher, "_run", return_value=complete) as run:
+            self.assertEqual(
+                publisher._gh_paginated_list(Path("."), "repos/x/y/releases?per_page=100"),
+                [{"id": 1}, {"id": 2}],
+            )
+        self.assertIn("--paginate", run.call_args.args[0])
+        self.assertIn("--slurp", run.call_args.args[0])
+        self.assertEqual(
+            run.call_args.kwargs["max_stdout_bytes"],
+            publisher.MAX_GITHUB_API_BYTES,
+        )
+
+        collection = subprocess.CompletedProcess(
+            ["gh", "api"],
+            0,
+            '{"workflow_runs": []}',
+            "",
+        )
+        collection.stdout = (
+            ' [{"workflow_runs": [{"id": 1}]}, '
+            '{"workflow_runs": [{"id": 2}]}] '
+        )
+        with mock.patch.object(publisher, "_run", return_value=collection):
+            self.assertEqual(
+                publisher._gh_paginated_list(
+                    Path("."),
+                    "repos/x/y/actions/workflows/z/runs?per_page=100",
+                    collection="workflow_runs",
+                ),
+                [{"id": 1}, {"id": 2}],
+            )
+
+        malformed = subprocess.CompletedProcess(
+            ["gh", "api"], 0, '{"id": 1}', ""
+        )
+        with mock.patch.object(
+            publisher, "_run", return_value=malformed
+        ), self.assertRaisesRegex(publisher.GateError, "pagination"):
+            publisher._gh_paginated_list(Path("."), "repos/x/y/releases?per_page=100")
+
+    def test_release_discovery_includes_drafts_and_binds_detail_to_numeric_id(self):
+        publisher = _load_script()
+        summary = {"id": 42, "tag_name": TAG, "draft": True}
+        detail = dict(summary)
+        with mock.patch.object(
+            publisher, "_gh_paginated_list", return_value=[summary]
+        ), mock.patch.object(
+            publisher, "_gh_json", return_value=detail
+        ) as api:
+            self.assertEqual(publisher._github_release_for_tag(Path("."), TAG), detail)
+        api.assert_called_once_with(
+            Path("."), "yzm1/boundver", "repos/yzm1/boundver/releases/42"
+        )
+
+        with mock.patch.object(
+            publisher, "_gh_paginated_list", return_value=[summary, dict(summary)]
+        ), self.assertRaisesRegex(publisher.GateError, "multiple Releases"):
+            publisher._github_release_for_tag(Path("."), TAG)
 
     def test_resume_source_run_and_artifacts_are_bound_to_exact_identity(self):
         publisher = _load_script()
@@ -933,8 +1387,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             stderr=b"",
         )
         with mock.patch.object(
-            publisher.subprocess,
-            "run",
+            publisher,
+            "_run_bytes",
             side_effect=[help_without_flag, result],
         ) as runner:
             actual = publisher._gh_job_log(Path("repo"), 31)
@@ -944,23 +1398,22 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             runner.call_args_list,
             [
                 mock.call(
-                    ["gh", "api", "--help"],
+                    ("gh", "api", "--help"),
                     cwd=Path("repo"),
-                    capture_output=True,
-                    check=False,
+                    max_stdout_bytes=publisher.MAX_GITHUB_HELP_BYTES,
+                    max_stderr_bytes=publisher.MAX_GITHUB_HELP_BYTES,
                 ),
                 mock.call(
                     ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
                     cwd=Path("repo"),
-                    capture_output=True,
-                    check=False,
+                    max_stdout_bytes=publisher.MAX_JOB_LOG_BYTES,
                 ),
             ],
         )
 
         with mock.patch.object(
-            publisher.subprocess,
-            "run",
+            publisher,
+            "_run_bytes",
             side_effect=[help_with_flag, result],
         ) as guarded_runner:
             guarded = publisher._gh_job_log(Path("repo"), 31)
@@ -970,10 +1423,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             guarded_runner.call_args_list,
             [
                 mock.call(
-                    ["gh", "api", "--help"],
+                    ("gh", "api", "--help"),
                     cwd=Path("repo"),
-                    capture_output=True,
-                    check=False,
+                    max_stdout_bytes=publisher.MAX_GITHUB_HELP_BYTES,
+                    max_stderr_bytes=publisher.MAX_GITHUB_HELP_BYTES,
                 ),
                 mock.call(
                     [
@@ -983,15 +1436,14 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "repos/yzm1/boundver/actions/jobs/31/logs",
                     ],
                     cwd=Path("repo"),
-                    capture_output=True,
-                    check=False,
+                    max_stdout_bytes=publisher.MAX_JOB_LOG_BYTES,
                 ),
             ],
         )
 
         with mock.patch.object(
-            publisher.subprocess,
-            "run",
+            publisher,
+            "_run_bytes",
             return_value=subprocess.CompletedProcess(
                 (), 1, b"", b"help unavailable"
             ),
@@ -1017,15 +1469,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         for response, message in failures:
             with self.subTest(message=message), mock.patch.object(
-                publisher.subprocess,
-                "run",
+                publisher,
+                "_run_bytes",
                 side_effect=[help_without_flag, response],
             ), self.assertRaisesRegex(publisher.GateError, message):
                 publisher._gh_job_log(Path("repo"), 31)
 
         with mock.patch.object(
-            publisher.subprocess,
-            "run",
+            publisher,
+            "_run_bytes",
             side_effect=[
                 help_without_flag,
                 subprocess.CompletedProcess((), 0, b"12345", b""),
@@ -1218,29 +1670,52 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        present = subprocess.CompletedProcess(
-            ["gh", "api"], 0, "HTTP/2.0 200 OK\n{}\n", ""
-        )
+        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+        draft_release = {"id": 42, "tag_name": TAG, "draft": True}
+
+        def paginated(_repo, endpoint, *, collection=None):
+            if endpoint.endswith("/environments?per_page=100"):
+                self.assertEqual(collection, "environments")
+                return response(None, None, "repos/yzm1/boundver/environments")[
+                    "environments"
+                ]
+            if "/rulesets?" in endpoint:
+                self.assertIsNone(collection)
+                return rulesets
+            if "actions/workflows/ci.yml/runs" in endpoint:
+                self.assertEqual(collection, "workflow_runs")
+                return response(None, None, endpoint)["workflow_runs"]
+            if "actions/workflows/" in endpoint:
+                self.assertEqual(collection, "workflow_runs")
+                return []
+            raise AssertionError(endpoint)
+
         with mock.patch.object(
             publisher, "_gh_json", side_effect=response
-        ), mock.patch.object(publisher, "_run", return_value=present):
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=draft_release
+        ):
             publisher._github_controls(
                 Path("."), SHA, TAG, allow_resumable_release=True
             )
 
-        def public_response(repo, repository, endpoint):
-            value = response(repo, repository, endpoint)
-            if endpoint.endswith(f"/releases/tags/{TAG}"):
-                value["draft"] = False
-                value["immutable"] = True
-                value["prerelease"] = False
-                value["published_at"] = "2026-08-17T13:19:01Z"
-            return value
+        public_release = {
+            "id": 42,
+            "tag_name": TAG,
+            "draft": False,
+            "immutable": True,
+            "prerelease": False,
+            "published_at": "2026-08-17T13:19:01Z",
+        }
 
         with mock.patch.object(
-            publisher, "_gh_json", side_effect=public_response
+            publisher, "_gh_json", side_effect=response
         ), mock.patch.object(
-            publisher, "_run", return_value=present
+            publisher, "_gh_paginated_list", side_effect=paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=public_release
         ):
             publisher._github_controls(
                 Path("."), SHA, TAG, allow_resumable_release=True
@@ -1252,16 +1727,17 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             ("published_at", ""),
         ):
 
-            def invalid_public_response(repo, repository, endpoint):
-                result = public_response(repo, repository, endpoint)
-                if endpoint.endswith(f"/releases/tags/{TAG}"):
-                    result[field] = value
-                return result
+            invalid_public_release = dict(public_release)
+            invalid_public_release[field] = value
 
             with self.subTest(field=field), mock.patch.object(
-                publisher, "_gh_json", side_effect=invalid_public_response
+                publisher, "_gh_json", side_effect=response
             ), mock.patch.object(
-                publisher, "_run", return_value=present
+                publisher, "_gh_paginated_list", side_effect=paginated
+            ), mock.patch.object(
+                publisher,
+                "_github_release_for_tag",
+                return_value=invalid_public_release,
             ), self.assertRaisesRegex(publisher.GateError, "stable and immutable"):
                 publisher._github_controls(
                     Path("."), SHA, TAG, allow_resumable_release=True
@@ -1271,29 +1747,29 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         publisher = _load_script()
         self.assertTrue(
             publisher._github_ref_pattern_matches(
-                "refs/tags/v*.*.*", "refs/tags/v0.11.0"
+                "refs/tags/v*.*.*", f"refs/tags/{TAG}"
             )
         )
         self.assertFalse(
             publisher._github_ref_pattern_matches(
-                "refs/tags/v*.*.*", "refs/tags/v0.11"
+                "refs/tags/v*.*.*", f"refs/tags/{ALIAS}"
             )
         )
         self.assertTrue(
             publisher._github_ref_pattern_matches(
-                "refs/tags/v*", "refs/tags/v0.11"
+                "refs/tags/v*", f"refs/tags/{ALIAS}"
             )
         )
         exact = {"include": ["refs/tags/v*.*.*"], "exclude": []}
         broad = {"include": ["refs/tags/v*"], "exclude": []}
         self.assertTrue(
-            publisher._ruleset_targets_ref(exact, "refs/tags/v0.11.0")
+            publisher._ruleset_targets_ref(exact, f"refs/tags/{TAG}")
         )
         self.assertFalse(
-            publisher._ruleset_targets_ref(exact, "refs/tags/v0.11")
+            publisher._ruleset_targets_ref(exact, f"refs/tags/{ALIAS}")
         )
         self.assertTrue(
-            publisher._ruleset_targets_ref(broad, "refs/tags/v0.11")
+            publisher._ruleset_targets_ref(broad, f"refs/tags/{ALIAS}")
         )
 
         scoped = {
@@ -1348,12 +1824,16 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         source = SCRIPT.read_text(encoding="utf-8")
         for workflow_contract in (
+            "testpypi-preflight",
             "publish-testpypi",
             "verify-testpypi",
+            "prepare-release-notes",
             "prepare-release-draft",
             "verify-marketplace",
+            "pypi-preflight",
             "publish-pypi",
             "verify-pypi",
+            "validate-compatibility-alias",
             "advance-compatibility-alias",
             "verify-public-surfaces",
         ):

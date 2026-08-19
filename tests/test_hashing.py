@@ -17,6 +17,7 @@ from boundver.core import (
     _lockfile_structure_issues,
     discover_components,
 )
+from tests._repo_fixtures import init_git_repo
 
 
 class CanonicalJsonTests(unittest.TestCase):
@@ -286,6 +287,22 @@ class RecomputeSliceEntryTests(unittest.TestCase):
 
 
 class LockfileStructureIssuesTests(unittest.TestCase):
+    def test_empty_component_name_reported(self):
+        lockfile = {"components": {"": {}}, "slices": {}}
+        issues = _lockfile_structure_issues(lockfile)
+        self.assertIn(
+            "LOCKFILE malformed: component names must be non-empty strings",
+            issues,
+        )
+
+    def test_empty_slice_name_reported(self):
+        lockfile = {"components": {}, "slices": {"": {}}}
+        issues = _lockfile_structure_issues(lockfile)
+        self.assertIn(
+            "LOCKFILE malformed: slice names must be non-empty strings",
+            issues,
+        )
+
     def test_slices_not_dict_reported(self):
         """_lockfile_structure_issues reports when slices is not an object."""
         lockfile = {"components": {}, "slices": "not-a-dict"}
@@ -357,17 +374,12 @@ class DiscoverComponentsTests(unittest.TestCase):
 class HeadIndexDigestTests(unittest.TestCase):
     """Tests for source_tree_digest using head/index sources."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_source_tree_digest_head_matches_working_tree_for_clean_commit(self):
         """source_tree_digest('head') equals source_tree_digest('working-tree') for a clean commit."""
         from boundver.core import source_tree_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x = 1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -382,7 +394,7 @@ class HeadIndexDigestTests(unittest.TestCase):
         from boundver.core import source_tree_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             f = root / "svc" / "main.py"
             f.write_text("x = 1\n")
@@ -400,7 +412,7 @@ class HeadIndexDigestTests(unittest.TestCase):
         from boundver.core import source_tree_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             f = root / "svc" / "main.py"
             f.write_text("x = 1\n")
@@ -420,7 +432,7 @@ class HeadIndexDigestTests(unittest.TestCase):
         from boundver.core import list_head_files
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "schema.json").write_text('{"key":"val"}')
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -431,17 +443,12 @@ class HeadIndexDigestTests(unittest.TestCase):
 class GitBatchCatTests(unittest.TestCase):
     """Unit tests for the _git_batch_cat helper."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_empty_refs_returns_empty_dict(self):
         """_git_batch_cat returns {} when given an empty ref list."""
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             result = _git_batch_cat(root, [])
             self.assertEqual(result, {})
 
@@ -450,7 +457,7 @@ class GitBatchCatTests(unittest.TestCase):
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "hello.txt").write_text("hello world\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -462,7 +469,7 @@ class GitBatchCatTests(unittest.TestCase):
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -474,7 +481,7 @@ class GitBatchCatTests(unittest.TestCase):
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "a.txt").write_text("aaa\n")
             (root / "b.txt").write_text("bbb\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -495,7 +502,7 @@ class GitBatchCatTests(unittest.TestCase):
         from boundver.core import _git_batch_cat
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -505,11 +512,6 @@ class GitBatchCatTests(unittest.TestCase):
 
 class ReadPathContentTests(unittest.TestCase):
     """Tests for _read_path_content covering index, head, symlink, and CRLF paths."""
-
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_crlf_normalized_in_working_tree(self):
         """_read_path_content normalizes CRLF → LF for working-tree text files."""
@@ -536,7 +538,7 @@ class ReadPathContentTests(unittest.TestCase):
         from boundver.core import _read_path_content
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             f = root / "file.txt"
             f.write_text("hello\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -548,7 +550,7 @@ class ReadPathContentTests(unittest.TestCase):
         from boundver.core import _read_path_content
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             f = root / "file.txt"
             f.write_text("hello\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -559,11 +561,6 @@ class ReadPathContentTests(unittest.TestCase):
 
 class ContentOnlyDigestTests(unittest.TestCase):
     """Tests for _content_only_digest — location-independent hash for vendored copies."""
-
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_returns_none_for_nonexistent_path(self):
         """_content_only_digest returns None when path has no files."""
@@ -591,7 +588,7 @@ class ContentOnlyDigestTests(unittest.TestCase):
         from boundver.core import _content_only_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.py").write_text("def foo(): pass\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -605,7 +602,7 @@ class ContentOnlyDigestTests(unittest.TestCase):
         from boundver.core import _content_only_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.py").write_text("def foo(): pass\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -617,7 +614,7 @@ class ContentOnlyDigestTests(unittest.TestCase):
         from boundver.core import _content_only_digest
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.py").write_text("def foo(): pass\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -644,17 +641,12 @@ class ShortHelperTests(unittest.TestCase):
 class AdditionalGitHelperTests(unittest.TestCase):
     """Additional git helper tests targeting uncovered branches."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_changed_components_skips_empty_path(self):
         """Line 181: changed_components_since_ref skips components with empty path."""
         from boundver._git import changed_components_since_ref
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -672,7 +664,7 @@ class AdditionalGitHelperTests(unittest.TestCase):
         from boundver.core import git_latest_tag
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -685,7 +677,7 @@ class AdditionalGitHelperTests(unittest.TestCase):
         from boundver.core import git_latest_tag
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -697,7 +689,7 @@ class AdditionalGitHelperTests(unittest.TestCase):
         from boundver.core import git_latest_tag
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "f.txt").write_text("x")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)

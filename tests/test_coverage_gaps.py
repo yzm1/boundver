@@ -1,18 +1,16 @@
-"""Tests targeting identified coverage gaps — gitignore **, YAML/TOML fallbacks,
-batch-cat malformed headers, custom provider name validation, symlink paths,
-PathHashProvider sort stability, and why_component source=index."""
+"""Focused edge contracts for Git patterns, parsers, hashing, and paths."""
 
-import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from boundver._git import (
     _GitignoreRules,
     _git_batch_cat,
 )
+from tests._repo_fixtures import commit_all, init_git_repo
 
 
 # ---------------------------------------------------------------------------
@@ -132,179 +130,79 @@ class TestGitBatchCatEdgeCases(unittest.TestCase):
     """Test _git_batch_cat with various header anomalies using a real git repo."""
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        subprocess.run(["git", "init"], cwd=self.tmpdir, capture_output=True, check=True)
-        subprocess.run(
-            ["git", "config", "user.email", "test@test.com"],
-            cwd=self.tmpdir, capture_output=True, check=True,
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temporary_directory.cleanup)
+        self.tmpdir = Path(self._temporary_directory.name)
+        init_git_repo(
+            self.tmpdir,
+            user_email="test@test.com",
+            user_name="Test",
         )
-        subprocess.run(
-            ["git", "config", "user.name", "Test"],
-            cwd=self.tmpdir, capture_output=True, check=True,
-        )
-        (Path(self.tmpdir) / "hello.txt").write_text("hello world\n")
-        subprocess.run(["git", "add", "."], cwd=self.tmpdir, capture_output=True, check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "init"],
-            cwd=self.tmpdir, capture_output=True, check=True,
-        )
+        (self.tmpdir / "hello.txt").write_text("hello world\n")
+        commit_all(self.tmpdir, "init")
 
     def test_missing_ref_raises(self):
         with self.assertRaisesRegex(ValueError, "not found"):
-            _git_batch_cat(Path(self.tmpdir), ["HEAD:nonexistent.txt"])
+            _git_batch_cat(self.tmpdir, ["HEAD:nonexistent.txt"])
 
     def test_existing_ref_returns_content(self):
-        result = _git_batch_cat(Path(self.tmpdir), ["HEAD:hello.txt"])
+        result = _git_batch_cat(self.tmpdir, ["HEAD:hello.txt"])
         self.assertEqual(result["HEAD:hello.txt"], b"hello world\n")
 
     def test_mixed_existing_and_missing_raises(self):
         with self.assertRaisesRegex(ValueError, "not found"):
             _git_batch_cat(
-                Path(self.tmpdir),
+                self.tmpdir,
                 ["HEAD:hello.txt", "HEAD:missing.txt"],
             )
 
     def test_empty_refs_returns_empty_dict(self):
-        result = _git_batch_cat(Path(self.tmpdir), [])
+        result = _git_batch_cat(self.tmpdir, [])
         self.assertEqual(result, {})
 
     def test_newline_in_ref_raises(self):
         with self.assertRaises(ValueError):
-            _git_batch_cat(Path(self.tmpdir), ["HEAD:foo\nbar"])
+            _git_batch_cat(self.tmpdir, ["HEAD:foo\nbar"])
 
     def test_carriage_return_in_ref_raises(self):
         with self.assertRaises(ValueError):
-            _git_batch_cat(Path(self.tmpdir), ["HEAD:foo\rbar"])
+            _git_batch_cat(self.tmpdir, ["HEAD:foo\rbar"])
 
     def test_ref_with_spaces_works(self):
         # Create a file with space in name
-        (Path(self.tmpdir) / "has space.txt").write_text("spaced\n")
-        subprocess.run(["git", "add", "."], cwd=self.tmpdir, capture_output=True, check=True)
-        subprocess.run(
-            ["git", "commit", "-m", "space"],
-            cwd=self.tmpdir, capture_output=True, check=True,
-        )
-        result = _git_batch_cat(Path(self.tmpdir), ["HEAD:has space.txt"])
+        (self.tmpdir / "has space.txt").write_text("spaced\n")
+        commit_all(self.tmpdir, "space")
+        result = _git_batch_cat(self.tmpdir, ["HEAD:has space.txt"])
         self.assertEqual(result["HEAD:has space.txt"], b"spaced\n")
 
 
 # ---------------------------------------------------------------------------
-# TOML fallback — edge cases
+# Optional parser absence
 # ---------------------------------------------------------------------------
 
 
-class TestTomlFallbackEdgeCases(unittest.TestCase):
-    """TOML regex-fallback edge cases (when tomllib/tomli unavailable)."""
+class TestOptionalParserAbsence(unittest.TestCase):
+    """Version extraction never guesses at TOML or YAML syntax."""
 
-    def setUp(self):
-        import boundver.versions as v
-        self._v = v
-        self._orig_toml = v.tomllib
-        v.tomllib = None  # Force regex fallback
+    def test_missing_toml_parser_fails_closed(self):
+        import boundver.versions as versions
 
-    def tearDown(self):
-        self._v.tomllib = self._orig_toml
+        with patch.object(versions, "tomllib", None):
+            self.assertIsNone(
+                versions._extract_toml_from_text(
+                    '[project]\nversion = "2.3.4"\n', "project.version"
+                )
+            )
 
-    def test_empty_double_quoted_string(self):
-        result = self._v._extract_toml_from_text('version = ""', "version")
-        self.assertEqual(result, "")
+    def test_missing_yaml_parser_fails_closed(self):
+        import boundver.versions as versions
 
-    def test_empty_single_quoted_string(self):
-        result = self._v._extract_toml_from_text("version = ''", "version")
-        self.assertEqual(result, "")
-
-    def test_value_with_equals_sign(self):
-        result = self._v._extract_toml_from_text(
-            'url = "https://example.com?a=1&b=2"', "url"
-        )
-        self.assertEqual(result, "https://example.com?a=1&b=2")
-
-    def test_value_with_inline_comment(self):
-        result = self._v._extract_toml_from_text(
-            'version = "1.0.0" # release candidate', "version"
-        )
-        self.assertEqual(result, "1.0.0")
-
-    def test_nested_table_value(self):
-        toml_text = "[project]\nversion = \"2.3.4\"\n"
-        result = self._v._extract_toml_from_text(toml_text, "project.version")
-        self.assertEqual(result, "2.3.4")
-
-    def test_unquoted_integer_value(self):
-        result = self._v._extract_toml_from_text("port = 8080", "port")
-        self.assertEqual(result, "8080")
-
-    def test_key_not_found_returns_none(self):
-        result = self._v._extract_toml_from_text('name = "foo"', "version")
-        self.assertIsNone(result)
-
-    def test_dotted_key_syntax_is_not_supported_by_regex_fallback(self):
-        result = self._v._extract_toml_from_text(
-            'project.version = "1.0.0"', "project.version"
-        )
-        self.assertIsNone(result)
-
-
-# ---------------------------------------------------------------------------
-# YAML fallback — edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestYamlFallbackEdgeCases(unittest.TestCase):
-    """YAML regex-fallback edge cases (when PyYAML unavailable)."""
-
-    def setUp(self):
-        import boundver.versions as v
-        self._v = v
-        self._orig_yaml = v.yaml
-        v.yaml = None  # Force regex fallback
-
-    def tearDown(self):
-        self._v.yaml = self._orig_yaml
-
-    def test_quoted_value_with_hash_not_stripped(self):
-        result = self._v._extract_yaml_from_text('key: "value#notcomment"', "key")
-        self.assertEqual(result, "value#notcomment")
-
-    def test_single_quoted_value_with_hash(self):
-        result = self._v._extract_yaml_from_text("key: 'val#ue'", "key")
-        self.assertEqual(result, "val#ue")
-
-    def test_unquoted_value_inline_comment_stripped(self):
-        result = self._v._extract_yaml_from_text("version: 1.0.0 # release", "version")
-        self.assertEqual(result, "1.0.0")
-
-    def test_nested_key_extraction(self):
-        yaml_text = "info:\n  version: 3.0.0\n"
-        result = self._v._extract_yaml_from_text(yaml_text, "info.version")
-        self.assertEqual(result, "3.0.0")
-
-    def test_deeply_nested_key(self):
-        yaml_text = "a:\n  b:\n    c: deep\n"
-        result = self._v._extract_yaml_from_text(yaml_text, "a.b.c")
-        self.assertEqual(result, "deep")
-
-    def test_section_with_no_value_not_returned(self):
-        result = self._v._extract_yaml_from_text("section:\n  key: val", "section")
-        self.assertIsNone(result)
-
-    def test_missing_key_returns_none(self):
-        result = self._v._extract_yaml_from_text("name: foo", "version")
-        self.assertIsNone(result)
-
-    def test_comment_only_lines_skipped(self):
-        yaml_text = "# comment\nversion: 1.2.3\n"
-        result = self._v._extract_yaml_from_text(yaml_text, "version")
-        self.assertEqual(result, "1.2.3")
-
-    def test_blank_lines_skipped(self):
-        yaml_text = "\n\nversion: 4.5.6\n\n"
-        result = self._v._extract_yaml_from_text(yaml_text, "version")
-        self.assertEqual(result, "4.5.6")
-
-    def test_quoted_value_with_colon(self):
-        result = self._v._extract_yaml_from_text('url: "http://localhost:8080"', "url")
-        self.assertEqual(result, "http://localhost:8080")
+        with patch.object(versions, "yaml", None):
+            self.assertIsNone(
+                versions._extract_yaml_from_text(
+                    "info:\n  version: 3.0.0\n", "info.version"
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -415,31 +313,29 @@ class TestSourceTreeDigestSort(unittest.TestCase):
 
     def test_same_files_different_order_same_hash(self):
         """If file listing returns in different order, digest must be stable."""
+        from boundver._git import _capture_git_source_snapshot
         from boundver._hashing import source_tree_digest
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # Init a git repo with multiple files
-            subprocess.run(["git", "init"], cwd=str(root), capture_output=True, check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "t@t.com"],
-                cwd=str(root), capture_output=True, check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "T"],
-                cwd=str(root), capture_output=True, check=True,
-            )
+            init_git_repo(root, user_email="t@t.com", user_name="T")
             (root / "b.txt").write_text("bbb")
             (root / "a.txt").write_text("aaa")
             (root / "c.txt").write_text("ccc")
-            subprocess.run(["git", "add", "."], cwd=str(root), capture_output=True, check=True)
-            subprocess.run(
-                ["git", "commit", "-m", "init"],
-                cwd=str(root), capture_output=True, check=True,
-            )
-            # Compute digest twice — should be identical
-            d1 = source_tree_digest(root, ".", source="head")
-            d2 = source_tree_digest(root, ".", source="head")
+            commit_all(root, "init")
+            snapshot = _capture_git_source_snapshot(root, "head")
+            paths = list(snapshot.entries)
+            with patch(
+                "boundver._hashing._files_from_source",
+                return_value=(paths, snapshot),
+            ):
+                d1 = source_tree_digest(root, ".", source="head")
+            with patch(
+                "boundver._hashing._files_from_source",
+                return_value=(list(reversed(paths)), snapshot),
+            ):
+                d2 = source_tree_digest(root, ".", source="head")
             self.assertEqual(d1, d2)
             self.assertIsNotNone(d1)
 
@@ -460,10 +356,6 @@ class TestIsWithin(unittest.TestCase):
 
     def test_unrelated_path_not_within(self):
         from boundver._utils import _is_within
-        a = Path(tempfile.gettempdir()) / "a"
-        b = Path(tempfile.gettempdir()) / "b"
-        # Only one of these can be True
-        # Actually both are within gettempdir, so use more distinct paths
         if sys.platform == "win32":
             self.assertFalse(_is_within(Path("C:/a"), Path("D:/b")))
         else:

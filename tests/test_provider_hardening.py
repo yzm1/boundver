@@ -16,6 +16,7 @@ from boundver.providers import (
     JsonCanonicalProvider,
     LeafProvider,
     OpenApiCanonicalProvider,
+    PathHashProvider,
     ProviderContext,
     ResolvedBoundary,
     compute_boundary,
@@ -53,6 +54,67 @@ class _Provider:
 
 
 class TestProviderObjectContract(unittest.TestCase):
+    def test_hardened_builtin_provider_versions(self):
+        expected = {
+            PathHashProvider: "3",
+            providers.OpenApiProvider: "3",
+            providers.JsonFileProvider: "3",
+            providers.PythonExportsProvider: "3",
+            providers.TypeScriptExportsProvider: "3",
+            ImplicitProvider: "3",
+            LeafProvider: "1",
+            JsonCanonicalProvider: "3",
+            OpenApiCanonicalProvider: "4",
+        }
+        for provider, version in expected.items():
+            with self.subTest(provider=provider.__name__):
+                self.assertEqual(provider.version, version)
+
+    def test_custom_loader_rejects_excess_entries_before_import(self):
+        entries = [
+            {"module": f"never_imported_{index}", "class": "Provider"}
+            for index in range(providers.MAX_CUSTOM_PROVIDERS + 1)
+        ]
+        with patch.object(providers.importlib, "import_module") as importer:
+            errors = load_custom_providers(entries, allow_custom=True, registry={})
+        importer.assert_not_called()
+        self.assertEqual(len(errors), 1)
+        self.assertIn("provider limit", errors[0])
+
+    def test_builtin_error_collection_stops_at_limit(self):
+        paths = [f"missing-{index}.json" for index in range(providers.MAX_PROVIDER_ERRORS + 1)]
+        ctx = _context()
+        ctx.boundary_cfg = {"provider": "path-hash", "paths": paths}
+
+        resolved = PathHashProvider().resolve(ctx)
+        self.assertEqual(resolved.status, "error")
+        self.assertEqual(len(resolved.errors), providers.MAX_PROVIDER_ERRORS)
+        self.assertIn("error limit", resolved.errors[-1])
+
+        with patch.object(Path, "exists", return_value=False):
+            errors = PathHashProvider().validate_config(
+                ctx.boundary_cfg,
+                "svc",
+                Path("/repo"),
+            )
+        self.assertEqual(len(errors), providers.MAX_PROVIDER_ERRORS)
+        self.assertIn("error limit", errors[-1])
+
+    def test_declared_path_count_is_checked_before_listing(self):
+        ctx = _context()
+        ctx.boundary_cfg = {
+            "provider": "path-hash",
+            "paths": ["one", "two", "three"],
+        }
+        with (
+            patch.object(providers, "MAX_PROVIDER_DECLARATIONS", 2),
+            patch.object(ctx, "list_files") as list_files,
+        ):
+            resolved = PathHashProvider().resolve(ctx)
+        list_files.assert_not_called()
+        self.assertEqual(resolved.status, "error")
+        self.assertIn("declaration limit", resolved.errors[0])
+
     def test_registration_requires_name_version_and_callable_resolve(self):
         cases = [
             type("MissingName", (), {"version": "1", "resolve": lambda self, ctx: None})(),
@@ -229,12 +291,49 @@ class TestResolvedBoundaryContract(unittest.TestCase):
             ),
             (
                 ResolvedBoundary(entries=[("a", b"x"), ("a", b"y")]),
-                "sorted order",
+                "unique labels",
             ),
         ]
         for result, expected in cases:
             with self.subTest(expected=expected):
                 self.assertIn(expected, self._error_for(result))
+
+    def test_invalid_entries_container_is_rejected_without_truthiness(self):
+        class ExplosiveTruthiness:
+            def __bool__(self):
+                raise RuntimeError("must not be called")
+
+        result = ResolvedBoundary(status="error", errors=["failed"])
+        result.entries = ExplosiveTruthiness()
+        self.assertIn("entries must be a list", self._error_for(result))
+
+    def test_custom_partial_result_is_not_a_generation_success(self):
+        from boundver._lockfile import _generation_errors
+
+        custom = {
+            "components": {
+                "svc": {
+                    "boundary_provider": "custom.partial",
+                    "boundary_status": "partial",
+                    "boundary_errors": ["only part of the contract was resolved"],
+                }
+            }
+        }
+        implicit = {
+            "components": {
+                "svc": {
+                    "boundary_provider": "implicit",
+                    "boundary_status": "partial",
+                    "boundary_errors": ["no explicit boundary"],
+                }
+            }
+        }
+
+        self.assertEqual(
+            _generation_errors(custom),
+            ["svc: only part of the contract was resolved"],
+        )
+        self.assertEqual(_generation_errors(implicit), [])
 
     def test_mode_aware_source_bytes_are_preserved_for_raw_provider_hashing(self):
         regular = ResolvedBoundary(
@@ -278,6 +377,53 @@ class TestResolvedBoundaryContract(unittest.TestCase):
             error = self._error_for(ResolvedBoundary(entries=[("aa", b"x")]))
             self.assertIn("entry labels", error)
 
+    def test_builtin_provider_applies_remaining_aggregate_budget_to_reads(self):
+        files = {"svc/a.json": b"aa", "svc/b.json": b"bb"}
+        requested_limits = []
+
+        def read_limited(path, limit):
+            requested_limits.append(limit)
+            content = files[path]
+            if len(content) > limit:
+                raise ProviderError("source content exceeds remaining budget")
+            return content
+
+        ctx = ProviderContext(
+            repo_root=Path("/repo"),
+            component_path="svc",
+            boundary_cfg={"paths": ["a.json", "b.json"]},
+            source="working-tree",
+            read_file=lambda path: files[path],
+            list_files=lambda prefix: sorted(
+                path
+                for path in files
+                if path == prefix or path.startswith(prefix.rstrip("/") + "/")
+            ),
+            read_file_limited=read_limited,
+        )
+        with patch.object(providers, "MAX_PROVIDER_TOTAL_BYTES", 3):
+            resolved = PathHashProvider().resolve(ctx)
+        self.assertEqual(resolved.status, "error")
+        self.assertIn("remaining budget", resolved.errors[0])
+        self.assertEqual(requested_limits, [3, 1])
+
+    def test_builtin_provider_rejects_entry_count_before_reading_content(self):
+        files = {"svc/a.json": b"a", "svc/b.json": b"b"}
+        reads = []
+        ctx = ProviderContext(
+            repo_root=Path("/repo"),
+            component_path="svc",
+            boundary_cfg={"paths": ["*.json"]},
+            source="working-tree",
+            read_file=lambda path: reads.append(path) or files[path],
+            list_files=lambda prefix: sorted(files),
+        )
+        with patch.object(providers, "MAX_PROVIDER_ENTRIES", 1):
+            resolved = PathHashProvider().resolve(ctx)
+        self.assertEqual(resolved.status, "error")
+        self.assertIn("1-entry limit", resolved.errors[0])
+        self.assertEqual(reads, [])
+
     def test_metadata_must_be_bounded_json(self):
         invalid_metadata = [
             ["not", "an", "object"],
@@ -300,6 +446,30 @@ class TestResolvedBoundaryContract(unittest.TestCase):
                 ResolvedBoundary(entries=[("a", b"x")], metadata={"value": "long"})
             )
             self.assertIn("JSON limit", error)
+
+    def test_metadata_serialization_stops_at_byte_budget(self):
+        # The repeated references keep the input small while their valid JSON
+        # form would be roughly 430 MB if serialization were materialized
+        # before checking the metadata byte limit.
+        large_integer = 10 ** 4_299
+        metadata = {
+            "items": [large_integer]
+            * (providers.MAX_PROVIDER_METADATA_NODES - 2)
+        }
+        with (
+            patch.object(providers, "MAX_PROVIDER_METADATA_BYTES", 64),
+            patch.object(
+                providers,
+                "_bounded_int_to_decimal",
+                wraps=providers._bounded_int_to_decimal,
+            ) as render_integer,
+        ):
+            error = self._error_for(
+                ResolvedBoundary(entries=[("a", b"x")], metadata=metadata)
+            )
+
+        self.assertIn("metadata exceeds the 64-byte JSON limit", error)
+        self.assertEqual(render_integer.call_count, 1)
 
     def test_only_explicit_builtin_null_boundaries_are_sanctioned(self):
         error = self._error_for(ResolvedBoundary())
@@ -346,13 +516,33 @@ class TestJsonCanonicalHardening(unittest.TestCase):
         self.assertEqual(result.status, "error")
         self.assertIn("decimal-digit limit", result.errors[0])
 
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_bounded_integer_canonicalization_ignores_runtime_setting(self):
+        digits = b"9" * 1000
+        raw = b'{"value":' + digits + b"}"
+        original = sys.get_int_max_str_digits()
+        try:
+            outputs = []
+            for setting in (640, 0):
+                sys.set_int_max_str_digits(setting)
+                result = self._resolve(raw)
+                self.assertEqual(result.status, "ok", result.errors)
+                outputs.append(result.entries[0][1])
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(outputs, [raw, raw])
+
     def test_rejects_escaped_lone_surrogate_without_raising(self):
         result = self._resolve(b'{"value":"\\ud800"}')
         self.assertEqual(result.status, "error")
         self.assertIn("valid Unicode/UTF-8", result.errors[0])
 
     def test_provider_version_marks_stricter_canonical_contract(self):
-        self.assertEqual(JsonCanonicalProvider.version, "2")
+        self.assertEqual(JsonCanonicalProvider.version, "3")
 
     def test_semantic_canonicalization_intentionally_drops_file_mode(self):
         raw = b'{"contract":true}'
@@ -382,6 +572,10 @@ class TestOpenApiCanonicalHardening(unittest.TestCase):
             (b"[]", "root must be an object"),
             (b"paths: {}", "must declare 'openapi'"),
             (b"openapi: 2.0.0\npaths: {}", "expected an OpenAPI 3.0.x"),
+            (
+                "openapi: '3.1.\u0663'\npaths: {}".encode("utf-8"),
+                "expected an OpenAPI 3.0.x",
+            ),
             (b"openapi: 3.1.0\nswagger: '2.0'\npaths: {}", "must not declare both"),
             (b"openapi: null\nswagger: '2.0'\npaths: {}", "must not declare both"),
         ]
@@ -414,6 +608,41 @@ class TestOpenApiCanonicalHardening(unittest.TestCase):
         )
         self.assertEqual(result.status, "error")
         self.assertIn("decimal-digit limit", result.errors[0])
+
+    def test_rejects_oversized_yaml_integers_implicitly_and_explicitly(self):
+        for value in ("9" * 4301, "!!int " + "9" * 4301):
+            with self.subTest(explicit=value.startswith("!!int")):
+                result = self._resolve(
+                    (
+                        "openapi: 3.1.0\n"
+                        "paths: {}\n"
+                        f"x-value: {value}\n"
+                    ).encode("utf-8"),
+                    "openapi.yaml",
+                )
+                self.assertEqual(result.status, "error")
+                self.assertIn("integer", result.errors[0].lower())
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_oversized_yaml_integer_rejection_ignores_runtime_setting(self):
+        raw = (
+            "openapi: 3.1.0\npaths: {}\nx-value: " + "9" * 4301 + "\n"
+        ).encode("utf-8")
+        original = sys.get_int_max_str_digits()
+        try:
+            outcomes = []
+            for setting in (4300, 0):
+                sys.set_int_max_str_digits(setting)
+                result = self._resolve(raw, "openapi.yaml")
+                outcomes.append((result.status, result.errors))
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(outcomes[0], outcomes[1])
+        self.assertEqual(outcomes[0][0], "error")
 
     def test_rejects_escaped_lone_surrogate_without_raising(self):
         for raw in (
@@ -525,7 +754,7 @@ x-enabled: true
         self.assertIn("JSON parse failed", result.errors[0])
 
     def test_provider_version_marks_hardened_contract(self):
-        self.assertEqual(OpenApiCanonicalProvider.version, "3")
+        self.assertEqual(OpenApiCanonicalProvider.version, "4")
 
 
 if __name__ == "__main__":

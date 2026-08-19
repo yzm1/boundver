@@ -31,32 +31,8 @@ from boundver.providers import (
     PathHashProvider,
     ProviderContext,
 )
-
-
-def _init_git_repo(root: Path) -> None:
-    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "config", "user.email", "first-principles@example.invalid"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "First Principles"],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
-
-
-def _commit_all(root: Path, message: str = "fixture") -> None:
-    subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=root,
-        check=True,
-        capture_output=True,
-    )
+from tests._repo_fixtures import commit_all as _commit_all
+from tests._repo_fixtures import init_git_repo as _init_git_repo
 
 
 def _provider_context(pattern: str, files: Dict[str, bytes]) -> ProviderContext:
@@ -537,6 +513,66 @@ class ScopedUpdateInvariantTests(unittest.TestCase):
                 "--components a --update must not silently accept drift in b",
             )
 
+    def test_scoped_update_does_not_use_global_preflight_repair(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            for name in ("a", "b"):
+                (root / name).mkdir()
+                (root / name / "main.txt").write_text(
+                    f"{name}-before\n", encoding="utf-8"
+                )
+            config = {
+                "project": "p",
+                "components": {
+                    name: {
+                        "path": name,
+                        "boundary": {"provider": "implicit"},
+                    }
+                    for name in ("a", "b")
+                },
+                "slices": {},
+            }
+            config_path = root / "boundary.config.json"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            _commit_all(root)
+            original = core.generate_lockfile(
+                config, root, source="working-tree", strict=True
+            )
+            lock_path = root / "boundary.lock.json"
+            lock_path.write_text(
+                json.dumps(original, indent=2) + "\n", encoding="utf-8"
+            )
+            before_bytes = lock_path.read_bytes()
+
+            (root / "b" / "main.txt").write_text("b-after\n", encoding="utf-8")
+            config["slices"] = {
+                "all": {"mode": "exact", "components": ["a", "b"]}
+            }
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+
+            exit_code, stdout, stderr = _run_cli(
+                "verify",
+                "--source",
+                "working-tree",
+                "--components",
+                "a",
+                "--update",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+
+            self.assertEqual(exit_code, core.EXIT_USAGE, stdout + stderr)
+            payload = json.loads(stdout)
+            self.assertFalse(payload["ok"])
+            self.assertFalse(payload["updated"])
+            self.assertTrue(
+                any("scoped --update" in issue for issue in payload["issues"]),
+                payload,
+            )
+            self.assertEqual(lock_path.read_bytes(), before_bytes)
+
 
 class ConfigWithoutJsonschemaTests(unittest.TestCase):
     @staticmethod
@@ -640,6 +676,32 @@ class ConfigWithoutJsonschemaTests(unittest.TestCase):
             self.assertTrue(
                 any("unexpected" in error for error in errors), errors
             )
+
+    def test_unique_facets_and_custom_provider_names_do_not_need_jsonschema(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            duplicate_facets = self._minimal_config()
+            duplicate_facets["defaults"] = {
+                "verify_facets": ["exact", "exact"]
+            }
+            errors = self._validate_without_jsonschema(duplicate_facets, root)
+            self.assertTrue(any("contains duplicates" in error for error in errors), errors)
+
+            for invalid_name in ("custom.", " custom.named", "custom.named ", 7):
+                with self.subTest(name=invalid_name):
+                    provider = self._minimal_config()
+                    provider["providers"] = [
+                        {
+                            "module": "example_provider",
+                            "class": "ExampleProvider",
+                            "name": invalid_name,
+                        }
+                    ]
+                    errors = self._validate_without_jsonschema(provider, root)
+                    self.assertTrue(
+                        any("field 'name'" in error for error in errors), errors
+                    )
 
     def test_component_path_must_be_a_tracked_directory_in_head_and_index(self):
         with tempfile.TemporaryDirectory() as td:
@@ -767,6 +829,50 @@ class OnboardingInvariantTests(unittest.TestCase):
             }
             self.assertEqual(validate_config(config, root), [])
 
+    def test_discovery_uses_only_tracked_files_for_provider_detection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            component = root / "svc"
+            component.mkdir()
+            (component / "package.json").write_text(
+                '{"name":"svc","version":"1.0.0"}\n', encoding="utf-8"
+            )
+            (component / "__init__.py").write_text("__all__ = []\n", encoding="utf-8")
+            _commit_all(root)
+            (component / "openapi.yaml").write_text(
+                "openapi: 3.1.0\npaths: {}\n", encoding="utf-8"
+            )
+
+            discovered = discover_components(root)
+
+            self.assertEqual(len(discovered), 1, discovered)
+            selected = next(iter(discovered.values()))
+            self.assertEqual(selected["boundary"]["provider"], "python-exports")
+            self.assertEqual(selected["boundary"]["paths"], ["__init__.py"])
+
+    def test_discovery_ignores_tracked_provider_files_deleted_from_worktree(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            component = root / "svc"
+            component.mkdir()
+            (component / "package.json").write_text(
+                '{"name":"svc","version":"1.0.0"}\n', encoding="utf-8"
+            )
+            (component / "__init__.py").write_text(
+                "__all__ = []\n", encoding="utf-8"
+            )
+            openapi = component / "openapi.yaml"
+            openapi.write_text("openapi: 3.1.0\npaths: {}\n", encoding="utf-8")
+            _commit_all(root)
+            openapi.unlink()
+
+            discovered = discover_components(root)
+
+            selected = next(iter(discovered.values()))
+            self.assertEqual(selected["boundary"]["provider"], "python-exports")
+
     def test_init_discover_does_not_write_an_invalid_empty_config(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -889,7 +995,7 @@ class PublicApiPolicyTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schema": "boundary-lock/v3",
-                        "config_contract": "boundver-semantic-config/v1",
+                        "config_contract": "boundver-semantic-config/v2",
                         "config_digest": "0" * 64,
                         "project": "p",
                         "components": {},
@@ -930,6 +1036,59 @@ class PublicApiPolicyTests(unittest.TestCase):
             with patch("boundver._git.git_root", return_value=root):
                 with self.assertRaisesRegex(core.ConfigError, "compat.*version_source"):
                     boundver.generate()
+
+    def test_verify_checks_global_component_and_slice_sets_when_filtered(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            for name in ("a", "b"):
+                (root / name).mkdir()
+                (root / name / "main.py").write_text(
+                    f"# {name}\n", encoding="utf-8"
+                )
+            config = {
+                "project": "public-api",
+                "components": {
+                    name: {
+                        "path": name,
+                        "boundary": {"provider": "implicit"},
+                    }
+                    for name in ("a", "b")
+                },
+                "slices": {
+                    "all": {
+                        "mode": "exact",
+                        "components": ["a", "b"],
+                    }
+                },
+            }
+            (root / "boundary.config.json").write_text(
+                json.dumps(config), encoding="utf-8"
+            )
+            _commit_all(root)
+
+            with patch("boundver._git.git_root", return_value=root):
+                lockfile = boundver.generate(
+                    source="working-tree", out_path=None
+                )
+                lockfile["components"].pop("b")
+                lockfile["slices"].pop("all")
+                (root / "boundary.lock.json").write_text(
+                    json.dumps(lockfile), encoding="utf-8"
+                )
+
+                issues = boundver.verify(
+                    source="working-tree", components=["a"]
+                )
+
+            self.assertTrue(
+                any("component set differs" in issue for issue in issues),
+                issues,
+            )
+            self.assertTrue(
+                any("slice set differs" in issue for issue in issues),
+                issues,
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover

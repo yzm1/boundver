@@ -1,15 +1,15 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v1",
-  "config_digest": "206172f8a2815f7e80e845db3f6ef85ca8bf1e5b3d3fe9a8eec662792f32c350",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "2d62dd9503c43e716a3bb07462d74a9a1f1a7dfe5974a79318708b2f6704ce0e",
   "project": "example-typescript-package",
   "components": {
     "pkg": {
       "version": "2.1.0",
       "path": "examples/typescript-package/src",
       "boundary_provider": "typescript-exports",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "ok",
       "consumers": [],
       "external_consumers": [],

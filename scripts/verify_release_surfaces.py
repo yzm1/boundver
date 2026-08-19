@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import time
@@ -29,8 +30,17 @@ REQUIRES_PYTHON = ">=3.9"
 DEFAULT_REPOSITORY = "yzm1/boundver"
 DEFAULT_MARKETPLACE_SLUG = "boundver"
 USER_AGENT = "boundver-release-surface-verifier/1"
-TAG_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
-ALIAS_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)")
+HTTP_READ_CHUNK_BYTES = 64 * 1024
+MAX_PUBLIC_DOCUMENT_BYTES = 8 * 1024 * 1024
+MAX_RELEASE_ARTIFACT_BYTES = 256 * 1024 * 1024
+MAX_RELEASE_NOTES_BYTES = 2 * 1024 * 1024
+MAX_CHECKSUM_MANIFEST_BYTES = 64 * 1024
+MAX_ARTIFACT_DIRECTORY_ENTRIES = 16
+MAX_JSON_INTEGER_DIGITS = 4300
+TAG_RE = re.compile(
+    r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+)
+ALIAS_RE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 REPOSITORY_RE = re.compile(
@@ -56,6 +66,54 @@ class ReleaseVerificationError(ValueError):
 
 class ReleaseNetworkError(RuntimeError):
     """A public surface could not be read."""
+
+
+def _bounded_json_int(value: str) -> int:
+    """Parse a JSON integer independently of Python's mutable digit limit."""
+    if re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value) is None:
+        raise ValueError("invalid JSON integer")
+    negative = value.startswith("-")
+    digits = value[1:] if negative else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            "JSON integer exceeds the "
+            f"{MAX_JSON_INTEGER_DIGITS}-decimal-digit limit"
+        )
+    result = 0
+    for offset in range(0, len(digits), 9):
+        chunk = digits[offset : offset + 9]
+        result = result * (10 ** len(chunk)) + int(chunk)
+    return -result if negative else result
+
+
+def _bounded_json_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite JSON number is not supported")
+    return result
+
+
+def _reject_json_constant(_value: str) -> Any:
+    raise ValueError("non-finite JSON constant is not supported")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key is not supported")
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(document: str) -> Any:
+    return json.loads(
+        document,
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_reject_json_constant,
+        parse_float=_bounded_json_float,
+        parse_int=_bounded_json_int,
+    )
 
 
 @dataclass(frozen=True)
@@ -97,6 +155,92 @@ REGISTRIES = (
 )
 
 
+def _declared_content_length(response: object, url: str) -> int | None:
+    response_attributes = getattr(response, "__dict__", {})
+    if (
+        "headers" not in response_attributes
+        and getattr(type(response), "headers", None) is None
+    ):
+        return None
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    get_all = getattr(headers, "get_all", None)
+    if callable(get_all):
+        values = get_all("Content-Length")
+        if values is None:
+            return None
+        if len(values) != 1:
+            raise ReleaseNetworkError(
+                f"public surface returned ambiguous Content-Length: {url}"
+            )
+        raw_length: object = values[0]
+    else:
+        raw_length = headers.get("Content-Length")
+        if raw_length is None:
+            return None
+    if isinstance(raw_length, int) and not isinstance(raw_length, bool):
+        length = raw_length
+    elif (
+        isinstance(raw_length, str)
+        and len(raw_length) <= 20
+        and raw_length.isascii()
+        and raw_length.isdigit()
+    ):
+        length = int(raw_length)
+    else:
+        raise ReleaseNetworkError(
+            f"public surface returned malformed Content-Length: {url}"
+        )
+    if length < 0:
+        raise ReleaseNetworkError(
+            f"public surface returned malformed Content-Length: {url}"
+        )
+    return length
+
+
+def _read_response_bounded(response: object, url: str, max_bytes: int) -> bytes:
+    declared = _declared_content_length(response, url)
+    if declared is not None and declared > max_bytes:
+        raise ReleaseNetworkError(
+            f"public surface exceeds the {max_bytes}-byte response limit: {url}"
+        )
+    read_limit = declared if declared is not None else max_bytes
+    chunks: list[bytes] = []
+    total = 0
+    while total < read_limit:
+        requested = min(HTTP_READ_CHUNK_BYTES, read_limit - total)
+        chunk = response.read(requested)
+        if not isinstance(chunk, bytes):
+            raise ReleaseNetworkError(
+                f"public surface returned non-byte response data: {url}"
+            )
+        if len(chunk) > requested:
+            raise ReleaseNetworkError(
+                f"public surface exceeded the bounded read request: {url}"
+            )
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+
+    sentinel = response.read(1)
+    if not isinstance(sentinel, bytes):
+        raise ReleaseNetworkError(
+            f"public surface returned non-byte response data: {url}"
+        )
+    if sentinel:
+        limit = declared if declared is not None else max_bytes
+        raise ReleaseNetworkError(
+            f"public surface exceeds its {limit}-byte response limit: {url}"
+        )
+    if declared is not None and total != declared:
+        raise ReleaseNetworkError(
+            f"public surface body disagrees with Content-Length: {url}"
+        )
+    return b"".join(chunks)
+
+
 def _stdlib_fetch(url: str, accept: str) -> HttpResponse:
     request = urllib.request.Request(
         url,
@@ -108,8 +252,13 @@ def _stdlib_fetch(url: str, accept: str) -> HttpResponse:
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
+            max_bytes = (
+                MAX_RELEASE_ARTIFACT_BYTES
+                if accept == "application/octet-stream"
+                else MAX_PUBLIC_DOCUMENT_BYTES
+            )
             return HttpResponse(
-                body=response.read(),
+                body=_read_response_bounded(response, url, max_bytes),
                 final_url=response.geturl(),
                 status=response.status,
             )
@@ -139,6 +288,8 @@ def _request(
     accept: str,
     *,
     allowed_origins: frozenset[str],
+    max_bytes: int = MAX_PUBLIC_DOCUMENT_BYTES,
+    too_large_message: str | None = None,
 ) -> bytes:
     if _origin(url) not in allowed_origins:
         raise ReleaseVerificationError(f"request URL has an unexpected origin: {url!r}")
@@ -158,6 +309,13 @@ def _request(
         raise ReleaseVerificationError(
             f"public request escaped its expected origin: {response.final_url!r}"
         )
+    if not isinstance(response.body, bytes):
+        raise ReleaseVerificationError("fetcher response body must be bytes")
+    if len(response.body) > max_bytes:
+        message = too_large_message or (
+            f"public response exceeds the {max_bytes}-byte limit: {url}"
+        )
+        raise ReleaseVerificationError(message)
     return response.body
 
 
@@ -171,8 +329,8 @@ def _request_json(
         allowed_origins=allowed_origins,
     )
     try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = _strict_json_loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise ReleaseVerificationError(f"public API returned invalid JSON: {url}") from error
     if not isinstance(value, dict):
         raise ReleaseVerificationError(f"public API response must be an object: {url}")
@@ -183,12 +341,103 @@ def _sha256_bytes(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _artifact(path: Path) -> LocalArtifact:
+def _read_file_bounded(path: Path, max_bytes: int, label: str) -> bytes:
     try:
-        payload = path.read_bytes()
+        advertised_size = path.stat().st_size
+        if advertised_size > max_bytes:
+            raise ReleaseVerificationError(
+                f"{label} exceeds the {max_bytes}-byte limit: {path}"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        with path.open("rb") as stream:
+            while total < max_bytes:
+                requested = min(HTTP_READ_CHUNK_BYTES, max_bytes - total)
+                chunk = stream.read(requested)
+                if len(chunk) > requested:
+                    raise ReleaseVerificationError(
+                        f"{label} exceeded the bounded read request: {path}"
+                    )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if stream.read(1):
+                raise ReleaseVerificationError(
+                    f"{label} exceeds the {max_bytes}-byte limit: {path}"
+                )
+    except ReleaseVerificationError:
+        raise
     except OSError as error:
-        raise ReleaseVerificationError(f"cannot read local artifact {path}: {error}") from error
-    return LocalArtifact(path.name, path, len(payload), _sha256_bytes(payload))
+        raise ReleaseVerificationError(f"cannot read {label} {path}: {error}") from error
+    if total != advertised_size:
+        raise ReleaseVerificationError(f"{label} changed while being read: {path}")
+    return b"".join(chunks)
+
+
+def _hash_file_bounded(path: Path, max_bytes: int, label: str) -> tuple[int, str]:
+    try:
+        advertised_size = path.stat().st_size
+        if advertised_size > max_bytes:
+            raise ReleaseVerificationError(
+                f"{label} exceeds the {max_bytes}-byte limit: {path}"
+            )
+        digest = hashlib.sha256()
+        total = 0
+        with path.open("rb") as stream:
+            while total < max_bytes:
+                requested = min(HTTP_READ_CHUNK_BYTES, max_bytes - total)
+                chunk = stream.read(requested)
+                if len(chunk) > requested:
+                    raise ReleaseVerificationError(
+                        f"{label} exceeded the bounded read request: {path}"
+                    )
+                if not chunk:
+                    break
+                digest.update(chunk)
+                total += len(chunk)
+            if stream.read(1):
+                raise ReleaseVerificationError(
+                    f"{label} exceeds the {max_bytes}-byte limit: {path}"
+                )
+    except ReleaseVerificationError:
+        raise
+    except OSError as error:
+        raise ReleaseVerificationError(f"cannot read {label} {path}: {error}") from error
+    if total != advertised_size:
+        raise ReleaseVerificationError(f"{label} changed while being read: {path}")
+    return total, digest.hexdigest()
+
+
+def _file_matches_bytes(path: Path, expected: bytes) -> bool:
+    if len(expected) > MAX_RELEASE_ARTIFACT_BYTES:
+        return False
+    try:
+        if path.stat().st_size != len(expected):
+            return False
+        offset = 0
+        expected_view = memoryview(expected)
+        with path.open("rb") as stream:
+            while offset < len(expected):
+                requested = min(HTTP_READ_CHUNK_BYTES, len(expected) - offset)
+                chunk = stream.read(requested)
+                if len(chunk) > requested or not chunk:
+                    return False
+                if chunk != expected_view[offset : offset + len(chunk)]:
+                    return False
+                offset += len(chunk)
+            return not stream.read(1)
+    except OSError as error:
+        raise ReleaseVerificationError(
+            f"cannot reread local artifact {path}: {error}"
+        ) from error
+
+
+def _artifact(path: Path) -> LocalArtifact:
+    size, digest = _hash_file_bounded(
+        path, MAX_RELEASE_ARTIFACT_BYTES, "local artifact"
+    )
+    return LocalArtifact(path.name, path, size, digest)
 
 
 def _directory_entries(path: Path) -> set[str]:
@@ -196,17 +445,23 @@ def _directory_entries(path: Path) -> set[str]:
         raise ReleaseVerificationError(f"artifact directory is missing: {path}")
     entries: set[str] = set()
     try:
-        children = list(path.iterdir())
+        for child in path.iterdir():
+            if len(entries) >= MAX_ARTIFACT_DIRECTORY_ENTRIES:
+                raise ReleaseVerificationError(
+                    "artifact directory exceeds the "
+                    f"{MAX_ARTIFACT_DIRECTORY_ENTRIES}-entry limit: {path}"
+                )
+            if child.is_symlink() or not child.is_file():
+                raise ReleaseVerificationError(
+                    f"artifact directory may contain only regular files: {child}"
+                )
+            entries.add(child.name)
+    except ReleaseVerificationError:
+        raise
     except OSError as error:
         raise ReleaseVerificationError(
             f"cannot inspect artifact directory {path}: {error}"
         ) from error
-    for child in children:
-        if child.is_symlink() or not child.is_file():
-            raise ReleaseVerificationError(
-                f"artifact directory may contain only regular files: {child}"
-            )
-        entries.add(child.name)
     return entries
 
 
@@ -284,8 +539,10 @@ def _verify_checksum_manifest(
     path: Path, artifacts: Mapping[str, LocalArtifact]
 ) -> None:
     try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+        text = _read_file_bounded(
+            path, MAX_CHECKSUM_MANIFEST_BYTES, "checksum manifest"
+        ).decode("utf-8")
+    except UnicodeError as error:
         raise ReleaseVerificationError(f"cannot read {path.name}: {error}") from error
     lines = text.splitlines()
     if not text.endswith("\n") or len(lines) != len(artifacts):
@@ -315,8 +572,10 @@ def _load_release_notes(path: Path) -> str:
             f"release notes must be a regular file: {path}"
         )
     try:
-        notes = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+        notes = _read_file_bounded(
+            path, MAX_RELEASE_NOTES_BYTES, "release notes"
+        ).decode("utf-8")
+    except UnicodeError as error:
         raise ReleaseVerificationError(
             f"cannot read release notes {path}: {error}"
         ) from error
@@ -445,14 +704,13 @@ def _verify_registry(
             url,
             "application/octet-stream",
             allowed_origins=frozenset({registry.file_origin}),
+            max_bytes=artifact.size,
+            too_large_message=(
+                f"downloaded {registry.name} bytes disagree with local artifact: "
+                f"{filename}"
+            ),
         )
-        try:
-            local_bytes = artifact.path.read_bytes()
-        except OSError as error:  # pragma: no cover - already read during discovery
-            raise ReleaseVerificationError(
-                f"cannot reread local artifact {artifact.path}: {error}"
-            ) from error
-        if downloaded != local_bytes:
+        if not _file_matches_bytes(artifact.path, downloaded):
             raise ReleaseVerificationError(
                 f"downloaded {registry.name} bytes disagree with local artifact: {filename}"
             )
@@ -680,8 +938,8 @@ def _verify_marketplace(
     matches = 0
     for document in parser.documents:
         try:
-            embedded = json.loads(document)
-        except json.JSONDecodeError:
+            embedded = _strict_json_loads(document)
+        except (json.JSONDecodeError, ValueError):
             continue
         if not isinstance(embedded, dict):
             continue
@@ -729,6 +987,7 @@ def _prepare_verification(
     repository: str = DEFAULT_REPOSITORY,
     marketplace_slug: str = DEFAULT_MARKETPLACE_SLUG,
     phase: str = "complete",
+    verify_alias: bool = True,
 ) -> tuple[str, str, dict[str, LocalArtifact], dict[str, LocalArtifact]]:
     match = TAG_RE.fullmatch(tag)
     if match is None:
@@ -736,15 +995,22 @@ def _prepare_verification(
     version = tag.removeprefix("v")
     if SHA_RE.fullmatch(sha) is None:
         raise ReleaseVerificationError("release SHA must be 40 lowercase hexadecimal characters")
-    if ALIAS_RE.fullmatch(alias) is None:
-        raise ReleaseVerificationError(
-            "compatibility alias must be an explicit vMAJOR.MINOR tag"
-        )
-    expected_alias = f"v{match.group(1)}.{match.group(2)}"
-    if alias != expected_alias:
-        raise ReleaseVerificationError(
-            f"compatibility alias {alias!r} does not match release line {expected_alias!r}"
-        )
+    if alias == "none":
+        if verify_alias:
+            raise ReleaseVerificationError(
+                "compatibility alias 'none' requires --skip-alias"
+            )
+    else:
+        if ALIAS_RE.fullmatch(alias) is None:
+            raise ReleaseVerificationError(
+                "compatibility alias must be an explicit vMAJOR.MINOR tag"
+            )
+        expected_alias = f"v{match.group(1)}.{match.group(2)}"
+        if alias != expected_alias:
+            raise ReleaseVerificationError(
+                f"compatibility alias {alias!r} does not match release line "
+                f"{expected_alias!r}"
+            )
     if REPOSITORY_RE.fullmatch(repository) is None:
         raise ReleaseVerificationError(f"invalid GitHub repository: {repository!r}")
     if SLUG_RE.fullmatch(marketplace_slug) is None:
@@ -779,6 +1045,7 @@ def _verify_prepared_surfaces(
     distributions: Mapping[str, LocalArtifact],
     release_assets: Mapping[str, LocalArtifact],
 ) -> None:
+    registries: tuple[Registry, ...]
     if phase == "complete":
         registries = REGISTRIES
     elif phase == "marketplace":
@@ -827,6 +1094,7 @@ def verify_release_surfaces(
         repository=repository,
         marketplace_slug=marketplace_slug,
         phase=phase,
+        verify_alias=verify_alias,
     )
     network = fetch if fetch is not None else _stdlib_fetch
     _verify_prepared_surfaces(
@@ -878,6 +1146,7 @@ def verify_release_surfaces_with_retries(
         repository=repository,
         marketplace_slug=marketplace_slug,
         phase=phase,
+        verify_alias=verify_alias,
     )
     network = fetch if fetch is not None else _stdlib_fetch
     for attempt in range(1, attempts + 1):
@@ -912,7 +1181,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tag", required=True, help="Exact vMAJOR.MINOR.PATCH tag")
     parser.add_argument("--sha", required=True, help="Exact 40-character release commit SHA")
     parser.add_argument(
-        "--alias", required=True, help="Explicit vMAJOR.MINOR compatibility alias"
+        "--alias",
+        required=True,
+        help="Explicit vMAJOR.MINOR alias, or 'none' together with --skip-alias",
     )
     parser.add_argument("--dist-dir", required=True, type=Path)
     parser.add_argument(
@@ -932,7 +1203,11 @@ def _parser() -> argparse.ArgumentParser:
         "--phase",
         choices=sorted(PHASES),
         default="complete",
-        help="marketplace defers production PyPI and the compatibility alias",
+        help=(
+            "github verifies only the immutable GitHub Release; marketplace "
+            "also verifies TestPyPI and Marketplace; complete verifies every "
+            "public surface and the compatibility alias"
+        ),
     )
     parser.add_argument(
         "--skip-alias",

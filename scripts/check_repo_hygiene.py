@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import locale
+import os
+import stat
 import subprocess
 import sys
+import threading
 from pathlib import Path
-from typing import Sequence
+from typing import BinaryIO, Sequence
 
 
 GENERATED_PARTS = {
@@ -45,38 +49,210 @@ TEXT_NAMES = {
     "LICENSE",
     "MANIFEST.in",
 }
+MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_TRACKED_ENTRIES = 50_000
+MAX_TRACKED_RECORD_BYTES = 16 * 1024 + 512
+MAX_TRACKED_PATH_BYTES = 16 * 1024
+MAX_TRACKED_TOTAL_PATH_BYTES = 16 * 1024 * 1024
+MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024
+MAX_TEXT_TOTAL_BYTES = 256 * 1024 * 1024
+_STREAM_CHUNK_BYTES = 64 * 1024
 
 
 def _git(repo: Path, *arguments: str) -> bytes:
+    """Run Git with bounded, concurrently drained stdout and stderr."""
+    command = ["git", *arguments]
     try:
-        result = subprocess.run(
-            ["git", *arguments],
+        process = subprocess.Popen(
+            command,
             cwd=repo,
-            capture_output=True,
-            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
     except FileNotFoundError as error:
         raise RuntimeError("git is required") from error
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout).decode(
-            "utf-8", "replace"
-        ).strip()
-        raise RuntimeError(detail or "git command failed") from error
-    return result.stdout
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    captured: dict[str, bytes] = {}
+    overflows: list[str] = []
+    read_errors: list[BaseException] = []
+    state_lock = threading.Lock()
+
+    def terminate() -> None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    def read_stream(stream: BinaryIO, name: str, limit: int) -> None:
+        data = bytearray()
+        try:
+            while True:
+                remaining = limit - len(data)
+                chunk = stream.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
+                if not chunk:
+                    break
+                if len(chunk) > remaining:
+                    with state_lock:
+                        overflows.append(name)
+                    terminate()
+                    break
+                data.extend(chunk)
+        except BaseException as error:
+            with state_lock:
+                read_errors.append(error)
+            terminate()
+        finally:
+            captured[name] = bytes(data)
+            stream.close()
+
+    readers = (
+        threading.Thread(
+            target=read_stream,
+            args=(process.stdout, "stdout", MAX_GIT_OUTPUT_BYTES),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_stream,
+            args=(process.stderr, "stderr", MAX_GIT_DIAGNOSTIC_BYTES),
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait()
+    except BaseException:
+        terminate()
+        process.wait()
+        raise
+    finally:
+        for reader in readers:
+            reader.join()
+
+    if read_errors:
+        raise read_errors[0]
+    if overflows:
+        name = "stdout" if "stdout" in overflows else "stderr"
+        limit = (
+            MAX_GIT_OUTPUT_BYTES
+            if name == "stdout"
+            else MAX_GIT_DIAGNOSTIC_BYTES
+        )
+        raise RuntimeError(f"git {name} exceeds the {limit}-byte limit")
+    if returncode != 0:
+        detail_bytes = captured["stderr"] or captured["stdout"]
+        encoding = locale.getpreferredencoding(False)
+        detail = detail_bytes.decode(encoding, "replace").strip()
+        raise RuntimeError(detail or "git command failed")
+    return captured["stdout"]
 
 
 def _tracked_entries(repo: Path) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
-    for record in _git(repo, "ls-files", "--stage", "-z").split(b"\0"):
+    raw = _git(repo, "ls-files", "--stage", "-z")
+    if raw and not raw.endswith(b"\0"):
+        raise RuntimeError("git returned a truncated tracked-file listing")
+    total_path_bytes = 0
+    start = 0
+    while start < len(raw):
+        end = raw.find(b"\0", start)
+        if end < 0:  # pragma: no cover - guarded by the trailing-NUL check
+            raise RuntimeError("git returned a truncated tracked-file listing")
+        record = raw[start:end]
+        start = end + 1
         if not record:
             continue
-        metadata, raw_path = record.split(b"\t", 1)
+        if len(record) > MAX_TRACKED_RECORD_BYTES:
+            raise RuntimeError(
+                "tracked-file record exceeds the "
+                f"{MAX_TRACKED_RECORD_BYTES}-byte limit"
+            )
+        if len(entries) >= MAX_TRACKED_ENTRIES:
+            raise RuntimeError(
+                f"tracked-file listing exceeds the {MAX_TRACKED_ENTRIES}-entry limit"
+            )
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+        except ValueError as error:
+            raise RuntimeError("git returned a malformed tracked-file entry") from error
+        if len(raw_path) > MAX_TRACKED_PATH_BYTES:
+            raise RuntimeError(
+                f"tracked path exceeds the {MAX_TRACKED_PATH_BYTES}-byte limit"
+            )
+        total_path_bytes += len(raw_path)
+        if total_path_bytes > MAX_TRACKED_TOTAL_PATH_BYTES:
+            raise RuntimeError(
+                "tracked paths exceed the "
+                f"{MAX_TRACKED_TOTAL_PATH_BYTES}-byte aggregate limit"
+            )
         fields = metadata.split()
         if len(fields) != 3 or fields[2] != b"0":
             raise RuntimeError("the index contains unresolved or malformed entries")
         path = raw_path.decode("utf-8", "surrogateescape")
         entries.append((fields[0].decode("ascii"), path))
     return entries
+
+
+def _read_tracked_text_file(path: Path, name: str, total_bytes: int) -> bytes:
+    """Read one stable regular text file within file and aggregate ceilings."""
+    initial = path.lstat()
+    if not stat.S_ISREG(initial.st_mode):
+        raise RuntimeError(f"tracked text path is not a regular file: {name}")
+    if initial.st_size > MAX_TEXT_FILE_BYTES:
+        raise RuntimeError(
+            f"tracked text file exceeds the {MAX_TEXT_FILE_BYTES}-byte limit: {name}"
+        )
+    if total_bytes + initial.st_size > MAX_TEXT_TOTAL_BYTES:
+        raise RuntimeError(
+            "tracked text files exceed the "
+            f"{MAX_TEXT_TOTAL_BYTES}-byte aggregate limit"
+        )
+
+    with path.open("rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (initial.st_dev, initial.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise RuntimeError(f"tracked text file changed while opening: {name}")
+        content = bytearray()
+        while True:
+            file_remaining = MAX_TEXT_FILE_BYTES - len(content)
+            aggregate_remaining = MAX_TEXT_TOTAL_BYTES - total_bytes - len(content)
+            remaining = min(file_remaining, aggregate_remaining)
+            chunk = stream.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
+            if not chunk:
+                break
+            if len(chunk) > remaining:
+                if len(chunk) > file_remaining:
+                    raise RuntimeError(
+                        "tracked text file exceeds the "
+                        f"{MAX_TEXT_FILE_BYTES}-byte limit: {name}"
+                    )
+                raise RuntimeError(
+                    "tracked text files exceed the "
+                    f"{MAX_TEXT_TOTAL_BYTES}-byte aggregate limit"
+                )
+            content.extend(chunk)
+        finished = os.fstat(stream.fileno())
+    try:
+        current = path.lstat()
+    except FileNotFoundError as error:
+        raise RuntimeError(f"tracked text file disappeared while reading: {name}") from error
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        or opened.st_size != finished.st_size
+        or opened.st_mtime_ns != finished.st_mtime_ns
+        or finished.st_size != len(content)
+        or current.st_size != finished.st_size
+        or current.st_mtime_ns != finished.st_mtime_ns
+    ):
+        raise RuntimeError(f"tracked text file changed while reading: {name}")
+    return bytes(content)
 
 
 def _is_generated(path: Path) -> bool:
@@ -101,6 +277,7 @@ def hygiene_errors(repo: Path) -> list[str]:
     errors: list[str] = []
     entries = _tracked_entries(repo)
     folded: dict[str, str] = {}
+    text_bytes = 0
     for mode, name in entries:
         relative = Path(name)
         if _is_generated(relative):
@@ -123,10 +300,11 @@ def hygiene_errors(repo: Path) -> list[str]:
         if mode != "120000" and _is_text(relative):
             path = repo / relative
             try:
-                content = path.read_bytes()
-            except OSError as error:
+                content = _read_tracked_text_file(path, name, text_bytes)
+            except (OSError, RuntimeError) as error:
                 errors.append(f"cannot read tracked text file {name}: {error}")
                 continue
+            text_bytes += len(content)
             if content.startswith(b"\xef\xbb\xbf"):
                 errors.append(f"UTF-8 BOM is not allowed: {name}")
             try:

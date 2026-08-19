@@ -11,9 +11,10 @@ It records four fingerprints per component—exact, behavior, boundary, and
 compatibility—so CI can block consumer-facing changes without rejecting every
 internal refactor.
 
-> Version 0.11 uses the `boundary-lock/v3` contract. Version 0.10.x writes
-> `boundary-lock/v2`; do not mix v2 locks or writers with these v3 instructions.
-> See the [migration note](#upgrade-from-010).
+> Version 0.12 uses `boundary-lock/v3` with
+> `boundver-semantic-config/v2`. Version 0.11 writes v3/v1 locks and 0.10.x
+> writes v2 locks; both require regeneration before using these instructions.
+> See the [migration note](#upgrade-to-012).
 
 ## Try it in one minute
 
@@ -60,7 +61,7 @@ A clean result means the declared inputs and their recorded identities agree.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -206,61 +207,19 @@ roadmap work.
 
 ## Source modes
 
-| Mode | Snapshot | Typical use |
-|---|---|---|
-| `head` | One captured commit tree | CI and committed local checks |
-| `index` | One captured staged tree | Pre-commit checks |
-| `working-tree` | Current bytes for the captured tracked path set | Reviewing local edits |
-
-After the first commit, all three modes enumerate Git-tracked paths. Untracked
-files are excluded: add a new contract file to Git before expecting it to match
-a glob. In an unborn repository, `working-tree` uses a bounded filesystem
-fallback for initial setup. Working-tree bytes can still change while a command
-runs; disappearance or an invalid type fails closed.
-
-For `head` and `index`, the configuration and lockfile are read from that same
-captured Git snapshot—not from possibly different unstaged files on disk.
-Generation writes the resulting lock to the working tree; add it to Git before
-expecting an `index` or `head` verification to see the update.
-
-This source binding is intentionally stricter than 0.10. An index workflow must
-stage a changed config before `generate --source index`, and stage the resulting
-lock before `verify --source index`. A head workflow sees none of those changes
-until they are committed together.
-
-Use the same source for generation and verification. A lock generated from
-uncommitted working-tree bytes is not expected to verify against `head` until
-the source change and lock are committed together.
+Use `head` for committed CI state, `index` for staged pre-commit state, and
+`working-tree` while reviewing local edits. Generate and verify from the same
+source. The normative snapshot and tracked-file rules live in the
+[specification](spec/spec.md#source-modes); practical staging examples live in
+the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 
 ## GitHub Actions
 
-```yaml
-name: Contract boundary
-on: [pull_request]
-
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.11.0
-        with:
-          config: boundary.config.json
-          lock: boundary.lock.json
-          source: head
-          transitive: true
-```
-
-The Action installs its own tagged source with schema and YAML support and
-exposes `exit-code`, `issues`, and `observations`. See the
-[CI cookbook](https://github.com/yzm1/boundver/blob/main/docs/ci-cookbook.md) for changed-path reporting, GitLab,
-pre-commit, and cache examples.
-Omitting the Action's `facets` input honors component/default policy. Supply it
-only when one CLI-wide override is intentional and every selected component can
-provide those facets.
+Pin the Action to the same lock-contract release used by local writers (for
+this release, `yzm1/boundver@v0.12.0`). The
+[CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
+the canonical workflow recipe and covers outputs, changed-path reporting,
+GitLab, pre-commit, and caching.
 
 ## Providers
 
@@ -282,38 +241,19 @@ checked-out config cannot authorize imports. See
 
 ## Exit codes
 
-| Code | Highest selected failure |
-|---:|---|
-| `0` | Selected facets match |
-| `1` | Exact or metadata drift |
-| `2` | Usage, configuration, or digest error |
-| `3` | Behavior drift |
-| `4` | Boundary drift |
-| `5` | Compatibility-family drift |
+The stable `0` through `5` contract distinguishes clean verification, exact or
+metadata drift, usage errors, and behavior/boundary/compatibility drift. See
+[CI exit-code handling](docs/ci-cookbook.md#exit-code-aware-automation) for the
+authoritative table and shell examples.
 
-## Upgrade from 0.10
+## Upgrade to 0.12
 
-`boundary-lock/v2` omits identities required by v3, so `migrate-lock` cannot
-convert its fingerprints safely. Upgrade all writers and verifiers together,
-then regenerate from the snapshot your CI will verify:
-
-```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.11.0"
-boundver validate-config
-# Stage changed config and every changed/newly selected contract input.
-git add boundary.config.json services/payment/openapi/new-route.yaml
-boundver generate --source index
-git add boundary.lock.json
-boundver verify --source index
-git diff --cached -- boundary.config.json boundary.lock.json
-```
-
-Review the entire lock change. The corrected glob grammar may select a different
-set of files, provider versions may change, and v3 digests intentionally differ
-even for unchanged bytes. Commit the config, source, and new lock together.
-Replace the illustrative source path above with every changed or newly selected
-artifact. If the config did not change, omit it from `git add`; Git still uses
-the already tracked index version.
+Version 0.11's `boundary-lock/v3` uses semantic-config/v1, whose digest meaning
+differs from 0.12's semantic-config/v2. Version 0.10's `boundary-lock/v2` also
+omits identities required by v3. Neither lock can be relabelled safely: upgrade
+writers and verifiers together and regenerate from the snapshot CI will
+verify. Follow the canonical
+[0.12 upgrade procedure](docs/gradual-adoption.md#upgrading-to-012).
 
 ## Useful commands
 

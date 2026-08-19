@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
   "project": "example-json-file",
   "components": {
     "svc": {

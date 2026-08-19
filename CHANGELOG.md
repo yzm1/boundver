@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-19
+
+This release advances the semantic configuration digest contract to v2.
+Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
+
+### Breaking changes
+
+- Locks now use `boundver-semantic-config/v2`. Component `ecosystem` and
+  boundary `note` are explicitly presentation-only, while every
+  contract-affecting field remains bound into the digest. Existing
+  `boundary-lock/v3` locks carrying semantic-config/v1 must be regenerated;
+  their digests cannot be relabelled.
+- Raw and implicit built-in providers advance to v3, `json-canonical` advances
+  to v3, and `openapi-canonical` advances to v4 for their bounded, stricter
+  selection and validation contracts. Existing provider metadata must be
+  regenerated even when selected artifact bytes are unchanged.
+
 ### Added
 
 - A fail-closed `publish_release.py resume` recovery path can resume one
@@ -16,15 +33,74 @@ All notable changes to this project are documented here. The format follows
   protected publication workflow once from current `main`; it never changes
   the approved alias policy, moves the release tag, or rebuilds and replaces
   the candidate.
+- Standard GitHub-hosted macOS Intel and arm64 CI jobs; cross-platform
+  composite-Action and pre-commit contracts on Linux, Windows, and macOS; an
+  undefined-name and unused-code gate; Dependabot maintenance for
+  Actions/Python pins; and coverage for every published pre-commit hook.
+
+### Changed
+
+- Git, filesystem, and provider hashing now stream and deduplicate inputs under
+  explicit entry, path, transport, diagnostic, and aggregate memory limits;
+  concurrent file/symlink changes fail closed, and glob complexity is bounded.
+- Release candidates use one shared verifier and binary-only SHA-256 wheel
+  locks for the complete Action, CI, and release toolchains. Python startup is
+  isolated, and candidate tooling receives a minimal disposable environment.
+- Local and protected release checks bound subprocess output, paginated API
+  responses, tracked-file traversal, remote metadata, and compressed archive
+  members before allocation; their JSON and TOML parsing is independent of
+  Python's process-wide integer conversion setting.
+- The runtime image pins its multi-platform Python base digest, Debian snapshot,
+  and Git package, builds reproducibly from the hash-locked wheelhouse, and
+  installs the final environment without network access.
+- Repeated source-mode, Action, exit-code, and v2-upgrade guidance now links to
+  the authoritative specification, cookbook, and migration procedure.
+- Machine-readable schemas changed after a release identify the development
+  contract on `main`; generated configs and locks remain pinned to the latest
+  immutable release schema until the next release-preparation commit.
 
 ### Fixed
 
+- Local and protected workflow dispatches bind deduplication to the exact tag,
+  release/control commit, compatibility-alias policy, and recovery run. The
+  local launcher discovers an accepted exact run even when the CLI response is
+  ambiguous, and paginated draft/public Release discovery binds subsequent
+  reads to the immutable numeric Release ID.
+- Windows release checks resolve Git-for-Windows Bash instead of the WSL
+  launcher, and credentialed review checks run from trusted control code with
+  an explicit fine-grained read-only token and invoking Python interpreter.
 - Publication recovery can continue after the exact GitHub Release has already
   become public and immutable, but only after reconciling its metadata and
   retained asset bytes. Public-surface verification runs reviewed control code
   from the recovery commit and treats LF, CRLF, and CR as equivalent transport
   spellings in otherwise exact release notes. A conflicting public Release is
   rejected before any TestPyPI or PyPI mutation.
+- Changed-component selection now honors `--source`, immutable Git snapshots,
+  both sides of cross-component renames, and repository-root components.
+- Strict generation and filtered verification reject incomplete custom-provider
+  results and vendored errors anywhere in a lock; malformed extension results
+  are contained as controlled provider failures.
+- JSON/YAML integers, symlink targets, canonical metadata, and version parsing
+  behave deterministically across supported Python versions and platforms;
+  deep JSON diagnostics and Windows reparse-point traversal fail closed under
+  explicit depth, node, path, and byte ceilings.
+- Lock diffs report project/config changes and slice metadata-only changes;
+  malformed configs no longer produce tracebacks in `add`, `remove`, or
+  `explain`.
+- Human CLI output is safe on redirected Windows code pages, atomic rewrites
+  preserve existing POSIX permissions, and positional names after `--` are no
+  longer mistaken for global verbosity flags.
+- Local release verification prefers Git-for-Windows Bash over the incompatible
+  WSL launcher while retaining normal Bash discovery on other platforms.
+- Trusted Codex release-review evidence must contain the authenticated clean
+  verdict for the exact reviewed commit; adverse or mixed bodies cannot satisfy
+  the release gate, and evidence is accepted only from a PR merged into this
+  repository's `main`. The mutation boundary requires identical review-state
+  snapshots before and after the semantic audit and immediately before push.
+- Registry and repository mutation jobs no longer execute candidate code with
+  OIDC or write credentials. Production PyPI retries reuse the complete exact
+  artifact with duplicate tolerance, followed by byte-for-byte public
+  verification, so a partial upload cannot make a failed-job retry unsafe.
 
 ## [0.11.0] - 2026-08-14
 
@@ -156,10 +232,6 @@ release.
 - The release-review audit materializes GitHub review and comment records
   before nested API lookups, so a Windows GitHub CLI invoked from WSL cannot
   consume later exact-commit evidence from the audit loop.
-- GitHub Release draft recovery discovers private drafts through the
-  authenticated paginated release list and reconciles them by numeric ID;
-  draft-only 404 responses from the public tag endpoint no longer strand a
-  verified release candidate.
 - OpenAPI canonicalization rejects malformed roots, unsafe or external
   references, ambiguous YAML constructs, and invalid map keys; it retains
   extension fields as contract data and handles response keys consistently.
@@ -301,7 +373,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/yzm1/boundver/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yzm1/boundver/releases/tag/v0.10.0
 [0.9.1]: https://github.com/yzm1/boundver/compare/v0.9.0...v0.9.1

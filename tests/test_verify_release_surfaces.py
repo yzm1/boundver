@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import sys
 from pathlib import Path
@@ -11,12 +12,18 @@ from typing import Any
 
 import pytest
 
+from tests._project_metadata import (
+    CURRENT_MINOR_TAG,
+    CURRENT_TAG,
+    CURRENT_VERSION,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TAG = "v0.11.0"
-VERSION = "0.11.0"
+TAG = CURRENT_TAG
+VERSION = CURRENT_VERSION
 SHA = "a" * 40
-ALIAS = "v0.11"
+ALIAS = CURRENT_MINOR_TAG
 RELEASE_NOTES = "### Changed\n\n- Shipped the exact verified candidate.\n"
 
 
@@ -253,34 +260,41 @@ def test_marketplace_phase_defers_production_pypi_and_alias(candidate):
 
 def test_github_phase_verifies_only_the_immutable_release(candidate):
     routes = _surface_routes(candidate[2])
-    allowed_prefixes = (
-        "https://api.github.com/repos/yzm1/boundver/releases/",
-        "https://api.github.com/repos/yzm1/boundver/git/ref/tags/v0.11.0",
-    )
-    routes = {
-        url: response
-        for url, response in routes.items()
-        if url.startswith(allowed_prefixes)
-    }
     fetch = FakeFetcher(routes)
 
     _verify(candidate, fetch, phase="github")
 
     requested = {url for url, _ in fetch.requests}
-    assert requested
     assert not any("pypi.org" in url for url in requested)
-    assert not any("marketplace/actions" in url for url in requested)
-    assert f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}" not in requested
+    assert "https://github.com/marketplace/actions/boundver" not in requested
+    assert (
+        f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}"
+        not in requested
+    )
+    assert (
+        f"https://api.github.com/repos/yzm1/boundver/releases/tags/{TAG}"
+        in requested
+    )
+    assert (
+        f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{TAG}"
+        in requested
+    )
 
 
-def test_complete_phase_can_skip_only_the_compatibility_alias(candidate):
+def test_complete_phase_accepts_alias_none_only_when_alias_is_skipped(candidate):
     routes = _surface_routes(candidate[2])
     routes.pop(
         f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}"
     )
     fetch = FakeFetcher(routes)
 
-    _verify(candidate, fetch, phase="complete", verify_alias=False)
+    _verify(
+        candidate,
+        fetch,
+        phase="complete",
+        alias="none",
+        verify_alias=False,
+    )
 
     requested = {url for url, _ in fetch.requests}
     assert f"https://pypi.org/pypi/boundver/{VERSION}/json" in requested
@@ -289,6 +303,70 @@ def test_complete_phase_can_skip_only_the_compatibility_alias(candidate):
         f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}"
         not in requested
     )
+
+
+def test_alias_none_is_rejected_before_network_without_skip_alias(candidate):
+    fetch = FakeFetcher({})
+
+    with pytest.raises(verifier.ReleaseVerificationError, match="requires --skip-alias"):
+        _verify(candidate, fetch, alias="none")
+
+    assert fetch.requests == []
+
+
+def test_cli_accepts_alias_none_with_skip_alias(candidate, monkeypatch):
+    fetch = FakeFetcher(_surface_routes(candidate[2]))
+    monkeypatch.setattr(verifier, "_stdlib_fetch", fetch)
+
+    assert verifier.main(
+        [
+            "--tag",
+            TAG,
+            "--sha",
+            SHA,
+            "--alias",
+            "none",
+            "--skip-alias",
+            "--dist-dir",
+            str(candidate[0]),
+            "--release-assets-dir",
+            str(candidate[1]),
+            "--release-notes",
+            str(candidate[0].parent / "release-notes.md"),
+            "--attempts",
+            "1",
+        ]
+    ) == 0
+
+    alias_url = f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}"
+    assert alias_url not in {url for url, _ in fetch.requests}
+
+
+def test_cli_rejects_alias_none_without_skip_alias(candidate, monkeypatch, capsys):
+    fetch = FakeFetcher({})
+    monkeypatch.setattr(verifier, "_stdlib_fetch", fetch)
+
+    assert verifier.main(
+        [
+            "--tag",
+            TAG,
+            "--sha",
+            SHA,
+            "--alias",
+            "none",
+            "--dist-dir",
+            str(candidate[0]),
+            "--release-assets-dir",
+            str(candidate[1]),
+            "--release-notes",
+            str(candidate[0].parent / "release-notes.md"),
+            "--attempts",
+            "1",
+        ]
+    ) == 1
+
+    assert "requires --skip-alias" in capsys.readouterr().err
+    assert fetch.requests == []
 
 
 @pytest.mark.parametrize(
@@ -375,7 +453,7 @@ def test_github_asset_names_and_digests_are_exact(candidate):
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("name", "boundver v0.11.0", "title disagrees"),
+        ("name", f"boundver {CURRENT_TAG}", "title disagrees"),
         ("body", RELEASE_NOTES.replace("exact ", ""), "notes disagree"),
     ],
 )
@@ -409,9 +487,7 @@ def test_github_may_omit_only_the_release_notes_final_newline(candidate):
 
 
 @pytest.mark.parametrize("newline", ["\r\n", "\r"])
-def test_github_release_notes_accept_transport_newline_normalization(
-    candidate, newline: str
-):
+def test_github_release_notes_accept_transport_newline_spelling(candidate, newline):
     routes = _surface_routes(candidate[2])
     url = f"https://api.github.com/repos/yzm1/boundver/releases/tags/{TAG}"
     payload = json.loads(routes[url])
@@ -545,3 +621,59 @@ def test_retries_remain_bounded(candidate):
 
     assert sleeps == [0, 0]
     assert sum(url == marketplace_url for url, _ in fetch.requests) == 3
+
+
+class _StreamingResponse(io.BytesIO):
+    def __init__(self, payload: bytes, url: str, headers: dict[str, str]):
+        super().__init__(payload)
+        self.url = url
+        self.headers = headers
+        self.status = 200
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return super().read(size)
+
+    def geturl(self) -> str:
+        return self.url
+
+
+def test_stdlib_fetch_rejects_oversized_content_length_before_read(monkeypatch):
+    url = "https://api.github.com/example"
+    response = _StreamingResponse(
+        b"{}",
+        url,
+        {"Content-Length": str(verifier.MAX_PUBLIC_DOCUMENT_BYTES + 1)},
+    )
+    monkeypatch.setattr(verifier.urllib.request, "urlopen", lambda *args, **kwargs: response)
+
+    with pytest.raises(verifier.ReleaseNetworkError, match="response limit"):
+        verifier._stdlib_fetch(url, "application/json")
+
+    assert response.read_sizes == []
+
+
+def test_stdlib_fetch_uses_one_byte_growth_sentinel(monkeypatch):
+    url = "https://api.github.com/example"
+    response = _StreamingResponse(b"abcde-more", url, {})
+    monkeypatch.setattr(verifier, "MAX_PUBLIC_DOCUMENT_BYTES", 4)
+    monkeypatch.setattr(verifier.urllib.request, "urlopen", lambda *args, **kwargs: response)
+
+    with pytest.raises(verifier.ReleaseNetworkError, match="4-byte response limit"):
+        verifier._stdlib_fetch(url, "application/json")
+
+    assert response.read_sizes == [4, 1]
+
+
+def test_local_artifact_size_is_rejected_before_open(tmp_path, monkeypatch):
+    artifact = tmp_path / "oversized.whl"
+    artifact.write_bytes(b"ab")
+    monkeypatch.setattr(verifier, "MAX_RELEASE_ARTIFACT_BYTES", 1)
+
+    def fail_open(*args, **kwargs):
+        raise AssertionError("oversized artifact must not be opened")
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(verifier.ReleaseVerificationError, match="1-byte limit"):
+        verifier._artifact(artifact)

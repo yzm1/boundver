@@ -2,7 +2,9 @@
 
 This document defines the deterministic hashing and source-snapshot contract
 for `boundary-lock/v3`. A v1 or v2 lock must be regenerated from repository
-content: neither older format binds all of the inputs required by v3.
+content: neither older format binds all of the inputs required by v3. A v3
+lock carrying `boundver-semantic-config/v1` must also be regenerated because
+its digest meaning differs from v2 and cannot be relabelled safely.
 
 ## Core rules
 
@@ -15,8 +17,11 @@ content: neither older format binds all of the inputs required by v3.
   raw behavior fingerprints even when the blob bytes are identical.
 - Text line endings: CRLF is canonicalized to LF when content contains no NUL.
 - Binary content: bytes containing NUL are hashed without line-ending changes.
-- Ordering: entries are sorted by encoded label, mode, type, then content.
-  Duplicate entries remain distinct and count toward `entry_count`.
+- Ordering: core hash inputs are sorted by encoded label, mode, type, then
+  content. The framing layer never coalesces identical tuples, so any internal
+  duplicates remain distinct and count toward `entry_count`. Provider results
+  have a stricter contract: labels must be unique and in strictly increasing
+  encoded-label order; duplicate labels are rejected before hashing.
 
 Every entry digest uses this binary format. `u64` is an unsigned big-endian
 64-bit integer and `||` means byte concatenation:
@@ -128,7 +133,44 @@ by CLI or configured policy as unavailable when either locked or current value
 is null and returns usage exit `2`; the policy-free fallback gates all available
 facets instead.
 
-The guardrails are 50,000 files per digest and 50 MiB per file.
+The guardrails are 50,000 entries per digest, 50 MiB per entry, and 256 MiB of
+logical entry content per digest. Repeated paths that resolve to the same Git
+blob count once toward Git transport memory but once per path toward the
+logical-content limit. Encoded labels are limited to 16 KiB each and 16 MiB in
+aggregate. These limits are enforced while Git blobs and tree entries are
+streamed, before a complete component tree can accumulate in memory.
+
+Git source snapshots and filename listings are NUL-parsed as a stream rather
+than captured as one subprocess result. A captured repository tree is limited
+to 50,000 entries, 16 KiB per encoded path, 16 MiB of encoded paths in
+aggregate, and 32 MiB of listing transport. This repository-level snapshot
+ceiling is applied before component selection because one operation must use a
+single immutable tree. Working-tree regular files are read in fixed-size
+chunks with a one-byte oversize sentinel; identity, size, and modification-time
+changes during the read fail closed. Symlink target bytes retain the separate
+handling described below. Directory symlinks and Windows directory reparse
+points (including NTFS junctions) are never traversed as repository content.
+
+Built-in providers apply the same per-entry and aggregate ceilings while they
+collect results and, when the host supplies a limit-aware source accessor,
+request no more than the remaining aggregate byte budget. Custom providers are
+explicitly trusted in-process Python extensions: boundver validates and bounds
+their returned result before hashing, but cannot constrain allocations made by
+arbitrary provider code while its `resolve()` method is executing.
+Provider path declarations are capped at 50,000, built-in validation retains at
+most 100 bounded errors, and a configuration may declare at most 100 custom
+provider classes; the custom-provider count is rejected before any import.
+Custom-provider metadata is limited to 64 nesting levels, 100,000 JSON values,
+and 1 MiB of canonical JSON; canonical emission stops at that byte ceiling.
+
+JSON-compatible value trees from configuration, lockfiles, and canonical
+JSON/OpenAPI providers are traversed iteratively under a shared limit of 128
+levels and 100,000 values. Validation retains at most 100 issues, and a
+rendered diagnostic path is capped at 4 KiB. Path nodes share their ancestors
+until an error is rendered, so nested long keys cannot create quadratic live
+memory before a depth or node guardrail is applied. Untrusted scalar previews
+in validation diagnostics are rendered independently of Python's process-wide
+integer conversion setting and capped at 500 characters.
 
 ## Derived digests
 
@@ -156,13 +198,13 @@ Every v3 lock stores:
 
 ```json
 {
-  "config_contract": "boundver-semantic-config/v1",
+  "config_contract": "boundver-semantic-config/v2",
   "config_digest": "<sha256>"
 }
 ```
 
 `config_digest` is SHA-256 of the UTF-8 string
-`boundver-semantic-config/v1\n` followed by canonical JSON of the semantic
+`boundver-semantic-config/v2\n` followed by canonical JSON of the semantic
 configuration. Canonical JSON sorts object keys, uses compact `,`/`:`
 separators, preserves Unicode, and has no insignificant whitespace.
 
@@ -172,8 +214,9 @@ component path, boundary provider/globs/options, behavior paths, version source,
 vendored paths, compatibility inputs, validated internal `consumers`, opaque
 `external_consumers`, per-component `verify_facets`, and every explicit or
 `closure_of` slice declaration. Set-like lists are sorted and documented
-default values are materialized. Presentation-only `$schema` values and object
-insertion order do not affect it. Verification compares this digest before
+default values are materialized. Presentation-only `$schema` values, component
+`ecosystem`, boundary `note`, and object insertion order do not affect it.
+Verification compares this digest before
 component fingerprints, so a contract-affecting config mutation cannot remain
 invisible merely because it happens to select the same current bytes.
 

@@ -1,7 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
   "title": "boundver config",
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
+    }
+  },
   "type": "object",
   "required": ["project", "components"],
   "properties": {
@@ -9,6 +16,7 @@
     "project": {"type": "string", "minLength": 1},
     "providers": {
       "type": "array",
+      "maxItems": 100,
       "description": "Custom providers. Loading requires an explicit --allow-custom-providers flag or trusted environment opt-in.",
       "items": {
         "type": "object",
@@ -16,7 +24,7 @@
         "properties": {
           "module": {"type": "string", "minLength": 1},
           "class": {"type": "string", "minLength": 1},
-          "name": {"type": "string", "pattern": "^custom\\."}
+          "name": {"type": "string", "pattern": "^custom\\..*\\S$"}
         },
         "additionalProperties": false
       }
@@ -48,11 +56,7 @@
         "type": "object",
         "required": ["path", "boundary"],
         "properties": {
-          "path": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
-          },
+          "path": {"$ref": "#/$defs/relativePath"},
           "ecosystem": {"type": "string"},
           "version_source": {
             "oneOf": [
@@ -61,7 +65,7 @@
                 "type": "object",
                 "required": ["file", "field"],
                 "properties": {
-                  "file": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"},
+                  "file": {"$ref": "#/$defs/relativePath"},
                   "field": {"type": "string", "minLength": 1}
                 },
                 "additionalProperties": false
@@ -83,7 +87,8 @@
               "provider": {"type": "string", "minLength": 1},
               "paths": {
                 "type": "array",
-                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"}
+                "maxItems": 50000,
+                "items": {"$ref": "#/$defs/relativePath"}
               },
               "options": {
                 "type": "object",
@@ -100,18 +105,15 @@
             "properties": {
               "paths": {
                 "type": "array",
-                "items": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"}
+                "maxItems": 50000,
+                "items": {"$ref": "#/$defs/relativePath"}
               }
             },
             "additionalProperties": false
           },
           "vendored_copies": {
             "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
-            }
+            "items": {"$ref": "#/$defs/relativePath"}
           },
           "consumers": {
             "type": "array",

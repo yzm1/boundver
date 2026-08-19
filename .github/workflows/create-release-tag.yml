@@ -1,4 +1,5 @@
 name: Create release tag
+run-name: release-tag:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}
 
 on:
   workflow_dispatch:
@@ -24,6 +25,749 @@ concurrency:
 
 permissions: {}
 
+env:
+  # Workflow-defined, isolated code independently snapshots every mutable input
+  # used by the full repository audit.  The read-only and mutation jobs compare
+  # its digest so candidate scripts never receive a contents-write token.
+  REVIEW_STATE_PROGRAM: |
+    import hashlib
+    import json
+    import math
+    import os
+    import pathlib
+    import re
+    import shutil
+    import subprocess
+    import sys
+    import threading
+    import urllib.parse
+
+    MAX_API_BYTES = 128 * 1024 * 1024
+    MAX_STDERR_BYTES = 16 * 1024
+    MAX_RECORDS = 50_000
+    MAX_PAGES = 500
+    MAX_JSON_NUMBER_DIGITS = 4300
+    READ_CHUNK_BYTES = 64 * 1024
+    TRUSTED_CODEX_BOT_ID = 199175422
+    consumed_api_bytes = 0
+
+    release_sha, release_tag, repository = sys.argv[1:]
+    if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
+        raise SystemExit("review snapshot received a malformed release SHA")
+    version_match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release_tag)
+    if version_match is None:
+        raise SystemExit("review snapshot received a malformed release tag")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+        raise SystemExit("review snapshot received a malformed repository")
+
+    workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    runner_temp = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
+    gh = pathlib.Path(shutil.which("gh") or "").resolve()
+    git = pathlib.Path(shutil.which("git") or "").resolve()
+    for name, executable in (("gh", gh), ("git", git)):
+        if not executable.is_file() or executable == workspace or workspace in executable.parents:
+            raise SystemExit(f"trusted {name} executable is unavailable")
+
+    def kill_process(process):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    def read_bounded_pipe(process, pipe, label, limit, buffer, overflows, errors):
+        try:
+            while True:
+                remaining_with_sentinel = max(1, limit - len(buffer) + 1)
+                read_size = min(READ_CHUNK_BYTES, remaining_with_sentinel)
+                reader = getattr(pipe, "read1", pipe.read)
+                chunk = reader(read_size)
+                if not chunk:
+                    return
+                if len(buffer) + len(chunk) > limit:
+                    overflows.append(label)
+                    kill_process(process)
+                    return
+                buffer.extend(chunk)
+        except (OSError, ValueError) as exc:
+            errors.append((label, str(exc)))
+            kill_process(process)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def run(command, *, cwd, api=False):
+        global consumed_api_bytes
+        stdout_limit = (
+            MAX_API_BYTES - consumed_api_bytes if api else MAX_API_BYTES
+        )
+        if stdout_limit < 0:
+            raise SystemExit("review snapshot API responses exceed the safety limit")
+        try:
+            process = subprocess.Popen(
+                [str(item) for item in command],
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise SystemExit(f"review snapshot command failed: {exc}") from exc
+        if process.stdout is None or process.stderr is None:
+            kill_process(process)
+            raise SystemExit("review snapshot command pipes are unavailable")
+
+        stdout = bytearray()
+        stderr = bytearray()
+        overflows = []
+        reader_errors = []
+        readers = [
+            threading.Thread(
+                target=read_bounded_pipe,
+                args=(
+                    process,
+                    process.stdout,
+                    "stdout",
+                    stdout_limit,
+                    stdout,
+                    overflows,
+                    reader_errors,
+                ),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=read_bounded_pipe,
+                args=(
+                    process,
+                    process.stderr,
+                    "stderr",
+                    MAX_STDERR_BYTES,
+                    stderr,
+                    overflows,
+                    reader_errors,
+                ),
+                daemon=True,
+            ),
+        ]
+        for reader_thread in readers:
+            reader_thread.start()
+        try:
+            returncode = process.wait(timeout=90)
+        except subprocess.TimeoutExpired as exc:
+            kill_process(process)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise SystemExit("review snapshot command timed out") from exc
+        finally:
+            for reader_thread in readers:
+                reader_thread.join(timeout=5)
+
+        if any(reader_thread.is_alive() for reader_thread in readers):
+            kill_process(process)
+            raise SystemExit("review snapshot command pipes did not close")
+        if reader_errors:
+            label, detail = reader_errors[0]
+            raise SystemExit(f"review snapshot {label} read failed: {detail}")
+        if overflows:
+            if "stdout" in overflows and api:
+                raise SystemExit("review snapshot API responses exceed the safety limit")
+            if "stdout" in overflows:
+                raise SystemExit("review snapshot command output exceeds the safety limit")
+            raise SystemExit("review snapshot command stderr exceeds the safety limit")
+        if api:
+            consumed_api_bytes += len(stdout)
+        if returncode != 0:
+            detail = stderr.decode("utf-8", "backslashreplace").strip()
+            raise SystemExit(f"review snapshot command failed: {detail}")
+        return stdout
+
+    def git_text(*arguments):
+        return run(
+            [git, "-c", "core.hooksPath=/dev/null", "-C", workspace, *arguments],
+            cwd=runner_temp,
+        ).decode("utf-8", "strict")
+
+    def unique_json_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def bounded_json_int(value):
+        negative = value.startswith("-")
+        digits = value[1:] if negative else value
+        if len(digits) > MAX_JSON_NUMBER_DIGITS:
+            raise ValueError("oversized JSON integer")
+        result = 0
+        for offset in range(0, len(digits), 18):
+            chunk = digits[offset : offset + 18]
+            result = result * (10 ** len(chunk)) + int(chunk)
+        return -result if negative else result
+
+    def bounded_json_float(value):
+        digits = sum(char.isdigit() for char in value)
+        if digits > MAX_JSON_NUMBER_DIGITS:
+            raise ValueError("oversized JSON float")
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("non-finite JSON float")
+        return result
+
+    def reject_json_constant(_value):
+        raise ValueError("non-finite JSON constant")
+
+    def api_json(arguments):
+        raw = run([gh, "api", *arguments], cwd=runner_temp, api=True)
+        try:
+            return json.loads(
+                raw.decode("utf-8", "strict"),
+                object_pairs_hook=unique_json_object,
+                parse_constant=reject_json_constant,
+                parse_float=bounded_json_float,
+                parse_int=bounded_json_int,
+            )
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SystemExit("GitHub returned malformed JSON during review snapshot") from exc
+
+    def rest(endpoint):
+        return api_json([endpoint, "-H", "Accept: application/vnd.github+json"])
+
+    def rest_records(endpoint):
+        records = []
+        separator = "&" if "?" in endpoint else "?"
+        for page_number in range(1, MAX_PAGES + 1):
+            page = rest(
+                f"{endpoint}{separator}page={page_number}"
+            )
+            if not isinstance(page, list):
+                raise SystemExit("GitHub returned a non-list review-state page")
+            if len(page) > 100:
+                raise SystemExit("GitHub returned an oversized review-state page")
+            records.extend(page)
+            if len(records) > MAX_RECORDS:
+                raise SystemExit("GitHub returned too many review-state records")
+            if len(page) < 100:
+                return records
+        raise SystemExit("GitHub returned too many review-state pages")
+
+    def actor(value):
+        if value is None:
+            return {"id": None, "login": None, "type": None}
+        if not isinstance(value, dict):
+            raise SystemExit("GitHub returned a malformed actor")
+        actor_id = value.get("id")
+        login = value.get("login")
+        actor_type = value.get("type")
+        if (type(actor_id) is not int or actor_id <= 0 or
+                not isinstance(login, str) or not isinstance(actor_type, str)):
+            raise SystemExit("GitHub returned a malformed actor")
+        return {"id": actor_id, "login": login, "type": actor_type}
+
+    merged_tags = []
+    for candidate in git_text("tag", "--merged", release_sha).splitlines():
+        match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", candidate)
+        # The mutation job creates the candidate tag locally before its final
+        # snapshot.  Normalize that one tag away so the digest remains bound
+        # to the same remote/review state as the read-only handoff.
+        if match is not None and candidate != release_tag:
+            merged_tags.append((tuple(map(int, match.groups())), candidate))
+    if len(merged_tags) != len(set(merged_tags)):
+        raise SystemExit("duplicate merged semantic-version tags were returned")
+    merged_tags.sort()
+    release_version = tuple(map(int, version_match.groups()))
+    previous = [item for item in merged_tags if item[0] < release_version]
+    previous_tag = previous[-1][1] if previous else ""
+    commit_range = f"{previous_tag}..{release_sha}" if previous_tag else release_sha
+    commits = git_text("rev-list", commit_range).splitlines()
+    if (not commits or len(commits) > MAX_RECORDS or
+            len(commits) != len(set(commits)) or
+            any(re.fullmatch(r"[0-9a-f]{40}", item) is None for item in commits)):
+        raise SystemExit("release range returned malformed or excessive commits")
+
+    associations = {}
+    release_prs = set()
+    for commit in commits:
+        records = rest_records(f"repos/{repository}/commits/{commit}/pulls?per_page=100")
+        numbers = []
+        for record in records:
+            number = record.get("number") if isinstance(record, dict) else None
+            if type(number) is not int or number <= 0:
+                raise SystemExit("GitHub returned a malformed associated pull request")
+            numbers.append(number)
+        if not numbers or len(numbers) != len(set(numbers)):
+            raise SystemExit("GitHub returned missing or duplicate pull-request associations")
+        numbers.sort()
+        associations[commit] = numbers
+        release_prs.update(numbers)
+
+    owner, repository_name = repository.split("/", 1)
+    repository_record = rest(f"repos/{repository}")
+    if not isinstance(repository_record, dict):
+        raise SystemExit("GitHub returned malformed repository metadata")
+    repository_owner = actor(repository_record.get("owner"))
+    if repository_owner["login"].casefold() != owner.casefold():
+        raise SystemExit("GitHub repository ownership changed")
+
+    thread_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewDecision reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}"""
+    pull_requests = {}
+    for number in sorted(release_prs):
+        pr = rest(f"repos/{repository}/pulls/{number}")
+        if not isinstance(pr, dict) or pr.get("number") != number:
+            raise SystemExit("GitHub returned malformed pull-request metadata")
+        head = pr.get("head")
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        merge_sha = pr.get("merge_commit_sha")
+        pr_state = pr.get("state")
+        merged_at = pr.get("merged_at")
+        base = pr.get("base")
+        base_ref = base.get("ref") if isinstance(base, dict) else None
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        base_repository = (
+            base_repo.get("full_name") if isinstance(base_repo, dict) else None
+        )
+        if (not isinstance(head_sha, str) or
+                (merge_sha is not None and not isinstance(merge_sha, str)) or
+                pr_state not in {"open", "closed"} or
+                (merged_at is not None and not isinstance(merged_at, str)) or
+                not isinstance(base_ref, str) or
+                not isinstance(base_repository, str)):
+            raise SystemExit("GitHub returned malformed pull-request commit metadata")
+        if (pr_state != "closed" or not merged_at or base_ref != "main" or
+                base_repository.casefold() != repository.casefold()):
+            raise SystemExit(
+                f"associated PR #{number} is not merged into {repository}:main"
+            )
+
+        reviews = []
+        review_ids = set()
+        permission_logins = set()
+        evidence_candidates = set()
+        for review in rest_records(f"repos/{repository}/pulls/{number}/reviews?per_page=100"):
+            if not isinstance(review, dict):
+                raise SystemExit("GitHub returned a malformed review")
+            review_id = review.get("id")
+            state = review.get("state")
+            commit_id = review.get("commit_id")
+            body = review.get("body")
+            reviewer = actor(review.get("user"))
+            if (type(review_id) is not int or review_id <= 0 or review_id in review_ids or
+                    not isinstance(state, str) or
+                    (commit_id is not None and not isinstance(commit_id, str)) or
+                    (body is not None and not isinstance(body, str))):
+                raise SystemExit("GitHub returned a malformed or duplicate review")
+            review_ids.add(review_id)
+            reviews.append({
+                "id": review_id,
+                "state": state,
+                "commit_id": commit_id,
+                "body": body,
+                "actor": reviewer,
+            })
+            evidence_actor = (
+                state == "APPROVED" and reviewer["type"] == "User"
+            ) or (
+                state == "COMMENTED" and reviewer["type"] == "Bot" and
+                reviewer["id"] == TRUSTED_CODEX_BOT_ID
+            )
+            if (evidence_actor and isinstance(commit_id, str) and
+                    re.fullmatch(r"[0-9a-fA-F]{7,40}", commit_id) is not None):
+                evidence_candidates.add(commit_id.lower())
+            if state == "APPROVED" and reviewer["type"] == "User":
+                permission_logins.add(reviewer["login"])
+
+        comments = []
+        comment_ids = set()
+        for comment in rest_records(f"repos/{repository}/issues/{number}/comments?per_page=100"):
+            if not isinstance(comment, dict):
+                raise SystemExit("GitHub returned a malformed issue comment")
+            comment_id = comment.get("id")
+            body = comment.get("body")
+            if (type(comment_id) is not int or comment_id <= 0 or
+                    comment_id in comment_ids or
+                    (body is not None and not isinstance(body, str))):
+                raise SystemExit("GitHub returned a malformed or duplicate issue comment")
+            comment_ids.add(comment_id)
+            commenter = actor(comment.get("user"))
+            comments.append({
+                "id": comment_id,
+                "body": body,
+                "actor": commenter,
+            })
+            if (isinstance(body, str) and commenter["type"] == "Bot" and
+                    commenter["id"] == TRUSTED_CODEX_BOT_ID):
+                for line in body.splitlines():
+                    marker = re.fullmatch(
+                        r"\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`",
+                        line.rstrip("\r"),
+                    )
+                    if marker is not None:
+                        evidence_candidates.add(marker.group(1).lower())
+
+        threads = []
+        thread_ids = set()
+        cursor = None
+        decision = None
+        decision_set = False
+        for page_index in range(MAX_PAGES):
+            arguments = [
+                "graphql", "-f", f"query={thread_query}",
+                "-f", f"owner={owner}", "-f", f"repository={repository_name}",
+                "-F", f"number={number}",
+            ]
+            if cursor is not None:
+                arguments.extend(("-f", f"endCursor={cursor}"))
+            response = api_json(arguments)
+            try:
+                pull_request = response["data"]["repository"]["pullRequest"]
+                review_threads = pull_request["reviewThreads"]
+                nodes = review_threads["nodes"]
+                page_info = review_threads["pageInfo"]
+            except (KeyError, TypeError) as exc:
+                raise SystemExit("GitHub returned malformed review-thread data") from exc
+            page_decision = pull_request.get("reviewDecision")
+            if not decision_set:
+                decision = page_decision
+                decision_set = True
+            elif page_decision != decision:
+                raise SystemExit("review decision changed during pagination")
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise SystemExit("GitHub returned malformed review-thread pagination")
+            if len(nodes) > 100 or len(threads) + len(nodes) > MAX_RECORDS:
+                raise SystemExit("GitHub returned too many review threads")
+            for node in nodes:
+                thread_id = node.get("id") if isinstance(node, dict) else None
+                resolved = node.get("isResolved") if isinstance(node, dict) else None
+                if (not isinstance(thread_id, str) or not thread_id or
+                        type(resolved) is not bool or thread_id in thread_ids):
+                    raise SystemExit("GitHub returned a malformed or duplicate review thread")
+                thread_ids.add(thread_id)
+                threads.append({"id": thread_id, "isResolved": resolved})
+            has_next = page_info.get("hasNextPage")
+            next_cursor = page_info.get("endCursor")
+            if type(has_next) is not bool:
+                raise SystemExit("GitHub returned malformed review-thread pagination")
+            if not has_next:
+                break
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                raise SystemExit("GitHub returned a malformed review-thread cursor")
+            cursor = next_cursor
+        else:
+            raise SystemExit("GitHub returned too many review-thread pages")
+
+        permissions = {}
+        for login in sorted(permission_logins, key=str.casefold):
+            encoded_login = urllib.parse.quote(login, safe="")
+            permission = rest(f"repos/{repository}/collaborators/{encoded_login}/permission")
+            value = permission.get("permission") if isinstance(permission, dict) else None
+            if not isinstance(value, str):
+                raise SystemExit("GitHub returned malformed collaborator permission")
+            permissions[login] = value
+
+        evidence_resolutions = {}
+        for candidate in sorted(evidence_candidates):
+            resolved = rest(f"repos/{repository}/commits/{candidate}")
+            resolved_sha = resolved.get("sha") if isinstance(resolved, dict) else None
+            if (not isinstance(resolved_sha, str) or
+                    re.fullmatch(r"[0-9a-f]{40}", resolved_sha) is None):
+                raise SystemExit("GitHub returned malformed review-evidence resolution")
+            evidence_resolutions[candidate] = resolved_sha
+
+        requested_reviewers = pr.get("requested_reviewers")
+        requested_teams = pr.get("requested_teams")
+        if not isinstance(requested_reviewers, list) or not isinstance(requested_teams, list):
+            raise SystemExit("GitHub returned malformed pending-review metadata")
+        teams = []
+        for team in requested_teams:
+            team_id = team.get("id") if isinstance(team, dict) else None
+            slug = team.get("slug") if isinstance(team, dict) else None
+            if type(team_id) is not int or team_id <= 0 or not isinstance(slug, str):
+                raise SystemExit("GitHub returned a malformed requested-review team")
+            teams.append({"id": team_id, "slug": slug})
+
+        normalized_reviewers = sorted(
+            (actor(item) for item in requested_reviewers),
+            key=lambda item: (item["id"] or 0, item["login"] or ""),
+        )
+        if len({item["id"] for item in normalized_reviewers}) != len(normalized_reviewers):
+            raise SystemExit("GitHub returned duplicate requested reviewers")
+        if len({item["id"] for item in teams}) != len(teams):
+            raise SystemExit("GitHub returned duplicate requested-review teams")
+
+        pull_requests[str(number)] = {
+            "author": actor(pr.get("user")),
+            "head_sha": head_sha,
+            "merge_sha": merge_sha,
+            "state": pr_state,
+            "merged_at": merged_at,
+            "base_repository": base_repository,
+            "base_ref": base_ref,
+            "requested_reviewers": normalized_reviewers,
+            "requested_teams": sorted(teams, key=lambda item: (item["id"], item["slug"])),
+            "review_decision": decision,
+            "review_threads": sorted(threads, key=lambda item: item["id"]),
+            "reviews": sorted(reviews, key=lambda item: item["id"]),
+            "comments": sorted(comments, key=lambda item: item["id"]),
+            "permissions": permissions,
+            "evidence_resolutions": evidence_resolutions,
+        }
+
+    snapshot = {
+        "release_sha": release_sha,
+        "release_tag": release_tag,
+        "merged_semver_tags": [item[1] for item in merged_tags],
+        "previous_tag": previous_tag,
+        "commits": commits,
+        "associations": associations,
+        "repository_owner": repository_owner,
+        "pull_requests": pull_requests,
+    }
+    encoded = json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    print(hashlib.sha256(encoded).hexdigest())
+
+  # This workflow-owned program is the only pagination path used to decide
+  # whether publication is already active or was already dispatched.  It runs
+  # outside the checkout, caps the producer pipes before materializing JSON,
+  # and fails closed if GitHub's page, item, or transport ceilings are reached.
+  PUBLICATION_RUN_STATE_PROGRAM: |
+    import json
+    import os
+    import pathlib
+    import re
+    import shutil
+    import subprocess
+    import sys
+    import threading
+
+    MAX_PAGE_BYTES = 8 * 1024 * 1024
+    MAX_TOTAL_BYTES = 32 * 1024 * 1024
+    MAX_STDERR_BYTES = 64 * 1024
+    MAX_PAGES = 100
+    MAX_ITEMS = 10_000
+    READ_CHUNK_BYTES = 64 * 1024
+    MAX_UINT64 = (1 << 64) - 1
+    ACTIVE_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
+
+    mode, repository, *selection = sys.argv[1:]
+    if mode not in {"active", "exact"}:
+        raise SystemExit("publication-run lookup mode is invalid")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+        raise SystemExit("publication-run repository is malformed")
+    if mode == "active" and selection:
+        raise SystemExit("active publication-run lookup received extra arguments")
+    if mode == "exact":
+        if len(selection) != 3:
+            raise SystemExit("exact publication-run lookup is incomplete")
+        release_sha, release_tag, expected_title = selection
+        if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
+            raise SystemExit("publication-run release SHA is malformed")
+        if re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release_tag) is None:
+            raise SystemExit("publication-run release tag is malformed")
+        if not expected_title or len(expected_title.encode("utf-8")) > 2048:
+            raise SystemExit("publication-run title is malformed")
+
+    workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+    runner_temp = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
+    gh = pathlib.Path(shutil.which("gh") or "").resolve()
+    if not gh.is_file() or gh == workspace or workspace in gh.parents:
+        raise SystemExit("trusted GitHub CLI is unavailable")
+    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    consumed_bytes = 0
+
+    def kill_process(process):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    def read_pipe(process, pipe, label, limit, buffer, overflows, errors):
+        try:
+            while True:
+                remaining_with_sentinel = max(1, limit - len(buffer) + 1)
+                reader = getattr(pipe, "read1", pipe.read)
+                chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
+                if not chunk:
+                    return
+                if len(buffer) + len(chunk) > limit:
+                    overflows.append(label)
+                    kill_process(process)
+                    return
+                buffer.extend(chunk)
+        except (OSError, ValueError):
+            errors.append(label)
+            kill_process(process)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def parse_integer(value):
+        if len(value.lstrip("-")) > 20:
+            raise ValueError("oversized JSON integer")
+        return int(value)
+
+    def reject_constant(_value):
+        raise ValueError("non-finite JSON constant")
+
+    def api_page(endpoint):
+        global consumed_bytes
+        remaining = MAX_TOTAL_BYTES - consumed_bytes
+        stdout_limit = min(MAX_PAGE_BYTES, remaining)
+        if stdout_limit < 0:
+            raise SystemExit("publication-run API responses exceed the aggregate limit")
+        try:
+            process = subprocess.Popen(
+                [str(gh), "api", endpoint],
+                cwd=runner_temp,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as error:
+            raise SystemExit("publication-run API command could not start") from error
+        if process.stdout is None or process.stderr is None:
+            kill_process(process)
+            raise SystemExit("publication-run API pipes are unavailable")
+        stdout = bytearray()
+        stderr = bytearray()
+        overflows = []
+        errors = []
+        readers = [
+            threading.Thread(
+                target=read_pipe,
+                args=(process, process.stdout, "stdout", stdout_limit,
+                      stdout, overflows, errors),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=read_pipe,
+                args=(process, process.stderr, "stderr", MAX_STDERR_BYTES,
+                      stderr, overflows, errors),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+        try:
+            returncode = process.wait(timeout=90)
+        except subprocess.TimeoutExpired as error:
+            kill_process(process)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            raise SystemExit("publication-run API command timed out") from error
+        finally:
+            for reader in readers:
+                reader.join(timeout=5)
+        if any(reader.is_alive() for reader in readers):
+            kill_process(process)
+            raise SystemExit("publication-run API pipes did not close")
+        if errors:
+            raise SystemExit("publication-run API response read failed")
+        if overflows:
+            raise SystemExit("publication-run API response exceeds the byte limit")
+        if returncode != 0:
+            detail = stderr.decode("utf-8", "backslashreplace").strip()
+            raise SystemExit(f"publication-run API request failed: {detail}")
+        consumed_bytes += len(stdout)
+        try:
+            return json.loads(
+                stdout.decode("utf-8", "strict"),
+                object_pairs_hook=unique_object,
+                parse_int=parse_integer,
+                parse_constant=reject_constant,
+            )
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SystemExit("publication-run API returned malformed JSON") from error
+
+    def iter_runs(endpoint):
+        expected_total = None
+        seen_count = 0
+        seen_ids = set()
+        separator = "&" if "?" in endpoint else "?"
+        for page_number in range(1, MAX_PAGES + 1):
+            payload = api_page(f"{endpoint}{separator}page={page_number}")
+            if not isinstance(payload, dict):
+                raise SystemExit("publication-run API returned a malformed page")
+            total = payload.get("total_count")
+            records = payload.get("workflow_runs")
+            if (
+                type(total) is not int
+                or total < 0
+                or total > MAX_ITEMS
+                or not isinstance(records, list)
+                or len(records) > 100
+                or (expected_total is not None and total != expected_total)
+            ):
+                raise SystemExit("publication-run API returned an invalid page")
+            expected_total = total
+            seen_count += len(records)
+            if seen_count > MAX_ITEMS or seen_count > total:
+                raise SystemExit("publication-run API returned too many records")
+            for record in records:
+                run_id = record.get("id") if isinstance(record, dict) else None
+                if (
+                    type(run_id) is not int
+                    or not 1 <= run_id <= MAX_UINT64
+                    or run_id in seen_ids
+                ):
+                    raise SystemExit("publication-run API returned a malformed run")
+                seen_ids.add(run_id)
+                yield record
+            if len(records) < 100:
+                if seen_count != total:
+                    raise SystemExit("publication-run API pagination was incomplete")
+                return
+        raise SystemExit("publication-run API exceeds the page limit")
+
+    endpoint = f"repos/{repository}/actions/workflows/publish.yml/runs?per_page=100"
+    if mode == "active":
+        active_count = 0
+        for run in iter_runs(endpoint):
+            status = run.get("status")
+            if not isinstance(status, str):
+                raise SystemExit("publication-run API returned a malformed status")
+            if status in ACTIVE_STATES:
+                active_count += 1
+        print(active_count)
+    else:
+        endpoint += f"&event=workflow_dispatch&head_sha={release_sha}"
+        matches = []
+        for run in iter_runs(endpoint):
+            if (
+                run.get("event") == "workflow_dispatch"
+                and run.get("head_sha") == release_sha
+                and run.get("head_branch") == release_tag
+                and run.get("display_title") == expected_title
+            ):
+                run_id = run["id"]
+                expected_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+                if run.get("html_url") != expected_url:
+                    raise SystemExit("publication-run URL disagrees with its identity")
+                matches.append(expected_url)
+        if len(matches) > 1:
+            raise SystemExit(
+                "multiple publication runs exist for this exact tag, SHA, and alias policy"
+            )
+        if matches:
+            print(matches[0])
+
 jobs:
   verify-candidate:
     name: Verify candidate before tagging
@@ -42,6 +786,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Validate inputs, version, and current main commit
@@ -53,15 +798,234 @@ jobs:
           COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
         run: |
           set -euo pipefail
-          python3 - "$RELEASE_TAG" "$RELEASE_SHA" "$COMPATIBILITY_ALIAS" <<'PY'
+          python3 -I - "$RELEASE_TAG" "$RELEASE_SHA" "$COMPATIBILITY_ALIAS" <<'PY'
           import pathlib
           import re
           import subprocess
           import sys
           import tomllib
 
+          MAX_PROJECT_METADATA_BYTES = 1024 * 1024
+          MAX_TOML_INTEGER_DIGITS = 640
+          MAX_VERSION_BYTES = 1024
+          READ_CHUNK_BYTES = 64 * 1024
+
+          def read_project_text(path):
+              advertised = path.stat().st_size
+              if advertised > MAX_PROJECT_METADATA_BYTES:
+                  raise SystemExit("pyproject.toml exceeds the metadata safety limit")
+              chunks = []
+              total = 0
+              with path.open("rb") as stream:
+                  while total < MAX_PROJECT_METADATA_BYTES:
+                      chunk = stream.read(
+                          min(READ_CHUNK_BYTES, MAX_PROJECT_METADATA_BYTES - total)
+                      )
+                      if not chunk:
+                          break
+                      chunks.append(chunk)
+                      total += len(chunk)
+                  if stream.read(1):
+                      raise SystemExit("pyproject.toml exceeds the metadata safety limit")
+              if total != advertised:
+                  raise SystemExit("pyproject.toml changed while being read")
+              try:
+                  return b"".join(chunks).decode("utf-8")
+              except UnicodeDecodeError as error:
+                  raise SystemExit("pyproject.toml is not UTF-8") from error
+
+          def toml_has_oversized_numeric_token(text):
+              index = 0
+              state = "normal"
+              root_in_value = False
+              table_header_depth = 0
+              at_statement_start = True
+              array_frame = 0
+              inline_key_frame = 1
+              inline_value_frame = 2
+              containers = bytearray()
+
+              def in_key_context():
+                  if table_header_depth:
+                      return True
+                  if containers:
+                      return containers[-1] == inline_key_frame
+                  return not root_in_value
+
+              def reset_line():
+                  nonlocal root_in_value, table_header_depth, at_statement_start
+                  if not containers:
+                      root_in_value = False
+                      table_header_depth = 0
+                      at_statement_start = True
+
+              while index < len(text):
+                  char = text[index]
+                  if state == "comment":
+                      if char in "\r\n":
+                          state = "normal"
+                          reset_line()
+                      index += 1
+                      continue
+                  if state in {"basic", "multiline-basic"}:
+                      if char == "\\":
+                          index += 2
+                          continue
+                      if state == "basic" and char == '"':
+                          state = "normal"
+                          index += 1
+                          continue
+                      if state == "multiline-basic" and char == '"':
+                          end = index
+                          while end < len(text) and text[end] == '"':
+                              end += 1
+                          if end - index >= 3:
+                              state = "normal"
+                          index = end
+                          continue
+                      index += 1
+                      continue
+                  if state in {"literal", "multiline-literal"}:
+                      if state == "literal" and char == "'":
+                          state = "normal"
+                          index += 1
+                          continue
+                      if state == "multiline-literal" and char == "'":
+                          end = index
+                          while end < len(text) and text[end] == "'":
+                              end += 1
+                          if end - index >= 3:
+                              state = "normal"
+                          index = end
+                          continue
+                      index += 1
+                      continue
+                  if char == "#":
+                      state = "comment"
+                      index += 1
+                      continue
+                  if char in "\r\n":
+                      reset_line()
+                      index += 1
+                      continue
+                  if char in " \t":
+                      index += 1
+                      continue
+                  if text.startswith('\"\"\"', index):
+                      state = "multiline-basic"
+                      at_statement_start = False
+                      index += 3
+                      continue
+                  if text.startswith("'''", index):
+                      state = "multiline-literal"
+                      at_statement_start = False
+                      index += 3
+                      continue
+                  if char == '"':
+                      state = "basic"
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "'":
+                      state = "literal"
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "[":
+                      if table_header_depth:
+                          table_header_depth += 1
+                      elif not containers and not root_in_value and at_statement_start:
+                          table_header_depth = 1
+                      else:
+                          containers.append(array_frame)
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "]":
+                      if table_header_depth:
+                          table_header_depth -= 1
+                      elif containers and containers[-1] == array_frame:
+                          containers.pop()
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "{":
+                      containers.append(inline_key_frame)
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "}":
+                      if containers and containers[-1] in {
+                          inline_key_frame,
+                          inline_value_frame,
+                      }:
+                          containers.pop()
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == "=":
+                      if containers and containers[-1] == inline_key_frame:
+                          containers[-1] = inline_value_frame
+                      elif not containers and not table_header_depth:
+                          root_in_value = True
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if char == ",":
+                      if containers and containers[-1] == inline_value_frame:
+                          containers[-1] = inline_key_frame
+                      at_statement_start = False
+                      index += 1
+                      continue
+                  if (
+                      not in_key_context()
+                      and char == "0"
+                      and index + 1 < len(text)
+                      and text[index + 1] in "bBoOxX"
+                  ):
+                      valid_digits = {
+                          "b": "01",
+                          "o": "01234567",
+                          "x": "0123456789abcdefABCDEF",
+                      }[text[index + 1].lower()]
+                      index += 2
+                      digits = 0
+                      while index < len(text) and (
+                          text[index] in valid_digits or text[index] == "_"
+                      ):
+                          if text[index] != "_":
+                              digits += 1
+                              if digits > MAX_TOML_INTEGER_DIGITS:
+                                  return True
+                          index += 1
+                      continue
+                  if not in_key_context() and "0" <= char <= "9":
+                      digits = 0
+                      while index < len(text) and (
+                          "0" <= text[index] <= "9" or text[index] == "_"
+                      ):
+                          if text[index] != "_":
+                              digits += 1
+                              if digits > MAX_TOML_INTEGER_DIGITS:
+                                  return True
+                          index += 1
+                      continue
+                  at_statement_start = False
+                  index += 1
+              return False
+
+          def strict_toml_loads(document):
+              if toml_has_oversized_numeric_token(document):
+                  raise SystemExit(
+                      "TOML numeric token exceeds the 640-digit safety limit"
+                  )
+              return tomllib.loads(document)
+
           tag, release_sha, alias = sys.argv[1:]
-          if re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag) is None:
+          if re.fullmatch(
+              r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+              tag,
+          ) is None:
               raise SystemExit(f"invalid release tag: {tag!r}")
           if re.fullmatch(r"[0-9a-f]{40}", release_sha) is None:
               raise SystemExit(f"invalid release SHA: {release_sha!r}")
@@ -70,8 +1034,20 @@ jobs:
               raise SystemExit(
                   f"compatibility alias must be {expected_alias!r} or 'none', got {alias!r}"
               )
-          project = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
-          if project.get("name") != "boundver" or tag != f"v{project.get('version')}":
+          document = read_project_text(pathlib.Path("pyproject.toml"))
+          project = strict_toml_loads(document).get("project")
+          version = project.get("version") if isinstance(project, dict) else None
+          if (
+              not isinstance(version, str)
+              or len(version.encode("utf-8")) > MAX_VERSION_BYTES
+              or re.fullmatch(
+                  r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                  version,
+              )
+              is None
+          ):
+              raise SystemExit("pyproject.toml project.version is not a bounded string")
+          if project.get("name") != "boundver" or tag != f"v{version}":
               raise SystemExit("release tag does not match boundver project metadata")
           head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           if head != release_sha:
@@ -113,9 +1089,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          active=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=100" \
-            --jq '[.workflow_runs[] | select(.status == "requested" or .status == "pending" or .status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
+          clean_python_cwd=$(mktemp -d)
+          active=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$PUBLICATION_RUN_STATE_PROGRAM" active "$GITHUB_REPOSITORY")
           if [[ ! "$active" =~ ^[0-9]+$ || "$active" -ne 0 ]]; then
             echo "Another release promotion is active; refusing to create a second version tag." >&2
             exit 1
@@ -137,49 +1113,65 @@ jobs:
           RELEASE_TAG: ${{ steps.validate.outputs.tag }}
         run: |
           set -euo pipefail
-          python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
+          python3 -I scripts/release_changelog.py --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
-          python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
 
       - name: Setup Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
-      - name: Test source and exact distributions
+      - name: Install hash-locked release verification tools
         shell: bash
-        env:
-          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[dev]' twine
-          pytest -q
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$RELEASE_SHA") \
-            bash scripts/packaging_smoke.sh
-          python -m twine check dist/*.whl dist/*.tar.gz
+          python -I scripts/install_locked_tools.py release
+          python -I -m pip --isolated install --disable-pip-version-check \
+            --no-index --no-deps --no-build-isolation -e .
+
+      - name: Verify release candidate source and distributions
+        env:
+          RELEASE_SHA: ${{ steps.validate.outputs.sha }}
+          RELEASE_TAG: ${{ steps.validate.outputs.tag }}
+        run: >-
+          python -I scripts/verify_release_candidate.py
+          --tag "$RELEASE_TAG"
+          --release-sha "$RELEASE_SHA"
 
       - name: Verify the public Action contract
         uses: ./
 
-  tag:
-    name: Create tag and dispatch publication
+  revalidate-release-state:
+    name: Revalidate release state without mutation authority
     runs-on: ubuntu-latest
     needs: verify-candidate
     permissions:
-      actions: write
-      contents: write
+      actions: read
+      contents: read
       issues: read
       pull-requests: read
+    outputs:
+      review-state-digest: ${{ steps.mutable-state.outputs.review-state-digest }}
     steps:
       - name: Checkout the exact candidate
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ needs.verify-candidate.outputs.release-sha }}
 
-      - name: Revalidate mutable state and create the version tag
-        id: tag
+      - name: Revalidate candidate-local release inputs without credentials
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 -I scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+
+      - name: Revalidate mutable state immediately before the tag job
+        id: mutable-state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -198,39 +1190,161 @@ jobs:
             echo "Tag $RELEASE_TAG already points to $existing_tag, not $RELEASE_SHA" >&2
             exit 1
           fi
+          git fetch --force --tags origin
+          clean_python_cwd=$(mktemp -d)
+          review_state_before=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$REVIEW_STATE_PROGRAM" \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
+          review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$REVIEW_STATE_PROGRAM" \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          if [[ ! "$review_state_before" =~ ^[0-9a-f]{64}$ || \
+                "$review_state_digest" != "$review_state_before" ]]; then
+            echo "Release review state changed during the semantic audit; rerun the workflow" >&2
+            exit 1
+          fi
           if [[ -z "$existing_tag" ]]; then
-            python3 scripts/release_changelog.py --tag "$RELEASE_TAG" \
-              --output "$RUNNER_TEMP/release-notes.md"
-            python3 scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
             git fetch --no-tags origin main
             main_sha=$(git rev-parse FETCH_HEAD)
             if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
               echo "Main advanced before the final review audit: $RELEASE_SHA != $main_sha" >&2
               exit 1
             fi
-            bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
-            active=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=100" \
-              --jq '[.workflow_runs[] | select(.status == "requested" or .status == "pending" or .status == "queued" or .status == "in_progress" or .status == "waiting")] | length')
+            clean_python_cwd=$(mktemp -d)
+            active=$(cd "$clean_python_cwd" && python3 -I -c \
+              "$PUBLICATION_RUN_STATE_PROGRAM" active "$GITHUB_REPOSITORY")
             if [[ ! "$active" =~ ^[0-9]+$ || "$active" -ne 0 ]]; then
               echo "Another release promotion became active; refusing to create the tag." >&2
               exit 1
             fi
-            # The checks above can take long enough for main to advance. Bind
-            # the final mutation to current main after the final review audit.
+            # Bind the read-only handoff to current main after the final review
+            # audit. The token-scoped tag job repeats this check before push.
             git fetch --no-tags origin main
             main_sha=$(git rev-parse FETCH_HEAD)
             if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
-              echo "Main advanced at the tag mutation boundary: $RELEASE_SHA != $main_sha" >&2
+              echo "Main advanced at the tag handoff boundary: $RELEASE_SHA != $main_sha" >&2
               exit 1
             fi
-            git tag "$RELEASE_TAG" "$RELEASE_SHA"
-            git push origin "refs/tags/$RELEASE_TAG"
-            echo "created=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "created=false" >> "$GITHUB_OUTPUT"
           fi
+          if [[ ! "$review_state_digest" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Review-state snapshot returned a malformed digest" >&2
+            exit 1
+          fi
+          echo "review-state-digest=$review_state_digest" >> "$GITHUB_OUTPUT"
 
+  tag:
+    name: Create the exact version tag
+    runs-on: ubuntu-latest
+    needs: [verify-candidate, revalidate-release-state]
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout the exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.verify-candidate.outputs.release-sha }}
+
+      - name: Create the tag with credentials scoped to the push boundary
+        shell: bash
+        env:
+          EXPECTED_REVIEW_STATE_DIGEST: ${{ needs.revalidate-release-state.outputs.review-state-digest }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.verify-candidate.outputs.release-sha }}
+          RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
+                ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Validated tag mutation inputs are malformed" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+            echo "Main advanced at the tag mutation boundary: $RELEASE_SHA != $main_sha" >&2
+            exit 1
+          fi
+          existing_tag=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
+          if [[ -n "$existing_tag" && "$existing_tag" != "$RELEASE_SHA" ]]; then
+            echo "Tag $RELEASE_TAG already points to $existing_tag, not $RELEASE_SHA" >&2
+            exit 1
+          fi
+          git fetch --force --tags origin
+          clean_python_cwd=$(mktemp -d)
+          current_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$REVIEW_STATE_PROGRAM" \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          if [[ ! "$EXPECTED_REVIEW_STATE_DIGEST" =~ ^[0-9a-f]{64}$ || \
+                "$current_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
+            echo "Release review state changed after the read-only audit; rerun the workflow" >&2
+            exit 1
+          fi
+          if [[ -n "$existing_tag" ]]; then
+            echo "$RELEASE_TAG already exists at $RELEASE_SHA"
+            exit 0
+          fi
+          clean_python_cwd=$(mktemp -d)
+          active=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$PUBLICATION_RUN_STATE_PROGRAM" active "$GITHUB_REPOSITORY")
+          if [[ ! "$active" =~ ^[0-9]+$ || "$active" -ne 0 ]]; then
+            echo "Another release promotion became active; refusing to create the tag." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          main_sha=$(git rev-parse FETCH_HEAD)
+          if [[ "$RELEASE_SHA" != "$main_sha" ]]; then
+            echo "Main advanced at the tag push boundary: $RELEASE_SHA != $main_sha" >&2
+            exit 1
+          fi
+          git fetch --force --tags origin
+          current_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$REVIEW_STATE_PROGRAM" \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          if [[ "$current_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
+            echo "Release review state changed at the tag push boundary; rerun the workflow" >&2
+            exit 1
+          fi
+          cleanup_auth() {
+            git config --global --unset-all \
+              credential.https://github.com.helper >/dev/null 2>&1 || true
+          }
+          trap cleanup_auth EXIT
+          git tag "$RELEASE_TAG" "$RELEASE_SHA"
+          gh auth setup-git
+          # Refresh remote tags after authentication. A conflicting candidate
+          # tag makes this fetch fail instead of silently changing the local
+          # mutation target. REVIEW_STATE_PROGRAM normalizes the just-created
+          # local candidate tag out of its semantic snapshot.
+          git -c core.hooksPath=/dev/null fetch --tags origin
+          local_tag_sha=$(git rev-parse "$RELEASE_TAG^{commit}")
+          if [[ "$local_tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Local tag changed before push: $local_tag_sha != $RELEASE_SHA" >&2
+            exit 1
+          fi
+          authenticated_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
+            "$REVIEW_STATE_PROGRAM" \
+            "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          if [[ ! "$authenticated_review_state_digest" =~ ^[0-9a-f]{64}$ || \
+                "$authenticated_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
+            echo "Release review state changed after tag/auth setup; rerun the workflow" >&2
+            exit 1
+          fi
+          git -c core.hooksPath=/dev/null push origin "refs/tags/$RELEASE_TAG"
+
+  dispatch-publication:
+    name: Dispatch publication exactly once
+    runs-on: ubuntu-latest
+    needs: [verify-candidate, tag]
+    permissions:
+      actions: write
+      contents: read
+    steps:
       - name: Dispatch publication exactly once
         shell: bash
         env:
@@ -238,12 +1352,14 @@ jobs:
           RELEASE_SHA: ${{ needs.verify-candidate.outputs.release-sha }}
           RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
           COMPATIBILITY_ALIAS: ${{ needs.verify-candidate.outputs.compatibility-alias }}
+          EXPECTED_RUN_TITLE: publish:${{ needs.verify-candidate.outputs.release-tag }}@${{ needs.verify-candidate.outputs.release-sha }}:alias=${{ needs.verify-candidate.outputs.compatibility-alias }}:resume=
         run: |
           set -euo pipefail
+          clean_python_cwd=$(mktemp -d)
           find_existing_run() {
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?event=workflow_dispatch&head_sha=${RELEASE_SHA}&per_page=100" \
-              --jq '[.workflow_runs[] | select(.head_sha == env.RELEASE_SHA and .head_branch == env.RELEASE_TAG)] | if length > 1 then error("multiple publication runs exist for this tag and SHA") elif length == 1 then .[0].html_url else "" end'
+            (cd "$clean_python_cwd" && python3 -I -c \
+              "$PUBLICATION_RUN_STATE_PROGRAM" exact "$GITHUB_REPOSITORY" \
+              "$RELEASE_SHA" "$RELEASE_TAG" "$EXPECTED_RUN_TITLE")
           }
           existing_run=$(find_existing_run)
           if [[ -n "$existing_run" ]]; then

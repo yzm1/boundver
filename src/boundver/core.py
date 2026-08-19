@@ -21,7 +21,7 @@ Common commands:
     boundver generate [--config boundary.config.json] [--out boundary.lock.json]
     boundver verify  [--config boundary.config.json] [--lock boundary.lock.json]
     boundver diff    <old.lock.json> <new.lock.json>
-    boundver slice   <slice_name> [--config boundary.config.json] [--lock boundary.lock.json]
+    boundver slice   <slice_name> [--lock boundary.lock.json]
     boundver validate-config [--config boundary.config.json]
     boundver status  [--config boundary.config.json] [--lock boundary.lock.json]
 
@@ -29,106 +29,127 @@ Requires: Git and Python 3.9+.
 """
 
 import argparse
-import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict as Dict
+from typing import List, Optional
 
 # Sub-module imports — each group lives in a focused module.
+#
+# Imports written as ``name as name`` below are deliberate compatibility
+# re-exports for callers that imported implementation helpers from
+# ``boundver.core`` before the module was split up. They are not needed by
+# this file itself, but removing them would be an unnecessary API break. New
+# code should import those helpers from their owning modules instead.
 from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
-    _git_run,
-    _is_ignored,
-    _list_files_for_source,
-    _to_posix,
+    _git_run as _git_run,
+    _is_ignored as _is_ignored,
+    _list_files_for_source as _list_files_for_source,
+    _to_posix as _to_posix,
     changed_components_since_ref,
     dirty_component_paths,
-    git_latest_tag,
+    git_latest_tag as git_latest_tag,
     git_root,
-    list_head_files,
-    _git_cat_blob,
-    _git_batch_cat,
+    list_head_files as list_head_files,
+    _git_cat_blob as _git_cat_blob,
+    _git_batch_cat as _git_batch_cat,
 )
 from ._hashing import (
-    MAX_HASH_FILE_BYTES,
-    MAX_HASH_FILES,
-    _content_only_digest,
-    _enforce_content_size,
-    _enforce_hash_guardrails,
-    _read_path_content,
-    canonical_json,
-    sha256_hex,
-    source_tree_digest,
+    MAX_HASH_FILE_BYTES as MAX_HASH_FILE_BYTES,
+    MAX_HASH_FILES as MAX_HASH_FILES,
+    _content_only_digest as _content_only_digest,
+    _enforce_content_size as _enforce_content_size,
+    _enforce_hash_guardrails as _enforce_hash_guardrails,
+    _read_path_content as _read_path_content,
+    canonical_json as canonical_json,
+    sha256_hex as sha256_hex,
+    source_tree_digest as source_tree_digest,
 )
 from ._utils import (
+    FACETS,
+    FACET_SET,
+    SOURCE_MODES,
+    SOURCE_MODE_SET,
     _available_component_facets,
-    BoundverError,
+    _bounded_json_dumps,
+    BoundverError as BoundverError,
     ConfigError,
-    GuardrailError,
+    GuardrailError as GuardrailError,
     LockfileError,
-    ProviderError,
+    ProviderError as ProviderError,
     _issue_facet,
     _short,
 )
 from ._config import (
     config_warnings,
-    _is_str_list,
-    _load_config_schema,
-    _schema_engine_errors,
-    _schema_required_fields,
+    _is_str_list as _is_str_list,
+    _load_config_schema as _load_config_schema,
+    _schema_engine_errors as _schema_engine_errors,
+    _schema_required_fields as _schema_required_fields,
     discover_components,
     find_config_file,
     load_config_file,
     validate_config,
 )
 from ._lockfile import (
-    LOCKFILE_SCHEMA,
-    LOCKFILE_SCHEMA_URL,
+    LOCKFILE_SCHEMA as LOCKFILE_SCHEMA,
+    LOCKFILE_SCHEMA_URL as LOCKFILE_SCHEMA_URL,
     MigrationError,
+    _generation_errors,
     _lockfile_schema_issues,
     _lockfile_structure_issues,
-    _recompute_slice_entry,
+    _recompute_slice_entry as _recompute_slice_entry,
     generate_lockfile,
     generate_lockfile_for_components,
     load_lockfile_file,
     migrate_lockfile,
     verify_lockfile,
 )
-from ._diff import _summarize_change, diff_lockfiles
+from ._diff import _summarize_change as _summarize_change
+from ._diff import diff_lockfiles
 from ._output import (
-    _bold,
+    _bold as _bold,
     _green,
-    _is_tty,
+    _is_tty as _is_tty,
     _log,
     _parse_components_arg,
     _print_json,
     _red,
     _yellow,
-    analyze_explain_changes,
+    analyze_explain_changes as analyze_explain_changes,
+    configure_cli_streams,
     explain_component_changes,
     print_diff,
     print_status,
+    safe_print as _safe_print,
     why_component,
 )
 from ._completions import (
-    _BASH_COMPLETION,
+    _BASH_COMPLETION as _BASH_COMPLETION,
     _COMPLETION_SCRIPTS,
-    _FISH_COMPLETION,
-    _ZSH_COMPLETION,
+    _FISH_COMPLETION as _FISH_COMPLETION,
+    _ZSH_COMPLETION as _ZSH_COMPLETION,
 )
 from ._consumer_graph import resolve_slice_components
 from .versions import (
-    _extract_json_field,
-    _extract_toml_field,
-    _extract_yaml_field,
-    extract_version,
-    parse_semver,
-    yaml,
+    _extract_json_field as _extract_json_field,
+    _extract_toml_field as _extract_toml_field,
+    _extract_yaml_field as _extract_yaml_field,
+    extract_version as extract_version,
+    parse_semver as parse_semver,
+    yaml as yaml,
 )
+
+
+# Command handlers are also exercised directly by embedders and tests, so use
+# the same encoding-safe writer even when ``main()`` did not configure streams.
+print = _safe_print
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +185,7 @@ def _parse_facets_arg(raw: str, config: dict) -> List[str]:
     value = raw.strip() if isinstance(raw, str) else ""
     configured = config.get("defaults", {}).get("verify_facets", [])
     facets = [p.strip() for p in value.split(",") if p.strip()] if value else configured
-    return sorted(set(facets or ["exact", "behavior", "boundary", "compat"]))
+    return sorted(set(facets or FACETS))
 
 
 def _facet_policy_payload(
@@ -259,7 +280,7 @@ def _capture_operation_snapshot(
     source: str,
 ) -> Optional[GitSourceSnapshot]:
     """Capture the one immutable Git source used by an operation."""
-    if source not in {"head", "index", "working-tree"}:
+    if source not in SOURCE_MODE_SET:
         raise ConfigError(
             f"Unknown source mode {source!r}; expected head, index, or working-tree"
         )
@@ -278,6 +299,59 @@ def _require_valid_lockfile(lockfile: dict) -> None:
     ]
     if issues:
         raise LockfileError("Lockfile validation failed:\n" + "\n".join(issues))
+
+
+def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
+    """Return lock-wide issues that must be checked before scoped verification.
+
+    Component and slice membership are global lock invariants.  They cannot be
+    skipped merely because a caller requested a subset of component
+    fingerprints.
+    """
+    structural_issues = [
+        *_lockfile_schema_issues(lockfile),
+        *_lockfile_structure_issues(lockfile),
+    ]
+    issues = list(structural_issues)
+    if structural_issues:
+        return issues
+
+    configured_project = config.get("project", "unknown")
+    if lockfile.get("project") != configured_project:
+        issues.append(
+            f"METADATA MISMATCH project: lockfile={lockfile.get('project')!r} "
+            f"current={configured_project!r}"
+        )
+
+    locked_names = (
+        set(lockfile.get("components", {}))
+        if isinstance(lockfile.get("components"), dict)
+        else set()
+    )
+    configured_names = set(config.get("components", {}))
+    if locked_names != configured_names:
+        issues.append(
+            "LOCKFILE component set differs from config: "
+            f"locked={sorted(locked_names)} configured={sorted(configured_names)}"
+        )
+
+    locked_slices = (
+        set(lockfile.get("slices", {}))
+        if isinstance(lockfile.get("slices"), dict)
+        else set()
+    )
+    configured_slices = set(config.get("slices", {}))
+    if locked_slices != configured_slices:
+        issues.append(
+            "LOCKFILE slice set differs from config: "
+            f"locked={sorted(locked_slices)} configured={sorted(configured_slices)}"
+        )
+
+    issues.extend(
+        f"LOCKED DIGEST ERROR {message}"
+        for message in _generation_errors(lockfile)
+    )
+    return issues
 
 
 def _ensure_lock_outside_components(
@@ -318,15 +392,29 @@ def _write_text_atomic(path: Path, text: str) -> None:
     from leaving a truncated lockfile behind.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode: Optional[int] = None
+    if os.name != "nt":
+        try:
+            existing_mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            pass
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
     )
     try:
+        if existing_mode is not None:
+            os.fchmod(fd, existing_mode)
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
+        if os.name != "nt":
+            directory_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
     except Exception:
         try:
             os.unlink(temp_name)
@@ -338,6 +426,16 @@ def _write_text_atomic(path: Path, text: str) -> None:
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
+
+def _run_cli_handler(command: str, handler, *handler_args) -> None:
+    """Run a command with operational failures converted to usage errors."""
+    try:
+        handler(*handler_args)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        print(f"ERROR: {command} failed: {detail}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+
 
 def _cmd_completions(args) -> None:
     sys.stdout.write(_COMPLETION_SCRIPTS.get(args.shell, ""))
@@ -360,7 +458,7 @@ def _cmd_migrate_lock(args) -> None:
     except MigrationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    out = json.dumps(migrated, indent=2, sort_keys=False) + "\n"
+    out = _bounded_json_dumps(migrated, indent=2, sort_keys=False) + "\n"
     if args.dry_run:
         sys.stdout.write(out)
     else:
@@ -368,17 +466,11 @@ def _cmd_migrate_lock(args) -> None:
         if migrated.get("schema") == old_lock.get("schema"):
             _log("Already at current schema, no changes written.")
         else:
-            _log(f"Migrated {lock_path} \u2192 schema {migrated['schema']}")
+            _log(f"Migrated {lock_path} -> schema {migrated['schema']}")
 
 
 def _cmd_diff(args) -> None:
     for label, fpath in (("old", args.old), ("new", args.new)):
-        if ".." in Path(fpath).parts:
-            print(
-                f"ERROR: {label} lockfile path '{fpath}' contains '..' traversal",
-                file=sys.stderr,
-            )
-            sys.exit(EXIT_USAGE)
         if not Path(fpath).exists():
             print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
@@ -430,7 +522,20 @@ def _cmd_generate(args, repo_root: Path) -> None:
     # Warn when --source head but working tree has uncommitted changes
     if args.source == "head" and not args.quiet:
         comp_paths = [c.get("path", "") for c in config.get("components", {}).values()]
-        dirty = dirty_component_paths(repo_root, comp_paths)
+        try:
+            dirty = dirty_component_paths(repo_root, comp_paths)
+        except (OSError, ValueError) as exc:
+            # This check is advisory: generation still reads the immutable
+            # captured HEAD tree. A malformed or oversized status listing must
+            # not turn that safe operation into an unhandled traceback.
+            dirty = []
+            print(
+                _yellow(
+                    "WARNING: Could not inspect uncommitted component changes: "
+                    f"{exc}"
+                ),
+                file=sys.stderr,
+            )
         if dirty:
             print(
                 _yellow("WARNING: Using --source head but these components have uncommitted changes:"),
@@ -473,7 +578,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
     if args.dry_run:
         _log(f"Dry run: lockfile not written ({out_path})", quiet=(args.quiet or args.format == "json"))
     else:
-        _write_text_atomic(out_path, json.dumps(lockfile, indent=2) + "\n")
+        _write_text_atomic(out_path, _bounded_json_dumps(lockfile, indent=2) + "\n")
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
     if args.verbose and not args.quiet and args.format != "json":
         print(f"Generation source={args.source} strict={not args.allow_partial}")
@@ -491,6 +596,34 @@ def _cmd_generate(args, repo_root: Path) -> None:
                         "If you haven't committed yet, try:\n"
                         "  boundver generate --source working-tree")
             )
+
+
+def _print_verify_json(
+    *,
+    ok: bool,
+    updated: bool,
+    issues: List[str],
+    resolved_issues: List[str],
+    observations: List[str],
+    facets: Optional[List[str]],
+    facet_policy: dict,
+    components_filter: List[str],
+    changed_components: List[str],
+) -> None:
+    """Print the stable structured result for every verify outcome."""
+    _print_json(
+        {
+            "ok": ok,
+            "updated": updated,
+            "issues": issues,
+            "resolved_issues": resolved_issues,
+            "observations": observations,
+            "facets": facets,
+            "facet_policy": facet_policy,
+            "components_filter": components_filter,
+            "changed_components": changed_components,
+        }
+    )
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
@@ -547,7 +680,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
     explicit_gated_facets = gated_facets if args.facets.strip() else None
     facet_policy = _facet_policy_payload(config, explicit_gated_facets)
     unknown_facets = sorted(
-        set(gated_facets) - {"exact", "behavior", "boundary", "compat"}
+        set(gated_facets) - FACET_SET
     )
     if unknown_facets:
         print(
@@ -559,90 +692,67 @@ def _cmd_verify(args, repo_root: Path) -> None:
         *_lockfile_schema_issues(lockfile),
         *_lockfile_structure_issues(lockfile),
     ]
-    preflight_issues = list(structural_issues)
-    if not structural_issues and lockfile.get("project") != config.get("project", "unknown"):
+    preflight_issues = _verify_lock_preflight_issues(config, lockfile)
+    changed_components: List[str] = []
+    scoped_preflight_update = (
+        bool(preflight_issues)
+        and args.update
+        and not structural_issues
+        and bool(requested_components_filter)
+        and not args.changed_from
+    )
+    if scoped_preflight_update:
         preflight_issues.append(
-            f"METADATA MISMATCH project: lockfile={lockfile.get('project')!r} "
-            f"current={config.get('project', 'unknown')!r}"
+            "LOCKFILE scoped --update cannot repair global component or slice "
+            "preflight issues; rerun without --components after reviewing the "
+            "full lock"
         )
-    locked_names = set(lockfile.get("components", {})) if isinstance(lockfile.get("components"), dict) else set()
-    configured_names = set(config.get("components", {}))
-    if not structural_issues and locked_names != configured_names:
-        preflight_issues.append(
-            "LOCKFILE component set differs from config: "
-            f"locked={sorted(locked_names)} configured={sorted(configured_names)}"
-        )
-    locked_slices = set(lockfile.get("slices", {})) if isinstance(lockfile.get("slices"), dict) else set()
-    configured_slices = set(config.get("slices", {}))
-    if not structural_issues and locked_slices != configured_slices:
-        preflight_issues.append(
-            "LOCKFILE slice set differs from config: "
-            f"locked={sorted(locked_slices)} configured={sorted(configured_slices)}"
-        )
-    if not structural_issues:
-        for name, entry in lockfile["components"].items():
-            for field in ("version_errors", "exact_errors", "behavior_errors"):
-                for message in entry.get(field, []):
-                    preflight_issues.append(
-                        f"LOCKED DIGEST ERROR {name}: {message}"
-                    )
-            if entry.get("boundary_status") == "error" and not entry.get("boundary_errors"):
-                preflight_issues.append(
-                    f"LOCKED DIGEST ERROR {name}: boundary computation failed"
-                )
-            elif entry.get("boundary_status") == "error":
-                for message in entry.get("boundary_errors", []):
-                    preflight_issues.append(
-                        f"LOCKED DIGEST ERROR {name}: {message}"
-                    )
-    if preflight_issues and args.update and not structural_issues:
+    if (
+        preflight_issues
+        and args.update
+        and not structural_issues
+        and not scoped_preflight_update
+    ):
         try:
-            if requested_components_filter:
-                updated = generate_lockfile_for_components(
-                    config,
-                    repo_root,
-                    selected_components=requested_components_filter,
-                    out_path=lock_path,
-                    source=args.source,
-                    strict=True,
-                    allow_custom_providers=allow_custom,
-                    snapshot=snapshot,
-                    existing_lockfile=lockfile,
-                )
-            else:
-                updated = generate_lockfile(
-                    config, repo_root, source=args.source, strict=True,
-                    allow_custom_providers=allow_custom,
-                    snapshot=snapshot,
-                )
+            # Preflight invariants cover the complete lock.  A scoped repair
+            # could leave a missing unselected component or slice unresolved.
+            updated = generate_lockfile(
+                config, repo_root, source=args.source, strict=True,
+                allow_custom_providers=allow_custom,
+                snapshot=snapshot,
+            )
         except ValueError as exc:
             print(f"ERROR: update failed: {exc}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
-        _write_text_atomic(lock_path, json.dumps(updated, indent=2) + "\n")
+        _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
         if args.format == "json":
-            _print_json({
-                "ok": True,
-                "updated": True,
-                "issues": preflight_issues,
-                "observations": [],
-                "facets": explicit_gated_facets,
-                "facet_policy": facet_policy,
-                "components_filter": components_filter,
-            })
+            _print_verify_json(
+                ok=True,
+                updated=True,
+                issues=[],
+                resolved_issues=preflight_issues,
+                observations=[],
+                facets=explicit_gated_facets,
+                facet_policy=facet_policy,
+                components_filter=components_filter,
+                changed_components=changed_components,
+            )
         elif not args.quiet:
             print(_green(f"Updated {lock_path} after successful preflight repair."))
         return
     if preflight_issues:
         if args.format == "json":
-            _print_json({
-                "ok": False,
-                "updated": False,
-                "issues": preflight_issues,
-                "observations": [],
-                "facets": explicit_gated_facets,
-                "facet_policy": facet_policy,
-                "components_filter": components_filter,
-            })
+            _print_verify_json(
+                ok=False,
+                updated=False,
+                issues=preflight_issues,
+                resolved_issues=[],
+                observations=[],
+                facets=explicit_gated_facets,
+                facet_policy=facet_policy,
+                components_filter=components_filter,
+                changed_components=changed_components,
+            )
         else:
             print("ERROR: lockfile preflight failed:", file=sys.stderr)
             for issue in preflight_issues:
@@ -650,7 +760,13 @@ def _cmd_verify(args, repo_root: Path) -> None:
         sys.exit(_drift_exit_code(preflight_issues))
     if args.changed_from:
         try:
-            auto = changed_components_since_ref(config, repo_root, args.changed_from)
+            auto = changed_components_since_ref(
+                config,
+                repo_root,
+                args.changed_from,
+                source=args.source,
+                snapshot=snapshot,
+            )
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
@@ -672,7 +788,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 )
             else:
                 print("No component paths changed; validating full lock integrity.")
-        reported_components_filter = list(components_filter)
+        changed_components = list(components_filter)
+        reported_components_filter = []
         components_filter = []
     else:
         reported_components_filter = list(components_filter)
@@ -710,19 +827,21 @@ def _cmd_verify(args, repo_root: Path) -> None:
         # the reviewed lock bytes untouched even when --update was requested.
         if args.update and unavailable_issues:
             if args.format == "json":
-                _print_json({
-                    "ok": False,
-                    "updated": False,
-                    "issues": issues,
-                    "observations": observations,
-                    "facets": explicit_gated_facets,
-                    "facet_policy": facet_policy,
-                    "components_filter": reported_components_filter,
-                })
+                _print_verify_json(
+                    ok=False,
+                    updated=False,
+                    issues=issues,
+                    resolved_issues=[],
+                    observations=observations,
+                    facets=explicit_gated_facets,
+                    facet_policy=facet_policy,
+                    components_filter=reported_components_filter,
+                    changed_components=changed_components,
+                )
             sys.exit(EXIT_USAGE)
         if args.update:
             try:
-                if requested_components_filter:
+                if requested_components_filter and not args.changed_from:
                     updated = generate_lockfile_for_components(
                         config,
                         repo_root,
@@ -743,35 +862,39 @@ def _cmd_verify(args, repo_root: Path) -> None:
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
-            _write_text_atomic(lock_path, json.dumps(updated, indent=2) + "\n")
+            _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
             if args.format == "json":
-                _print_json({
-                    "ok": True,
-                    "updated": True,
-                    "issues": issues,
-                    "observations": observations,
-                    "facets": explicit_gated_facets,
-                    "facet_policy": facet_policy,
-                    "components_filter": reported_components_filter,
-                })
+                _print_verify_json(
+                    ok=True,
+                    updated=True,
+                    issues=[],
+                    resolved_issues=issues,
+                    observations=observations,
+                    facets=explicit_gated_facets,
+                    facet_policy=facet_policy,
+                    components_filter=reported_components_filter,
+                    changed_components=changed_components,
+                )
             if args.format != "json" and not args.quiet:
                 print(_green(f"Updated {lock_path} after successful generation."))
             return
         if args.format == "json":
-            _print_json({
-                "ok": False,
-                "updated": False,
-                "issues": issues,
-                "observations": observations,
-                "facets": explicit_gated_facets,
-                "facet_policy": facet_policy,
-                "components_filter": reported_components_filter,
-            })
+            _print_verify_json(
+                ok=False,
+                updated=False,
+                issues=issues,
+                resolved_issues=[],
+                observations=observations,
+                facets=explicit_gated_facets,
+                facet_policy=facet_policy,
+                components_filter=reported_components_filter,
+                changed_components=changed_components,
+            )
         sys.exit(_drift_exit_code(issues))
     else:
         if args.update and observations:
             try:
-                if requested_components_filter:
+                if requested_components_filter and not args.changed_from:
                     updated = generate_lockfile_for_components(
                         config,
                         repo_root,
@@ -792,31 +915,35 @@ def _cmd_verify(args, repo_root: Path) -> None:
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
-            _write_text_atomic(lock_path, json.dumps(updated, indent=2) + "\n")
+            _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
             if args.format == "json":
-                _print_json({
-                    "ok": True,
-                    "updated": True,
-                    "issues": [],
-                    "observations": observations,
-                    "facets": explicit_gated_facets,
-                    "facet_policy": facet_policy,
-                    "components_filter": reported_components_filter,
-                })
+                _print_verify_json(
+                    ok=True,
+                    updated=True,
+                    issues=[],
+                    resolved_issues=[],
+                    observations=observations,
+                    facets=explicit_gated_facets,
+                    facet_policy=facet_policy,
+                    components_filter=reported_components_filter,
+                    changed_components=changed_components,
+                )
             elif not args.quiet:
                 print(_green(f"Updated {lock_path} after successful generation."))
             return
         if args.format == "json":
-            _print_json({
-                "ok": True,
-                "updated": False,
-                "issues": [],
-                "observations": observations,
-                "facets": explicit_gated_facets,
-                "facet_policy": facet_policy,
-                "components_filter": reported_components_filter,
-            })
-        if args.verbose and not args.quiet:
+            _print_verify_json(
+                ok=True,
+                updated=False,
+                issues=[],
+                resolved_issues=[],
+                observations=observations,
+                facets=explicit_gated_facets,
+                facet_policy=facet_policy,
+                components_filter=reported_components_filter,
+                changed_components=changed_components,
+            )
+        if args.verbose and not args.quiet and args.format != "json":
             print(_green(f"Verified source={args.source} with 0 issues."))
         elif args.format != "json" and not args.quiet:
             print(_green("Lockfile is up to date."))
@@ -869,7 +996,7 @@ def _cmd_slice(args, repo_root: Path) -> None:
     print(f"\n  Slice: {args.name}")
     print(f"  Mode: {sl.get('mode', 'exact')}")
     print(f"  Fingerprint: {sl['fingerprint']}")
-    print(f"  Components:")
+    print("  Components:")
     for cname in sl.get("components", []):
         digest = sl.get("component_digests", {}).get(cname)
         comp = lockfile.get("components", {}).get(cname, {})
@@ -914,7 +1041,12 @@ def _cmd_init(args, repo_root: Path) -> None:
     if config_path.exists() and not args.force:
         print(f"ERROR: Config already exists: {config_path}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    discovered = discover_components(repo_root) if args.discover else {}
+    try:
+        discovered = discover_components(repo_root) if args.discover else {}
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        print(f"ERROR: component discovery failed: {detail}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     if args.discover and not discovered:
         print(
             "ERROR: No tracked component could be discovered. Root manifests "
@@ -924,7 +1056,7 @@ def _cmd_init(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered if args.discover else {
@@ -935,9 +1067,9 @@ def _cmd_init(args, repo_root: Path) -> None:
             }
         },
     }
-    _write_text_atomic(config_path, json.dumps(starter, indent=2) + "\n")
+    _write_text_atomic(config_path, _bounded_json_dumps(starter, indent=2) + "\n")
     print(f"Created {config_path} with {len(starter['components'])} component(s).")
-    print(f"Next: review the config, then run `boundver validate-config` and `boundver generate`.")
+    print("Next: review the config, then run `boundver validate-config` and `boundver generate`.")
 
 
 def _cmd_add(args, repo_root: Path) -> None:
@@ -955,6 +1087,15 @@ def _cmd_add(args, repo_root: Path) -> None:
         config = load_config_file(config_path)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    existing_errors = validate_config(config, repo_root)
+    if existing_errors:
+        print(
+            f"ERROR: Config is invalid ({len(existing_errors)} issues):",
+            file=sys.stderr,
+        )
+        for error in existing_errors:
+            print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components = config.get("components", {})
     if args.name in components:
@@ -985,7 +1126,7 @@ def _cmd_add(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_text_atomic(config_path, json.dumps(config, indent=2) + "\n")
+    _write_text_atomic(config_path, _bounded_json_dumps(config, indent=2) + "\n")
     print(f"Added component '{args.name}' at path '{args.path}'")
     print(f"Run: boundver generate --components {args.name}")
 
@@ -1004,6 +1145,15 @@ def _cmd_remove(args, repo_root: Path) -> None:
         config = load_config_file(config_path)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    existing_errors = validate_config(config, repo_root)
+    if existing_errors:
+        print(
+            f"ERROR: Config is invalid ({len(existing_errors)} issues):",
+            file=sys.stderr,
+        )
+        for error in existing_errors:
+            print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components = config.get("components", {})
     if not isinstance(components, dict):
@@ -1038,13 +1188,18 @@ def _cmd_remove(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_text_atomic(config_path, json.dumps(config, indent=2) + "\n")
+    _write_text_atomic(config_path, _bounded_json_dumps(config, indent=2) + "\n")
     print(f"Removed component '{args.name}'")
     print("Run: boundver generate")
 
 
 def _cmd_discover(args, repo_root: Path) -> None:
-    discovered = discover_components(repo_root)
+    try:
+        discovered = discover_components(repo_root)
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        print(f"ERROR: component discovery failed: {detail}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     payload = {"count": len(discovered), "components": discovered}
     if args.format == "json":
         _print_json(payload)
@@ -1163,6 +1318,22 @@ def _cmd_explain(args, repo_root: Path) -> None:
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    allow_custom = _resolve_allow_custom(args, config)
+    config_errors = validate_config(
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom,
+        source=args.source,
+        snapshot=snapshot,
+    )
+    if config_errors:
+        print(
+            f"ERROR: Config is invalid ({len(config_errors)} issues):",
+            file=sys.stderr,
+        )
+        for error in config_errors:
+            print(f"  - {error}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     rc = explain_component_changes(
         config,
         repo_root,
@@ -1228,13 +1399,21 @@ def _cmd_why(args, repo_root: Path) -> None:
 
 
 def main():
+    configure_cli_streams()
     # argparse normally accepts global options only before the subcommand.
     # Normalize the two verbosity flags so documented/completed post-command
     # forms work as well (for example `boundver status --quiet`).
+    try:
+        option_boundary = sys.argv.index("--", 2)
+    except ValueError:
+        option_boundary = len(sys.argv)
     for option in ("--quiet", "--verbose"):
-        if option in sys.argv[2:]:
-            sys.argv.remove(option)
-            sys.argv.insert(1, option)
+        try:
+            option_index = sys.argv.index(option, 2, option_boundary)
+        except ValueError:
+            continue
+        sys.argv.pop(option_index)
+        sys.argv.insert(1, option)
     parser = argparse.ArgumentParser(
         description="Detect declared component, behavior, boundary, and compatibility drift",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1263,7 +1442,7 @@ def main():
     gen.add_argument("--config", default="boundary.config.json", help="Config file path")
     gen.add_argument("--out", default="boundary.lock.json", help="Output lockfile path")
     gen.add_argument(
-        "--source", choices=["head", "index", "working-tree"], default="head",
+        "--source", choices=SOURCE_MODES, default="head",
         help="Snapshot to fingerprint: last commit, staged index, or tracked files on disk",
     )
     gen.add_argument(
@@ -1303,7 +1482,7 @@ def main():
     )
     ver.add_argument("--config", default="boundary.config.json")
     ver.add_argument("--lock", default="boundary.lock.json")
-    ver.add_argument("--source", choices=["head", "index", "working-tree"], default="head",
+    ver.add_argument("--source", choices=SOURCE_MODES, default="head",
                      help="Snapshot to compare: last commit, staged index, or tracked files on disk")
     ver.add_argument("--components", default="", help="Comma-separated component names to verify")
     ver.add_argument(
@@ -1413,7 +1592,7 @@ def main():
     )
     st.add_argument("--config", default="boundary.config.json")
     st.add_argument("--lock", default="boundary.lock.json")
-    st.add_argument("--source", choices=["head", "index", "working-tree"], default="head")
+    st.add_argument("--source", choices=SOURCE_MODES, default="head")
     st.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     st.add_argument("--strict", action="store_true",
                     help="Exit non-zero if any drift or warnings are detected (useful for CI)")
@@ -1427,8 +1606,12 @@ def main():
     ex.add_argument("component", help="Component name from config")
     ex.add_argument("--config", default="boundary.config.json")
     ex.add_argument("--base-ref", default="HEAD", help="Git ref to diff against (default: HEAD)")
-    ex.add_argument("--source", choices=["head", "index", "working-tree"], default="head",
+    ex.add_argument("--source", choices=SOURCE_MODES, default="head",
                     help="Source to diff against base-ref (default: head)")
+    ex.add_argument(
+        "--allow-custom-providers", action="store_true",
+        help="Allow loading external provider modules declared in the config 'providers' key",
+    )
 
     why = sub.add_parser(
         "why",
@@ -1447,7 +1630,7 @@ def main():
     why.add_argument("component", help="Component name from config")
     why.add_argument("--config", default="boundary.config.json")
     why.add_argument("--lock", default="boundary.lock.json")
-    why.add_argument("--source", choices=["head", "index", "working-tree"], default="head",
+    why.add_argument("--source", choices=SOURCE_MODES, default="head",
                      help="Fingerprint source to compare against (default: head)")
     why.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     why.add_argument(
@@ -1468,8 +1651,9 @@ def main():
         help="Normalize a current lock or explain why regeneration is required",
         description=(
             "Normalize a supported current-schema boundary.lock.json in place. "
-            "Hash-contract v1/v2 locks cannot be upgraded safely and are rejected "
-            "with instructions to regenerate from repository content. Use --dry-run "
+            "Hash-contract v1/v2 locks and v3 locks carrying semantic-config/v1 "
+            "cannot be upgraded safely and are rejected with instructions to "
+            "regenerate from repository content. Use --dry-run "
             "to print the normalized current lock without writing it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1510,13 +1694,13 @@ def main():
 
     # Commands that don't need a git repo.
     if args.command == "completions":
-        _cmd_completions(args)
+        _run_cli_handler(args.command, _cmd_completions, args)
         return
     if args.command == "migrate-lock":
-        _cmd_migrate_lock(args)
+        _run_cli_handler(args.command, _cmd_migrate_lock, args)
         return
     if args.command == "diff":
-        _cmd_diff(args)
+        _run_cli_handler(args.command, _cmd_diff, args)
         return
 
     try:
@@ -1551,7 +1735,7 @@ def main():
     }
     handler = _COMMANDS.get(args.command)
     if handler:
-        handler(args, repo_root)
+        _run_cli_handler(args.command, handler, args, repo_root)
 
 
 if __name__ == "__main__":

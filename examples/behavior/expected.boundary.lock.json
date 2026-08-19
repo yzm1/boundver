@@ -1,15 +1,15 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v1",
-  "config_digest": "4dfa1f84d31db7bd189f6ac72809435e68b2cc299973dc5e21f4c126c7a4b9ff",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "63bbf0fbfe515264b02b8ba10f8b6b919d51c69b646f87d166107b3f0a87ae80",
   "project": "example-behavior",
   "components": {
     "payment-svc": {
       "version": "2.1.0",
       "path": "examples/behavior/service",
       "boundary_provider": "openapi",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "ok",
       "consumers": [],
       "external_consumers": [],

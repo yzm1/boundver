@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=78.1.1", "wheel"]
+requires = ["setuptools==80.9.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "boundver"
-version = "0.11.0"
+version = "0.12.0"
 description = "Detect API boundary, behavioral contract, and component changes in CI"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -57,7 +57,13 @@ Repository = "https://github.com/yzm1/boundver"
 [project.optional-dependencies]
 schema = ["jsonschema>=4"]
 yaml = ["PyYAML>=6"]
-dev = ["pytest>=7,<9", "jsonschema>=4", "build>=1.2", "PyYAML>=6"]
+dev = [
+  "pytest>=7,<9",
+  "jsonschema>=4",
+  "build>=1.2",
+  "PyYAML>=6",
+  "ruff==0.16.3",
+]
 
 [project.scripts]
 boundver = "boundver.cli:main"
@@ -70,3 +76,9 @@ boundver = ["py.typed", "boundary.config.schema.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F"]

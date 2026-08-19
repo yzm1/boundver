@@ -1,15 +1,40 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.why.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/cli-output.why.schema.json",
   "title": "boundver why --format json output",
   "type": "object",
   "required": [
     "component", "path", "source", "version", "drifted", "changes",
     "metadata_changes", "digest_errors", "summary", "changed_files",
+    "changed_files_status", "changed_files_error",
     "boundary_paths", "provider_detail", "affected_consumers",
     "transitive_consumers"
   ],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {"changed_files_status": {"const": "error"}},
+        "required": ["changed_files_status"]
+      },
+      "then": {
+        "properties": {
+          "changed_files": {"maxItems": 0},
+          "changed_files_error": {"type": "string", "minLength": 1}
+        }
+      },
+      "else": {
+        "properties": {"changed_files_error": {"type": "null"}}
+      }
+    },
+    {
+      "if": {
+        "properties": {"changed_files_status": {"const": "not-run"}},
+        "required": ["changed_files_status"]
+      },
+      "then": {"properties": {"changed_files": {"maxItems": 0}}}
+    }
+  ],
   "properties": {
     "component": {"type": "string"},
     "path": {"type": "string"},
@@ -54,6 +79,15 @@
           "path": {"type": "string"}
         }
       }
+    },
+    "changed_files_status": {
+      "type": "string",
+      "enum": ["ok", "error", "not-run"],
+      "description": "Whether changed-file diagnostics succeeded, failed, or were not applicable to this drift."
+    },
+    "changed_files_error": {
+      "type": ["string", "null"],
+      "description": "Diagnostic failure detail when changed_files_status is error; otherwise null."
     },
     "boundary_paths": {"type": "array", "items": {"type": "string"}},
     "provider_detail": {"type": "string"},

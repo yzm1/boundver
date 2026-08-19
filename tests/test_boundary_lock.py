@@ -11,22 +11,10 @@ from contextlib import redirect_stdout
 import boundver.core as boundary_lock
 import boundver
 import boundver.versions as versions
+from tests._repo_fixtures import commit_all, init_git_repo
 
 
 class BoundaryLockTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=root, check=True, capture_output=True, text=True)
-
-    def _commit_all(self, root: Path, message: str = "test fixture") -> None:
-        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", message],
-            cwd=root,
-            check=True,
-            capture_output=True,
-        )
 
     def test_package_exposes_version(self):
         self.assertTrue(isinstance(boundver.__version__, str))
@@ -292,7 +280,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_explain_component_changes_reports_boundary_relevant_files(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp = root / "svc"
             comp.mkdir(parents=True)
             (comp / "openapi.yaml").write_text("openapi: 3.0.0\n")
@@ -415,7 +403,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_discover_components_uses_tracked_manifests_and_deduplicates_dirs(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / ".gitignore").write_text("ignored/\n")
             (root / "packages" / "real").mkdir(parents=True)
             (root / "packages" / "real" / "package.json").write_text(
@@ -476,7 +464,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_init_discover_creates_config_with_discovered_components(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir(parents=True)
             (root / "svc" / "go.mod").write_text("module example.com/svc\n")
             proc = self._run_cli(root, "init", "--discover")
@@ -489,7 +477,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_changed_components_since_ref_detects_modified_component_paths(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "a").mkdir()
             (root / "b").mkdir()
             (root / "a" / "x.txt").write_text("a1")
@@ -614,7 +602,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_exact_hash_matches_between_head_and_working_tree_for_same_content(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -648,7 +636,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_boundary_source_head_ignores_working_tree_deletion(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -679,7 +667,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_git_latest_tag_uses_repo_root_not_process_cwd(self):
         with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as other:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             svc = root / "svc"
             svc.mkdir(parents=True)
             (svc / "main.py").write_text("print('v1')\n")
@@ -699,7 +687,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_git_latest_tag_prefers_reachable_tags(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "app.py").write_text("print('base')\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
             subprocess.run(["git", "commit", "-m", "base"], cwd=root, check=True, capture_output=True, text=True)
@@ -736,7 +724,7 @@ class BoundaryLockTests(unittest.TestCase):
             version = boundary_lock._extract_toml_field(pyproject, "tool.poetry.version")
             self.assertEqual(version, "2.5.1")
 
-    def test_extract_yaml_field_fallback_parser(self):
+    def test_extract_yaml_field_fails_closed_without_parser(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             spec = root / "openapi.yaml"
@@ -747,12 +735,12 @@ class BoundaryLockTests(unittest.TestCase):
                 version = boundary_lock._extract_yaml_field(spec, "info.version")
             finally:
                 boundary_lock._extract_yaml_field.__globals__["yaml"] = original_yaml
-            self.assertEqual(version, "1.4.0")
+            self.assertIsNone(version)
 
     def test_init_writes_schema_and_refuses_overwrite_without_force(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             res1 = self._run_cli(root, "init")
             self.assertEqual(res1.returncode, 0, res1.stderr)
             cfg = json.loads((root / "boundary.config.json").read_text())
@@ -766,7 +754,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_init_supports_out_and_force(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             target = "custom-config.json"
             res1 = self._run_cli(root, "init", "--out", target)
             self.assertEqual(res1.returncode, 0, res1.stderr)
@@ -781,7 +769,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_init_then_validate_config_succeeds_when_component_path_exists(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "src").mkdir()
             init_res = self._run_cli(root, "init")
             self.assertEqual(init_res.returncode, 0, init_res.stderr)
@@ -791,7 +779,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_generate_dry_run_does_not_write_lockfile(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -811,7 +799,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_verify_json_output_machine_readable(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -834,7 +822,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_verify_verbose_prints_diagnostics(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -854,7 +842,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_quiet_and_verbose_are_mutually_exclusive(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             res = self._run_cli(root, "--quiet", "--verbose", "status")
             self.assertNotEqual(res.returncode, 0)
             self.assertIn("not allowed with argument", res.stderr)
@@ -862,7 +850,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_status_json_returns_single_json_payload_with_issues(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -1068,7 +1056,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_hash_guardrail_applies_to_head_source_content(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("x" * 200)
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
@@ -1093,7 +1081,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_internal_change_updates_exact_but_not_api(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -1128,7 +1116,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_boundary_change_updates_exact_and_api_not_compat(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -1162,7 +1150,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_symlink_content_matches_between_head_and_working_tree(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp = root / "svc"
             comp.mkdir(parents=True)
             target = comp / "target.txt"
@@ -1193,7 +1181,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_major_version_bump_updates_compat(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -1226,7 +1214,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_adding_unrelated_component_does_not_change_existing_slice(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             a_dir = root / "a"
             a_dir.mkdir(parents=True)
             (a_dir / "main.py").write_text("print('a')\n")
@@ -1280,7 +1268,7 @@ class BoundaryLockTests(unittest.TestCase):
     def test_source_hashing_independent_of_cwd_for_head_and_index(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('v1')\n")
@@ -1389,7 +1377,7 @@ class BoundaryLockTests(unittest.TestCase):
         """HEAD source fails closed when no commit can be captured."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             comp_dir = root / "svc"
             comp_dir.mkdir(parents=True)
             (comp_dir / "main.py").write_text("print('x')\n")
@@ -1413,7 +1401,7 @@ class BoundaryLockTests(unittest.TestCase):
         """--format json is accepted and produces JSON output."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -1432,7 +1420,7 @@ class BoundaryLockTests(unittest.TestCase):
         """--format json is accepted by diff and produces JSON."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             cfg = {
@@ -1613,7 +1601,7 @@ class BoundaryLockTests(unittest.TestCase):
         """slice command prints fingerprint for a named slice."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -1632,7 +1620,7 @@ class BoundaryLockTests(unittest.TestCase):
         """slice command exits 1 when slice name is unknown."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -1653,7 +1641,7 @@ class BoundaryLockTests(unittest.TestCase):
         """validate-config returns 0 for a valid config."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             cfg = {
                 "project": "p",
@@ -1669,7 +1657,7 @@ class BoundaryLockTests(unittest.TestCase):
         """validate-config returns non-zero for a config with errors."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             cfg = {
                 "project": "p",
                 "components": {
@@ -1685,7 +1673,7 @@ class BoundaryLockTests(unittest.TestCase):
         """validate-config exits non-zero when config file does not exist."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             res = self._run_cli(root, "validate-config", "--config", "nonexistent.json")
             self.assertNotEqual(res.returncode, 0)
 
@@ -1697,14 +1685,14 @@ class BoundaryLockTests(unittest.TestCase):
         """explain exits 2 when component name is not in config."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             cfg = {
                 "project": "p",
                 "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}},
                 "slices": {},
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
-            self._commit_all(root, "add config")
+            commit_all(root, "add config")
             res = self._run_cli(root, "explain", "no-such-component")
             self.assertEqual(res.returncode, 2)
 
@@ -1712,7 +1700,7 @@ class BoundaryLockTests(unittest.TestCase):
         """explain exits 0 for a known component with no changes."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1723,7 +1711,7 @@ class BoundaryLockTests(unittest.TestCase):
                 "slices": {},
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
-            self._commit_all(root, "add config")
+            commit_all(root, "add config")
             res = self._run_cli(root, "explain", "svc")
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertIn("svc", res.stdout)
@@ -1736,7 +1724,7 @@ class BoundaryLockTests(unittest.TestCase):
         """generate --format json prints the lockfile JSON to stdout."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -1755,7 +1743,7 @@ class BoundaryLockTests(unittest.TestCase):
         """generate --verbose prints source info."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -1776,7 +1764,7 @@ class BoundaryLockTests(unittest.TestCase):
         """verify --changed-from skips components with no changes."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1796,7 +1784,7 @@ class BoundaryLockTests(unittest.TestCase):
         """verify --components with unknown name exits 2."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -1817,7 +1805,7 @@ class BoundaryLockTests(unittest.TestCase):
         """discover --format json returns JSON with count and components."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "package.json").write_text('{"name":"svc","version":"1.0.0"}\n')
             res = self._run_cli(root, "discover", "--format", "json")
@@ -1831,7 +1819,7 @@ class BoundaryLockTests(unittest.TestCase):
         """discover text output lists component names."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "package.json").write_text('{"name":"svc","version":"1.0.0"}\n')
             res = self._run_cli(root, "discover")
@@ -1846,7 +1834,7 @@ class BoundaryLockTests(unittest.TestCase):
         """status exits non-zero when no lockfile exists."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             res = self._run_cli(root, "status")
             self.assertNotEqual(res.returncode, 0)
 
@@ -2039,7 +2027,7 @@ class BoundaryLockTests(unittest.TestCase):
         """changed_components_since_ref returns empty list when nothing changed."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2088,7 +2076,7 @@ class BoundaryLockTests(unittest.TestCase):
         """git_latest_tag returns a tag reachable from the selected commit."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             # Create and tag the selected orphan history.
             subprocess.run(["git", "checkout", "--orphan", "orphan-branch"], cwd=root, check=True, capture_output=True)
             (root / "f.txt").write_text("v\n")
@@ -2134,7 +2122,7 @@ class BoundaryLockTests(unittest.TestCase):
         """generate_lockfile produces a slice with compat mode."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\ninfo:\n  version: 1.0.0\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2214,7 +2202,7 @@ class BoundaryLockTests(unittest.TestCase):
         """explain shows boundary-relevant changed files when boundary paths declared."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             (root / "svc" / "impl.py").write_text("x = 1\n")
@@ -2240,7 +2228,7 @@ class BoundaryLockTests(unittest.TestCase):
         """explain shows 'no boundary-relevant changes' when only impl files changed."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             (root / "svc" / "impl.py").write_text("x = 1\n")
@@ -2796,7 +2784,6 @@ class BoundaryLockTests(unittest.TestCase):
 
     def test_yaml_config_generates_lockfile(self):
         """Full generate flow works with a YAML config file."""
-        import yaml
         from boundver._config import load_config_file, validate_config
         from boundver._lockfile import generate_lockfile
         with tempfile.TemporaryDirectory() as td:
@@ -2835,7 +2822,7 @@ class BoundaryLockTests(unittest.TestCase):
         """An invalid baseline must fail closed instead of skipping verification."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2873,22 +2860,13 @@ class BoundaryLockTests(unittest.TestCase):
 class TestWhyComponent(unittest.TestCase):
     """Tests for why_component() in _output.py."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=root, check=True, capture_output=True, text=True)
-
-    def _commit_all(self, root: Path, msg: str = "init") -> None:
-        subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True, text=True)
-        subprocess.run(["git", "commit", "-m", msg], cwd=root, check=True, capture_output=True, text=True)
-
     def _build_fixture(self, td: str):
         """Create a git repo with one component and generate a lockfile. Returns (root, config, lockfile)."""
         root = Path(td)
-        self._init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\npaths: {}\n")
-        self._commit_all(root)
+        commit_all(root)
         config = {
             "project": "proj",
             "components": {
@@ -2907,7 +2885,6 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             import io as _io
             err = _io.StringIO()
-            import sys as _sys
             from contextlib import redirect_stderr
             with redirect_stderr(err):
                 rc = boundary_lock.why_component(config, lockfile, root, "missing")
@@ -2937,7 +2914,7 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             # Commit impl.py at v1 so it is tracked by git
             (root / "svc" / "impl.py").write_text("x = 1\n")
-            self._commit_all(root, "add impl v1")
+            commit_all(root, "add impl v1")
             config2 = {
                 "project": "proj",
                 "components": {
@@ -2951,7 +2928,7 @@ class TestWhyComponent(unittest.TestCase):
             lockfile2 = boundary_lock.generate_lockfile(config2, root)  # HEAD has x=1
             # Commit impl.py at v2 to advance HEAD
             (root / "svc" / "impl.py").write_text("x = 2\n")
-            self._commit_all(root, "change impl v2")
+            commit_all(root, "change impl v2")
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = boundary_lock.why_component(config2, lockfile2, root, "svc")
@@ -2991,7 +2968,7 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             (root / "boundary.config.json").write_text(json.dumps(config))
             (root / "boundary.lock.json").write_text(json.dumps(lockfile))
-            self._commit_all(root, "add config and lock")
+            commit_all(root, "add config and lock")
             import sys as _sys
             old_argv = _sys.argv[:]
             old_dir = os.getcwd()
@@ -3015,7 +2992,7 @@ class TestWhyComponent(unittest.TestCase):
             root, config, lockfile = self._build_fixture(td)
             (root / "boundary.config.json").write_text(json.dumps(config))
             (root / "boundary.lock.json").write_text(json.dumps(lockfile))
-            self._commit_all(root, "add config and lock")
+            commit_all(root, "add config and lock")
             import sys as _sys
             old_argv = _sys.argv[:]
             old_dir = os.getcwd()
@@ -3065,7 +3042,7 @@ class MigrateLockTests(unittest.TestCase):
     def _minimal_v3(self, **extra):
         base = self._minimal_v2()
         base["schema"] = "boundary-lock/v3"
-        base["config_contract"] = "boundver-semantic-config/v1"
+        base["config_contract"] = "boundver-semantic-config/v2"
         base["config_digest"] = "0" * 64
         base.update(extra)
         return base
@@ -3090,6 +3067,14 @@ class MigrateLockTests(unittest.TestCase):
         result = migrate_lockfile(lf)
         self.assertNotIn("generated_at", result)
 
+    def test_v3_semantic_v1_requires_regeneration(self):
+        from boundver._lockfile import MigrationError, migrate_lockfile
+
+        lockfile = self._minimal_v3()
+        lockfile["config_contract"] = "boundver-semantic-config/v1"
+        with self.assertRaisesRegex(MigrationError, "cannot be relabelled"):
+            migrate_lockfile(lockfile)
+
     def test_migrate_does_not_mutate_input(self):
         from boundver._lockfile import MigrationError, migrate_lockfile
         lf = self._minimal_v1(generated_at="x")
@@ -3104,7 +3089,11 @@ class MigrateLockTests(unittest.TestCase):
 
     def test_current_v3_cleanup_adds_missing_components_and_slices(self):
         from boundver._lockfile import migrate_lockfile
-        lf = {"schema": "boundary-lock/v3", "project": "x"}
+        lf = {
+            "schema": "boundary-lock/v3",
+            "config_contract": "boundver-semantic-config/v2",
+            "project": "x",
+        }
         result = migrate_lockfile(lf)
         self.assertEqual(result["components"], {})
         self.assertEqual(result["slices"], {})
