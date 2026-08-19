@@ -36,7 +36,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Dict as Dict
-from typing import List, Optional
+from typing import List, Optional, Set
 
 # Sub-module imports — each group lives in a focused module.
 #
@@ -78,6 +78,7 @@ from ._utils import (
     SOURCE_MODE_SET,
     _available_component_facets,
     _bounded_json_dumps,
+    _is_windows_reparse_point,
     BoundverError as BoundverError,
     ConfigError,
     GuardrailError as GuardrailError,
@@ -98,6 +99,7 @@ from ._config import (
     validate_config,
 )
 from ._lockfile import (
+    DIFFABLE_SEMANTIC_CONFIG_VERSIONS,
     LOCKFILE_SCHEMA as LOCKFILE_SCHEMA,
     LOCKFILE_SCHEMA_URL as LOCKFILE_SCHEMA_URL,
     MigrationError,
@@ -112,7 +114,7 @@ from ._lockfile import (
     verify_lockfile,
 )
 from ._diff import _summarize_change as _summarize_change
-from ._diff import diff_lockfiles
+from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._output import (
     _bold as _bold,
     _green,
@@ -137,6 +139,20 @@ from ._completions import (
     _ZSH_COMPLETION as _ZSH_COMPLETION,
 )
 from ._consumer_graph import resolve_slice_components
+from ._discovery import compare_discovery_to_config
+from ._migration_analysis import analyze_selector_migration
+from ._baseline import (
+    BaselineError,
+    apply_baseline,
+    baseline_change_ids,
+    baseline_context,
+    create_baseline,
+    dump_baseline,
+    load_baseline,
+    load_baseline_with_bytes,
+    replace_baseline_if_unchanged,
+    write_baseline_create_only,
+)
 from .versions import (
     _extract_json_field as _extract_json_field,
     _extract_toml_field as _extract_toml_field,
@@ -156,17 +172,18 @@ print = _safe_print
 # Exit code constants
 # ---------------------------------------------------------------------------
 EXIT_OK = 0
-EXIT_DRIFT = 1       # Gated drift detected
-EXIT_USAGE = 2       # Usage/config error (missing file, parse error, unknown name)
-EXIT_BEHAVIOR = 3    # Highest gated drift is behavioral
-EXIT_BOUNDARY = 4    # Highest gated drift is boundary
-EXIT_COMPAT = 5      # Compatibility-family drift
+EXIT_DRIFT = 1  # Gated drift detected
+EXIT_USAGE = 2  # Usage/config error (missing file, parse error, unknown name)
+EXIT_BEHAVIOR = 3  # Highest gated drift is behavioral
+EXIT_BOUNDARY = 4  # Highest gated drift is boundary
+EXIT_COMPAT = 5  # Compatibility-family drift
 
 
 def _get_version() -> str:
     """Return the installed package version."""
     try:
         from importlib.metadata import version as _meta_version
+
         return _meta_version("boundver")
     except Exception:
         return "unknown"
@@ -188,9 +205,7 @@ def _parse_facets_arg(raw: str, config: dict) -> List[str]:
     return sorted(set(facets or FACETS))
 
 
-def _facet_policy_payload(
-    config: dict, explicit_facets: Optional[List[str]]
-) -> dict:
+def _facet_policy_payload(config: dict, explicit_facets: Optional[List[str]]) -> dict:
     """Describe effective component and slice gating without hiding overrides."""
     raw_defaults = config.get("defaults", {})
     configured_defaults = (
@@ -246,10 +261,14 @@ def _facet_policy_payload(
 def _drift_exit_code(issues: List[str]) -> int:
     """Return an exit code for the highest-severity gated fingerprint drift."""
     safety_prefixes = (
-        "Config root", "LOCKFILE", "Custom provider loading failed",
-        "Config invalid", "Config unavailable",
+        "Config root",
+        "LOCKFILE",
+        "Custom provider loading failed",
+        "Config invalid",
+        "Config unavailable",
         "Verification error",
-        "Unknown verification facet", "Unknown verification component",
+        "Unknown verification facet",
+        "Unknown verification component",
         "CURRENT DIGEST ERROR",
         "LOCKED DIGEST ERROR",
         "UNAVAILABLE FACET",
@@ -292,13 +311,29 @@ def _capture_operation_snapshot(
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
 
 
-def _require_valid_lockfile(lockfile: dict) -> None:
-    issues = [
-        *_lockfile_schema_issues(lockfile),
-        *_lockfile_structure_issues(lockfile),
-    ]
+def _require_valid_lockfile(
+    lockfile: dict,
+    *,
+    allowed_config_contracts: Optional[Set[str]] = None,
+) -> None:
+    schema_issues = _lockfile_schema_issues(lockfile)
+    if schema_issues:
+        raise LockfileError("Lockfile validation failed:\n" + "\n".join(schema_issues))
+    issues = _lockfile_structure_issues(
+        lockfile,
+        allowed_config_contracts=allowed_config_contracts,
+        running_version=_get_version(),
+    )
     if issues:
         raise LockfileError("Lockfile validation failed:\n" + "\n".join(issues))
+
+
+def _require_diffable_lockfile(lockfile: dict) -> None:
+    """Validate one lock for the explicitly read-only historical diff path."""
+    _require_valid_lockfile(
+        lockfile,
+        allowed_config_contracts=set(DIFFABLE_SEMANTIC_CONFIG_VERSIONS),
+    )
 
 
 def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
@@ -310,7 +345,7 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
     """
     structural_issues = [
         *_lockfile_schema_issues(lockfile),
-        *_lockfile_structure_issues(lockfile),
+        *_lockfile_structure_issues(lockfile, running_version=_get_version()),
     ]
     issues = list(structural_issues)
     if structural_issues:
@@ -348,8 +383,7 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
         )
 
     issues.extend(
-        f"LOCKED DIGEST ERROR {message}"
-        for message in _generation_errors(lockfile)
+        f"LOCKED DIGEST ERROR {message}" for message in _generation_errors(lockfile)
     )
     return issues
 
@@ -423,9 +457,95 @@ def _write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+def _resolve_baseline_path(repo_root: Path, raw_path: str) -> Path:
+    """Return a normalized lexical baseline path inside the repository.
+
+    Keeping the lexical path ensures an unstaged symlink cannot select
+    a different committed/staged baseline entry for a head/index operation.
+    """
+    lexical_root = Path(os.path.abspath(repo_root))
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = lexical_root / candidate
+    lexical_candidate = Path(os.path.abspath(candidate))
+    try:
+        lexical_candidate.relative_to(lexical_root)
+    except (OSError, ValueError) as exc:
+        raise BaselineError(
+            "verification baseline paths must stay within the repository"
+        ) from exc
+    if lexical_candidate.suffix.lower() != ".json":
+        raise BaselineError("verification baseline path must end in .json")
+    return lexical_candidate
+
+
+def _ensure_baseline_outside_components(
+    repo_root: Path, baseline_path: Path, config: dict
+) -> None:
+    for name, component in config.get("components", {}).items():
+        if not isinstance(component, dict):
+            continue
+        component_path = component.get("path")
+        if not isinstance(component_path, str):
+            continue
+        protected_roots = [("component", component_path)]
+        vendored = component.get("vendored_copies", [])
+        if isinstance(vendored, list):
+            protected_roots.extend(
+                ("vendored copy", path) for path in vendored if isinstance(path, str)
+            )
+        for root_kind, root_path in protected_roots:
+            protected_root = Path(
+                os.path.abspath(repo_root / os.path.normpath(root_path.strip()))
+            )
+            try:
+                baseline_path.relative_to(protected_root)
+            except (ValueError, OSError):
+                continue
+            raise BaselineError(
+                f"verification baseline {baseline_path} is inside {root_kind} "
+                f"root '{root_path}' declared by component '{name}'; choose a "
+                "repository path outside every hashed component or vendored-copy "
+                "root to avoid self-referential drift"
+            )
+
+
+def _ensure_plain_baseline_disk_path(repo_root: Path, baseline_path: Path) -> None:
+    """Reject live symlink/reparse traversal for disk reads and writes."""
+    lexical_root = Path(os.path.abspath(repo_root))
+    try:
+        relative = baseline_path.relative_to(lexical_root)
+    except ValueError as exc:
+        raise BaselineError(
+            "verification baseline paths must stay within the repository"
+        ) from exc
+    current = lexical_root
+    for part in relative.parts[:-1]:
+        current = current / part
+        try:
+            identity = current.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+            raise BaselineError(
+                "verification baseline path must not traverse a symlink, "
+                f"junction, or reparse-point ancestor: {baseline_path}"
+            )
+    try:
+        identity = baseline_path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(identity.st_mode) or _is_windows_reparse_point(identity):
+        raise BaselineError(
+            "verification baseline path must be a regular file, not a symlink, "
+            f"junction, or reparse point: {baseline_path}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
+
 
 def _run_cli_handler(command: str, handler, *handler_args) -> None:
     """Run a command with operational failures converted to usage errors."""
@@ -453,11 +573,118 @@ def _cmd_migrate_lock(args) -> None:
     except LockfileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    migration_reason = None
     try:
         migrated = migrate_lockfile(old_lock)
     except MigrationError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
+        if not args.explain:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+        migrated = None
+        migration_action = "regenerate"
+        migration_reason = str(exc)[:4096]
+    else:
+        migration_action = "none" if migrated == old_lock else "normalize"
+    if args.explain:
+        try:
+            repo_root = git_root()
+            snapshot = _capture_operation_snapshot(repo_root, args.source)
+            analysis_snapshot = snapshot
+            if args.source == "working-tree":
+                tracked_snapshot = _capture_git_source_snapshot(repo_root, "index")
+                visible_entries = {
+                    path: entry
+                    for path, entry in tracked_snapshot.entries.items()
+                    if (repo_root / path).exists() or (repo_root / path).is_symlink()
+                }
+                analysis_snapshot = GitSourceSnapshot(
+                    source="working-tree",
+                    tree_oid=tracked_snapshot.tree_oid,
+                    entries=visible_entries,
+                    head_oid=tracked_snapshot.head_oid,
+                    filemode=tracked_snapshot.filemode,
+                )
+            config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+            config = load_config_file(
+                config_path, repo_root=repo_root, snapshot=snapshot
+            )
+            lock_label = Path(args.lock).as_posix()
+            if len(lock_label) > 4096:
+                raise ConfigError("Lockfile path exceeds the diagnostic limit")
+            analysis = analyze_selector_migration(
+                config,
+                repo_root,
+                source=args.source,
+                snapshot=analysis_snapshot,
+                lock_path=lock_label,
+                lock_schema=old_lock.get("schema"),
+                migration_action=migration_action,
+                migration_reason=migration_reason,
+            )
+        except (FileNotFoundError, ValueError, ConfigError, GuardrailError) as exc:
+            print(f"error: migration analysis failed: {exc}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+        if args.format == "json":
+            _print_json(analysis)
+        else:
+            summary = analysis["summary"]
+            print(
+                "Migration selector analysis "
+                f"({analysis['source']['mode']}): "
+                f"{summary['declaration_count']} declaration(s), "
+                f"{summary['changed_declaration_count']} changed, "
+                f"{summary['uncompared_declaration_count']} not comparable"
+            )
+            print(f"Lock action: {analysis['lock']['action']}")
+            if analysis["lock"]["reason"]:
+                print(f"  {analysis['lock']['reason']}")
+            changed_declarations = [
+                declaration
+                for declaration in analysis["declarations"]
+                if declaration["analysis_status"] == "compared"
+                and declaration["impact"] != "unchanged"
+            ]
+            uncompared_declarations = [
+                declaration
+                for declaration in analysis["declarations"]
+                if declaration["analysis_status"] != "compared"
+            ]
+            unchanged_count = summary["compared_declaration_count"] - len(
+                changed_declarations
+            )
+            if unchanged_count:
+                print(f"Unchanged comparable declarations: {unchanged_count}")
+            for declaration in uncompared_declarations:
+                print(
+                    f"  {declaration['component']}.{declaration['facet']} "
+                    f"{declaration['selector']!r}: not comparable "
+                    f"({declaration['analysis_status']})"
+                )
+                print(f"    {declaration['detail']}")
+            if not changed_declarations:
+                print("No comparable selector match sets changed.")
+            for declaration in changed_declarations:
+                print(
+                    f"  {declaration['component']}.{declaration['facet']} "
+                    f"{declaration['selector']!r}: {declaration['impact']} "
+                    f"(v0.10={declaration['legacy_match_count']}, "
+                    f"current={declaration['current_match_count']})"
+                )
+                for path in declaration["legacy_only_examples"]:
+                    print(f"    - legacy only: {path}")
+                if declaration["legacy_only_omitted"]:
+                    print(
+                        f"    - legacy only: +{declaration['legacy_only_omitted']} more"
+                    )
+                for path in declaration["current_only_examples"]:
+                    print(f"    + current only: {path}")
+                if declaration["current_only_omitted"]:
+                    print(
+                        "    + current only: "
+                        f"+{declaration['current_only_omitted']} more"
+                    )
+        return
+    assert migrated is not None
     out = _bounded_json_dumps(migrated, indent=2, sort_keys=False) + "\n"
     if args.dry_run:
         sys.stdout.write(out)
@@ -477,8 +704,9 @@ def _cmd_diff(args) -> None:
     try:
         old = _load_lockfile(Path(args.old))
         new = _load_lockfile(Path(args.new))
-        _require_valid_lockfile(old)
-        _require_valid_lockfile(new)
+        require_compatible_lockfile_schemas(old, new)
+        _require_diffable_lockfile(old)
+        _require_diffable_lockfile(new)
     except LockfileError as exc:
         print(f"ERROR: Invalid lockfile: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -492,12 +720,8 @@ def _cmd_diff(args) -> None:
 def _cmd_generate(args, repo_root: Path) -> None:
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(
-            repo_root, args.config, snapshot=snapshot
-        )
-        config = load_config_file(
-            config_path, repo_root=repo_root, snapshot=snapshot
-        )
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -508,9 +732,12 @@ def _cmd_generate(args, repo_root: Path) -> None:
         allow_custom_providers=allow_custom,
         source=args.source,
         snapshot=snapshot,
+        require_slice_facets=not args.allow_partial,
     )
     if config_errors:
-        print(f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr)
+        print(
+            f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr
+        )
         for error in config_errors:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -531,14 +758,15 @@ def _cmd_generate(args, repo_root: Path) -> None:
             dirty = []
             print(
                 _yellow(
-                    "WARNING: Could not inspect uncommitted component changes: "
-                    f"{exc}"
+                    f"WARNING: Could not inspect uncommitted component changes: {exc}"
                 ),
                 file=sys.stderr,
             )
         if dirty:
             print(
-                _yellow("WARNING: Using --source head but these components have uncommitted changes:"),
+                _yellow(
+                    "WARNING: Using --source head but these components have uncommitted changes:"
+                ),
                 file=sys.stderr,
             )
             for d in dirty:
@@ -563,20 +791,31 @@ def _cmd_generate(args, repo_root: Path) -> None:
                 strict=(not args.allow_partial),
                 allow_custom_providers=allow_custom,
                 snapshot=snapshot,
+                running_version=_get_version(),
             )
         else:
             lockfile = generate_lockfile(
-                config, repo_root, source=args.source, strict=(not args.allow_partial),
+                config,
+                repo_root,
+                source=args.source,
+                strict=(not args.allow_partial),
                 allow_custom_providers=allow_custom,
                 snapshot=snapshot,
             )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        print("Run: boundver validate-config", file=sys.stderr)
+        print(
+            "Review the reported provider, source, or facet error. Use "
+            "--allow-partial only when null slice facet inputs are intentional.",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_USAGE)
     out_path = repo_root / args.out
     if args.dry_run:
-        _log(f"Dry run: lockfile not written ({out_path})", quiet=(args.quiet or args.format == "json"))
+        _log(
+            f"Dry run: lockfile not written ({out_path})",
+            quiet=(args.quiet or args.format == "json"),
+        )
     else:
         _write_text_atomic(out_path, _bounded_json_dumps(lockfile, indent=2) + "\n")
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
@@ -592,9 +831,11 @@ def _cmd_generate(args, repo_root: Path) -> None:
         comps = lockfile.get("components", {})
         if comps and all(c.get("exact_errors") for c in comps.values()):
             print(
-                _yellow("\nHint: All components have errors at HEAD. "
-                        "If you haven't committed yet, try:\n"
-                        "  boundver generate --source working-tree")
+                _yellow(
+                    "\nHint: All components have errors at HEAD. "
+                    "If you haven't committed yet, try:\n"
+                    "  boundver generate --source working-tree"
+                )
             )
 
 
@@ -609,32 +850,51 @@ def _print_verify_json(
     facet_policy: dict,
     components_filter: List[str],
     changed_components: List[str],
+    baseline: Optional[dict] = None,
 ) -> None:
     """Print the stable structured result for every verify outcome."""
-    _print_json(
-        {
-            "ok": ok,
-            "updated": updated,
-            "issues": issues,
-            "resolved_issues": resolved_issues,
-            "observations": observations,
-            "facets": facets,
-            "facet_policy": facet_policy,
-            "components_filter": components_filter,
-            "changed_components": changed_components,
-        }
-    )
+    payload = {
+        "ok": ok,
+        "updated": updated,
+        "issues": issues,
+        "resolved_issues": resolved_issues,
+        "observations": observations,
+        "facets": facets,
+        "facet_policy": facet_policy,
+        "components_filter": components_filter,
+        "changed_components": changed_components,
+    }
+    if baseline is not None:
+        payload["baseline"] = baseline
+    _print_json(payload)
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
+    baseline_mode = next(
+        (
+            mode
+            for mode in ("baseline", "write_baseline", "update_baseline")
+            if getattr(args, mode, "")
+        ),
+        None,
+    )
+    if baseline_mode is not None and args.update:
+        print(
+            "ERROR: verification baselines cannot be combined with lockfile --update",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
+    if baseline_mode is not None and args.fail_fast:
+        print(
+            "ERROR: verification baselines require the complete issue set; "
+            "remove --fail-fast",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(
-            repo_root, args.config, snapshot=snapshot
-        )
-        config = load_config_file(
-            config_path, repo_root=repo_root, snapshot=snapshot
-        )
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -647,7 +907,9 @@ def _cmd_verify(args, repo_root: Path) -> None:
         snapshot=snapshot,
     )
     if config_errors:
-        print(f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr)
+        print(
+            f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr
+        )
         for error in config_errors:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -658,17 +920,14 @@ def _cmd_verify(args, repo_root: Path) -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        lockfile = _load_lockfile(
-            lock_path, repo_root=repo_root, snapshot=snapshot
-        )
+        lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, LockfileError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components_filter = _parse_components_arg(args.components)
     requested_components_filter = list(components_filter)
     unknown = [
-        name for name in components_filter
-        if name not in config.get("components", {})
+        name for name in components_filter if name not in config.get("components", {})
     ]
     if unknown:
         print(
@@ -679,9 +938,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
     gated_facets = _parse_facets_arg(args.facets, config)
     explicit_gated_facets = gated_facets if args.facets.strip() else None
     facet_policy = _facet_policy_payload(config, explicit_gated_facets)
-    unknown_facets = sorted(
-        set(gated_facets) - FACET_SET
-    )
+    unknown_facets = sorted(set(gated_facets) - FACET_SET)
     if unknown_facets:
         print(
             f"ERROR: unknown --facets entries: {', '.join(unknown_facets)}",
@@ -690,7 +947,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     structural_issues = [
         *_lockfile_schema_issues(lockfile),
-        *_lockfile_structure_issues(lockfile),
+        *_lockfile_structure_issues(lockfile, running_version=_get_version()),
     ]
     preflight_issues = _verify_lock_preflight_issues(config, lockfile)
     changed_components: List[str] = []
@@ -717,7 +974,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
             # Preflight invariants cover the complete lock.  A scoped repair
             # could leave a missing unselected component or slice unresolved.
             updated = generate_lockfile(
-                config, repo_root, source=args.source, strict=True,
+                config,
+                repo_root,
+                source=args.source,
+                strict=True,
                 allow_custom_providers=allow_custom,
                 snapshot=snapshot,
             )
@@ -783,7 +1043,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
         if args.verbose and not args.quiet and args.format != "json":
             if components_filter:
                 print(
-                    "Changed component paths: " + ", ".join(components_filter)
+                    "Changed component paths: "
+                    + ", ".join(components_filter)
                     + "; validating full lock integrity."
                 )
             else:
@@ -796,7 +1057,11 @@ def _cmd_verify(args, repo_root: Path) -> None:
     observations: List[str] = []
     try:
         issues = verify_lockfile(
-            config, lockfile, repo_root, source=args.source, components_filter=components_filter,
+            config,
+            lockfile,
+            repo_root,
+            source=args.source,
+            components_filter=components_filter,
             allow_custom_providers=allow_custom,
             fail_fast=getattr(args, "fail_fast", False),
             facets=explicit_gated_facets,
@@ -807,10 +1072,122 @@ def _cmd_verify(args, repo_root: Path) -> None:
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    baseline_info: Optional[dict] = None
+    if baseline_mode is not None:
+        raw_baseline_path = getattr(args, baseline_mode)
+        try:
+            baseline_path = _resolve_baseline_path(repo_root, raw_baseline_path)
+            _ensure_baseline_outside_components(repo_root, baseline_path, config)
+            if baseline_mode != "baseline" or snapshot is None:
+                _ensure_plain_baseline_disk_path(repo_root, baseline_path)
+            if baseline_path in {
+                Path(os.path.abspath(config_path)),
+                Path(os.path.abspath(lock_path)),
+            }:
+                raise BaselineError(
+                    "verification baseline must not overwrite the config or lockfile"
+                )
+            context = baseline_context(
+                config=config,
+                lockfile=lockfile,
+                source=args.source,
+                components_filter=reported_components_filter,
+                facets=explicit_gated_facets,
+                transitive=args.transitive,
+                facet_policy=facet_policy,
+            )
+            baseline_label = baseline_path.relative_to(
+                Path(os.path.abspath(repo_root))
+            ).as_posix()
+            if len(baseline_label) > 4096:
+                raise BaselineError(
+                    "verification baseline path exceeds the output contract limit"
+                )
+            if baseline_mode == "baseline":
+                stored_baseline = load_baseline(
+                    baseline_path,
+                    repo_root=repo_root,
+                    snapshot=snapshot,
+                )
+                issues, acknowledged, stale_ids = apply_baseline(
+                    stored_baseline, context, issues
+                )
+                baseline_info = {
+                    "action": "applied",
+                    "path": baseline_label,
+                    "baselined_issues": [
+                        issue[:4096] for issue in acknowledged[:10000]
+                    ],
+                    "stale_ids": stale_ids,
+                    "added_ids": [],
+                    "removed_ids": [],
+                }
+            else:
+                previous = None
+                previous_raw = None
+                if baseline_mode == "write_baseline":
+                    if baseline_path.exists():
+                        raise BaselineError(
+                            f"verification baseline already exists: {baseline_label}; "
+                            "use --update-baseline after reviewing current debt"
+                        )
+                else:
+                    previous, previous_raw = load_baseline_with_bytes(
+                        baseline_path,
+                        repo_root=repo_root,
+                        snapshot=snapshot,
+                    )
+                captured_issues = list(issues)
+                if previous is not None:
+                    # Updating is only a ratchet operation for the exact same
+                    # verification scope. A changed source/policy requires a
+                    # separately reviewed create workflow.
+                    apply_baseline(previous, context, captured_issues)
+                replacement = create_baseline(context, captured_issues)
+                added_ids, removed_ids = baseline_change_ids(previous, replacement)
+                if baseline_mode == "update_baseline" and added_ids:
+                    raise BaselineError(
+                        "--update-baseline is shrink-only and current verification "
+                        f"contains {len(added_ids)} new violation identity/identities; "
+                        "fix the new violations instead of baselining them"
+                    )
+                replacement_text = dump_baseline(replacement)
+                if baseline_mode == "write_baseline":
+                    write_baseline_create_only(
+                        baseline_path,
+                        replacement_text,
+                        repo_root=repo_root,
+                    )
+                else:
+                    if previous_raw is None:
+                        raise BaselineError(
+                            "selected verification baseline bytes are unavailable"
+                        )
+                    replace_baseline_if_unchanged(
+                        baseline_path,
+                        replacement_text,
+                        previous_raw,
+                        repo_root=repo_root,
+                    )
+                issues = []
+                baseline_info = {
+                    "action": (
+                        "created" if baseline_mode == "write_baseline" else "updated"
+                    ),
+                    "path": baseline_label,
+                    "baselined_issues": [
+                        issue[:4096] for issue in captured_issues[:10000]
+                    ],
+                    "stale_ids": [],
+                    "added_ids": added_ids,
+                    "removed_ids": removed_ids,
+                }
+        except BaselineError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
     if issues:
         unavailable_issues = [
-            issue for issue in issues
-            if issue.startswith("UNAVAILABLE FACET ")
+            issue for issue in issues if issue.startswith("UNAVAILABLE FACET ")
         ]
         if args.format != "json" and not args.quiet:
             print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):") + "\n")
@@ -820,8 +1197,14 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 print(_yellow("\nNON-GATING DRIFT:"))
                 for observation in observations:
                     print(f"  {observation}")
+            if baseline_info and baseline_info["baselined_issues"]:
+                print(_yellow("\nKNOWN BASELINE VIOLATIONS:"))
+                for issue in baseline_info["baselined_issues"]:
+                    print(f"  {issue}")
             if not args.update:
-                print("\nInspect with `boundver why <component>`, then run `boundver verify --update` after review.")
+                print(
+                    "\nInspect with `boundver why <component>`, then run `boundver verify --update` after review."
+                )
         # Regeneration cannot manufacture a facet that the configuration does
         # not define. Treat this as a controlled policy/input error and leave
         # the reviewed lock bytes untouched even when --update was requested.
@@ -852,10 +1235,14 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         allow_custom_providers=allow_custom,
                         snapshot=snapshot,
                         existing_lockfile=lockfile,
+                        running_version=_get_version(),
                     )
                 else:
                     updated = generate_lockfile(
-                        config, repo_root, source=args.source, strict=True,
+                        config,
+                        repo_root,
+                        source=args.source,
+                        strict=True,
                         allow_custom_providers=allow_custom,
                         snapshot=snapshot,
                     )
@@ -889,6 +1276,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 facet_policy=facet_policy,
                 components_filter=reported_components_filter,
                 changed_components=changed_components,
+                baseline=baseline_info,
             )
         sys.exit(_drift_exit_code(issues))
     else:
@@ -905,10 +1293,14 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         allow_custom_providers=allow_custom,
                         snapshot=snapshot,
                         existing_lockfile=lockfile,
+                        running_version=_get_version(),
                     )
                 else:
                     updated = generate_lockfile(
-                        config, repo_root, source=args.source, strict=True,
+                        config,
+                        repo_root,
+                        source=args.source,
+                        strict=True,
                         allow_custom_providers=allow_custom,
                         snapshot=snapshot,
                     )
@@ -942,8 +1334,42 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 facet_policy=facet_policy,
                 components_filter=reported_components_filter,
                 changed_components=changed_components,
+                baseline=baseline_info,
             )
-        if args.verbose and not args.quiet and args.format != "json":
+        if baseline_info is not None and not args.quiet and args.format != "json":
+            baselined_count = len(baseline_info["baselined_issues"])
+            stale_count = len(baseline_info["stale_ids"])
+            if baseline_info["action"] in {"created", "updated"}:
+                print(
+                    _green(
+                        f"Baseline {baseline_info['action']} at "
+                        f"{baseline_info['path']} with {baselined_count} "
+                        "reviewed violation(s)."
+                    )
+                )
+                if baselined_count:
+                    print("Reviewed baseline violations:")
+                    for issue in baseline_info["baselined_issues"]:
+                        print(f"  {issue}")
+            elif baselined_count:
+                print(
+                    _yellow(
+                        f"Acknowledged {baselined_count} known baseline "
+                        "violation(s); no new violations found."
+                    )
+                )
+                for issue in baseline_info["baselined_issues"]:
+                    print(f"  {issue}")
+            else:
+                print(_green("No new baseline violations found."))
+            if stale_count:
+                print(
+                    _yellow(
+                        f"Baseline has {stale_count} stale violation id(s); "
+                        "review and run --update-baseline to remove them."
+                    )
+                )
+        elif args.verbose and not args.quiet and args.format != "json":
             print(_green(f"Verified source={args.source} with 0 issues."))
         elif args.format != "json" and not args.quiet:
             print(_green("Lockfile is up to date."))
@@ -956,7 +1382,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
 def _cmd_slice(args, repo_root: Path) -> None:
     lock_path = repo_root / args.lock
     if not lock_path.exists():
-        print(f"ERROR: Lockfile not found: {lock_path} \u2014 run 'boundver generate' first.", file=sys.stderr)
+        print(
+            f"ERROR: Lockfile not found: {lock_path} \u2014 run 'boundver generate' first.",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_USAGE)
     try:
         lockfile = _load_lockfile(lock_path)
@@ -1016,7 +1445,10 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     errors = validate_config(
-        config, repo_root, allow_custom_providers=allow_custom
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom,
+        require_slice_facets=not args.allow_partial,
     )
     warnings = config_warnings(config, repo_root)
     if errors:
@@ -1059,7 +1491,9 @@ def _cmd_init(args, repo_root: Path) -> None:
         "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
-        "components": discovered if args.discover else {
+        "components": discovered
+        if args.discover
+        else {
             "example-component": {
                 "path": "src",
                 "version_source": None,
@@ -1069,7 +1503,9 @@ def _cmd_init(args, repo_root: Path) -> None:
     }
     _write_text_atomic(config_path, _bounded_json_dumps(starter, indent=2) + "\n")
     print(f"Created {config_path} with {len(starter['components'])} component(s).")
-    print("Next: review the config, then run `boundver validate-config` and `boundver generate`.")
+    print(
+        "Next: review the config, then run `boundver validate-config` and `boundver generate`."
+    )
 
 
 def _cmd_add(args, repo_root: Path) -> None:
@@ -1099,13 +1535,17 @@ def _cmd_add(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     components = config.get("components", {})
     if args.name in components:
-        print(f"ERROR: Component '{args.name}' already exists in config.", file=sys.stderr)
+        print(
+            f"ERROR: Component '{args.name}' already exists in config.", file=sys.stderr
+        )
         sys.exit(EXIT_USAGE)
     add_path = args.path.replace("\\", "/").rstrip("/")
     if not add_path or ".." in Path(add_path).parts or Path(add_path).is_absolute():
         print(f"ERROR: Invalid component path: {args.path!r}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    boundary_paths = [p.strip() for p in args.paths.split(",") if p.strip()] if args.paths else []
+    boundary_paths = (
+        [p.strip() for p in args.paths.split(",") if p.strip()] if args.paths else []
+    )
     components[args.name] = {
         "path": add_path,
         "version_source": None,
@@ -1201,28 +1641,52 @@ def _cmd_discover(args, repo_root: Path) -> None:
         print(f"ERROR: component discovery failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     payload = {"count": len(discovered), "components": discovered}
+    config_diff = None
+    if args.diff_config:
+        try:
+            config_path = find_config_file(repo_root, args.config)
+            config = load_config_file(config_path)
+            config_diff = compare_discovery_to_config(discovered, config)
+        except (FileNotFoundError, ValueError, ConfigError) as exc:
+            print(f"ERROR: discovery config comparison failed: {exc}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+        payload["config_diff"] = config_diff
     if args.format == "json":
         _print_json(payload)
     else:
         print(f"Discovered {len(discovered)} components:")
         for name, comp in discovered.items():
             print(f"  - {name}: {comp['path']}")
+        if config_diff is not None:
+            print(
+                "Config comparison: "
+                f"{config_diff['registered_count']} registered, "
+                f"{config_diff['unregistered_count']} unregistered, "
+                f"{config_diff['not_discovered_count']} configured root(s) "
+                "without a discoverable manifest"
+            )
+            if config_diff["unregistered"]:
+                print("  Discovered but unregistered:")
+                for entry in config_diff["unregistered"]:
+                    print(f"    - {entry['name']}: {entry['path']}")
+            if config_diff["not_discovered"]:
+                print("  Configured but not discovered:")
+                for entry in config_diff["not_discovered"]:
+                    print(f"    - {entry['name']}: {entry['path']}")
 
 
 def _cmd_status(args, repo_root: Path) -> None:
     lock_path = repo_root / args.lock
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
-        lockfile = _load_lockfile(
-            lock_path, repo_root=repo_root, snapshot=snapshot
-        )
+        lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, LockfileError, ConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     if lockfile is not None:
         structure_issues = [
             *_lockfile_schema_issues(lockfile),
-            *_lockfile_structure_issues(lockfile),
+            *_lockfile_structure_issues(lockfile, running_version=_get_version()),
         ]
         status_payload = {
             "lockfile": lockfile,
@@ -1248,7 +1712,9 @@ def _cmd_status(args, repo_root: Path) -> None:
                 status_payload["warnings"].append(f"{name}: {w}")
                 has_warnings = True
             for e in comp.get("boundary_errors", []):
-                status_payload["warnings"].append(f"{name}: boundary {comp.get('boundary_status', 'unknown')} - {e}")
+                status_payload["warnings"].append(
+                    f"{name}: boundary {comp.get('boundary_status', 'unknown')} - {e}"
+                )
                 has_warnings = True
             for error_field, label in (
                 ("version_errors", "version"),
@@ -1260,9 +1726,7 @@ def _cmd_status(args, repo_root: Path) -> None:
                     has_warnings = True
         # Also verify if config exists
         try:
-            config_path = find_config_file(
-                repo_root, args.config, snapshot=snapshot
-            )
+            config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
             config = load_config_file(
                 config_path, repo_root=repo_root, snapshot=snapshot
             )
@@ -1284,7 +1748,10 @@ def _cmd_status(args, repo_root: Path) -> None:
             else:
                 try:
                     issues = verify_lockfile(
-                        config, lockfile, repo_root, source=args.source,
+                        config,
+                        lockfile,
+                        repo_root,
+                        source=args.source,
                         allow_custom_providers=allow_custom,
                         snapshot=snapshot,
                     )
@@ -1299,7 +1766,9 @@ def _cmd_status(args, repo_root: Path) -> None:
         if args.format == "json":
             _print_json(status_payload)
         # --strict: exit non-zero if any drift or warnings
-        if getattr(args, "strict", False) and (status_payload["issues"] or has_warnings):
+        if getattr(args, "strict", False) and (
+            status_payload["issues"] or has_warnings
+        ):
             sys.exit(_drift_exit_code(status_payload["issues"]))
     else:
         print(f"No lockfile found at {lock_path}. Run 'generate' first.")
@@ -1309,12 +1778,8 @@ def _cmd_status(args, repo_root: Path) -> None:
 def _cmd_explain(args, repo_root: Path) -> None:
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(
-            repo_root, args.config, snapshot=snapshot
-        )
-        config = load_config_file(
-            config_path, repo_root=repo_root, snapshot=snapshot
-        )
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -1350,15 +1815,9 @@ def _cmd_why(args, repo_root: Path) -> None:
     lock_path = repo_root / args.lock
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(
-            repo_root, args.config, snapshot=snapshot
-        )
-        config = load_config_file(
-            config_path, repo_root=repo_root, snapshot=snapshot
-        )
-        lockfile = _load_lockfile(
-            lock_path, repo_root=repo_root, snapshot=snapshot
-        )
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+        lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -1419,11 +1878,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--version", action="version",
-                        version=f"%(prog)s {_get_version()}")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_get_version()}"
+    )
     verbosity = parser.add_mutually_exclusive_group()
-    verbosity.add_argument("--quiet", action="store_true", help="Reduce non-error human-readable output")
-    verbosity.add_argument("--verbose", action="store_true", help="Print additional progress diagnostics")
+    verbosity.add_argument(
+        "--quiet", action="store_true", help="Reduce non-error human-readable output"
+    )
+    verbosity.add_argument(
+        "--verbose", action="store_true", help="Print additional progress diagnostics"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # generate
@@ -1439,24 +1903,37 @@ def main():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    gen.add_argument("--config", default="boundary.config.json", help="Config file path")
+    gen.add_argument(
+        "--config", default="boundary.config.json", help="Config file path"
+    )
     gen.add_argument("--out", default="boundary.lock.json", help="Output lockfile path")
     gen.add_argument(
-        "--source", choices=SOURCE_MODES, default="head",
-        help="Snapshot to fingerprint: last commit, staged index, or tracked files on disk",
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Snapshot to fingerprint (default: head): last commit, staged index, or tracked files on disk",
     )
     gen.add_argument(
         "--allow-partial",
         action="store_true",
         help="Allow intentional null facet inputs in slices (not provider or source errors)",
     )
-    gen.add_argument("--dry-run", action="store_true", help="Compute lockfile and print status without writing output")
-    gen.add_argument("--components", default="", help="Comma-separated component names to regenerate")
-    gen.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     gen.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--dry-run",
+        action="store_true",
+        help="Compute lockfile and print status without writing output",
+    )
+    gen.add_argument(
+        "--components", default="", help="Comma-separated component names to regenerate"
+    )
+    gen.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    gen.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key "
-             "(or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1)",
+        "(or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1)",
     )
     ver = sub.add_parser(
         "verify",
@@ -1482,33 +1959,68 @@ def main():
     )
     ver.add_argument("--config", default="boundary.config.json")
     ver.add_argument("--lock", default="boundary.lock.json")
-    ver.add_argument("--source", choices=SOURCE_MODES, default="head",
-                     help="Snapshot to compare: last commit, staged index, or tracked files on disk")
-    ver.add_argument("--components", default="", help="Comma-separated component names to verify")
     ver.add_argument(
-        "--changed-from", default="",
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Snapshot to compare (default: head): last commit, staged index, or tracked files on disk",
+    )
+    ver.add_argument(
+        "--components", default="", help="Comma-separated component names to verify"
+    )
+    ver.add_argument(
+        "--changed-from",
+        default="",
         help="Report components changed since a Git ref while verifying full lock integrity",
     )
-    ver.add_argument("--fail-fast", action="store_true",
-                     help="Report only the highest-severity mismatch")
     ver.add_argument(
-        "--facets", default="",
+        "--fail-fast",
+        action="store_true",
+        help="Report only the highest-severity mismatch",
+    )
+    ver.add_argument(
+        "--facets",
+        default="",
         help=(
             "Comma-separated CLI-wide gate override (default: component "
             "verify_facets, then config defaults, then all available facets)"
         ),
     )
     ver.add_argument(
-        "--transitive", action="store_true",
+        "--transitive",
+        action="store_true",
         help="Report the transitive downstream consumer closure for boundary/compat drift",
     )
     ver.add_argument(
-        "--update", action="store_true",
+        "--update",
+        action="store_true",
         help="After reporting drift, atomically regenerate the lockfile if computation succeeds",
     )
-    ver.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    baseline_group = ver.add_mutually_exclusive_group()
+    baseline_group.add_argument(
+        "--baseline",
+        default="",
+        metavar="PATH",
+        help="Allow reviewed violation identities from a baseline while failing on new ones",
+    )
+    baseline_group.add_argument(
+        "--write-baseline",
+        default="",
+        metavar="PATH",
+        help="Explicitly capture current baselinable violations in a new JSON file",
+    )
+    baseline_group.add_argument(
+        "--update-baseline",
+        default="",
+        metavar="PATH",
+        help="Shrink an existing baseline by removing resolved identities; never adds violations",
+    )
     ver.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    ver.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
@@ -1516,13 +2028,17 @@ def main():
     dif = sub.add_parser("diff", help="Diff two lockfiles")
     dif.add_argument("old", help="Old lockfile")
     dif.add_argument("new", help="New lockfile")
-    dif.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    dif.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
 
     # slice
     sl = sub.add_parser("slice", help="Show fingerprint for a specific slice")
     sl.add_argument("name", help="Slice name")
     sl.add_argument("--lock", default="boundary.lock.json")
-    sl.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    sl.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
 
     # validate-config (and check-config alias)
     vc = sub.add_parser(
@@ -1537,13 +2053,25 @@ def main():
     )
     vc.add_argument("--config", default="boundary.config.json")
     vc.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--allow-partial",
+        action="store_true",
+        help="Allow intentional null facet inputs in slices",
+    )
+    vc.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
     cc = sub.add_parser("check-config", help="Alias for validate-config")
     cc.add_argument("--config", default="boundary.config.json")
     cc.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--allow-partial",
+        action="store_true",
+        help="Allow intentional null facet inputs in slices",
+    )
+    cc.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
@@ -1561,17 +2089,27 @@ def main():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    init.add_argument("--out", default="boundary.config.json", help="Output config file path")
+    init.add_argument(
+        "--out", default="boundary.config.json", help="Output config file path"
+    )
     init.add_argument("--force", action="store_true", help="Overwrite existing file")
-    init.add_argument("--discover", action="store_true", help="Auto-discover components from common manifests")
+    init.add_argument(
+        "--discover",
+        action="store_true",
+        help="Auto-discover components from common manifests",
+    )
 
     # add
     add = sub.add_parser("add", help="Add a component to the config")
     add.add_argument("name", help="Component name")
     add.add_argument("path", help="Component path relative to repo root")
-    add.add_argument("--provider", default="implicit", help="Boundary provider (default: implicit)")
+    add.add_argument(
+        "--provider", default="implicit", help="Boundary provider (default: implicit)"
+    )
     add.add_argument("--paths", default="", help="Comma-separated boundary paths")
-    add.add_argument("--config", default="boundary.config.json", help="Config file path")
+    add.add_argument(
+        "--config", default="boundary.config.json", help="Config file path"
+    )
 
     # remove
     rm = sub.add_parser("remove", help="Remove a component from the config")
@@ -1592,12 +2130,23 @@ def main():
     )
     st.add_argument("--config", default="boundary.config.json")
     st.add_argument("--lock", default="boundary.lock.json")
-    st.add_argument("--source", choices=SOURCE_MODES, default="head")
-    st.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
-    st.add_argument("--strict", action="store_true",
-                    help="Exit non-zero if any drift or warnings are detected (useful for CI)")
     st.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Snapshot to inspect (default: head)",
+    )
+    st.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    st.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero if any drift or warnings are detected (useful for CI)",
+    )
+    st.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
@@ -1605,11 +2154,18 @@ def main():
     ex = sub.add_parser("explain", help="Explain changed files for a component")
     ex.add_argument("component", help="Component name from config")
     ex.add_argument("--config", default="boundary.config.json")
-    ex.add_argument("--base-ref", default="HEAD", help="Git ref to diff against (default: HEAD)")
-    ex.add_argument("--source", choices=SOURCE_MODES, default="head",
-                    help="Source to diff against base-ref (default: head)")
     ex.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--base-ref", default="HEAD", help="Git ref to diff against (default: HEAD)"
+    )
+    ex.add_argument(
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Source to diff against base-ref (default: head)",
+    )
+    ex.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
@@ -1630,20 +2186,40 @@ def main():
     why.add_argument("component", help="Component name from config")
     why.add_argument("--config", default="boundary.config.json")
     why.add_argument("--lock", default="boundary.lock.json")
-    why.add_argument("--source", choices=SOURCE_MODES, default="head",
-                     help="Fingerprint source to compare against (default: head)")
-    why.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
     why.add_argument(
-        "--transitive", action="store_true",
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Fingerprint source to compare against (default: head)",
+    )
+    why.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    why.add_argument(
+        "--transitive",
+        action="store_true",
         help="Report the transitive downstream consumer closure",
     )
     why.add_argument(
-        "--allow-custom-providers", action="store_true",
+        "--allow-custom-providers",
+        action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
     disc = sub.add_parser("discover", help="Find Git-tracked component manifests")
-    disc.add_argument("--format", choices=["json", "text"], default="text", help="Output format")
+    disc.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    disc.add_argument(
+        "--diff-config",
+        action="store_true",
+        help="Compare discovered component paths with the current config",
+    )
+    disc.add_argument(
+        "--config",
+        default="boundary.config.json",
+        help="Config file used by --diff-config",
+    )
 
     # migrate-lock
     ml = sub.add_parser(
@@ -1658,10 +2234,40 @@ def main():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ml.add_argument("--lock", default="boundary.lock.json",
-                    help="Path to lockfile (default: boundary.lock.json)")
-    ml.add_argument("--dry-run", action="store_true",
-                    help="Print normalized JSON to stdout without writing the file")
+    ml.add_argument(
+        "--lock",
+        default="boundary.lock.json",
+        help="Path to lockfile (default: boundary.lock.json)",
+    )
+    migrate_mode = ml.add_mutually_exclusive_group()
+    migrate_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print normalized JSON to stdout without writing the file",
+    )
+    migrate_mode.add_argument(
+        "--explain",
+        action="store_true",
+        help=(
+            "Analyze and classify every boundary/behavior selector under v0.10 "
+            "and current semantics without writing"
+        ),
+    )
+    ml.add_argument(
+        "--config", default="boundary.config.json", help="Config used by --explain"
+    )
+    ml.add_argument(
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Source analyzed by --explain (default: head)",
+    )
+    ml.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="text",
+        help="Analysis output format used by --explain",
+    )
 
     # completions
     comp = sub.add_parser(
@@ -1677,14 +2283,19 @@ def main():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    comp.add_argument("--shell", required=True, choices=["bash", "zsh", "fish"],
-                      help="Target shell")
+    comp.add_argument(
+        "--shell", required=True, choices=["bash", "zsh", "fish"], help="Target shell"
+    )
 
     args = parser.parse_args()
 
     # Honour the BOUNDVER_ALLOW_CUSTOM_PROVIDERS env var as a fallback so
     # automation pipelines don't need to thread the flag through every call site.
-    if os.environ.get("BOUNDVER_ALLOW_CUSTOM_PROVIDERS", "").strip() in {"1", "true", "yes"}:
+    if os.environ.get("BOUNDVER_ALLOW_CUSTOM_PROVIDERS", "").strip() in {
+        "1",
+        "true",
+        "yes",
+    }:
         if hasattr(args, "allow_custom_providers"):
             args.allow_custom_providers = True
 

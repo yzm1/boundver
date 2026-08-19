@@ -26,6 +26,18 @@ boundver --version
 The base install can validate JSON configuration without third-party packages.
 The extras add full JSON Schema validation and YAML parsing.
 
+If this is a reused developer environment rather than a disposable virtual
+environment, replace the install above with an exact upgraded pin and assert
+what Python imports before writing a lock:
+
+```bash
+python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -c "import boundver; assert boundver.__version__ == '0.12.0', boundver.__version__"
+```
+
+Run persistent automation through `python -m boundver ...` with that same
+interpreter so an older `boundver` executable on `PATH` cannot be selected.
+
 ## 2. Discover a starting point
 
 Preview tracked manifests before writing anything:
@@ -102,6 +114,15 @@ vendored-copy, and file version-source paths use `/` separators and are relative
 to the scope documented by the schema. Empty, absolute, traversing, and
 backslash-separated declarations are rejected.
 
+Released v0.12 treats component `ecosystem` and `boundary.note` as
+presentation-only, so they can record classification and review rationale
+without rotating `config_digest`; do not use them to hide contract selection or
+policy. Unreleased v0.13 development builds also accept a component-level
+`note` for ownership, migration, or review context that applies to the whole
+component. That field is not valid under the released v0.12 schema; development
+configurations using it must identify the `main` schema until v0.13 release
+preparation pins the new immutable schema.
+
 Path selectors are case-sensitive:
 
 - `*.yaml` matches only component-root YAML files.
@@ -139,9 +160,10 @@ The effective facet gate follows `--facets` (when supplied), then a component's
 `verify_facets`, then `defaults.verify_facets`. With none of those configured,
 boundver gates all facets available for each component. Explicitly selecting a
 facet that cannot exist is a usage error (exit `2`): `compat` needs a
-`version_source`, `behavior` needs behavior inputs, and `implicit`/`leaf`
-components do not provide a boundary digest. Per-component policy is therefore
-the right way to combine heterogeneous component types in one config.
+`version_source`, `behavior` needs behavior inputs, `leaf` never provides a
+boundary digest, and `implicit` provides one only when it declares paths.
+Per-component policy is therefore the right way to combine heterogeneous
+component types in one config.
 
 ## 4. Validate before hashing
 
@@ -151,9 +173,11 @@ boundver validate-config
 
 Fix every error and review every warning. Validation rejects unknown fields even
 without the optional schema engine, checks path safety and component roots, and
-validates providers, versions, consumers, vendored paths, and slices. The
-installed package's bundled schema is authoritative; a checkout cannot replace
-it with a same-named local file.
+validates providers, versions, consumers, vendored paths, and slices. It
+resolves closure slices and rejects a strict slice when any resolved component
+cannot supply its selected facet, before digest generation starts. The installed
+package's bundled schema is authoritative; a checkout cannot replace it with a
+same-named local file.
 
 ## 5. Generate a local baseline
 
@@ -179,7 +203,10 @@ comparison cannot be computed. Inspect the generated lock; it should use
 `--allow-partial` does not suppress those computation errors. It only permits
 an intentionally unavailable component facet to be stored as a null input in a
 slice. A declared path that selects nothing, a provider failure, a broken
-version source, or a missing/divergent vendored copy remains fatal.
+version source, or a missing/divergent vendored copy remains fatal. That command
+uses partial-compatible validation deliberately. The standalone
+`validate-config` command checks the normal strict-generation contract unless
+you explicitly give it the matching `--allow-partial` flag.
 
 ### Generated contracts need their own freshness check
 
@@ -332,6 +359,15 @@ git add boundary.lock.json
 boundver verify --source index
 git diff --cached -- boundary.config.json boundary.lock.json
 ```
+
+“No metadata-only migration” means the lock must be recomputed, not that every
+content fingerprint must rotate. When the selected source bytes and effective
+selectors are unchanged, v3/v1 to v3/v2 regeneration and v0.12's provider
+metadata bumps are expected to preserve component facet and slice digest
+values. Review the changed semantic-config/provider metadata, and investigate
+any facet or slice value that does change. A deliberate `json-file-raw` to
+`path-hash` change has the same digest-neutral expectation under identical raw
+paths and options, while provider/config metadata changes.
 
 When upgrading directly from 0.10, review selector changes carefully: the
 corrected `*`/`**` grammar may add or remove matches. Update every writer and

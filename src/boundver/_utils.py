@@ -1032,13 +1032,22 @@ def _normalize_declared_path(path: str) -> str:
     return normalized
 
 
-def _match_path_glob(path: str, pattern: str) -> bool:
+def _match_path_glob(
+    path: str,
+    pattern: str,
+    *,
+    _step_consumer: Optional[Callable[[int], None]] = None,
+) -> bool:
     """Match a POSIX path with deterministic, segment-aware glob semantics.
 
     Ordinary wildcard segments use :func:`fnmatch.fnmatchcase`, so ``*``,
     ``?``, and character classes never cross ``/``.  A segment that is exactly
     ``**`` consumes zero or more complete path segments.  Matching is always
     case-sensitive and, like ``fnmatch``, includes leading-dot names.
+
+    Internal bounded-analysis callers may supply ``_step_consumer`` to charge
+    every NFA state/epsilon transition to an aggregate work budget.  The
+    ordinary two-argument API and boolean result remain unchanged.
     """
     if not isinstance(path, str) or not isinstance(pattern, str):
         return False
@@ -1092,6 +1101,8 @@ def _match_path_glob(path: str, pattern: str) -> bool:
                 "Glob match guardrail exceeded: more than "
                 f"{MAX_GLOB_MATCH_STEPS} matcher steps"
             )
+        if _step_consumer is not None:
+            _step_consumer(1)
 
     def epsilon_closure(states: Set[int]) -> Set[int]:
         closed = set(states)
@@ -1166,9 +1177,10 @@ def _available_component_facets(component: Mapping[str, object]) -> Set[str]:
     return available
 
 
-def boundary_provider_name(boundary: dict) -> str:
+def boundary_provider_name(boundary: Mapping[str, object]) -> str:
     """Return boundary provider name from a component's boundary config."""
-    return boundary.get("provider") or "unknown"
+    provider = boundary.get("provider")
+    return provider if isinstance(provider, str) and provider else "unknown"
 
 
 def _short(h: Optional[str]) -> str:

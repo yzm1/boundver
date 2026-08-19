@@ -6,6 +6,43 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Presentation-only component `note` metadata for migration context, ownership
+  guidance, and rationale without semantic-config digest churn, following the
+  released v0.12 treatment of component `ecosystem` and boundary `note`.
+- Verification baselines with create-only `--write-baseline`, read-only
+  `--baseline`, and shrink-only `--update-baseline` workflows so established
+  drift can be reviewed once while CI rejects new debt. The composite Action
+  exposes only the read-only baseline gate.
+- `discover --diff-config` reports discovered roots missing from configuration
+  and configured roots absent from discovery; `migrate-lock --explain` audits
+  0.10 whole-path glob behavior against current segment-aware selection before
+  regeneration.
+
+### Changed
+
+- Strict `validate-config` and generation now reject unavailable slice facets
+  and empty explicit built-in path selections before lock computation, while
+  `--allow-partial` remains the explicit escape hatch for intentional null
+  slice inputs. Source-option help now names `head` as the default snapshot.
+- Migration and CI guidance now distinguishes required lock regeneration from
+  digest-neutral facet/slice results when selected content is unchanged,
+  documents the raw `json-file-raw` to `path-hash` transition, and requires
+  persistent developer, hook, and container environments to upgrade and assert
+  their exact pinned boundver version.
+
+### Fixed
+
+- Read-only lock diffs now accept canonical `boundary-lock/v3` semantic-config/v1
+  and v2 inputs and report the contract transition, while incompatible lock
+  schemas or unknown contracts still produce one bounded diagnostic.
+- Verification preflight identifies a semantic-contract/version mismatch,
+  including the running boundver version and regeneration guidance, instead of
+  calling a well-formed historical lock malformed.
+- Index snapshot failures retain bounded, terminal-safe Git or OS detail from
+  `git write-tree`/`ls-tree`, making intermittent capture failures diagnosable.
+
 ## [0.12.0] - 2026-08-19
 
 This release advances the semantic configuration digest contract to v2.

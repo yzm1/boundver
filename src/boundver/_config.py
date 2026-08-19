@@ -22,6 +22,7 @@ from ._hashing import _read_bounded_path_bytes
 from ._utils import (
     FACET_SET,
     SOURCE_MODE_SET,
+    _available_component_facets,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
     _bounded_json_value_issues,
@@ -651,7 +652,14 @@ def validate_config(
     allow_custom_providers: bool = False,
     source: str = "working-tree",
     snapshot: Optional[GitSourceSnapshot] = None,
+    require_slice_facets: bool = False,
 ) -> List[str]:
+    """Validate a configuration without performing digest computation.
+
+    ``require_slice_facets`` applies strict-generation slice availability
+    rules.  Its backward-compatible default permits intentional null slice
+    inputs for callers that will generate with ``strict=False``.
+    """
     errors: List[str] = []
     if not isinstance(config, dict):
         return ["Config root must be a JSON object"]
@@ -687,6 +695,11 @@ def validate_config(
         else:
             if candidate_tracking.entries or candidate_tracking.head_oid is not None:
                 tracking_snapshot = candidate_tracking
+    if tracking_snapshot_error is not None:
+        errors.append(
+            "Working-tree Git tracking state cannot be read: "
+            f"{tracking_snapshot_error}"
+        )
 
     schema = _load_config_schema(repo_root)
     errors.extend(_schema_engine_errors(config, schema))
@@ -836,7 +849,7 @@ def validate_config(
             errors,
             comp,
             {
-                "path", "ecosystem", "version_source", "boundary", "behavior",
+                "path", "ecosystem", "note", "version_source", "boundary", "behavior",
                 "vendored_copies", "consumers", "external_consumers",
                 "verify_facets",
             },
@@ -844,6 +857,8 @@ def validate_config(
         )
         if "ecosystem" in comp and not isinstance(comp["ecosystem"], str):
             errors.append(f"Component '{name}' field 'ecosystem' must be a string")
+        if "note" in comp and not isinstance(comp["note"], str):
+            errors.append(f"Component '{name}' field 'note' must be a string")
         if "path" not in comp:
             errors.append(f"Component '{name}' missing required field: path")
             continue
@@ -1236,11 +1251,9 @@ def validate_config(
                         )
                     elif source == "working-tree" and vs_full is not None:
                         if tracking_snapshot_error is not None:
-                            errors.append(
-                                f"Component '{name}' version_source.file tracking "
-                                f"state cannot be read: '{vs_file}': "
-                                f"{tracking_snapshot_error}"
-                            )
+                            # The one top-level tracking diagnostic above
+                            # already makes validation fail closed.
+                            pass
                         elif (
                             tracking_snapshot is not None
                             and version_repo_path not in tracking_snapshot.entries
@@ -1420,6 +1433,36 @@ def validate_config(
         for cname in slice_components:
             if cname not in components:
                 errors.append(f"Slice '{sname}' references unknown component: {cname}")
+            elif (
+                require_slice_facets
+                and isinstance(mode, str)
+                and mode in supported_modes
+                and mode != "exact"
+            ):
+                component = components[cname]
+                if (
+                    isinstance(component, dict)
+                    and mode not in _available_component_facets(component)
+                ):
+                    if mode == "boundary":
+                        boundary = component.get("boundary")
+                        provider = (
+                            boundary_provider_name(boundary)
+                            if isinstance(boundary, dict)
+                            else "unknown"
+                        )
+                        detail = (
+                            f"provider '{provider}' does not produce a boundary "
+                            "digest from this declaration"
+                        )
+                    elif mode == "behavior":
+                        detail = "the component has no non-empty behavior.paths"
+                    else:
+                        detail = "the component has no version_source"
+                    errors.append(
+                        f"Slice '{sname}' mode '{mode}' requires {mode} digest "
+                        f"from component '{cname}' to supply that facet, but {detail}"
+                    )
 
     provider_load_errors = load_custom_providers(
         config.get("providers", []),
@@ -1446,6 +1489,18 @@ def validate_config(
                     f"Component '{name}' provider '{provider_name}' was not registered "
                     "by the configured provider module"
                 )
+            continue
+        provider_paths = boundary.get("paths", [])
+        if (
+            provider_name in known_providers
+            and provider_name not in {"implicit", "leaf"}
+            and _is_str_list(provider_paths)
+            and not provider_paths
+        ):
+            errors.append(
+                f"Component '{name}': No boundary paths declared for "
+                "explicit boundary provider"
+            )
             continue
         if source == "working-tree":
             for provider_error in validate_provider_config(

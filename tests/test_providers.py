@@ -105,6 +105,29 @@ class TestPathHashProvider(unittest.TestCase):
         rb = self.p.resolve(ctx)
         self.assertEqual(rb.status, "error")
 
+    def test_explicit_builtins_reject_missing_and_empty_paths_during_validation(self):
+        explicit_providers = (
+            PathHashProvider(),
+            OpenApiProvider(),
+            JsonFileProvider(),
+            PythonExportsProvider(),
+            TypeScriptExportsProvider(),
+            JsonCanonicalProvider(),
+            OpenApiCanonicalProvider(),
+        )
+        expected = ["No boundary paths declared for explicit boundary provider"]
+
+        for provider in explicit_providers:
+            for boundary_cfg in ({}, {"paths": []}):
+                with self.subTest(
+                    provider=provider.name,
+                    boundary_cfg=boundary_cfg,
+                ):
+                    self.assertEqual(
+                        provider.validate_config(boundary_cfg, "svc", ROOT),
+                        expected,
+                    )
+
     def test_paths_with_no_matching_files_returns_error(self):
         ctx = _make_ctx(boundary_cfg={"paths": ["missing.yaml"]}, files={})
         rb = self.p.resolve(ctx)
@@ -125,6 +148,20 @@ class TestPathHashProvider(unittest.TestCase):
         label, content = rb.entries[0]
         self.assertEqual(label, "file:api.yaml")
         self.assertEqual(content, b"openapi: 3.0")
+
+    def test_format_neutral_provider_accepts_sql(self):
+        ctx = _make_ctx(
+            boundary_cfg={"provider": "path-hash", "paths": ["schema.sql"]},
+            files={"svc/schema.sql": b"CREATE TABLE account (id bigint);\n"},
+        )
+
+        rb = PathHashProvider().resolve(ctx)
+
+        self.assertEqual(rb.status, "ok")
+        self.assertEqual(
+            rb.entries,
+            [("file:schema.sql", b"CREATE TABLE account (id bigint);\n")],
+        )
 
     def test_multiple_files_sorted_by_path(self):
         ctx = _make_ctx(
@@ -281,8 +318,14 @@ class TestImplicitProvider(unittest.TestCase):
         self.assertTrue(rb.entries)
 
     def test_validate_config_empty_is_ok(self):
-        errs = ImplicitProvider().validate_config({}, "svc", ROOT)
-        self.assertEqual(errs, [])
+        for boundary_cfg in ({}, {"paths": []}):
+            with self.subTest(boundary_cfg=boundary_cfg):
+                errs = ImplicitProvider().validate_config(
+                    boundary_cfg,
+                    "svc",
+                    ROOT,
+                )
+                self.assertEqual(errs, [])
 
     def test_name(self):
         self.assertEqual(ImplicitProvider().name, "implicit")
@@ -297,8 +340,14 @@ class TestLeafProvider(unittest.TestCase):
         self.assertEqual(rb.entries, [])
 
     def test_validate_config_always_ok(self):
-        errs = LeafProvider().validate_config({"paths": ["x"]}, "svc", ROOT)
-        self.assertEqual(errs, [])
+        for boundary_cfg in ({}, {"paths": []}, {"paths": ["x"]}):
+            with self.subTest(boundary_cfg=boundary_cfg):
+                errs = LeafProvider().validate_config(
+                    boundary_cfg,
+                    "svc",
+                    ROOT,
+                )
+                self.assertEqual(errs, [])
 
     def test_name(self):
         self.assertEqual(LeafProvider().name, "leaf")
@@ -352,6 +401,13 @@ class TestRegistry(unittest.TestCase):
         ):
             self.assertIsNotNone(get_provider(name), f"Provider {name!r} not registered")
 
+    def test_path_hash_registration_preserves_public_identity(self):
+        provider = get_provider("path-hash")
+
+        self.assertIsInstance(provider, PathHashProvider)
+        self.assertEqual(provider.name, "path-hash")
+        self.assertEqual(provider.version, "3")
+
     def test_get_unknown_returns_none(self):
         self.assertIsNone(get_provider("no-such-provider"))
 
@@ -365,6 +421,165 @@ class TestRegistry(unittest.TestCase):
     def test_protocol_isinstance(self):
         p = ImplicitProvider()
         self.assertIsInstance(p, BoundaryProvider)
+
+
+class TestPathHashIntegration(unittest.TestCase):
+    def test_sql_boundary_validates_and_generates(self):
+        import tempfile
+
+        from boundver._config import validate_config
+        from boundver._lockfile import generate_lockfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            component = root / "database"
+            component.mkdir()
+            (component / "schema.sql").write_text(
+                "CREATE TABLE account (id bigint);\n",
+                encoding="utf-8",
+            )
+            config = {
+                "project": "format-neutral-provider",
+                "components": {
+                    "database": {
+                        "path": "database",
+                        "boundary": {
+                            "provider": "path-hash",
+                            "paths": ["schema.sql"],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+
+            self.assertEqual(
+                validate_config(config, root, source="working-tree"),
+                [],
+            )
+            lockfile = generate_lockfile(
+                config,
+                root,
+                source="working-tree",
+            )
+
+        entry = lockfile["components"]["database"]
+        self.assertEqual(entry["boundary_provider"], "path-hash")
+        self.assertEqual(entry["boundary_provider_version"], "3")
+        self.assertEqual(entry["boundary_status"], "ok")
+        self.assertIsNotNone(entry["fingerprints"]["boundary"])
+
+    def test_empty_explicit_paths_fail_head_validation_before_default_generation(self):
+        import subprocess
+        import tempfile
+
+        from boundver._config import validate_config
+        from boundver._lockfile import generate_lockfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            component = root / "database"
+            component.mkdir()
+            (component / "schema.sql").write_text(
+                "CREATE TABLE account (id bigint);\n",
+                encoding="utf-8",
+            )
+            config = {
+                "project": "explicit-provider-paths",
+                "components": {
+                    "database": {
+                        "path": "database",
+                        "boundary": {
+                            "provider": "path-hash",
+                            "paths": [],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+            subprocess.run(
+                ["git", "init", "-q"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "boundver@example.invalid"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Boundver Tests"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "fixture"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            expected_errors = [
+                "Component 'database': No boundary paths declared for "
+                "explicit boundary provider"
+            ]
+            head_errors = validate_config(config, root, source="head")
+            working_tree_errors = validate_config(
+                config,
+                root,
+                source="working-tree",
+            )
+
+            self.assertEqual(head_errors, expected_errors)
+            self.assertEqual(working_tree_errors, expected_errors)
+            with self.assertRaisesRegex(
+                ValueError,
+                "No boundary paths declared for explicit boundary provider",
+            ):
+                generate_lockfile(config, root)
+
+    def test_implicit_and_leaf_empty_paths_remain_valid(self):
+        import tempfile
+
+        from boundver._config import validate_config
+        from boundver._lockfile import generate_lockfile
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for provider_name in ("implicit", "leaf"):
+                component = root / provider_name
+                component.mkdir()
+                (component / "main.txt").write_text("content\n", encoding="utf-8")
+                config = {
+                    "project": f"{provider_name}-provider",
+                    "components": {
+                        provider_name: {
+                            "path": provider_name,
+                            "boundary": {
+                                "provider": provider_name,
+                                "paths": [],
+                            },
+                        }
+                    },
+                    "slices": {},
+                }
+
+                with self.subTest(provider=provider_name):
+                    self.assertEqual(validate_config(config, root), [])
+                    entry = generate_lockfile(
+                        config,
+                        root,
+                        source="working-tree",
+                    )["components"][provider_name]
+                    self.assertIn(entry["boundary_status"], {"ok", "partial"})
 
 
 class TestLoadCustomProviders(unittest.TestCase):

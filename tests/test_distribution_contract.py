@@ -7,7 +7,9 @@ import base64
 import email.parser
 import importlib.util
 import io
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -318,6 +320,23 @@ class AutomationContractTests(unittest.TestCase):
             "boundary.lock.json",
         ):
             self.assertIn(f"exclude {path}", manifest)
+
+    def test_manifest_includes_field_report_public_schemas(self):
+        manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("recursive-include spec *.json", manifest)
+        for schema_name in (
+            "verify-baseline.schema.json",
+            "cli-output.migrate-lock.schema.json",
+        ):
+            with self.subTest(schema=schema_name):
+                schema_path = REPO_ROOT / "spec" / schema_name
+                self.assertTrue(schema_path.is_file())
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    schema["$id"],
+                    "https://raw.githubusercontent.com/yzm1/boundver/"
+                    f"main/spec/{schema_name}",
+                )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
         script = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
@@ -1657,6 +1676,90 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
+
+    def test_action_baseline_input_is_read_only_and_opt_in(self):
+        import yaml
+
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertNotIn("write-baseline", action["inputs"])
+        self.assertNotIn("update-baseline", action["inputs"])
+        self.assertEqual(
+            action["inputs"]["baseline"],
+            {
+                "description": "Optional read-only verification baseline path.",
+                "required": False,
+                "default": "",
+            },
+        )
+        verify_step = action["runs"]["steps"][-1]
+        self.assertEqual(
+            verify_step["env"]["BOUNDVER_BASELINE"], "${{ inputs.baseline }}"
+        )
+        script = verify_step["run"]
+        baseline_block = """if [[ -n "$BOUNDVER_BASELINE" ]]; then
+  command+=(--baseline "$BOUNDVER_BASELINE")
+fi"""
+        self.assertEqual(script.count(baseline_block), 1)
+        self.assertNotIn("--write-baseline", script)
+        self.assertNotIn("--update-baseline", script)
+        self.assertIn("result_file=$(mktemp", script)
+
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            git_bash = (
+                Path(git).resolve().parent.parent / "bin" / "bash.exe"
+                if git is not None
+                else None
+            )
+            if git_bash is not None and git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:  # pragma: no cover - every published Action runner has Bash
+            self.skipTest("Bash is required to exercise the composite Action script")
+        assembly = script.split("result_file=$(mktemp", 1)[0]
+        probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
+        base_environment = {
+            **os.environ,
+            "BOUNDVER_CONFIG": "boundary.config.json",
+            "BOUNDVER_LOCK": "boundary.lock.json",
+            "BOUNDVER_SOURCE": "head",
+            "BOUNDVER_FACETS": "",
+            "BOUNDVER_COMPONENTS": "",
+            "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_TRANSITIVE": "false",
+            "BOUNDVER_FAIL_FAST": "false",
+            "BOUNDVER_UPDATE": "false",
+        }
+        expected = [
+            "python",
+            "-I",
+            "-m",
+            "boundver",
+            "verify",
+            "--config",
+            "boundary.config.json",
+            "--lock",
+            "boundary.lock.json",
+            "--source",
+            "head",
+            "--format",
+            "json",
+        ]
+        for baseline, suffix in (
+            ("", []),
+            ("ci/known-debt.json", ["--baseline", "ci/known-debt.json"]),
+        ):
+            with self.subTest(baseline=baseline):
+                environment = {**base_environment, "BOUNDVER_BASELINE": baseline}
+                result = subprocess.run(
+                    [bash, "-c", probe],
+                    cwd=REPO_ROOT,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout.splitlines(), expected + suffix)
 
     def test_pre_commit_and_pre_push_use_matching_snapshots_and_portable_exact_gate(self):
         import yaml

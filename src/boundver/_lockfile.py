@@ -16,7 +16,6 @@ from ._git import (
     _git_cat_blob,
     _is_git_repository,
     _list_files_for_source,
-    _resolve_head_oid,
     _snapshot_files,
     _to_posix,
     git_latest_tag,
@@ -65,6 +64,12 @@ from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
 LOCKFILE_SCHEMA = "boundary-lock/v3"
 LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json"
 SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v2"
+# Historical semantic contracts that retain the current boundary-lock/v3
+# structure closely enough for a bounded, read-only comparison.  Mutation and
+# verification paths continue to accept only ``SEMANTIC_CONFIG_VERSION``.
+DIFFABLE_SEMANTIC_CONFIG_VERSIONS = frozenset(
+    {"boundver-semantic-config/v1", SEMANTIC_CONFIG_VERSION}
+)
 MAX_LOCKFILE_BYTES = 10 * 1024 * 1024
 
 # Persisted fields whose integrity matters independently of the four digests.
@@ -264,7 +269,7 @@ def _semantic_config(config: dict) -> dict:
                 key: value
                 for key, value in raw_component.items()
                 if key not in {
-                    "path", "ecosystem", "boundary", "behavior", "version_source",
+                    "path", "ecosystem", "note", "boundary", "behavior", "version_source",
                     "vendored_copies", "consumers", "external_consumers",
                     "verify_facets",
                 }
@@ -461,7 +466,11 @@ class _SourceAccessor:
                 if _is_git_repository(repo_root):
                     raise
                 tracking_snapshot = None
-                self.head_oid = _resolve_head_oid(repo_root)
+                # The repository probe above already established that this is
+                # the documented non-Git filesystem fallback.  Re-probing HEAD
+                # would turn Git's expected non-repository rc=128 into an
+                # operational error under the strict resolver.
+                self.head_oid = None
             else:
                 self.head_oid = tracking_snapshot.head_oid
             # Preserve the documented unborn/non-Git filesystem fallback when
@@ -874,6 +883,7 @@ def generate_lockfile_for_components(
     allow_custom_providers: bool = False,
     snapshot: Optional[GitSourceSnapshot] = None,
     existing_lockfile: Optional[dict] = None,
+    running_version: Optional[str] = None,
 ) -> dict:
     """Generate/update lockfile only for selected components and impacted slices."""
     source = _normalize_source(source)
@@ -928,10 +938,13 @@ def generate_lockfile_for_components(
             f"{_bounded_diagnostic_repr(merged.get('schema'))}; "
             f"run a full `boundver generate` to create {LOCKFILE_SCHEMA}."
         )
-    structure_issues = _lockfile_structure_issues(merged)
+    structure_issues = _lockfile_structure_issues(
+        merged,
+        running_version=running_version,
+    )
     if structure_issues:
         raise ConfigError(
-            "Cannot partially update a malformed lockfile:\n"
+            "Cannot partially update the selected lockfile:\n"
             + "\n".join(structure_issues)
         )
     if merged.get("project") != config.get("project", "unknown"):
@@ -1036,10 +1049,20 @@ def _append_unknown_field_issues(
             issues.append(f"LOCKFILE malformed: unknown field in {context}: {field}")
 
 
-def _lockfile_structure_issues(lockfile: dict) -> List[str]:
+def _lockfile_structure_issues(
+    lockfile: dict,
+    *,
+    allowed_config_contracts: Optional[Set[str]] = None,
+    running_version: Optional[str] = None,
+) -> List[str]:
     issues: List[str] = []
     if not isinstance(lockfile, dict):
         return ["LOCKFILE malformed: root must be an object"]
+    accepted_contracts = (
+        {SEMANTIC_CONFIG_VERSION}
+        if allowed_config_contracts is None
+        else set(allowed_config_contracts)
+    )
     _append_unknown_field_issues(
         issues,
         lockfile,
@@ -1054,13 +1077,61 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
         },
         "lockfile",
     )
+    if "$schema" in lockfile and not isinstance(lockfile["$schema"], str):
+        issues.append("LOCKFILE malformed: $schema must be a string")
     if not isinstance(lockfile.get("project"), str) or not lockfile.get("project"):
         issues.append("LOCKFILE malformed: project must be a non-empty string")
-    if lockfile.get("config_contract") != SEMANTIC_CONFIG_VERSION:
-        issues.append(
-            "LOCKFILE malformed: config_contract must be "
-            f"{SEMANTIC_CONFIG_VERSION!r}"
-        )
+    config_contract = lockfile.get("config_contract")
+    if (
+        not isinstance(config_contract, str)
+        or config_contract not in accepted_contracts
+    ):
+        contract_prefix = "boundver-semantic-config/v"
+        read_only_historical = accepted_contracts != {SEMANTIC_CONFIG_VERSION}
+        if read_only_historical:
+            supported = ", ".join(
+                repr(contract) for contract in sorted(accepted_contracts)
+            )
+            if (
+                isinstance(config_contract, str)
+                and config_contract.startswith(contract_prefix)
+                and config_contract[len(contract_prefix) :].isdigit()
+            ):
+                return [
+                    "LOCKFILE semantic configuration contract unsupported for "
+                    "this read-only comparison: "
+                    f"{_bounded_diagnostic_repr(config_contract)}; supported "
+                    f"contracts are {supported}"
+                ]
+            issues.append(
+                "LOCKFILE malformed: config_contract must be one of "
+                f"{supported} for this read-only comparison"
+            )
+        elif (
+            isinstance(config_contract, str)
+            and config_contract.startswith(contract_prefix)
+            and config_contract[len(contract_prefix) :].isdigit()
+        ):
+            release = (
+                f"boundver {running_version}"
+                if isinstance(running_version, str) and running_version
+                else "this boundver release"
+            )
+            schema = lockfile.get("schema", LOCKFILE_SCHEMA)
+            return [
+                "LOCKFILE semantic configuration contract mismatch: "
+                f"{_bounded_diagnostic_repr(schema)} uses "
+                f"{_bounded_diagnostic_repr(config_contract)}, but {release} "
+                f"requires {SEMANTIC_CONFIG_VERSION!r}. Semantic digests cannot "
+                "be relabelled or migrated without repository content. Install "
+                "the repository-pinned boundver version or run `boundver generate` "
+                "with this version after reviewing the migration."
+            ]
+        elif not read_only_historical:
+            issues.append(
+                "LOCKFILE malformed: config_contract must be "
+                f"{SEMANTIC_CONFIG_VERSION!r}"
+            )
     config_digest = lockfile.get("config_digest")
     if not _is_sha256_digest(config_digest):
         issues.append(
@@ -1639,9 +1710,10 @@ def migrate_lockfile(lockfile: dict) -> dict:
         raise MigrationError(
             "Lockfile has no 'schema' field — cannot determine version to migrate from."
         )
-    if schema not in KNOWN_SCHEMAS:
+    if not isinstance(schema, str) or schema not in KNOWN_SCHEMAS:
         raise MigrationError(
-            f"Unknown lockfile schema '{schema}'. "
+            "Unknown lockfile schema "
+            f"{_bounded_diagnostic_repr(schema)}. "
             f"Supported: {', '.join(sorted(KNOWN_SCHEMAS))}. "
             "You may need to upgrade boundver."
         )
@@ -1655,7 +1727,8 @@ def migrate_lockfile(lockfile: dict) -> dict:
     if config_contract != SEMANTIC_CONFIG_VERSION:
         actual = config_contract if isinstance(config_contract, str) else "missing"
         raise MigrationError(
-            f"{schema} uses semantic configuration contract {actual!r}, but this "
+            f"{schema} uses semantic configuration contract "
+            f"{_bounded_diagnostic_repr(actual)}, but this "
             f"release requires {SEMANTIC_CONFIG_VERSION!r}. Semantic digests "
             "cannot be relabelled or migrated without repository content. Run "
             f"`boundver generate` to create a current {LOCKFILE_SCHEMA} lockfile."

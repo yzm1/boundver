@@ -2,11 +2,33 @@
 
 from typing import Dict
 
-from ._lockfile import COMPONENT_METADATA_FIELDS
-from ._utils import FACETS
+from ._lockfile import COMPONENT_METADATA_FIELDS, LOCKFILE_SCHEMA
+from ._utils import FACETS, LockfileError, _bounded_diagnostic_repr
 
 
-LOCKFILE_METADATA_FIELDS = ("project", "config_digest")
+LOCKFILE_METADATA_FIELDS = ("project", "config_contract", "config_digest")
+
+
+def require_compatible_lockfile_schemas(old: dict, new: dict) -> None:
+    """Reject cross-schema or legacy-schema diffs with one actionable error."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        raise LockfileError("lockfiles must each contain a JSON object")
+    old_schema = old.get("schema")
+    new_schema = new.get("schema")
+    if old_schema != new_schema:
+        raise LockfileError(
+            "lockfiles use incompatible schemas "
+            f"(old={_bounded_diagnostic_repr(old_schema)}, "
+            f"new={_bounded_diagnostic_repr(new_schema)}); regenerate both "
+            "lockfiles with the same Boundver version before diffing"
+        )
+    if old_schema != LOCKFILE_SCHEMA:
+        raise LockfileError(
+            "lockfiles use unsupported schema "
+            f"{_bounded_diagnostic_repr(old_schema)} (expected "
+            f"{LOCKFILE_SCHEMA!r}); regenerate both lockfiles with this "
+            "Boundver version before diffing"
+        )
 
 
 def diff_lockfiles(old: dict, new: dict) -> dict:
@@ -38,15 +60,19 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
         old_entry = old_comps.get(name) if isinstance(old_comps.get(name), dict) else {}
         new_entry = new_comps.get(name) if isinstance(new_comps.get(name), dict) else {}
         if name not in old_comps:
-            result["components"]["added"].append({
-                "name": name,
-                "version": new_entry.get("version"),
-            })
+            result["components"]["added"].append(
+                {
+                    "name": name,
+                    "version": new_entry.get("version"),
+                }
+            )
         elif name not in new_comps:
-            result["components"]["removed"].append({
-                "name": name,
-                "version": old_entry.get("version"),
-            })
+            result["components"]["removed"].append(
+                {
+                    "name": name,
+                    "version": old_entry.get("version"),
+                }
+            )
         else:
             old_fp = old_entry.get("fingerprints", {})
             new_fp = new_entry.get("fingerprints", {})
@@ -90,22 +116,24 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
         old_s = old_slices.get(sname) if isinstance(old_slices.get(sname), dict) else {}
         new_s = new_slices.get(sname) if isinstance(new_slices.get(sname), dict) else {}
         if sname not in old_slices:
-            result["slices"]["added"].append({
-                "name": sname,
-                "fingerprint": new_s.get("fingerprint"),
-            })
+            result["slices"]["added"].append(
+                {
+                    "name": sname,
+                    "fingerprint": new_s.get("fingerprint"),
+                }
+            )
         elif sname not in new_slices:
-            result["slices"]["removed"].append({
-                "name": sname,
-                "fingerprint": old_s.get("fingerprint"),
-            })
+            result["slices"]["removed"].append(
+                {
+                    "name": sname,
+                    "fingerprint": old_s.get("fingerprint"),
+                }
+            )
         else:
             old_fp = old_s.get("fingerprint")
             new_fp = new_s.get("fingerprint")
             metadata_changes: Dict[str, dict] = {}
-            metadata_fields = sorted(
-                (set(old_s) | set(new_s)) - {"fingerprint"}
-            )
+            metadata_fields = sorted((set(old_s) | set(new_s)) - {"fingerprint"})
             for field in metadata_fields:
                 old_value = old_s.get(field)
                 new_value = new_s.get(field)
@@ -115,12 +143,14 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
                         "new": new_value,
                     }
             if old_fp != new_fp or metadata_changes:
-                result["slices"]["changed"].append({
-                    "name": sname,
-                    "old": old_fp,
-                    "new": new_fp,
-                    "changed_metadata": metadata_changes,
-                })
+                result["slices"]["changed"].append(
+                    {
+                        "name": sname,
+                        "old": old_fp,
+                        "new": new_fp,
+                        "changed_metadata": metadata_changes,
+                    }
+                )
             else:
                 result["slices"]["unchanged"].append(sname)
 

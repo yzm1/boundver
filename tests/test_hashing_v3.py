@@ -368,10 +368,13 @@ class SemanticConfigDigestTests(unittest.TestCase):
             semantic_config_digest(first), semantic_config_digest(second)
         )
 
-    def test_presentation_only_ecosystem_and_note_are_not_semantic(self):
+    def test_presentation_only_ecosystem_and_notes_are_not_semantic(self):
         baseline = _config()
         annotated = copy.deepcopy(baseline)
         annotated["components"]["svc"]["ecosystem"] = "python"
+        annotated["components"]["svc"]["note"] = (
+            "Human-facing component ownership context"
+        )
         annotated["components"]["svc"]["boundary"]["note"] = (
             "Human-facing onboarding context"
         )

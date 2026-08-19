@@ -117,6 +117,17 @@ docs/RELEASING.md
         + "\n",
         encoding="utf-8",
     )
+    for schema_name in (
+        "cli-output.migrate-lock.schema.json",
+        "verify-baseline.schema.json",
+    ):
+        schema_url = (
+            "https://raw.githubusercontent.com/yzm1/boundver/"
+            f"{TAG}/spec/{schema_name}"
+        )
+        (spec / schema_name).write_text(
+            json.dumps({"$id": schema_url}) + "\n", encoding="utf-8"
+        )
     (repo / "boundary.lock.json").write_text(
         json.dumps(
             {
@@ -220,5 +231,28 @@ def test_readiness_rejects_stale_lock_contracts(tmp_path: Path) -> None:
     assert any(
         "boundary.lock.json config_contract must be "
         "'boundver-semantic-config/v2'" in error
+        for error in errors
+    ), errors
+
+
+def test_readiness_rejects_stale_new_public_schema_ids(tmp_path: Path) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    schema_path = tmp_path / "spec" / "verify-baseline.schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "$id": (
+                    "https://raw.githubusercontent.com/yzm1/boundver/"
+                    "v0.11.0/spec/verify-baseline.schema.json"
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+
+    assert any(
+        "verify-baseline.schema.json $id must be" in error
         for error in errors
     ), errors

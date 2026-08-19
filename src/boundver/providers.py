@@ -904,8 +904,11 @@ class PathHashProvider:
         component_path: str,
         repo_root: Path,
     ) -> List[str]:
+        paths = boundary_cfg.get("paths", [])
+        if not paths:
+            return ["No boundary paths declared for explicit boundary provider"]
         errors: List[str] = []
-        for rel in boundary_cfg.get("paths", []):
+        for rel in paths:
             try:
                 normalized = _normalize_declared_path(rel)
             except ValueError as exc:
@@ -972,6 +975,8 @@ class ImplicitProvider:
         component_path: str,
         repo_root: Path,
     ) -> List[str]:
+        if not boundary_cfg.get("paths", []):
+            return []
         return PathHashProvider().validate_config(boundary_cfg, component_path, repo_root)
 
     def explain_diff(

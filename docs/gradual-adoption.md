@@ -47,6 +47,11 @@ identity change below `services/auth` rotates the exact digest. `implicit`
 intentionally produces no separate boundary digest, so do not use it in a
 boundary slice.
 
+The optional `boundary.note` is a human-facing annotation and does not rotate
+the semantic configuration digest. Unreleased v0.13 development builds add the
+same presentation-only behavior for a component-level `note`; released v0.12
+does not accept that component field.
+
 ## Stage 2: declare the public artifact
 
 Replace `implicit` once you know which files consumers actually observe:
@@ -219,7 +224,7 @@ for the first baseline or after a broad semantic configuration change.
 ## Stage 7: tighten CI policy
 
 Start with consumer-facing policy on components that provide those facets, and
-give implicit, leaf, or unversioned components a meaningful override:
+give pathless implicit, leaf, or unversioned components a meaningful override:
 
 ```json
 {
@@ -287,6 +292,9 @@ declared consumer closure:
 component. Exactly one of `components` or `closure_of` is allowed. The resolved,
 sorted membership is persisted in the lock, so graph changes are reviewable.
 Use a mode every resolved member provides—usually `exact` for a mixed closure.
+Strict configuration validation checks the resolved membership before
+generation, including leaf, pathless implicit, unversioned, and behavior-free
+members.
 The fingerprint can key caches or downstream jobs without rotating for
 unrelated components:
 

@@ -16,6 +16,10 @@ internal refactor.
 > writes v2 locks; both require regeneration before using these instructions.
 > See the [migration note](#upgrade-to-012).
 
+The stable install and Action examples below target released v0.12. Features
+listed under [Unreleased](CHANGELOG.md#unreleased) are v0.13 development work
+and are not available from the v0.12 package or Action.
+
 ## Try it in one minute
 
 For a Git repository with tracked code below `src/`, run from the repository
@@ -103,6 +107,12 @@ A clean result means the declared inputs and their recorded identities agree.
 
 Component paths are repository-relative. Boundary, behavior, and version-source
 files are component-relative. Use POSIX `/` separators.
+
+In released v0.12, component `ecosystem` and boundary `note` are
+presentation-only: use them for classification and review rationale, not hidden
+contract selection, and editing them does not rotate `config_digest`.
+Unreleased v0.13 development builds extend the same rationale-only treatment to
+component `note`; that field is not accepted by the v0.12 schema.
 
 ### Glob rules
 
@@ -207,7 +217,8 @@ roadmap work.
 
 ## Source modes
 
-Use `head` for committed CI state, `index` for staged pre-commit state, and
+The default source is `head`: committed state, not unstaged local edits. Use
+`head` for committed CI state, `index` for staged pre-commit state, and
 `working-tree` while reviewing local edits. Generate and verify from the same
 source. The normative snapshot and tracked-file rules live in the
 [specification](spec/spec.md#source-modes); practical staging examples live in
@@ -216,7 +227,7 @@ the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 ## GitHub Actions
 
 Pin the Action to the same lock-contract release used by local writers (for
-this release, `yzm1/boundver@v0.12.0`). The
+the latest stable release, `yzm1/boundver@v0.12.0`). The
 [CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
 the canonical workflow recipe and covers outputs, changed-path reporting,
 GitLab, pre-commit, and caching.
@@ -225,7 +236,7 @@ GitLab, pre-commit, and caching.
 
 | Provider | Selection and meaning |
 |---|---|
-| `path-hash` | Raw bytes for arbitrary declared artifacts |
+| `path-hash` | Format-neutral raw bytes from any declared artifact, such as SQL or protobuf files |
 | `openapi` / `openapi-raw` | Raw OpenAPI or Swagger bytes |
 | `openapi-canonical` | Parsed OpenAPI contract with selected documentation noise removed |
 | `json-file` / `json-file-raw` | Raw JSON contract bytes |
@@ -256,14 +267,34 @@ writers and verifiers together and regenerate from the snapshot CI will
 verify. Follow the canonical
 [0.12 upgrade procedure](docs/gradual-adoption.md#upgrading-to-012).
 
+Regeneration is still mandatory even when its content fingerprints are
+digest-neutral. With the same source bytes and effective selectors, a v3/v1 to
+v3/v2 regeneration and v0.12's built-in provider-metadata updates are expected
+to retain component facet and slice digest values; the semantic-config and
+provider metadata still change. Investigate any facet/slice value change rather
+than treating it as metadata churn. The equivalent raw-provider case for
+`json-file-raw` and `path-hash` is documented in the
+[provider guide](docs/public-vs-custom-providers.md#provider-versions-and-v3-locks).
+The unreleased v0.13 `diff` command can compare canonical `boundary-lock/v3`
+semantic-config/v1 and v2 locks read-only so this regeneration remains
+reviewable. Full generation recomputes and emits v2 without trusting the old
+lock; verification and generation paths that reuse an existing lock reject v1.
+
 ## Useful commands
+
+`discover --diff-config`, `migrate-lock --explain`, and the verification
+baseline flags below are unreleased v0.13 features. Test them only from a
+reviewed development checkout until v0.13 is published.
 
 ```bash
 boundver discover
+boundver discover --diff-config
 boundver status --format json
 boundver verify --changed-from origin/main --transitive
 boundver verify --components payment-api --update
 boundver diff old.lock.json boundary.lock.json
+boundver migrate-lock --explain --source head --format json
+boundver verify --write-baseline .boundver-verify-baseline.json
 boundver why payment-api --transitive --format json
 boundver slice checkout-contracts --format json
 boundver completions --shell bash
@@ -278,10 +309,23 @@ python -m pip install boundver
 python -m pip install "boundver[schema,yaml]"  # recommended for strict JSON Schema and YAML
 ```
 
+For a reused developer environment, system pre-commit hook, or prebuilt
+container, install the repository's exact pin with `--upgrade` and assert the
+imported version before generating or verifying a lock:
+
+```bash
+python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -c "import boundver; assert boundver.__version__ == '0.12.0', boundver.__version__"
+```
+
+In persistent automation, invoke commands as `python -m boundver ...` with that
+same interpreter so an older executable elsewhere on `PATH` cannot take over.
+
 - [Getting started](https://github.com/yzm1/boundver/blob/main/docs/getting-started.md)
 - [Examples](https://github.com/yzm1/boundver/blob/main/examples/README.md)
 - [CI cookbook](https://github.com/yzm1/boundver/blob/main/docs/ci-cookbook.md)
 - [Gradual adoption](https://github.com/yzm1/boundver/blob/main/docs/gradual-adoption.md)
+- [Migration inspection and verification ratchets](https://github.com/yzm1/boundver/blob/main/docs/migration-and-ratcheting.md)
 - [Why boundver?](https://github.com/yzm1/boundver/blob/main/docs/WHY_BOUNDVER.md)
 - [Lockfile merge strategy](https://github.com/yzm1/boundver/blob/main/docs/LOCKFILE_MERGE.md)
 - [Maintainer release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md)

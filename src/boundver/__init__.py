@@ -81,6 +81,7 @@ def generate(
         allow_custom_providers=allow_custom_providers,
         source=source,
         snapshot=snapshot,
+        require_slice_facets=True,
     )
     if config_errors:
         raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
@@ -164,11 +165,12 @@ def verify(
 def diff(old_path: str, new_path: str) -> dict:
     """Diff two lockfiles and return structured result."""
     from pathlib import Path
-    from ._diff import diff_lockfiles
-    from .core import _load_lockfile, _require_valid_lockfile
+    from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
+    from .core import _load_lockfile, _require_diffable_lockfile
 
     old = _load_lockfile(Path(old_path))
     new = _load_lockfile(Path(new_path))
-    _require_valid_lockfile(old)
-    _require_valid_lockfile(new)
+    require_compatible_lockfile_schemas(old, new)
+    _require_diffable_lockfile(old)
+    _require_diffable_lockfile(new)
     return diff_lockfiles(old, new)

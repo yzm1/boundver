@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boundver"
-version = "0.12.0"
+version = "0.13.0"
 description = "Detect API boundary, behavioral contract, and component changes in CI"
 readme = "README.md"
 requires-python = ">=3.9"

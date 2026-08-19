@@ -800,7 +800,14 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         and path.name.startswith("cli-output.")
         and path.name.endswith(".schema.json")
     ]
-    for path in cli_schema_paths:
+    required_new_schema_paths = [
+        repo / "spec" / "cli-output.migrate-lock.schema.json",
+        repo / "spec" / "verify-baseline.schema.json",
+    ]
+    public_output_schema_paths = sorted(
+        set(cli_schema_paths + required_new_schema_paths)
+    )
+    for path in public_output_schema_paths:
         value = _json(path, errors, reads)
         expected = (
             f"https://raw.githubusercontent.com/yzm1/boundver/{tag}/spec/{path.name}"

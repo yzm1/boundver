@@ -12,8 +12,9 @@
   contract-relevant config, including boundary paths/globs/options, behavior paths,
   version sources, vendored copies, compatibility mode, internal and external
   consumers, provider declarations, slice declarations, and default/component
-  verification policy. Presentation-only component `ecosystem` and boundary
-  `note` annotations are excluded from v2 alongside `$schema`.
+  verification policy. Presentation-only component `ecosystem` and `note`
+  annotations, plus boundary `note` annotations, are excluded from v2 alongside
+  `$schema`.
 
 ## Component facets
 
@@ -78,10 +79,13 @@ axis to match, and non-equivalent digests must be regenerated from source.
   or membership changes; those declaration changes are still visible through
   the lock's semantic config digest.
 
-Strict generation rejects a slice whose selected member facet is null.
+Strict configuration validation and generation reject a slice whose selected
+member facet is null. Validation resolves `closure_of` before checking every
+member, so a downstream component cannot introduce a late generation failure.
 `generate --allow-partial` relaxes only that intentional null slice input; it
 does not suppress missing declarations, provider/version errors, or vendored
-copy failures.
+copy failures. `validate-config --allow-partial` applies the same static slice
+availability relaxation without generating a lock.
 
 ## Consumer graph
 
@@ -107,6 +111,27 @@ copy failures.
 - A slice is gated when its mode is selected by the CLI policy, or, without a
   CLI policy, by at least one resolved member's effective component policy.
 
+### Verification baseline ratchet
+
+- `verify --write-baseline PATH` is an explicit create-only operation.
+  `--update-baseline PATH` is shrink-only and refuses any newly observed
+  violation identity. Neither operation silently updates the lock.
+- Only component-facet mismatches, slice-facet mismatches, and their affected-
+  consumer annotations are baselinable. Metadata, configuration, structure,
+  provider/digest, vendored-copy, unavailable-facet, and unclassified failures
+  are never independently acknowledged. When a current component `compat`
+  mismatch is known, its same-component `version` and `semver` metadata lines
+  are ancillary observations of that mismatch and are covered only while the
+  compat mismatch is present; no metadata identity is stored.
+- Identities exclude changing digest values but the baseline binds the complete
+  canonical lock digest, project, lock/config contract identifiers, source,
+  verification scope, consumer traversal, and effective facet policy.
+- Applying a baseline removes known identities from the gated failure set.
+  Newly observed identities retain their ordinary exit severity; stale stored
+  identities are reported for explicit shrink-only cleanup.
+- The stored format is `boundver-verify-baseline/v1`, described by
+  `spec/verify-baseline.schema.json`, and is bounded to 10,000 identities.
+
 ## Determinism
 
 - Hash framing, Git modes/types, source snapshots, path/glob selection,
@@ -131,8 +156,22 @@ verification.
 ## Machine-readable CLI output
 
 Canonical schemas live in `spec/cli-output.*.schema.json`. `verify`, `status`,
-`diff`, `discover`, `why`, and `slice` support `--format json`. `status` JSON
-predates v3; `why` and `slice` are the v3 additions.
+`diff`, `discover`, `why`, and `slice` support `--format json`;
+`migrate-lock --explain` also supports a bounded JSON selector audit.
+`discover --diff-config` adds a deterministic registered/unregistered path
+comparison to the discovery payload. Baseline-aware verification adds its
+action, acknowledged issues, stale identities, and shrink delta under the
+optional `baseline` member.
+
+`diff` is a non-mutating review surface. It accepts canonical
+`boundary-lock/v3` inputs using the explicitly supported semantic-config/v1 or
+v2 contracts, reports a contract transition under `changed_metadata`, and does
+not relabel or trust a historical digest as current. Different lock schemas,
+unknown semantic contracts, and structures whose changes cannot be represented
+by the diff output contract are rejected before comparison. Generation and
+verification outputs continue to use semantic-config/v2: full generation
+recomputes it from repository content, while verification and generation paths
+that reuse an existing lock reject semantic-config/v1 input.
 
 ## Derived artifacts
 
