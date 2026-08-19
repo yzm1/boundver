@@ -1006,7 +1006,9 @@ class AutomationContractTests(unittest.TestCase):
             "remaining_with_sentinel",
             "kill_process(process)",
             "len(jobs) > 100",
-            "len(artifacts) != 2",
+            "not 2 <= artifacts_total <= 100",
+            "release_notes_re = re.compile(",
+            "not set(expected_names).issubset(artifact_names)",
         ):
             self.assertIn(check, recovery_lookup)
 

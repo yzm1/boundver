@@ -88,6 +88,7 @@ def _resume_api_payloads(
     *,
     run_attempt: int = RUN_ATTEMPT,
     artifact_attempt: int | None = None,
+    release_note_attempts: tuple[int, ...] = (),
 ) -> dict[str, object]:
     if artifact_attempt is None:
         artifact_attempt = run_attempt
@@ -97,6 +98,38 @@ def _resume_api_payloads(
         "head_branch": TAG,
         "head_sha": SHA,
     }
+    artifacts = [
+        {
+            "id": 41,
+            "size_in_bytes": 100,
+            "name": f"python-dist-{TAG}-{RUN_ID}-{artifact_attempt}",
+            "expired": False,
+            "expires_at": "2999-01-01T00:00:00Z",
+            "digest": f"sha256:{'a' * 64}",
+            "workflow_run": dict(association),
+        },
+        {
+            "id": 42,
+            "size_in_bytes": 200,
+            "name": f"release-assets-{TAG}-{RUN_ID}-{artifact_attempt}",
+            "expired": False,
+            "expires_at": "2999-01-01T00:00:00Z",
+            "digest": f"sha256:{'b' * 64}",
+            "workflow_run": dict(association),
+        },
+    ]
+    for index, note_attempt in enumerate(release_note_attempts, start=43):
+        artifacts.append(
+            {
+                "id": index,
+                "size_in_bytes": 50,
+                "name": f"release-notes-{SHA}-{RUN_ID}-{note_attempt}",
+                "expired": False,
+                "expires_at": "2999-01-01T00:00:00Z",
+                "digest": f"sha256:{'c' * 64}",
+                "workflow_run": dict(association),
+            }
+        )
     return {
         run_endpoint: {
             "id": RUN_ID,
@@ -124,27 +157,8 @@ def _resume_api_payloads(
             ],
         },
         f"{run_endpoint}/artifacts?per_page=100": {
-            "total_count": 2,
-            "artifacts": [
-                {
-                    "id": 41,
-                    "size_in_bytes": 100,
-                    "name": f"python-dist-{TAG}-{RUN_ID}-{artifact_attempt}",
-                    "expired": False,
-                    "expires_at": "2999-01-01T00:00:00Z",
-                    "digest": f"sha256:{'a' * 64}",
-                    "workflow_run": dict(association),
-                },
-                {
-                    "id": 42,
-                    "size_in_bytes": 200,
-                    "name": f"release-assets-{TAG}-{RUN_ID}-{artifact_attempt}",
-                    "expired": False,
-                    "expires_at": "2999-01-01T00:00:00Z",
-                    "digest": f"sha256:{'b' * 64}",
-                    "workflow_run": dict(association),
-                },
-            ],
+            "total_count": len(artifacts),
+            "artifacts": artifacts,
         },
     }
 
@@ -1324,6 +1338,30 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertIn("attempt 2", detail)
         self.assertIn("verify-release attempt 1", detail)
 
+    def test_resume_accepts_validated_late_stage_release_note_artifacts(self):
+        publisher = _load_script()
+        payloads = _resume_api_payloads(
+            run_attempt=3,
+            artifact_attempt=1,
+            release_note_attempts=(1, 2),
+        )
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ):
+            detail = publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA, ALIAS
+            )
+
+        self.assertIn("validated 2 retained release-note artifact(s)", detail)
+
     def test_resume_source_log_binds_the_exact_original_release_inputs(self):
         publisher = _load_script()
         detail = publisher._require_source_release_inputs(
@@ -1560,6 +1598,17 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "name"
         ] = f"python-dist-{TAG}-{RUN_ID + 1}-{RUN_ATTEMPT}"
         cases["artifact name from another run"] = (wrong_name, "names")
+
+        unknown_extra = _resume_api_payloads(release_note_attempts=(1,))
+        unknown_extra[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][2][
+            "name"
+        ] = f"unexpected-{SHA}-{RUN_ID}-1"
+        cases["unknown extra artifact"] = (unknown_extra, "names")
+
+        future_note = _resume_api_payloads(
+            release_note_attempts=(RUN_ATTEMPT + 1,)
+        )
+        cases["future release-note attempt"] = (future_note, "names")
 
         for label, (payloads, message) in cases.items():
             def response(_repo, _repository, endpoint):

@@ -768,25 +768,45 @@ jobs:
           if (
               not isinstance(artifacts, list)
               or type(artifacts_total) is not int
-              or artifacts_total != 2
-              or len(artifacts) != 2
+              or artifacts_total != len(artifacts)
+              or not 2 <= artifacts_total <= 100
           ):
-              raise SystemExit("source run must contain exactly two artifacts")
+              raise SystemExit(
+                  "source artifact response is incomplete or exceeds the inspection limit"
+              )
           suffix = f"{release_tag}-{source_run_id}-{artifact_attempt}"
           expected_names = {
               f"python-dist-{suffix}": "python-dist",
               f"release-assets-{suffix}": "release-assets",
           }
+          release_notes_re = re.compile(
+              rf"release-notes-{re.escape(release_sha)}-"
+              rf"{source_run_id}-([1-9][0-9]*)"
+          )
+          artifact_names = [
+              artifact.get("name")
+              for artifact in artifacts
+              if isinstance(artifact, dict)
+          ]
           if (
               any(not isinstance(artifact, dict) for artifact in artifacts)
               or any(
-                  not isinstance(artifact.get("name"), str)
-                  or len(artifact["name"].encode("utf-8")) > 1024
-                  for artifact in artifacts
+                  not isinstance(name, str)
+                  or len(name.encode("utf-8")) > 1024
+                  for name in artifact_names
               )
-              or {artifact.get("name") for artifact in artifacts} != set(expected_names)
+              or len(artifact_names) != len(set(artifact_names))
+              or not set(expected_names).issubset(artifact_names)
           ):
               raise SystemExit("source artifact names do not match tag, run, and attempt")
+          for name in artifact_names:
+              if name in expected_names:
+                  continue
+              match = release_notes_re.fullmatch(name)
+              if match is None or int(match.group(1)) > attempt:
+                  raise SystemExit(
+                      "source artifact names do not match tag, run, and attempt"
+                  )
 
           now = datetime.datetime.now(datetime.timezone.utc)
           selected = {}
@@ -824,7 +844,8 @@ jobs:
                   ) from error
               if expiry <= now:
                   raise SystemExit("source artifact has expired")
-              selected[expected_names[name]] = (artifact_id, digest)
+              if name in expected_names:
+                  selected[expected_names[name]] = (artifact_id, digest)
 
           lines = [
               f"source-run-id={source_run_id}",

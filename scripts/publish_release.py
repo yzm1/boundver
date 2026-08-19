@@ -1470,16 +1470,22 @@ def _source_release_artifacts(
     if (
         not isinstance(total_artifacts, int)
         or isinstance(total_artifacts, bool)
-        or total_artifacts != 2
         or not isinstance(artifacts, list)
-        or len(artifacts) != 2
+        or total_artifacts != len(artifacts)
+        or not 2 <= total_artifacts <= 100
     ):
-        raise GateError("source run must have exactly two retained release artifacts")
+        raise GateError(
+            "source run artifact response is incomplete or exceeds the inspection limit"
+        )
     expected_names = {
         f"python-dist-{tag}-{run_id}-{artifact_attempt}",
         f"release-assets-{tag}-{run_id}-{artifact_attempt}",
     }
+    release_notes_re = re.compile(
+        rf"release-notes-{re.escape(sha)}-{run_id}-([1-9][0-9]*)"
+    )
     actual_names: set[str] = set()
+    release_note_count = 0
     now = datetime.now(timezone.utc)
     for artifact in artifacts:
         if not isinstance(artifact, dict):
@@ -1495,6 +1501,7 @@ def _source_release_artifacts(
             or isinstance(artifact_size, bool)
             or artifact_size <= 0
             or not isinstance(name, str)
+            or len(name.encode("utf-8")) > 1024
             or name in actual_names
             or artifact.get("expired") is not False
             or not isinstance(artifact_digest, str)
@@ -1507,12 +1514,20 @@ def _source_release_artifacts(
             raise GateError("source artifact identity, digest, or run association is invalid")
         if _github_timestamp(artifact.get("expires_at"), "expires_at") <= now:
             raise GateError("source publication artifact has expired")
+        if name not in expected_names:
+            match = release_notes_re.fullmatch(name)
+            if match is None or int(match.group(1)) > attempt:
+                raise GateError(
+                    "source artifact names do not match the release tag, run, and attempt"
+                )
+            release_note_count += 1
         actual_names.add(name)
-    if actual_names != expected_names:
+    if not expected_names.issubset(actual_names):
         raise GateError("source artifact names do not match the release tag, run, and attempt")
     return (
         f"failed publish run {run_id} attempt {attempt} reuses successful "
         f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts; "
+        f"validated {release_note_count} retained release-note artifact(s); "
         f"{source_inputs}"
     )
 
