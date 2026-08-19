@@ -190,15 +190,12 @@ fi
 # The numeric account ID is stable even if the GitHub App bot is renamed.
 readonly trusted_codex_bot_id=199175422
 readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
-# The authenticated clean verdict is stable, but the app varies its short
-# presentation flourish.  Accept one bounded ASCII sentence while rejecting
-# review-state/adverse vocabulary so contradictory findings cannot hide on the
-# verdict line.
-readonly codex_clean_verdict="Codex Review: Didn't find any major issues."
-readonly codex_flourish_regex="^[A-Za-z0-9][A-Za-z0-9 ,.'!?-]{0,158}[.!?]$"
-readonly codex_adverse_transition_regex='(^|[^a-z0-9])(although|but|except|however|not|though|yet)([^a-z0-9]|$)'
-readonly codex_adverse_finding_regex='(^|[^a-z0-9])(block|blocked|blocker|blockers|blocking|bug|bugs|concern|concerns|conflict|conflicting|error|errors|fail|failed|failure|failures|finding|findings|issue|issues|problem|problems|risk|risks|security|unsafe|warning|warnings)([^a-z0-9]|$)'
-readonly codex_adverse_vulnerability_regex='(^|[^a-z0-9])(vulnerability|vulnerabilities)([^a-z0-9]|$)'
+# Keep this a positive allowlist of statuses actually emitted by the trusted
+# app.  A free-form suffix would let contradictory review state share the
+# authenticated clean-verdict line and still satisfy the release gate.
+readonly codex_clean_bang_status_regex='(Breezy|Delightful|Hooray|Keep it up|Keep them coming|Swish)!'
+readonly codex_clean_period_status_regex='(Already looking forward to the next diff|More of your lovely PRs please)\.'
+readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
 
 if ! capture_bounded repository_owner "repository ownership" \
@@ -252,23 +249,6 @@ resolve_evidence_sha() {
 }
 
 codex_marker_sha=
-codex_verdict_line_is_clean() {
-  local line=$1
-  local flourish
-  local flourish_lower
-  if [[ "$line" == "$codex_clean_verdict" ]]; then
-    return 0
-  fi
-  [[ "$line" == "$codex_clean_verdict "* ]] || return 1
-  flourish=${line#"$codex_clean_verdict "}
-  [[ "$flourish" =~ $codex_flourish_regex ]] || return 1
-  flourish_lower=$(printf '%s' "$flourish" | \
-    LC_ALL=C tr '[:upper:]' '[:lower:]')
-  [[ ! "$flourish_lower" =~ $codex_adverse_transition_regex && \
-     ! "$flourish_lower" =~ $codex_adverse_finding_regex && \
-     ! "$flourish_lower" =~ $codex_adverse_vulnerability_regex ]]
-}
-
 codex_body_is_clean() {
   local body=$1
   local marker_policy=$2
@@ -296,7 +276,7 @@ codex_body_is_clean() {
 
     if [[ -z "$line" ]]; then
       continue
-    elif codex_verdict_line_is_clean "$line"; then
+    elif [[ "$line" =~ $codex_clean_verdict_regex ]]; then
       # The verdict must be the first meaningful line and may occur once.
       [[ "$clean_count" -eq 0 && "$marker_count" -eq 0 && \
          "$footer_count" -eq 0 ]] || return 1

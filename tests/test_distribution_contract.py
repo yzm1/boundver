@@ -2139,6 +2139,7 @@ exit 74
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
         head = "a" * 40
         verdicts = (
+            "Codex Review: Didn't find any major issues. Delightful!",
             "Codex Review: Didn't find any major issues. Swish!",
             "Codex Review: Didn't find any major issues. Keep it up!",
             "Codex Review: Didn't find any major issues. Keep them coming!",
@@ -2225,6 +2226,19 @@ exit 74
                     head,
                     "Codex Review: Didn't find any major issues. "
                     "However, one risk remains.",
+                )
+            },
+            {
+                "FAKE_REVIEWS": self._review_record(
+                    head,
+                    "Codex Review: Didn't find any major issues. Needs changes!",
+                )
+            },
+            {
+                "FAKE_REVIEWS": self._review_record(
+                    head,
+                    "Codex Review: Didn't find any major issues. "
+                    "A regression remains.",
                 )
             },
             {
