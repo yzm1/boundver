@@ -24,8 +24,10 @@ from boundver._lockfile import (
     semantic_config_digest,
     verify_lockfile,
 )
+from boundver._output import _display_path, analyze_explain_changes, why_component
 from boundver.providers import ResolvedBoundary
 from boundver._utils import ConfigError, LockfileError
+from tests._repo_fixtures import init_git_repo
 
 
 @contextmanager
@@ -47,9 +49,7 @@ def _git(root: Path, *args: str) -> None:
 
 
 def _init_repo(root: Path) -> dict:
-    _git(root, "init")
-    _git(root, "config", "user.email", "test@example.invalid")
-    _git(root, "config", "user.name", "Source View Test")
+    init_git_repo(root, user_name="Source View Test")
     (root / "svc").mkdir()
     (root / "svc" / "main.py").write_text("value = 1\n", encoding="utf-8")
     config = {
@@ -115,6 +115,74 @@ def _run_cli(root: Path, *args: str):
 
 
 class SourceViewIntegrityTests(unittest.TestCase):
+    def test_explain_head_on_root_commit_lists_added_component_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root, user_name="Source View Test")
+            (root / "svc").mkdir()
+            (root / "svc" / "main.py").write_text(
+                "value = 1\n", encoding="utf-8"
+            )
+            config = {
+                "project": "root-commit",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": "implicit"},
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(
+                json.dumps(config) + "\n", encoding="utf-8"
+            )
+            _git(root, "add", ".")
+            _git(root, "commit", "-m", "root commit")
+            snapshot = _capture_git_source_snapshot(root, "head")
+
+            result = analyze_explain_changes(
+                config, root, "svc", source="head", snapshot=snapshot
+            )
+
+            self.assertIsNone(result["error"])
+            self.assertEqual(result["changed"], [("A", "svc/main.py")])
+
+    def test_human_path_rendering_escapes_controls_and_non_ascii(self):
+        self.assertEqual(
+            _display_path("safe/line\n\x1b/\N{LATIN SMALL LETTER E WITH ACUTE}"),
+            r"safe/line\x0a\x1b/\xe9",
+        )
+
+    def test_why_text_is_encodable_on_redirected_cp1252_stdout(self):
+        drift = {
+            "changes": {"exact": {"old": "a" * 64, "new": "b" * 64}},
+            "metadata_changes": {},
+            "digest_errors": [],
+            "summary": "implementation changed",
+            "locked_fps": {"exact": "a" * 64},
+            "current_fps": {"exact": "b" * 64},
+            "changed_files": [("M", "svc/main.py")],
+            "version": None,
+            "provider_explanation": "",
+        }
+        config = {
+            "components": {
+                "svc": {"path": "svc", "boundary": {"provider": "implicit"}}
+            }
+        }
+        lock = {"components": {"svc": {}}}
+        raw = io.BytesIO()
+        redirected = io.TextIOWrapper(raw, encoding="cp1252")
+
+        with patch(
+            "boundver._output.analyze_component_drift", return_value=drift
+        ), patch.object(sys, "stdout", redirected):
+            result = why_component(config, lock, Path.cwd(), "svc")
+            redirected.flush()
+
+        self.assertEqual(result, 1)
+        self.assertIn("->", raw.getvalue().decode("cp1252"))
+
     def test_explain_head_ignores_unstaged_config_and_lock(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -473,7 +541,6 @@ class SourceViewIntegrityTests(unittest.TestCase):
 
             snapshot = _capture_git_source_snapshot(root, "head")
             registry = {"custom.flapping": FlappingProvider()}
-            accessor = _SourceAccessor(root, "head", snapshot=snapshot)
             with patch("boundver._lockfile.create_registry", return_value=registry), patch(
                 "boundver._lockfile.load_custom_providers", return_value=[]
             ):
@@ -626,9 +693,7 @@ class ParserIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(LockfileError, "duplicate JSON object key"):
                 load_lockfile_file(lock_path)
 
-            _git(root, "init")
-            _git(root, "config", "user.email", "test@example.invalid")
-            _git(root, "config", "user.name", "Source View Test")
+            init_git_repo(root, user_name="Source View Test")
             _git(root, "add", lock_path.name)
             _git(root, "commit", "-m", "malformed reviewed lock")
             snapshot = _capture_git_source_snapshot(root, "head")
@@ -653,6 +718,40 @@ class ParserIntegrityTests(unittest.TestCase):
                 b"project: p\ncomponents: &all {}\nslices: *all\n",
                 Path("c.yaml"),
             )
+
+    def test_yaml_integer_bound_applies_to_implicit_and_explicit_tags(self):
+        for value in ("9" * 4301, "!!int " + "9" * 4301):
+            with self.subTest(explicit=value.startswith("!!int")):
+                with self.assertRaisesRegex(ConfigError, "integer"):
+                    parse_config_bytes(
+                        (
+                            "project: p\n"
+                            "components: {}\n"
+                            f"number: {value}\n"
+                        ).encode("utf-8"),
+                        Path("c.yaml"),
+                    )
+
+    @unittest.skipUnless(
+        hasattr(sys, "set_int_max_str_digits"),
+        "Python runtime has no configurable integer digit limit",
+    )
+    def test_yaml_integer_rejection_is_independent_of_runtime_setting(self):
+        payload = (
+            "project: p\ncomponents: {}\nnumber: " + "9" * 4301 + "\n"
+        ).encode("utf-8")
+        original = sys.get_int_max_str_digits()
+        try:
+            messages = []
+            for setting in (4300, 0):
+                sys.set_int_max_str_digits(setting)
+                with self.assertRaises(ConfigError) as raised:
+                    parse_config_bytes(payload, Path("c.yaml"))
+                messages.append(str(raised.exception))
+        finally:
+            sys.set_int_max_str_digits(original)
+
+        self.assertEqual(messages[0], messages[1])
 
     def test_non_json_scalars_and_nonfinite_values_are_rejected(self):
         with self.assertRaisesRegex(ConfigError, "non-JSON scalar type"):
@@ -705,9 +804,7 @@ class ParserIntegrityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _git(root, "init")
-            _git(root, "config", "user.email", "test@example.invalid")
-            _git(root, "config", "user.name", "Source View Test")
+            init_git_repo(root, user_name="Source View Test")
             config_path = root / "boundary.config.json"
             lock_path = root / "boundary.lock.json"
             config_path.write_bytes(b'{"project":"too large"}')
@@ -740,9 +837,7 @@ class ParserIntegrityTests(unittest.TestCase):
     def test_working_tree_validation_rejects_untracked_version_source(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _git(root, "init")
-            _git(root, "config", "user.email", "test@example.invalid")
-            _git(root, "config", "user.name", "Source View Test")
+            init_git_repo(root, user_name="Source View Test")
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x = 1\n", encoding="utf-8")
             _git(root, "add", "svc/main.py")
@@ -801,14 +896,26 @@ class ParserIntegrityTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        self.assertFalse(
+            schema["properties"]["components"]["additionalProperties"][
+                "additionalProperties"
+            ]
+        )
         digest_schema = schema["properties"]["components"]["additionalProperties"][
             "properties"
         ]["fingerprints"]["properties"]["exact"]
+        if "$ref" in digest_schema:
+            self.assertEqual(digest_schema["$ref"], "#/$defs/nullableSha256")
+            digest_schema = schema["$defs"]["nullableSha256"]
+        first_digest_variant = digest_schema.get("oneOf", [{}])[0]
+        if "$ref" in first_digest_variant:
+            self.assertEqual(first_digest_variant["$ref"], "#/$defs/sha256")
+            digest_schema = schema["$defs"]["sha256"]
         self.assertIn("^[0-9a-f]{64}$", json.dumps(digest_schema))
 
         lock = {
             "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v1",
+            "config_contract": "boundver-semantic-config/v2",
             "config_digest": "0" * 64,
             "project": "p",
             "components": {
@@ -859,6 +966,71 @@ class ParserIntegrityTests(unittest.TestCase):
                         core.main()
             self.assertEqual(raised.exception.code, core.EXIT_USAGE)
             self.assertIn("lowercase SHA-256", stderr.getvalue())
+
+    def test_lock_runtime_rejects_fields_forbidden_by_schema(self):
+        base = {
+            "schema": "boundary-lock/v3",
+            "config_contract": "boundver-semantic-config/v2",
+            "config_digest": "0" * 64,
+            "project": "p",
+            "components": {
+                "svc": {
+                    "version": None,
+                    "path": "svc",
+                    "boundary_provider": "implicit",
+                    "boundary_provider_version": "2",
+                    "boundary_status": "partial",
+                    "consumers": [],
+                    "external_consumers": [],
+                    "fingerprints": {
+                        "exact": "0" * 64,
+                        "behavior": None,
+                        "boundary": None,
+                        "compat": None,
+                    },
+                    "semver": {
+                        "compat_family": None,
+                        "api_surface": None,
+                        "exact_version": None,
+                    },
+                }
+            },
+            "slices": {
+                "all": {
+                    "description": "",
+                    "mode": "exact",
+                    "components": ["svc"],
+                    "fingerprint": "0" * 64,
+                    "component_digests": {"svc": "0" * 64},
+                }
+            },
+        }
+        cases = []
+        root_extra = json.loads(json.dumps(base))
+        root_extra["unexpected"] = True
+        cases.append((root_extra, "unexpected"))
+        fingerprint_extra = json.loads(json.dumps(base))
+        fingerprint_extra["components"]["svc"]["fingerprints"]["extra"] = None
+        cases.append((fingerprint_extra, "extra"))
+        semver_extra = json.loads(json.dumps(base))
+        semver_extra["components"]["svc"]["semver"]["extra"] = None
+        cases.append((semver_extra, "extra"))
+        component_extra = json.loads(json.dumps(base))
+        component_extra["components"]["svc"]["future_security_policy"] = {
+            "enforced": True
+        }
+        cases.append((component_extra, "future_security_policy"))
+        slice_extra = json.loads(json.dumps(base))
+        slice_extra["slices"]["all"]["extra"] = None
+        cases.append((slice_extra, "extra"))
+
+        for lockfile, field in cases:
+            with self.subTest(field=field, lockfile=lockfile):
+                issues = _lockfile_structure_issues(lockfile)
+                self.assertTrue(
+                    any("unknown field" in issue and field in issue for issue in issues),
+                    issues,
+                )
 
 
 if __name__ == "__main__":

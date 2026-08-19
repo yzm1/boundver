@@ -5,12 +5,15 @@
 - Lockfile schema identifier: `boundary-lock/v3`.
 - Canonical schema file: `spec/boundary.lock.schema.json`.
 - v1 and v2 hash-bearing locks require regeneration; migration cannot infer
-  v3 mode/type or semantic-config inputs from an old lockfile.
-- Every lock records `boundver-semantic-config/v1` and a digest covering all
+  v3 mode/type or semantic-config inputs from an old lockfile. A v3 lock with
+  `boundver-semantic-config/v1` also requires regeneration because its digest
+  has a different semantic field set and cannot be relabelled as v2.
+- Every lock records `boundver-semantic-config/v2` and a digest covering all
   contract-relevant config, including boundary paths/globs/options, behavior paths,
   version sources, vendored copies, compatibility mode, internal and external
   consumers, provider declarations, slice declarations, and default/component
-  verification policy.
+  verification policy. Presentation-only component `ecosystem` and boundary
+  `note` annotations are excluded from v2 alongside `$schema`.
 
 ## Component facets
 
@@ -30,6 +33,37 @@ The intended containment hierarchy is exact ⊇ behavior ⊇ boundary. The
 behavior envelope enforces its boundary dependency cryptographically: any
 boundary digest change changes a configured behavior digest even when the
 declared behavior paths are disjoint.
+
+## Contract version axes
+
+- `boundary-lock/v3` identifies the persisted lock shape and the core v3
+  entry/framing domains used by exact, behavior, compatibility, and slices.
+- `boundver-semantic-config/v2` independently identifies the normalized
+  configuration field set and canonical digest domain.
+- Each built-in provider independently versions its selection, validation,
+  normalization, and output identity in `boundary_provider_version`.
+
+A release may advance one axis without changing the others. An identifier is
+never reused after its meaning changes; verification requires every recorded
+axis to match, and non-equivalent digests must be regenerated from source.
+
+## Version sources
+
+- File-backed version fields are textual identifiers. TOML version values must
+  be quoted strings; numeric TOML values are rejected so extraction cannot vary
+  with the parser or Python's process-wide decimal conversion limit.
+- JSON and YAML retain bounded numeric-version compatibility. Integers use the
+  JSON decimal grammar (no plus sign, leading zeroes, separators, alternate
+  bases, or sexagesimal notation) and are limited to 4,300 decimal digits.
+- Version values must be strings or finite numbers; booleans, nulls, mappings,
+  and sequences are rejected. TOML parsing is provided by the standard library
+  or the required `tomli` compatibility dependency. YAML version sources
+  require the `yaml` extra. If an authoritative parser is unavailable,
+  extraction fails closed rather than applying a partial regex grammar.
+- A numeric run longer than 640 significant digits anywhere in a TOML config
+  or version-source document is rejected before parsing, including when the
+  selected version field is a valid string. Digits inside strings and comments
+  are not numeric tokens.
 
 ## Slice model
 
@@ -112,5 +146,6 @@ contract revision.
 
 - `boundary` terminology is canonical; there is no legacy alias expansion in
   spec language.
-- A semantic change to stored data or hashing uses a new schema/hash contract
-  rather than silently overloading v3.
+- A semantic change advances the narrowest recorded contract axis described
+  above; no lock, semantic-config, or provider identifier is silently
+  overloaded.

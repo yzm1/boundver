@@ -3,9 +3,9 @@
 You do not need to model an entire repository on day one. Start with one
 component, make one signal trustworthy, then expand the contract deliberately.
 
-This guide uses the v3 contract in boundver 0.11. If the repository already has
-a v1 or v2 lock, perform the [schema upgrade](#upgrading-an-existing-v2-lock)
-before mixing old and new writers.
+This guide uses boundver 0.12's v3/semantic-config-v2 contract. If the
+repository has a v3/semantic-config-v1 lock from 0.11 or a v1/v2 lock, perform
+the [0.12 upgrade](#upgrading-to-012) before mixing old and new writers.
 
 ## Stage 1: record exact drift
 
@@ -303,14 +303,15 @@ PY
 Treat that value as a deterministic change signal, not as a replacement for
 consumer tests when the signal rotates.
 
-## Upgrading an existing v2 lock
+## Upgrading to 0.12
 
-v2 hashes do not bind every file's mode/type or the semantic configuration, and
-their path selection followed the incorrect v0.10 glob behavior. They cannot be
-relabelled safely:
+Version 0.11's v3 locks carry semantic-config/v1, whose digest cannot be
+relabelled as v2. Version 0.10's v2 hashes do not bind every file's mode/type
+or the semantic configuration, and their path selection followed the old glob
+behavior. Both require regeneration:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.11.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/auth/openapi/new-route.yaml
@@ -320,11 +321,11 @@ boundver verify --source index
 git diff --cached -- boundary.config.json boundary.lock.json
 ```
 
-Review all changed selectors and provider versions, then commit the v3 lock with
-the upgrade. Replace the illustrative source path with every changed or newly
-selected input, and omit the config from `git add` if unchanged. A head-based
-alternative must commit config/source changes before generation. Update CI,
-local tooling, and automation together.
+When upgrading directly from 0.10, review all changed selectors and provider
+versions. Then commit the regenerated v3/v2 lock. Replace the illustrative
+source path with every changed or newly selected input, and omit the config
+from `git add` if unchanged. A head-based alternative must commit config/source
+changes before generation. Update CI, local tooling, and automation together.
 
 ## Common mistakes
 

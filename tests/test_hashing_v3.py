@@ -21,6 +21,7 @@ from boundver._lockfile import (
     verify_lockfile,
 )
 from boundver._utils import ConfigError
+from tests._repo_fixtures import commit_all, init_git_repo
 
 
 _TEMP_ROOT = "/tmp" if os.name != "nt" and Path("/tmp").is_dir() else None
@@ -34,14 +35,11 @@ def _git(root: Path, *args: str) -> str:
 
 
 def _init_repo(root: Path) -> None:
-    _git(root, "init", "-q")
-    _git(root, "config", "user.email", "test@example.invalid")
-    _git(root, "config", "user.name", "Boundver Test")
+    init_git_repo(root)
 
 
 def _commit(root: Path, message: str) -> None:
-    _git(root, "add", "--all")
-    _git(root, "commit", "-qm", message)
+    commit_all(root, message)
 
 
 def _config(*, vendored: bool = False) -> dict:
@@ -164,6 +162,23 @@ class ModeAndTypeBindingTests(unittest.TestCase):
                 behavior_symlink["components"]["svc"]["fingerprints"]["behavior"],
                 contract_symlink["components"]["svc"]["fingerprints"]["behavior"],
             )
+
+    def test_worktree_accessor_round_trips_non_utf8_symlink_target(self):
+        if os.name == "nt":
+            self.skipTest("requires POSIX byte-oriented symlink targets")
+        with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
+            root = Path(td)
+            _init_repo(root)
+            component = root / "svc"
+            component.mkdir()
+            link = component / "contract.link"
+            target = b"contract-\xff"
+            os.symlink(target, os.fsencode(link))
+            _commit(root, "non-UTF-8 symlink target")
+
+            accessor = _SourceAccessor(root, "working-tree")
+
+            self.assertEqual(bytes(accessor.read_file("svc/contract.link")), target)
 
 
 class SourceSnapshotTests(unittest.TestCase):
@@ -353,6 +368,19 @@ class SemanticConfigDigestTests(unittest.TestCase):
             semantic_config_digest(first), semantic_config_digest(second)
         )
 
+    def test_presentation_only_ecosystem_and_note_are_not_semantic(self):
+        baseline = _config()
+        annotated = copy.deepcopy(baseline)
+        annotated["components"]["svc"]["ecosystem"] = "python"
+        annotated["components"]["svc"]["boundary"]["note"] = (
+            "Human-facing onboarding context"
+        )
+
+        self.assertEqual(
+            semantic_config_digest(baseline),
+            semantic_config_digest(annotated),
+        )
+
     def test_verify_reports_semantic_config_mutation(self):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
             root = Path(td)
@@ -492,7 +520,7 @@ class LockV3SafetyTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         minimal = {
             "schema": LOCKFILE_SCHEMA,
-            "config_contract": "boundver-semantic-config/v1",
+            "config_contract": "boundver-semantic-config/v2",
             "config_digest": "0" * 64,
             "project": "demo",
             "components": {},

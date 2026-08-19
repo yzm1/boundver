@@ -16,6 +16,8 @@ from pathlib import Path
 from unittest import mock
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
+from tests._project_metadata import CURRENT_VERSION
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_EPOCH = 1_700_000_000
@@ -34,8 +36,11 @@ def _load_script(name: str):
 
 def _write_wheel(path: Path, timestamp: tuple[int, ...], reverse: bool) -> None:
     entries = [
-        ("boundver/__init__.py", b"__version__ = '0.11.0'\n"),
-        ("boundver-0.11.0.dist-info/RECORD", b""),
+        (
+            "boundver/__init__.py",
+            f"__version__ = '{CURRENT_VERSION}'\n".encode(),
+        ),
+        (f"boundver-{CURRENT_VERSION}.dist-info/RECORD", b""),
     ]
     if reverse:
         entries.reverse()
@@ -48,19 +53,23 @@ def _write_wheel(path: Path, timestamp: tuple[int, ...], reverse: bool) -> None:
 
 
 def _write_sdist(path: Path, timestamp: int, uid: int) -> None:
-    payload = b"Metadata-Version: 2.4\nName: boundver\nVersion: 0.11.0\n"
+    payload = (
+        f"Metadata-Version: 2.4\nName: boundver\nVersion: {CURRENT_VERSION}\n"
+    ).encode()
     with path.open("wb") as raw:
         with gzip.GzipFile(
             filename=path.name, mode="wb", fileobj=raw, mtime=timestamp
         ) as compressed:
             with tarfile.open(fileobj=compressed, mode="w") as archive:
-                root = tarfile.TarInfo("boundver-0.11.0")
+                root = tarfile.TarInfo(f"boundver-{CURRENT_VERSION}")
                 root.type = tarfile.DIRTYPE
                 root.mtime = timestamp
                 root.uid = uid
                 root.gid = uid
                 archive.addfile(root)
-                metadata = tarfile.TarInfo("boundver-0.11.0/PKG-INFO")
+                metadata = tarfile.TarInfo(
+                    f"boundver-{CURRENT_VERSION}/PKG-INFO"
+                )
                 metadata.size = len(payload)
                 metadata.mtime = timestamp
                 metadata.uid = uid
@@ -192,10 +201,12 @@ class ReproducibleBuildContractTests(unittest.TestCase):
         builder = (REPO_ROOT / "scripts" / "build_release_artifacts.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('requires = ["setuptools>=78.1.1", "wheel"]', pyproject)
-        self.assertIn("'build==1.5.0'", smoke)
-        self.assertIn("'setuptools==84.0.0'", smoke)
-        self.assertIn("'wheel==0.48.0'", smoke)
+        self.assertIn(
+            'requires = ["setuptools==80.9.0", "wheel==0.48.0"]',
+            pyproject,
+        )
+        self.assertIn("scripts/install_locked_tools.py release", smoke)
+        self.assertIn("--no-index --no-deps --no-build-isolation", smoke)
         self.assertIn('"--no-isolation"', builder)
         self.assertIn("scripts/build_release_artifacts.py --output-dir dist", smoke)
         self.assertNotIn("python scripts/build_standalone.py", smoke)

@@ -1,7 +1,6 @@
 """Config validation and component discovery for boundver."""
 
 import json
-import math
 import os
 import subprocess
 from importlib import resources
@@ -11,26 +10,38 @@ from typing import Any, Dict, List, Optional, Set
 from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
-    _decode_nul_paths,
     _git_cat_blob,
-    _git_run_bytes,
+    _git_run,
+    _iter_bounded_git_paths,
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
     _to_posix,
 )
+from ._hashing import _read_bounded_path_bytes
 from ._utils import (
+    FACET_SET,
+    SOURCE_MODE_SET,
+    _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
+    _bounded_json_value_issues,
     _bounded_json_int,
+    _bounded_sorted_paths,
+    _bounded_yaml_int,
     _is_glob,
     _is_within,
-    _json_integer_is_bounded,
+    _iter_bounded_filesystem_paths,
+    _iter_bounded_json_values,
     _match_path_glob,
     _normalize_declared_path,
+    _toml_has_oversized_numeric_token,
     boundary_provider_name,
     ConfigError,
     GuardrailError,
 )
 from .providers import (
+    MAX_CUSTOM_PROVIDERS,
+    MAX_PROVIDER_DECLARATIONS,
     create_registry,
     get_provider,
     load_custom_providers,
@@ -47,6 +58,11 @@ _CONFIG_CANDIDATES = [
 ]
 
 MAX_CONFIG_BYTES = 10 * 1024 * 1024
+MAX_COMPONENT_EXPANSION_FILES = 50_000
+MAX_DISCOVERY_MANIFESTS = 50_000
+MAX_DISCOVERED_COMPONENTS = 1_000
+MAX_PROVIDER_DETECTION_ENTRIES = 50_000
+MAX_FILESYSTEM_TRAVERSAL_ENTRIES = 200_000
 
 
 def _snapshot_relative_path(repo_root: Path, path: Path) -> str:
@@ -70,66 +86,23 @@ def _json_object_without_duplicates(pairs: List[tuple]) -> dict:
     result: dict = {}
     for key, value in pairs:
         if key in result:
-            raise ConfigError(f"duplicate JSON object key {key!r}")
+            raise ConfigError(
+                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}"
+            )
         result[key] = value
     return result
 
 
 def _reject_nonfinite_json_constant(value: str) -> Any:
-    raise ConfigError(f"non-finite JSON number {value!r} is not supported")
+    raise ConfigError(
+        "non-finite JSON number "
+        f"{_bounded_diagnostic_repr(value)} is not supported"
+    )
 
 
 def _json_value_issues(value: Any, *, path: str = "config") -> List[str]:
     """Return reasons a parsed value is unsafe for deterministic JSON hashing."""
-    issues: List[str] = []
-    active: Set[int] = set()
-
-    def visit(item: Any, item_path: str) -> None:
-        if item is None or type(item) in {str, bool, int}:
-            if type(item) is str:
-                try:
-                    item.encode("utf-8")
-                except UnicodeEncodeError:
-                    issues.append(f"{item_path} contains invalid Unicode")
-            elif type(item) is int and not _json_integer_is_bounded(item):
-                issues.append(f"{item_path} contains an oversized integer")
-            return
-        if type(item) is float:
-            if not math.isfinite(item):
-                issues.append(f"{item_path} contains a non-finite number")
-            return
-        if type(item) not in {list, dict}:
-            issues.append(
-                f"{item_path} contains non-JSON scalar type {type(item).__name__}"
-            )
-            return
-        object_id = id(item)
-        if object_id in active:
-            issues.append(f"{item_path} contains a reference cycle")
-            return
-        active.add(object_id)
-        try:
-            if type(item) is list:
-                for index, child in enumerate(item):
-                    visit(child, f"{item_path}[{index}]")
-                return
-            for key, child in item.items():
-                if type(key) is not str:
-                    issues.append(
-                        f"{item_path} contains non-string mapping key {key!r}"
-                    )
-                    continue
-                try:
-                    key.encode("utf-8")
-                except UnicodeEncodeError:
-                    issues.append(f"{item_path} contains an invalid Unicode key")
-                    continue
-                visit(child, f"{item_path}.{key}")
-        finally:
-            active.remove(object_id)
-
-    visit(value, path)
-    return issues
+    return _bounded_json_value_issues(value, path=path)
 
 
 def parse_config_text(text: str, path: Path) -> dict:
@@ -165,16 +138,28 @@ def parse_config_text(text: str, path: Path) -> dict:
                     key = loader.construct_object(key_node, deep=deep)
                     if type(key) is not str:
                         raise ConfigError(
-                            f"YAML mapping keys must be strings, got {key!r}"
+                            "YAML mapping keys must be strings, got "
+                            f"{_bounded_diagnostic_repr(key)}"
                         )
                     if key in mapping:
                         raise ConfigError(f"duplicate YAML mapping key {key!r}")
                     mapping[key] = loader.construct_object(value_node, deep=deep)
                 return mapping
 
+            def construct_integer(loader: Any, node: Any) -> int:
+                try:
+                    scalar = loader.construct_scalar(node)
+                    return _bounded_yaml_int(scalar)
+                except (TypeError, ValueError) as exc:
+                    raise ConfigError(f"invalid YAML integer: {exc}") from exc
+
             StrictConfigLoader.add_constructor(
                 yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
                 construct_mapping,
+            )
+            StrictConfigLoader.add_constructor(
+                "tag:yaml.org,2002:int",
+                construct_integer,
             )
             result = yaml.load(text, Loader=StrictConfigLoader)
         except ImportError:
@@ -199,6 +184,11 @@ def parse_config_text(text: str, path: Path) -> dict:
                     f"Cannot parse {path}: neither tomllib (Python 3.11+) nor tomli is available. "
                     "Install tomli: pip install tomli"
                 )
+        if _toml_has_oversized_numeric_token(text):
+            raise ConfigError(
+                f"TOML config contains a numeric token exceeding the "
+                f"cross-runtime safety limit in {path}"
+            )
         try:
             result = tomllib.loads(text)
         except MemoryError:
@@ -303,8 +293,17 @@ def load_config_file(
                 f"source: {label} (mode={entry.mode}, type={entry.object_type})"
             )
         try:
-            data = _git_cat_blob(repo_root, entry.oid)
-        except (subprocess.CalledProcessError, GuardrailError) as exc:
+            data = _git_cat_blob(
+                repo_root,
+                entry.oid,
+                max_bytes=MAX_CONFIG_BYTES,
+            )
+        except GuardrailError as exc:
+            raise ConfigError(
+                f"Cannot read config from captured {snapshot.source} source: "
+                f"{label}: file too large or transport limit exceeded"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
             raise ConfigError(
                 f"Cannot read config from captured {snapshot.source} source: "
                 f"{label}"
@@ -314,14 +313,16 @@ def load_config_file(
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     try:
-        size = path.stat().st_size
-    except OSError as exc:
-        raise ConfigError(f"Cannot stat config file {path}: {exc}") from exc
-    if size > MAX_CONFIG_BYTES:
-        raise ConfigError(f"Config file too large ({size} bytes): {path}")
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
+        data = _read_bounded_path_bytes(
+            path,
+            str(path),
+            max_bytes=MAX_CONFIG_BYTES,
+        )
+    except GuardrailError as exc:
+        raise ConfigError(
+            f"Config file exceeds the {MAX_CONFIG_BYTES}-byte limit at {path}"
+        ) from exc
+    except (OSError, ValueError) as exc:
         raise ConfigError(f"Cannot read config file {path}: {exc}") from exc
     return parse_config_bytes(data, path)
 
@@ -344,8 +345,23 @@ def _load_config_schema(repo_root: Path) -> Optional[dict]:
         schema_path = repo_root / "boundary.config.schema.json"
         if schema_path.exists():
             try:
-                return json.loads(schema_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                schema_data = _read_bounded_path_bytes(
+                    schema_path,
+                    str(schema_path),
+                    max_bytes=MAX_CONFIG_BYTES,
+                )
+                return json.loads(
+                    schema_data.decode("utf-8"),
+                    parse_int=_bounded_json_int,
+                    parse_constant=_reject_nonfinite_json_constant,
+                )
+            except (
+                GuardrailError,
+                OSError,
+                UnicodeDecodeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
                 pass
         return None
 
@@ -378,7 +394,9 @@ def _reject_unknown_fields(
         if not isinstance(key, str):
             errors.append(f"{context} field names must be strings")
         elif key not in allowed:
-            errors.append(f"Unknown field in {context}: {key}")
+            errors.append(
+                f"Unknown field in {context}: {_bounded_diagnostic_text(key)}"
+            )
 
 
 def _validate_component_path_entries(
@@ -429,6 +447,11 @@ def _expand_component_paths(
 ) -> Set[str]:
     if component_path is None:
         return set()
+    if len(paths) > MAX_PROVIDER_DECLARATIONS:
+        raise GuardrailError(
+            "Component path expansion guardrail exceeded: "
+            f">{MAX_PROVIDER_DECLARATIONS} declarations"
+        )
 
     component_root = repo_root / component_path
     # Validation must inspect the same tracked source as hashing. Otherwise an
@@ -441,6 +464,8 @@ def _expand_component_paths(
                 if snapshot is not None
                 else _list_files_for_source(repo_root, component_path, source)
             )
+        except GuardrailError:
+            raise
         except (OSError, subprocess.CalledProcessError, ValueError):
             return set()
         prefix = component_path.rstrip("/") + "/"
@@ -452,17 +477,34 @@ def _expand_component_paths(
     else:
         if not component_root.exists() or not component_root.is_dir():
             return set()
-        # Bounded enumeration for callers explicitly analyzing the filesystem.
-        _MAX_EXPAND_FILES = 50000
-        all_files = []
-        for path in sorted(component_root.rglob("*")):
-            if path.is_file():
-                all_files.append(_to_posix(str(path.relative_to(component_root))))
-                if len(all_files) > _MAX_EXPAND_FILES:
-                    # This helper is diagnostic-only, but returning a partial
-                    # selection could invent a false behavior-containment
-                    # result. Signal an indeterminate expansion instead.
-                    return set()
+        # Filter lazily, enforce the contract, and only then sort.  Sorting the
+        # raw ``rglob`` result first would allocate for every directory entry
+        # before the safety limit could run.
+        filesystem_files = _bounded_sorted_paths(
+            (
+                path
+                for path in _iter_bounded_filesystem_paths(
+                    component_root,
+                    recursive=True,
+                    max_entries=MAX_FILESYSTEM_TRAVERSAL_ENTRIES,
+                    exceeded_message=(
+                        "Component path expansion guardrail exceeded: "
+                        "filesystem traversal exceeds "
+                        f"{MAX_FILESYSTEM_TRAVERSAL_ENTRIES} entries"
+                    ),
+                )
+                if path.is_file()
+            ),
+            max_paths=MAX_COMPONENT_EXPANSION_FILES,
+            exceeded_message=(
+                "Component path expansion guardrail exceeded: "
+                f">{MAX_COMPONENT_EXPANSION_FILES} files"
+            ),
+        )
+        all_files = [
+            _to_posix(str(path.relative_to(component_root)))
+            for path in filesystem_files
+        ]
     matched: Set[str] = set()
 
     for rel in paths:
@@ -506,22 +548,100 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
     except ImportError:
         return []
 
+    class DiagnosticInt(int):
+        """An integer whose JSON Schema error representation is always safe."""
+
+        def __repr__(self) -> str:
+            return _bounded_diagnostic_repr(int.__new__(int, self))
+
+        __str__ = __repr__
+
+    # JSON Schema error construction calls repr() on invalid instances.
+    # Values above CPython's smallest supported process-wide conversion limit
+    # can otherwise make validation itself raise. Preserve numeric semantics
+    # with an int subclass and change only its diagnostic representation.
+    diagnostic_int_limit = 10 ** 640
+    needs_diagnostic_ints = False
+    walker = _iter_bounded_json_values(config, path="config")
+    try:
+        for item, _item_path in walker:
+            if type(item) is int and (
+                item >= diagnostic_int_limit or item <= -diagnostic_int_limit
+            ):
+                needs_diagnostic_ints = True
+                break
+    except (GuardrailError, RuntimeError, ValueError) as exc:
+        return [
+            "Config cannot be traversed safely for schema validation: "
+            f"{_bounded_diagnostic_text(str(exc))}"
+        ]
+    finally:
+        walker.close()
+
+    schema_instance: Any = config
+    if needs_diagnostic_ints:
+        schema_instance = {}
+        stack = [(config, schema_instance)]
+        while stack:
+            source_value, target_value = stack.pop()
+            if type(source_value) is dict:
+                children = source_value.items()
+            else:
+                children = enumerate(source_value)
+            for key, child in children:
+                if type(child) is dict:
+                    transformed_child: Any = {}
+                    stack.append((child, transformed_child))
+                elif type(child) is list:
+                    transformed_child = []
+                    stack.append((child, transformed_child))
+                elif type(child) is int and (
+                    child >= diagnostic_int_limit
+                    or child <= -diagnostic_int_limit
+                ):
+                    transformed_child = DiagnosticInt(child)
+                else:
+                    transformed_child = child
+                if type(target_value) is dict:
+                    target_value[key] = transformed_child
+                else:
+                    target_value.append(transformed_child)
+
     try:
         validator = jsonschema.Draft202012Validator(schema)
     except Exception as exc:  # pragma: no cover - defensive path
-        return [f"Schema validator initialization failed: {exc}"]
+        try:
+            detail = str(exc)
+        except Exception:
+            detail = exc.__class__.__name__
+        return [
+            "Schema validator initialization failed: "
+            f"{_bounded_diagnostic_text(detail)}"
+        ]
 
     errors: List[str] = []
     try:
-        for err in validator.iter_errors(config):
-            path = ".".join(str(p) for p in err.path) or "<root>"
-            errors.append(f"Schema validation error at {path}: {err.message}")
+        for err in validator.iter_errors(schema_instance):
+            path = ".".join(
+                _bounded_diagnostic_text(part, max_chars=128)
+                for part in err.path
+            ) or "<root>"
+            path = _bounded_diagnostic_text(path)
+            message = _bounded_diagnostic_text(err.message)
+            errors.append(f"Schema validation error at {path}: {message}")
     except MemoryError:
         raise
     except RecursionError:
         return ["Config is nested too deeply for schema validation"]
     except Exception as exc:  # pragma: no cover - defensive library boundary
-        return [f"Schema validation failed safely: {exc}"]
+        try:
+            detail = str(exc)
+        except Exception:
+            detail = exc.__class__.__name__
+        return [
+            "Schema validation failed safely: "
+            f"{_bounded_diagnostic_text(detail)}"
+        ]
     return sorted(errors)
 
 
@@ -535,8 +655,8 @@ def validate_config(
     errors: List[str] = []
     if not isinstance(config, dict):
         return ["Config root must be a JSON object"]
-    if source not in {"head", "index", "working-tree"}:
-        return [f"Unknown source mode: {source!r}"]
+    if source not in SOURCE_MODE_SET:
+        return [f"Unknown source mode: {_bounded_diagnostic_repr(source)}"]
     if snapshot is not None and snapshot.source != source:
         return [
             f"Captured source mismatch: snapshot={snapshot.source!r}, source={source!r}"
@@ -588,7 +708,7 @@ def validate_config(
     if "$schema" in config and not isinstance(config["$schema"], str):
         errors.append("Field '$schema' must be a string")
 
-    supported_modes = {"exact", "behavior", "boundary", "compat"}
+    supported_modes = FACET_SET
     defaults = config.get("defaults", {})
     if not isinstance(defaults, dict):
         errors.append("Field 'defaults' must be an object")
@@ -601,12 +721,17 @@ def validate_config(
     if not isinstance(compat_mode, str) or compat_mode not in {
         "major", "semver_major", "semver_major_minor"
     }:
-        errors.append(f"Unsupported defaults.compat_mode: {compat_mode}")
+        errors.append(
+            "Unsupported defaults.compat_mode: "
+            f"{_bounded_diagnostic_text(compat_mode)}"
+        )
     verify_facets = defaults.get("verify_facets")
     if verify_facets is not None:
         if not _is_str_list(verify_facets) or not verify_facets:
             errors.append("defaults.verify_facets must be a non-empty array of strings")
         else:
+            if len(verify_facets) != len(set(verify_facets)):
+                errors.append("defaults.verify_facets contains duplicates")
             invalid = sorted(set(verify_facets) - supported_modes)
             if invalid:
                 errors.append(
@@ -633,12 +758,11 @@ def validate_config(
         )
 
     seen_component_paths: Dict[str, str] = {}
-    known_providers = {
-        "openapi", "python-exports", "typescript-exports", "json-file", "leaf", "implicit",
-        "json-canonical", "openapi-canonical",
-        # Explicit "-raw" aliases for clarity
-        "openapi-raw", "json-file-raw", "python-exports-raw", "typescript-exports-raw",
-    }
+    # Derive validation names from the same registry used for resolution so a
+    # newly registered built-in or alias cannot be accepted by one layer and
+    # rejected by the other.
+    registry = create_registry()
+    known_providers = set(registry)
 
     # Validate top-level providers list (Phase 2)
     providers_list = config.get("providers")
@@ -646,6 +770,11 @@ def validate_config(
     if providers_list is not None:
         if not isinstance(providers_list, list):
             errors.append("Top-level 'providers' must be an array")
+        elif len(providers_list) > MAX_CUSTOM_PROVIDERS:
+            errors.append(
+                "Top-level 'providers' exceeds the "
+                f"{MAX_CUSTOM_PROVIDERS}-provider limit"
+            )
         else:
             for i, entry in enumerate(providers_list):
                 if not isinstance(entry, dict):
@@ -669,12 +798,25 @@ def validate_config(
                 # Track declared custom provider names for cross-reference.
                 # The registered provider name is: entry["name"] if provided,
                 # otherwise defaults to "custom.{class_name}".
-                declared_name = entry.get("name", "").strip() if isinstance(entry.get("name"), str) else ""
-                cls_name = entry.get("class", "")
-                if declared_name:
-                    if not declared_name.startswith("custom."):
+                raw_declared_name = entry.get("name")
+                declared_name = (
+                    raw_declared_name.strip()
+                    if isinstance(raw_declared_name, str)
+                    else ""
+                )
+                if raw_declared_name is not None:
+                    if not isinstance(raw_declared_name, str) or not declared_name:
+                        errors.append(
+                            f"providers[{i}] field 'name' must be a non-empty string"
+                        )
+                    elif raw_declared_name != declared_name:
+                        errors.append(
+                            f"providers[{i}] field 'name' must not have surrounding whitespace"
+                        )
+                    elif not declared_name.startswith("custom.") or declared_name == "custom.":
                         errors.append(
                             f"providers[{i}] field 'name' must start with 'custom.' "
+                            "and include a name after the prefix "
                             f"to avoid collisions with built-in providers "
                             f"(got '{declared_name}', try 'custom.{declared_name}')"
                         )
@@ -816,6 +958,12 @@ def validate_config(
         if "paths" in boundary and not _is_str_list(paths):
             errors.append(f"Component '{name}' field 'boundary.paths' must be an array of strings")
             paths = []
+        elif len(paths) > MAX_PROVIDER_DECLARATIONS:
+            errors.append(
+                f"Component '{name}' field 'boundary.paths' exceeds the "
+                f"{MAX_PROVIDER_DECLARATIONS}-declaration limit"
+            )
+            paths = []
         elif len(paths) != len(set(paths)):
             errors.append(f"Component '{name}' field 'boundary.paths' contains duplicates")
         _validate_component_path_entries(
@@ -842,6 +990,12 @@ def validate_config(
                 behavior_paths = behavior.get("paths", [])
                 if "paths" in behavior and not _is_str_list(behavior_paths):
                     errors.append(f"Component '{name}' field 'behavior.paths' must be an array of strings")
+                    behavior_paths = []
+                elif len(behavior_paths) > MAX_PROVIDER_DECLARATIONS:
+                    errors.append(
+                        f"Component '{name}' field 'behavior.paths' exceeds the "
+                        f"{MAX_PROVIDER_DECLARATIONS}-declaration limit"
+                    )
                     behavior_paths = []
                 elif len(behavior_paths) != len(set(behavior_paths)):
                     errors.append(f"Component '{name}' field 'behavior.paths' contains duplicates")
@@ -1172,20 +1326,26 @@ def validate_config(
         behavior_paths = behavior.get("paths", [])
         if not _is_str_list(boundary_paths) or not _is_str_list(behavior_paths):
             continue
-        boundary_files = _expand_component_paths(
-            repo_root,
-            component_path,
-            boundary_paths,
-            source=source,
-            snapshot=snapshot,
-        )
-        behavior_files = _expand_component_paths(
-            repo_root,
-            component_path,
-            behavior_paths,
-            source=source,
-            snapshot=snapshot,
-        )
+        try:
+            boundary_files = _expand_component_paths(
+                repo_root,
+                component_path,
+                boundary_paths,
+                source=source,
+                snapshot=snapshot,
+            )
+            behavior_files = _expand_component_paths(
+                repo_root,
+                component_path,
+                behavior_paths,
+                source=source,
+                snapshot=snapshot,
+            )
+        except GuardrailError as exc:
+            errors.append(
+                f"Component '{name}' path expansion could not be validated: {exc}"
+            )
+            continue
         uncovered = sorted(boundary_files - behavior_files)
         if uncovered:
             preview = ", ".join(uncovered[:3])
@@ -1211,7 +1371,10 @@ def validate_config(
         )
         mode = sdef.get("mode", "exact")
         if not isinstance(mode, str) or mode not in supported_modes:
-            errors.append(f"Slice '{sname}' has unknown mode: {mode}")
+            errors.append(
+                f"Slice '{sname}' has unknown mode: "
+                f"{_bounded_diagnostic_text(mode)}"
+            )
         has_components = "components" in sdef
         has_closure = "closure_of" in sdef
         if has_components == has_closure:
@@ -1258,7 +1421,6 @@ def validate_config(
             if cname not in components:
                 errors.append(f"Slice '{sname}' references unknown component: {cname}")
 
-    registry = create_registry()
     provider_load_errors = load_custom_providers(
         config.get("providers", []),
         allow_custom=allow_custom_providers,
@@ -1322,14 +1484,26 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
         if not boundary_paths:
             continue
 
-        boundary_files = _expand_component_paths(
-            repo_root, component_path, boundary_paths, source="working-tree"
-        )
+        try:
+            boundary_files = _expand_component_paths(
+                repo_root, component_path, boundary_paths, source="working-tree"
+            )
+        except GuardrailError as exc:
+            warnings.append(
+                f"Component '{name}' behavior coverage could not be inspected: {exc}"
+            )
+            continue
         if not boundary_files:
             continue
-        behavior_files = _expand_component_paths(
-            repo_root, component_path, behavior_paths, source="working-tree"
-        )
+        try:
+            behavior_files = _expand_component_paths(
+                repo_root, component_path, behavior_paths, source="working-tree"
+            )
+        except GuardrailError as exc:
+            warnings.append(
+                f"Component '{name}' behavior coverage could not be inspected: {exc}"
+            )
+            continue
         uncovered = sorted(boundary_files - behavior_files)
         if uncovered:
             preview = ", ".join(uncovered[:3])
@@ -1355,23 +1529,68 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
         ".git", "node_modules", "__pycache__", ".venv", "venv",
         "dist", "build", "vendor",
     }
-    _MAX_DISCOVER = 1000  # Cap discovered components to prevent runaway on huge monorepos
     found: Dict[str, dict] = {}
     seen_directories: Set[str] = set()
     root_manifest_component: Optional[str] = None
+    tracked_detection = False
+    provider_candidate_paths: List[Path] = []
+
+    def filesystem_manifest_candidates() -> List[Path]:
+        manifest_names = {manifest for manifest, _field in manifest_specs}
+        return _bounded_sorted_paths(
+            (
+                path
+                for path in _iter_bounded_filesystem_paths(
+                    repo_root,
+                    recursive=True,
+                    max_entries=MAX_FILESYSTEM_TRAVERSAL_ENTRIES,
+                    exceeded_message=(
+                        "Component discovery guardrail exceeded: "
+                        "filesystem traversal exceeds "
+                        f"{MAX_FILESYSTEM_TRAVERSAL_ENTRIES} entries"
+                    ),
+                    should_descend=(
+                        lambda directory: directory.name not in _ignored_dirs
+                    ),
+                )
+                if path.name in manifest_names
+            ),
+            max_paths=MAX_DISCOVERY_MANIFESTS,
+            exceeded_message=(
+                "Component discovery guardrail exceeded: "
+                f">{MAX_DISCOVERY_MANIFESTS} manifests"
+            ),
+        )
+
     try:
-        tracked = _git_run_bytes(repo_root, ["ls-files", "-z", "--"])
-        candidate_paths = [repo_root / p for p in _decode_nul_paths(tracked.stdout)]
-        if not candidate_paths:
+        listed_paths = [
+            repo_root / path
+            for path in _iter_bounded_git_paths(
+                repo_root,
+                ["ls-files", "--cached", "-z", "--"],
+            )
+        ]
+        # Manifests are discovered from the index name set so an unstaged
+        # deletion does not erase an otherwise configured component. Provider
+        # evidence, however, must be readable from the working tree selected by
+        # the generated declaration; filter that separate view below.
+        candidate_paths = listed_paths
+        provider_candidate_paths = [
+            path
+            for path in listed_paths
+            if path.exists() or path.is_symlink()
+        ]
+        if listed_paths:
+            tracked_detection = True
+        else:
             try:
-                _git_run_bytes(repo_root, ["rev-parse", "--verify", "HEAD"])
+                _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
             except subprocess.CalledProcessError:
-                for manifest, _field in manifest_specs:
-                    candidate_paths.extend(repo_root.rglob(manifest))
+                candidate_paths = filesystem_manifest_candidates()
+            else:
+                tracked_detection = True
     except (OSError, subprocess.CalledProcessError):
-        candidate_paths = []
-        for manifest, _field in manifest_specs:
-            candidate_paths.extend(repo_root.rglob(manifest))
+        candidate_paths = filesystem_manifest_candidates()
 
     # A repository-root manifest is common for single-package projects, but a
     # root component would hash its own lockfile.  Map it to a conventional,
@@ -1381,6 +1600,12 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
     for candidate in candidate_paths:
         try:
             tracked_relative.append(candidate.relative_to(repo_root).as_posix())
+        except ValueError:
+            continue
+    provider_relative = []
+    for candidate in provider_candidate_paths:
+        try:
+            provider_relative.append(candidate.relative_to(repo_root).as_posix())
         except ValueError:
             continue
     python_package_dirs = sorted({
@@ -1433,34 +1658,123 @@ def discover_components(repo_root: Path) -> Dict[str, dict]:
                 comp_name = f"{base_name}-{idx}"
                 idx += 1
             component_dir = repo_root / rel_path
-            provider, paths = _detect_provider(component_dir)
+            component_prefix = rel_path.rstrip("/") + "/"
+            available_paths = (
+                {
+                    path[len(component_prefix):]
+                    for path in provider_relative
+                    if path.startswith(component_prefix)
+                }
+                if tracked_detection
+                else None
+            )
+            provider, paths = _detect_provider(
+                component_dir, available_paths=available_paths
+            )
             version_source = (
                 {"file": mf.name, "field": version_field}
                 if version_field is not None and str(rel_dir) != "."
                 else None
             )
+            if len(found) >= MAX_DISCOVERED_COMPONENTS:
+                raise GuardrailError(
+                    "Component discovery guardrail exceeded: "
+                    f">{MAX_DISCOVERED_COMPONENTS} components"
+                )
             found[comp_name] = {
                 "path": rel_path,
                 "version_source": version_source,
                 "boundary": {"provider": provider, "paths": paths},
             }
-            if len(found) >= _MAX_DISCOVER:
-                return found
     return found
 
 
-def _detect_provider(component_dir: Path) -> tuple:
+def _detect_provider(
+    component_dir: Path,
+    *,
+    available_paths: Optional[Set[str]] = None,
+) -> tuple:
     """Detect the best boundary provider and paths for a component directory.
 
     Returns (provider_name, paths_list).
     """
+    if available_paths is not None:
+        # Discovery is index-backed whenever Git supplied the manifest list.
+        # Restrict provider evidence to that same immutable name set so an
+        # untracked, deleted, or concurrently-created working-tree artifact
+        # cannot change the generated declaration.
+        if len(available_paths) > MAX_PROVIDER_DETECTION_ENTRIES:
+            raise GuardrailError(
+                "Provider detection guardrail exceeded: "
+                f">{MAX_PROVIDER_DETECTION_ENTRIES} available paths"
+            )
+        names = {
+            _to_posix(path)
+            for path in available_paths
+            if isinstance(path, str) and path
+        }
+        for name in (
+            "openapi.yaml",
+            "openapi.yml",
+            "openapi.json",
+            "swagger.yaml",
+            "swagger.json",
+        ):
+            if name in names:
+                return ("openapi", [name])
+        openapi_names = sorted(
+            name
+            for name in names
+            if "/" not in name and name.lower().startswith("openapi")
+        )
+        if openapi_names:
+            return ("openapi", [openapi_names[0]])
+        for name in ("boundary.json", "schema.json", "api.json"):
+            if name in names:
+                return ("json-file", [name])
+        if "__init__.py" in names:
+            return ("python-exports", ["__init__.py"])
+        if "src/index.ts" in names:
+            return ("typescript-exports", ["src/index.ts"])
+        if "index.ts" in names:
+            return ("typescript-exports", ["index.ts"])
+        return ("implicit", [])
+
+    # Non-Git and truly empty unborn repositories retain the documented
+    # bounded filesystem fallback.
     # OpenAPI specs
-    for pattern in ("openapi.yaml", "openapi.yml", "openapi.json", "swagger.yaml", "swagger.json"):
-        candidates = sorted(component_dir.glob(pattern))
-        if candidates:
-            return ("openapi", [candidates[0].name])
+    for name in (
+        "openapi.yaml",
+        "openapi.yml",
+        "openapi.json",
+        "swagger.yaml",
+        "swagger.json",
+    ):
+        candidate = component_dir / name
+        if candidate.exists() or candidate.is_symlink():
+            return ("openapi", [name])
     # Glob for any openapi-like files
-    for f in sorted(component_dir.iterdir()) if component_dir.exists() else []:
+    directory_entries = _bounded_sorted_paths(
+        (
+            _iter_bounded_filesystem_paths(
+                component_dir,
+                recursive=False,
+                max_entries=MAX_PROVIDER_DETECTION_ENTRIES,
+                exceeded_message=(
+                    "Provider detection guardrail exceeded: "
+                    f">{MAX_PROVIDER_DETECTION_ENTRIES} directory entries"
+                ),
+            )
+            if component_dir.exists()
+            else ()
+        ),
+        max_paths=MAX_PROVIDER_DETECTION_ENTRIES,
+        exceeded_message=(
+            "Provider detection guardrail exceeded: "
+            f">{MAX_PROVIDER_DETECTION_ENTRIES} directory entries"
+        ),
+    )
+    for f in directory_entries:
         if f.is_file() and f.name.lower().startswith("openapi"):
             return ("openapi", [f.name])
 

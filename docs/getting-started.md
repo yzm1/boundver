@@ -3,9 +3,10 @@
 This guide takes a Git repository from no configuration to a reviewed v3
 lockfile and a useful pull-request gate.
 
-> This guide describes the v3 contract in boundver 0.11. Version 0.10.x writes
-> `boundary-lock/v2`; see [Upgrade from 0.10](#upgrade-from-010) before combining
-> an existing lock with these instructions.
+> This guide describes boundver 0.12's v3/semantic-config-v2 contract. Version
+> 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
+> [Upgrade to 0.12](#upgrade-to-012) before combining an existing lock with
+> these instructions.
 
 ## Prerequisites
 
@@ -59,7 +60,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -222,7 +223,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.11.0
+      - uses: yzm1/boundver@v0.12.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -314,13 +315,15 @@ must define exactly one of `components` or `closure_of`. The selected mode must
 be available for every member during strict generation; `exact` is the portable
 choice for heterogeneous closures.
 
-## Upgrade from 0.10
+## Upgrade to 0.12
 
-v2 does not bind file mode/type or the complete semantic configuration. There
-is no safe metadata-only migration:
+Version 0.11's v3 lock carries semantic-config/v1; 0.12 uses v2 so
+presentation-only annotations no longer alter that identity. Version 0.10's
+v2 lock also does not bind file mode/type or the complete semantic
+configuration. There is no safe metadata-only migration for either source:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.11.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml
@@ -330,10 +333,11 @@ boundver verify --source index
 git diff --cached -- boundary.config.json boundary.lock.json
 ```
 
-Review selector changes carefully: the corrected `*`/`**` grammar may add or
-remove matches compared with 0.10. Update every writer and verifier together,
-then commit the regenerated v3 lock. `boundver migrate-lock` deliberately
-rejects v1/v2 hash-bearing locks and directs you to regenerate from content.
+When upgrading directly from 0.10, review selector changes carefully: the
+corrected `*`/`**` grammar may add or remove matches. Update every writer and
+verifier together, then commit the regenerated v3/v2 lock. `boundver
+migrate-lock` deliberately rejects v1/v2 hash-bearing locks and v3 locks with
+semantic-config/v1, directing you to regenerate from content.
 The source path is illustrative; stage every changed or newly selected input.
 Omit `boundary.config.json` from `git add` if it did not change. Alternatively,
 commit config/source changes first and only then generate from `head`.

@@ -1,7 +1,5 @@
 """Output / pretty-printing helpers for boundver."""
 
-import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,11 +8,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
+    _git_name_status,
     _git_run,
-    _git_run_bytes,
     _to_posix,
 )
 from ._utils import (
+    FACETS,
+    SOURCE_MODE_SET,
+    _bounded_json_dumps,
     _is_glob,
     _match_path_glob,
     _normalize_declared_path,
@@ -22,6 +23,73 @@ from ._utils import (
     boundary_provider_name,
 )
 from ._consumer_graph import affected_consumers
+
+
+def _encoding_safe_text(text: str, stream: Any) -> str:
+    """Return ``text`` losslessly representable by ``stream``'s encoding."""
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return text
+    try:
+        text.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        try:
+            return text.encode(encoding, "backslashreplace").decode(encoding)
+        except LookupError:
+            return text.encode("ascii", "backslashreplace").decode("ascii")
+    return text
+
+
+def safe_print(
+    *values: object,
+    sep: Optional[str] = " ",
+    end: Optional[str] = "\n",
+    file: Any = None,
+    flush: bool = False,
+) -> None:
+    """Print without failing when a redirected stream cannot encode Unicode.
+
+    ``backslashreplace`` is reversible enough for diagnostics and, unlike
+    replacement characters or ignored bytes, retains every code point.
+    """
+    if sep is None:
+        sep = " "
+    elif not isinstance(sep, str):
+        raise TypeError(f"sep must be None or a string, not {type(sep).__name__}")
+    if end is None:
+        end = "\n"
+    elif not isinstance(end, str):
+        raise TypeError(f"end must be None or a string, not {type(end).__name__}")
+
+    stream = sys.stdout if file is None else file
+    text = sep.join(str(value) for value in values) + end
+    safe = _encoding_safe_text(text, stream)
+    try:
+        stream.write(safe)
+    except UnicodeEncodeError:
+        # Some proxy streams do not accurately expose their final encoding.
+        stream.write(safe.encode("ascii", "backslashreplace").decode("ascii"))
+    if flush:
+        stream.flush()
+
+
+def configure_cli_streams() -> None:
+    """Make argparse and direct stream writes safe on legacy code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            # In-memory/proxy streams may not support reconfiguration. Calls
+            # through ``safe_print`` still use an encoding-aware fallback.
+            continue
+
+
+# Keep every human-output path in this module safe, including direct callers
+# that do not enter through ``core.main``.
+print = safe_print
 
 
 # ---------------------------------------------------------------------------
@@ -48,32 +116,39 @@ def _bold(s: str) -> str:
     return f"\033[1m{s}\033[0m" if _is_tty() else s
 
 
-def _parse_name_status_z(data: bytes) -> List[Tuple[str, str]]:
-    """Parse ``git diff --name-status -z`` without filename ambiguity."""
-    fields = [field for field in data.split(b"\0") if field]
-    changed: List[Tuple[str, str]] = []
-    index = 0
-    while index < len(fields):
-        status = os.fsdecode(fields[index])
-        index += 1
-        if index >= len(fields):
-            break
-        path = os.fsdecode(fields[index])
-        index += 1
-        if status.startswith(("R", "C")) and index < len(fields):
-            destination = os.fsdecode(fields[index])
-            index += 1
-            # A rename can remove a declared boundary path even when its
-            # destination is internal. Preserve both identities for impact
-            # classification. A copy leaves its source unchanged.
-            if status.startswith("R"):
-                changed.append((status, path))
-            path = destination
-        changed.append((status, path))
-    return changed
+def _display_path(path: object) -> str:
+    """Return an ASCII, single-line representation safe for terminal output."""
+    rendered: List[str] = []
+    for character in str(path):
+        codepoint = ord(character)
+        if 0x20 <= codepoint <= 0x7E:
+            rendered.append(character)
+        elif 0xDC80 <= codepoint <= 0xDCFF:
+            rendered.append(f"\\x{codepoint - 0xDC00:02x}")
+        elif codepoint <= 0xFF:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint <= 0xFFFF:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(f"\\U{codepoint:08x}")
+    return "".join(rendered)
+
+
+def _display_value(value: object) -> str:
+    """Render metadata without depending on CPython's integer digit setting."""
+    return _bounded_json_dumps(value, ensure_ascii=True, sort_keys=True)
 
 
 def print_diff(diff: dict) -> None:
+    lock_metadata = diff.get("changed_metadata", {})
+    if lock_metadata:
+        print("\n  LOCKFILE METADATA CHANGED:")
+        for field, values in lock_metadata.items():
+            print(
+                f"    {field}: {_display_value(values['old'])} -> "
+                f"{_display_value(values['new'])}"
+            )
+
     comps = diff["components"]
 
     if comps["added"]:
@@ -97,7 +172,10 @@ def print_diff(diff: dict) -> None:
             for facet, vals in c["changed_facets"].items():
                 print(f"      {facet}: {_short(vals['old'])} -> {_short(vals['new'])}")
             for field, vals in c.get("changed_metadata", {}).items():
-                print(f"      {field}: {vals['old']!r} -> {vals['new']!r}")
+                print(
+                    f"      {field}: {_display_value(vals['old'])} -> "
+                    f"{_display_value(vals['new'])}"
+                )
 
     if comps["unchanged"]:
         print(f"\n  UNCHANGED: {len(comps['unchanged'])} components")
@@ -115,6 +193,11 @@ def print_diff(diff: dict) -> None:
         print("\n  SLICES CHANGED:")
         for s in slices["changed"]:
             print(_yellow(f"    ~ {s['name']}: {_short(s['old'])} -> {_short(s['new'])}"))
+            for field, values in s.get("changed_metadata", {}).items():
+                print(
+                    f"      {field}: {_display_value(values['old'])} -> "
+                    f"{_display_value(values['new'])}"
+                )
     if slices["unchanged"]:
         print(f"\n  SLICES UNCHANGED: {', '.join(slices['unchanged'])}")
 
@@ -173,7 +256,7 @@ def print_status(lockfile: dict) -> None:
     ]
     if implicit_partial:
         print(f"\n  Note: {len(implicit_partial)} component(s) use the 'implicit' provider (boundary fingerprint = null).")
-        print("    This is expected — implicit tracks exact changes only.")
+        print("    This is expected -- implicit tracks exact changes only.")
         print("    To track a declared boundary, edit the component's boundary provider and paths in the config.")
 
     # Warnings
@@ -218,7 +301,7 @@ def analyze_explain_changes(
         source, changed (list of (status, path) tuples),
         boundary_provider, boundary_paths, boundary_changed (list of (status, path) tuples).
     """
-    if source not in {"head", "index", "working-tree"}:
+    if source not in SOURCE_MODE_SET:
         return {
             "error": (
                 f"unknown source mode {source!r}; expected head, index, or "
@@ -240,6 +323,12 @@ def analyze_explain_changes(
     if not comp:
         known = sorted(config.get("components", {}).keys())
         return {"error": f"unknown component '{component_name}'", "known": known}
+    if source in {"head", "index"} and snapshot is None:
+        try:
+            snapshot = _capture_git_source_snapshot(repo_root, source)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            return {"error": f"cannot capture {source} source: {detail}"}
 
     component_path = str(comp.get("path", "")).rstrip("/")
     boundary = comp.get("boundary", {})
@@ -249,6 +338,7 @@ def analyze_explain_changes(
     # Resolve the automatic parent from the captured commit when available so
     # a concurrent branch update cannot change either side of the comparison.
     effective_base = base_ref
+    root_commit_target: Optional[str] = None
     if source == "head" and base_ref == "HEAD":
         captured_head = snapshot.head_oid if snapshot is not None else None
         parent_ref = f"{captured_head}~1" if captured_head else "HEAD~1"
@@ -256,11 +346,24 @@ def analyze_explain_changes(
             _git_run(repo_root, ["rev-parse", "--verify", parent_ref])
             effective_base = parent_ref
         except subprocess.CalledProcessError:
-            pass
+            root_commit_target = captured_head or "HEAD"
 
     # Choose diff target based on source
-    diff_args = ["diff", "--name-status", "-z"]
-    if source == "working-tree":
+    if root_commit_target is not None:
+        diff_args = [
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "-z",
+            root_commit_target,
+        ]
+    else:
+        diff_args = ["diff", "--name-status", "-z"]
+    if root_commit_target is not None:
+        pass
+    elif source == "working-tree":
         diff_args.append(effective_base)
     elif source == "index" and snapshot is not None:
         if effective_base == "HEAD" and snapshot.head_oid is not None:
@@ -271,7 +374,8 @@ def analyze_explain_changes(
             changed = [
                 ("A", path)
                 for path in sorted(snapshot.entries)
-                if path == component_path
+                if component_path in {"", "."}
+                or path == component_path
                 or path.startswith(f"{component_path}/")
             ]
             diff_args = []
@@ -286,19 +390,21 @@ def analyze_explain_changes(
     else:
         diff_args.extend([effective_base, "HEAD"])
     if diff_args:
-        diff_args.extend(["--", component_path])
+        diff_args.append("--")
+        if component_path not in {"", "."}:
+            diff_args.append(component_path)
         try:
-            diff = _git_run_bytes(
-                repo_root, ["--literal-pathspecs", *diff_args]
+            changed = _git_name_status(
+                repo_root,
+                ["--literal-pathspecs", *diff_args],
             )
-        except subprocess.CalledProcessError as exc:
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             return {
                 "error": (
                     f"failed to diff '{component_name}' against "
                     f"{effective_base}: {exc}"
                 )
             }
-        changed = _parse_name_status_z(diff.stdout)
 
     component_prefix = f"{_to_posix(component_path)}/"
     normalized_boundary_paths: List[str] = []
@@ -378,7 +484,7 @@ def explain_component_changes(
 
     print(f"\nChanged files ({len(changed)}):")
     for status, rel in changed:
-        print(f"  {status:>2}  {rel}")
+        print(f"  {status:>2}  {_display_path(rel)}")
 
     if not boundary_paths:
         print("\nBoundary paths: none declared")
@@ -387,12 +493,12 @@ def explain_component_changes(
     print(f"\nBoundary provider: {result['boundary_provider']}")
     print("Boundary paths:")
     for bp in boundary_paths:
-        print(f"  - {bp}")
+        print(f"  - {_display_path(bp)}")
 
     if boundary_changed:
         print(f"\nBoundary-relevant changed files ({len(boundary_changed)}):")
         for status, rel in boundary_changed:
-            print(f"  {status:>2}  {rel}")
+            print(f"  {status:>2}  {_display_path(rel)}")
     else:
         print("\nBoundary-relevant changed files: none")
 
@@ -400,7 +506,7 @@ def explain_component_changes(
 
 
 def _print_json(data: Any) -> None:
-    print(json.dumps(data, indent=2, sort_keys=True))
+    print(_bounded_json_dumps(data, indent=2, sort_keys=True))
 
 
 def _log(msg: str, quiet: bool = False) -> None:
@@ -475,6 +581,11 @@ def why_component(
                     {"status": status, "path": path}
                     for status, path in result["changed_files"]
                 ],
+                "changed_files_status": result.get(
+                    "changed_files_status",
+                    "ok" if result["changed_files"] else "not-run",
+                ),
+                "changed_files_error": result.get("changed_files_error"),
                 "boundary_paths": comp_cfg.get("boundary", {}).get("paths", []),
                 "provider_detail": result.get("provider_explanation", ""),
                 "affected_consumers": consumers,
@@ -487,58 +598,86 @@ def why_component(
 
     # Format human-readable output.
     print(f"\nComponent:  {_bold(component_name)}")
-    print(f"Path:       {comp_path}")
+    print(f"Path:       {_display_path(comp_path)}")
     print(f"Source:     {source}")
     if result["version"]:
         print(f"Version:    {result['version']}")
 
     if not (result["changes"] or result["metadata_changes"] or result["digest_errors"]):
-        print(_green("\nStatus: UP TO DATE — no fingerprint or metadata drift detected."))
+        print(_green("\nStatus: UP TO DATE -- no fingerprint or metadata drift detected."))
         return 0
 
     drift_count = len(changes) + len(result["metadata_changes"]) + len(result["digest_errors"])
-    print(_red(f"\nStatus: DRIFTED — {drift_count} issue(s) detected"))
+    print(_red(f"\nStatus: DRIFTED -- {drift_count} issue(s) detected"))
 
     print("\nFingerprint changes:")
-    for facet in ("exact", "behavior", "boundary", "compat"):
+    for facet in FACETS:
         lv = result["locked_fps"].get(facet)
         cv = result["current_fps"].get(facet)
         if facet in changes:
-            print(f"  {facet:<10}  {_short(lv)}  →  {_red(_short(cv))}  (changed)")
+            print(f"  {facet:<10}  {_short(lv)}  ->  {_red(_short(cv))}  (changed)")
         else:
-            print(f"  {facet:<10}  {_short(lv)}  →  {_short(cv)}  (unchanged)")
+            print(f"  {facet:<10}  {_short(lv)}  ->  {_short(cv)}  (unchanged)")
 
     print(f"\n{_yellow('Change type:')}  {result['summary']}")
 
     if result["metadata_changes"]:
         print("\nMetadata changes:")
         for field, values in result["metadata_changes"].items():
-            print(f"  {field}: {values['locked']!r} → {values['current']!r}")
+            print(
+                f"  {field}: {_display_value(values['locked'])} -> "
+                f"{_display_value(values['current'])}"
+            )
 
     if result["digest_errors"]:
         print(_red("\nFingerprint errors:"))
         for message in result["digest_errors"]:
             print(f"  {message}")
 
-    if result["changed_files"]:
-        print(f"\nModified files under {comp_path}:")
+    changed_files_status = result.get(
+        "changed_files_status",
+        "ok" if result["changed_files"] else "not-run",
+    )
+    if changed_files_status == "error":
+        detail = result.get("changed_files_error") or "unknown diagnostic error"
+        print(
+            _red(
+                f"\nChanged-file diagnostics failed under "
+                f"{_display_path(comp_path)}: {detail}"
+            )
+        )
+    elif result["changed_files"]:
+        print(f"\nModified files under {_display_path(comp_path)}:")
         seen: set = set()
         for status, rel in result["changed_files"]:
             if rel not in seen:
                 seen.add(rel)
-                print(f"  {status:>2}  {rel}")
-    elif source == "index":
-        print(f"\nNo staged changes under {comp_path}.")
-        print(f"Drift is from changes staged after the lockfile was last generated.")
-        print(f"  Tip: run `git diff --cached --name-only -- {comp_path}` to check staged files.")
+                print(f"  {status:>2}  {_display_path(rel)}")
+    elif changed_files_status == "ok" and source == "index":
+        print(
+            f"\nChanged-file diagnostics found no staged tracked changes "
+            f"under {_display_path(comp_path)}."
+        )
+        print(
+            f"  Tip: run `git diff --cached --name-only -- "
+            f"{_display_path(comp_path)}` to inspect the index."
+        )
+    elif changed_files_status == "ok" and source == "working-tree":
+        print(
+            f"\nChanged-file diagnostics found no tracked staged or "
+            f"unstaged changes under {_display_path(comp_path)}."
+        )
     else:
-        print(f"\nNo uncommitted changes under {comp_path}.")
-        print(f"Drift is from commits made after the lockfile was last generated.")
-        print(f"  Tip: run `git log --oneline -- {comp_path}` to find the relevant commits.")
+        print(f"\nChanged-file diagnostics were not run for source={source}.")
+        if source == "head":
+            print(
+                f"  Tip: run `git log --oneline -- "
+                f"{_display_path(comp_path)}` to inspect component history."
+            )
 
     boundary_paths = comp_cfg.get("boundary", {}).get("paths", [])
     if boundary_paths and "boundary" in changes:
-        print(f"\nBoundary paths:  {', '.join(boundary_paths)}")
+        print(f"\nBoundary paths:  {', '.join(_display_path(path) for path in boundary_paths)}")
     if result.get("provider_explanation"):
         print(f"Provider detail: {result['provider_explanation']}")
 
@@ -569,6 +708,8 @@ def analyze_component_drift(
         changes: Dict[str, dict]  — facets that changed
         summary: str              — human-readable change type
         changed_files: List[Tuple[str, str]]
+        changed_files_status: str — ok, error, or not-run
+        changed_files_error: Optional[str]
         version: Optional[str]
         locked_fps: dict
         current_fps: dict
@@ -598,7 +739,7 @@ def analyze_component_drift(
 
     locked_comp = lockfile.get("components", {}).get(component_name)
     if locked_comp is None:
-        print(f"Component '{component_name}' is not in the lockfile — run 'boundver generate' first.", file=sys.stderr)
+        print(f"Component '{component_name}' is not in the lockfile -- run 'boundver generate' first.", file=sys.stderr)
         return None
 
     if snapshot is not None and snapshot.source != source:
@@ -617,8 +758,12 @@ def analyze_component_drift(
     if source in {"head", "index"} and snapshot is None:
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
-        except ValueError as exc:
-            print(f"ERROR: cannot capture {source} source: {exc}", file=sys.stderr)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            print(
+                f"ERROR: cannot capture {source} source: {detail}",
+                file=sys.stderr,
+            )
             return None
 
     # Compute current fingerprints for just this component.
@@ -646,7 +791,7 @@ def analyze_component_drift(
 
     # Build diff of changed facets.
     changes: Dict[str, dict] = {}
-    for facet in ("exact", "behavior", "boundary", "compat"):
+    for facet in FACETS:
         lv = locked_fps.get(facet)
         cv = current_fps.get(facet)
         if lv != cv:
@@ -697,6 +842,7 @@ def analyze_component_drift(
                 boundary_cfg=comp_cfg.get("boundary", {}),
                 source=source,
                 read_file=accessor.read_file,
+                read_file_limited=accessor.read_file_limited,
                 list_files=accessor.list_files,
             )
             provider_explanation = explain_provider_diff(
@@ -708,23 +854,58 @@ def analyze_component_drift(
 
     # Get changed files via git diff
     comp_path = comp_cfg.get("path", "?").rstrip("/")
+    component_pathspec = "." if comp_path in {"", "."} else comp_path
     changed_files: List[Tuple[str, str]] = []
+    changed_files_status = "not-run"
+    changed_files_error: Optional[str] = None
     if changes:
         if source == "working-tree":
             try:
-                diff = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "HEAD", "--name-status", "-z", "--", comp_path])
-                staged = _git_run_bytes(repo_root, ["--literal-pathspecs", "diff", "--cached", "--name-status", "-z", "--", comp_path])
-                changed_files.extend(_parse_name_status_z(diff.stdout))
-                changed_files.extend(_parse_name_status_z(staged.stdout))
-            except subprocess.CalledProcessError:
-                pass
+                diagnostic_files: List[Tuple[str, str]] = []
+                diagnostic_files.extend(
+                    _git_name_status(
+                        repo_root,
+                        [
+                            "--literal-pathspecs",
+                            "diff",
+                            "HEAD",
+                            "--name-status",
+                            "-z",
+                            "--",
+                            component_pathspec,
+                        ],
+                    )
+                )
+                diagnostic_files.extend(
+                    _git_name_status(
+                        repo_root,
+                        [
+                            "--literal-pathspecs",
+                            "diff",
+                            "--cached",
+                            "--name-status",
+                            "-z",
+                            "--",
+                            component_pathspec,
+                        ],
+                    )
+                )
+                changed_files = diagnostic_files
+                changed_files_status = "ok"
+            except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                changed_files = []
+                changed_files_status = "error"
+                changed_files_error = str(exc).strip() or type(exc).__name__
         elif source == "index":
             if snapshot is not None and snapshot.head_oid is None:
                 changed_files.extend(
                     ("A", path)
                     for path in sorted(snapshot.entries)
-                    if path == comp_path or path.startswith(f"{comp_path}/")
+                    if comp_path in {"", "."}
+                    or path == comp_path
+                    or path.startswith(f"{comp_path}/")
                 )
+                changed_files_status = "ok"
             else:
                 try:
                     if snapshot is None:
@@ -739,13 +920,22 @@ def analyze_component_drift(
                             snapshot.head_oid,
                             snapshot.tree_oid,
                         ]
-                    staged = _git_run_bytes(
-                        repo_root,
-                        ["--literal-pathspecs", *diff_args, "--", comp_path],
+                    changed_files.extend(
+                        _git_name_status(
+                            repo_root,
+                            [
+                                "--literal-pathspecs",
+                                *diff_args,
+                                "--",
+                                component_pathspec,
+                            ],
+                        )
                     )
-                    changed_files.extend(_parse_name_status_z(staged.stdout))
-                except subprocess.CalledProcessError:
-                    pass
+                    changed_files_status = "ok"
+                except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+                    changed_files = []
+                    changed_files_status = "error"
+                    changed_files_error = str(exc).strip() or type(exc).__name__
 
     # ``git diff HEAD`` already includes staged changes, while the additional
     # cached diff is useful for unborn/fallback cases.  Keep one stable entry
@@ -767,6 +957,8 @@ def analyze_component_drift(
         "digest_errors": digest_errors,
         "summary": summary,
         "changed_files": changed_files,
+        "changed_files_status": changed_files_status,
+        "changed_files_error": changed_files_error,
         "version": version,
         "locked_fps": locked_fps,
         "current_fps": current_fps,

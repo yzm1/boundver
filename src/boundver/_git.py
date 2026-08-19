@@ -1,17 +1,63 @@
 """Git helper primitives for boundver."""
 
+import locale
 import os
 import stat
 import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import (
+    BinaryIO,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+)
 
-from ._utils import GuardrailError
+from ._utils import (
+    GuardrailError,
+    SOURCE_MODE_SET,
+    _bounded_sorted_paths,
+    _iter_bounded_filesystem_paths,
+    _read_bounded_path_bytes,
+)
 
 
 MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024
+MAX_GIT_BATCH_BYTES = 256 * 1024 * 1024
+MAX_GIT_BATCH_HEADER_BYTES = 64 * 1024
+MAX_GIT_TREE_ENTRIES = 50_000
+MAX_GIT_STATUS_PATHS = 50_000
+MAX_GIT_STATUS_FIELDS = MAX_GIT_STATUS_PATHS * 3
+MAX_GIT_PATH_BYTES = 16 * 1024
+MAX_GIT_TOTAL_PATH_BYTES = 16 * 1024 * 1024
+# Includes ls-tree's mode/type/object header and NUL framing in addition to
+# path bytes.  The path-specific limits below are the normative contract; this
+# transport limit prevents malformed or unexpectedly verbose Git output from
+# consuming memory before a complete record can be validated.
+MAX_GIT_LIST_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_GIT_LIST_RECORD_BYTES = MAX_GIT_PATH_BYTES + 512
+MAX_GIT_COMMAND_OUTPUT_BYTES = 1024 * 1024
+MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
+_GIT_STREAM_CHUNK_BYTES = 64 * 1024
+_GIT_DIAGNOSTIC_TRUNCATION = b"\n...[Git diagnostic truncated by boundver]"
 MAX_FALLBACK_FILES = 50_000
+MAX_FALLBACK_TRAVERSAL_ENTRIES = 200_000
+MAX_GITIGNORE_BYTES = 1024 * 1024
+
+
+def _read_bounded_git_diagnostic(stderr_file: BinaryIO) -> bytes:
+    """Return capped subprocess diagnostics with an explicit truncation mark."""
+    stderr_file.seek(0)
+    diagnostic = stderr_file.read(MAX_GIT_DIAGNOSTIC_BYTES + 1)
+    if len(diagnostic) <= MAX_GIT_DIAGNOSTIC_BYTES:
+        return diagnostic
+    return diagnostic[:MAX_GIT_DIAGNOSTIC_BYTES] + _GIT_DIAGNOSTIC_TRUNCATION
 
 
 @dataclass(frozen=True)
@@ -51,23 +97,210 @@ def git_root() -> Path:
 
 def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     """Run git against a specific repository root regardless of process CWD."""
-    return subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        capture_output=True, text=True, check=True,
+    command = ["git", "-C", str(repo_root), *args]
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+
+    captured: Dict[str, bytes] = {}
+    overflows: List[str] = []
+    read_errors: List[BaseException] = []
+    state_lock = threading.Lock()
+
+    def terminate() -> None:
+        try:
+            proc.kill()
+        except OSError:
+            # The child may have exited between the bounded read and kill.
+            pass
+
+    def read_stream(stream: BinaryIO, name: str, limit: int) -> None:
+        data = bytearray()
+        try:
+            while True:
+                remaining = limit - len(data)
+                chunk = stream.read(min(_GIT_STREAM_CHUNK_BYTES, remaining + 1))
+                if not chunk:
+                    break
+                if len(chunk) > remaining:
+                    with state_lock:
+                        overflows.append(name)
+                    terminate()
+                    break
+                data.extend(chunk)
+        except BaseException as exc:
+            with state_lock:
+                read_errors.append(exc)
+            terminate()
+        finally:
+            captured[name] = bytes(data)
+            stream.close()
+
+    readers = [
+        threading.Thread(
+            target=read_stream,
+            args=(proc.stdout, "stdout", MAX_GIT_COMMAND_OUTPUT_BYTES),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=read_stream,
+            args=(proc.stderr, "stderr", MAX_GIT_DIAGNOSTIC_BYTES),
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = proc.wait()
+    except BaseException:
+        terminate()
+        raise
+    finally:
+        for reader in readers:
+            reader.join()
+
+    if read_errors:
+        raise read_errors[0]
+    if overflows:
+        name = overflows[0]
+        limit = (
+            MAX_GIT_COMMAND_OUTPUT_BYTES
+            if name == "stdout"
+            else MAX_GIT_DIAGNOSTIC_BYTES
+        )
+        raise GuardrailError(
+            f"Git command {name} exceeds the {limit}-byte limit"
+        )
+
+    encoding = locale.getpreferredencoding(False)
+
+    def as_text(data: bytes) -> str:
+        return (
+            data.decode(encoding)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+        )
+
+    stdout = as_text(captured["stdout"])
+    stderr = as_text(captured["stderr"])
+    result = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    if returncode != 0:
+        raise subprocess.CalledProcessError(
+            returncode,
+            command,
+            output=stdout,
+            stderr=stderr,
+        )
+    return result
 
 
-def _git_run_bytes(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
-    """Run Git with byte output for NUL-delimited, filename-safe commands."""
-    return subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        capture_output=True, text=False, check=True,
-    )
+def _iter_git_nul_records(
+    repo_root: Path,
+    args: List[str],
+    *,
+    max_records: Optional[int] = None,
+) -> Iterator[bytes]:
+    """Stream bounded NUL-delimited records from Git.
+
+    Git filename commands can emit output proportional to the repository.  A
+    normal ``capture_output`` call would allocate all of it before boundver had
+    an opportunity to enforce its entry/path limits.  This parser keeps only a
+    fixed-size read chunk plus the current bounded record in memory.
+    """
+    command = ["git", "-C", str(repo_root), *args]
+    record_limit = MAX_GIT_TREE_ENTRIES if max_records is None else max_records
+    if record_limit < 0:
+        raise ValueError("Git listing record limit must be non-negative")
+    with tempfile.TemporaryFile() as stderr_file:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert proc.stdout is not None
+        pending = bytearray()
+        output_bytes = 0
+        record_count = 0
+        try:
+            while True:
+                chunk = proc.stdout.read(_GIT_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                output_bytes += len(chunk)
+                if output_bytes > MAX_GIT_LIST_OUTPUT_BYTES:
+                    raise GuardrailError(
+                        "Git listing exceeds the "
+                        f"{MAX_GIT_LIST_OUTPUT_BYTES}-byte transport limit"
+                    )
+                pending.extend(chunk)
+                consumed = 0
+                while True:
+                    terminator = pending.find(b"\0", consumed)
+                    if terminator < 0:
+                        break
+                    record = bytes(pending[consumed:terminator])
+                    consumed = terminator + 1
+                    if not record:
+                        continue
+                    record_count += 1
+                    if record_count > record_limit:
+                        raise GuardrailError(
+                            "Git listing exceeds the "
+                            f"{record_limit}-entry limit"
+                        )
+                    if len(record) > MAX_GIT_LIST_RECORD_BYTES:
+                        raise GuardrailError(
+                            "Git listing record exceeds the "
+                            f"{MAX_GIT_LIST_RECORD_BYTES}-byte limit"
+                        )
+                    yield record
+                if consumed:
+                    del pending[:consumed]
+                if len(pending) > MAX_GIT_LIST_RECORD_BYTES:
+                    raise GuardrailError(
+                        "Git listing record exceeds the "
+                        f"{MAX_GIT_LIST_RECORD_BYTES}-byte limit"
+                    )
+
+            returncode = proc.wait()
+            if returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode,
+                    command,
+                    stderr=_read_bounded_git_diagnostic(stderr_file),
+                )
+            if pending:
+                raise ValueError("Truncated NUL-delimited Git listing output")
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
-def _decode_nul_paths(data: bytes) -> List[str]:
-    """Decode Git's NUL-delimited path output without C-quote mangling."""
-    return [os.fsdecode(raw) for raw in data.split(b"\0") if raw]
+def _iter_bounded_git_paths(
+    repo_root: Path,
+    args: List[str],
+) -> Iterator[str]:
+    """Yield filename-safe Git paths with per-path and aggregate ceilings."""
+    total_path_bytes = 0
+    for raw_path in _iter_git_nul_records(repo_root, args):
+        if len(raw_path) > MAX_GIT_PATH_BYTES:
+            raise GuardrailError(
+                "Git path exceeds the "
+                f"{MAX_GIT_PATH_BYTES}-byte limit"
+            )
+        total_path_bytes += len(raw_path)
+        if total_path_bytes > MAX_GIT_TOTAL_PATH_BYTES:
+            raise GuardrailError(
+                "Git paths exceed the "
+                f"{MAX_GIT_TOTAL_PATH_BYTES}-byte aggregate limit"
+            )
+        yield os.fsdecode(raw_path)
 
 
 def _resolve_head_oid(repo_root: Path) -> Optional[str]:
@@ -95,31 +328,62 @@ def _is_git_repository(repo_root: Path) -> bool:
     return result.stdout.strip().lower() == "true"
 
 
-def _parse_ls_tree_entries(data: bytes) -> Dict[str, GitTreeEntry]:
-    """Parse ``git ls-tree -r -z --full-tree`` output without path quoting."""
+def _parse_ls_tree_record(record: bytes) -> tuple[GitTreeEntry, int]:
+    """Parse one filename-safe ``git ls-tree -z`` record."""
+    try:
+        header, raw_path = record.split(b"\t", 1)
+        raw_mode, raw_type, raw_oid = header.split(b" ", 2)
+        mode = raw_mode.decode("ascii")
+        object_type = raw_type.decode("ascii")
+        oid = raw_oid.decode("ascii")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError(f"Malformed git ls-tree record: {record!r}") from exc
+    if not raw_path:
+        raise ValueError("Malformed git ls-tree record with an empty path")
+    if len(raw_path) > MAX_GIT_PATH_BYTES:
+        raise GuardrailError(
+            "Git path exceeds the "
+            f"{MAX_GIT_PATH_BYTES}-byte limit"
+        )
+    if len(mode) != 6 or not mode.isdigit():
+        raise ValueError(f"Malformed Git mode {mode!r} for {os.fsdecode(raw_path)!r}")
+    if object_type not in {"blob", "commit"}:
+        raise ValueError(
+            f"Unsupported Git object type {object_type!r} for "
+            f"{os.fsdecode(raw_path)!r}"
+        )
+    if len(oid) not in {40, 64} or any(
+        character not in "0123456789abcdefABCDEF" for character in oid
+    ):
+        raise ValueError(
+            f"Malformed Git object ID {oid!r} for {os.fsdecode(raw_path)!r}"
+        )
+    path = os.fsdecode(raw_path)
+    return GitTreeEntry(path, mode, object_type, oid), len(raw_path)
+
+
+def _collect_ls_tree_entries(records: Iterator[bytes]) -> Dict[str, GitTreeEntry]:
+    """Collect a streamed tree within the snapshot's hard path ceilings."""
     entries: Dict[str, GitTreeEntry] = {}
-    for record in data.split(b"\0"):
-        if not record:
-            continue
-        try:
-            header, raw_path = record.split(b"\t", 1)
-            raw_mode, raw_type, raw_oid = header.split(b" ", 2)
-            mode = raw_mode.decode("ascii")
-            object_type = raw_type.decode("ascii")
-            oid = raw_oid.decode("ascii")
-        except (ValueError, UnicodeDecodeError) as exc:
-            raise ValueError(f"Malformed git ls-tree record: {record!r}") from exc
-        if len(mode) != 6 or not mode.isdigit():
-            raise ValueError(f"Malformed Git mode {mode!r} for {os.fsdecode(raw_path)!r}")
-        if object_type not in {"blob", "commit"}:
-            raise ValueError(
-                f"Unsupported Git object type {object_type!r} for "
-                f"{os.fsdecode(raw_path)!r}"
+    total_path_bytes = 0
+    for record in records:
+        if len(entries) >= MAX_GIT_TREE_ENTRIES:
+            raise GuardrailError(
+                "Git listing exceeds the "
+                f"{MAX_GIT_TREE_ENTRIES}-entry limit"
             )
-        path = os.fsdecode(raw_path)
-        if path in entries:
-            raise ValueError(f"Duplicate path in captured Git tree: {path!r}")
-        entries[path] = GitTreeEntry(path, mode, object_type, oid)
+        entry, path_bytes = _parse_ls_tree_record(record)
+        total_path_bytes += path_bytes
+        if total_path_bytes > MAX_GIT_TOTAL_PATH_BYTES:
+            raise GuardrailError(
+                "Git tree paths exceed the "
+                f"{MAX_GIT_TOTAL_PATH_BYTES}-byte aggregate limit"
+            )
+        if entry.path in entries:
+            raise ValueError(
+                f"Duplicate path in captured Git tree: {entry.path!r}"
+            )
+        entries[entry.path] = entry
     return entries
 
 
@@ -147,9 +411,11 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
             raise ValueError("git write-tree returned an empty object ID")
 
     try:
-        listed = _git_run_bytes(
-            repo_root,
-            ["ls-tree", "-r", "-z", "--full-tree", treeish],
+        entries = _collect_ls_tree_entries(
+            _iter_git_nul_records(
+                repo_root,
+                ["ls-tree", "-r", "-z", "--full-tree", treeish],
+            )
         )
     except subprocess.CalledProcessError as exc:
         raise ValueError(f"Cannot enumerate captured {source} tree {treeish}") from exc
@@ -162,7 +428,7 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
     return GitSourceSnapshot(
         source=source,
         tree_oid=treeish,
-        entries=_parse_ls_tree_entries(listed.stdout),
+        entries=entries,
         head_oid=head_oid,
         filemode=core_filemode,
     )
@@ -187,13 +453,15 @@ def _working_tree_mode(
     tracked_entry: Optional[GitTreeEntry] = None,
     *,
     core_filemode: bool = True,
+    path_stat: Optional[os.stat_result] = None,
 ) -> tuple:
-    """Return canonical Git mode/type for a tracked working-tree path."""
-    full_path = repo_root / repo_rel
-    try:
-        path_stat = full_path.lstat()
-    except FileNotFoundError as exc:
-        raise ValueError(f"File disappeared while hashing: {repo_rel}") from exc
+    """Return canonical Git mode/type for one working-tree identity sample."""
+    if path_stat is None:
+        full_path = repo_root / repo_rel
+        try:
+            path_stat = full_path.lstat()
+        except FileNotFoundError as exc:
+            raise ValueError(f"File disappeared while hashing: {repo_rel}") from exc
     if stat.S_ISLNK(path_stat.st_mode):
         return "120000", "blob"
     if stat.S_ISREG(path_stat.st_mode):
@@ -210,18 +478,216 @@ def _working_tree_mode(
     raise ValueError(f"Unsupported working-tree file type at {repo_rel}")
 
 
-def _git_cat_blob(repo_root: Path, ref: str) -> bytes:
+def _git_cat_blob(
+    repo_root: Path,
+    ref: str,
+    *,
+    max_bytes: int = MAX_GIT_BLOB_BYTES,
+) -> bytes:
     """Read a single git blob at the given ref as raw bytes (no text-mode CRLF conversion)."""
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "show", ref],
-        capture_output=True, text=False, check=True,
-    )
-    if len(result.stdout) > MAX_GIT_BLOB_BYTES:
+    if max_bytes < 0:
+        raise ValueError("Git blob byte limit must be non-negative")
+    effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
+    command = ["git", "-C", str(repo_root), "show", ref]
+    # ``capture_output`` would buffer the entire object before the size check.
+    # Bound the read itself and terminate Git as soon as the limit is crossed.
+    with tempfile.TemporaryFile() as stderr_file:
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert proc.stdout is not None
+        try:
+            content = proc.stdout.read(effective_limit + 1)
+            if len(content) > effective_limit:
+                proc.kill()
+                proc.wait()
+                raise GuardrailError(
+                    f"Hash guardrail exceeded: Git blob too large "
+                    f"(>{effective_limit} bytes) for ref {ref!r}"
+                )
+            returncode = proc.wait()
+            if returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode,
+                    command,
+                    output=content,
+                    stderr=_read_bounded_git_diagnostic(stderr_file),
+                )
+            return content
+        finally:
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+def _parse_batch_header(header_bytes: bytes, ref: str) -> int:
+    """Validate one ``cat-file --batch`` header and return its blob size."""
+    try:
+        header = header_bytes.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"Malformed non-ASCII git cat-file header for {ref!r}"
+        ) from exc
+    if header.endswith(" missing"):
+        raise ValueError(f"Git blob not found for ref {ref!r}")
+    last_space = header.rfind(" ")
+    type_space = header.rfind(" ", 0, last_space)
+    if last_space < 0 or type_space < 0:
+        raise ValueError(
+            f"Malformed git cat-file header for {ref!r}: {header!r}"
+        )
+    object_type = header[type_space + 1:last_space]
+    if object_type != "blob":
+        raise ValueError(
+            f"Expected a Git blob for {ref!r}, got {object_type!r}"
+        )
+    try:
+        size = int(header[last_space + 1:])
+    except ValueError as exc:
+        raise ValueError(
+            f"Malformed git cat-file size for {ref!r}: {header!r}"
+        ) from exc
+    if size < 0:
+        raise ValueError(f"Negative git blob size for {ref!r}: {size}")
+    if size > MAX_GIT_BLOB_BYTES:
         raise GuardrailError(
             f"Hash guardrail exceeded: Git blob too large "
-            f"({len(result.stdout)} bytes) for ref {ref!r}"
+            f"({size} bytes) for ref {ref!r}"
         )
-    return result.stdout
+    return size
+
+
+def _iter_git_blobs(
+    repo_root: Path,
+    refs: List[str],
+    *,
+    max_total_bytes: int = MAX_GIT_BATCH_BYTES,
+    remaining_bytes: Optional[Callable[[], int]] = None,
+) -> Iterator[Tuple[str, bytes]]:
+    """Yield unique Git blobs under a pre-read aggregate byte ceiling."""
+    if max_total_bytes < 0:
+        raise ValueError("Git blob aggregate byte limit must be non-negative")
+    effective_total_limit = min(max_total_bytes, MAX_GIT_BATCH_BYTES)
+    total_bytes = 0
+
+    def remaining_limit() -> int:
+        remaining = effective_total_limit - total_bytes
+        if remaining_bytes is not None:
+            logical_remaining = remaining_bytes()
+            if logical_remaining < 0:
+                raise GuardrailError(
+                    "Hash guardrail exceeded: Git blobs exhausted the logical "
+                    "aggregate byte limit"
+                )
+            remaining = min(remaining, logical_remaining)
+        return remaining
+
+    unique_refs = list(dict.fromkeys(refs))
+    line_refs = [
+        ref for ref in unique_refs if "\n" not in ref and "\r" not in ref
+    ]
+    line_ref_set = set(line_refs)
+    for ref in unique_refs:
+        if ref in line_ref_set:
+            continue
+        try:
+            content = _git_cat_blob(
+                repo_root,
+                ref,
+                max_bytes=remaining_limit(),
+            )
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(
+                f"Git blob not found for ref containing a newline: {ref!r}"
+            ) from exc
+        total_bytes += len(content)
+        yield ref, content
+
+    if not line_refs:
+        return
+
+    command = ["git", "-C", str(repo_root), "cat-file", "--batch"]
+    with tempfile.TemporaryFile() as stderr_file:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            for ref in line_refs:
+                try:
+                    proc.stdin.write(os.fsencode(ref) + b"\n")
+                    proc.stdin.flush()
+                except (BrokenPipeError, OSError) as exc:
+                    returncode = proc.poll()
+                    if returncode is None:
+                        returncode = proc.wait()
+                    raise subprocess.CalledProcessError(
+                        returncode,
+                        command,
+                        stderr=_read_bounded_git_diagnostic(stderr_file),
+                    ) from exc
+                header = proc.stdout.readline(MAX_GIT_BATCH_HEADER_BYTES + 1)
+                if not header.endswith(b"\n"):
+                    if not header:
+                        returncode = proc.wait()
+                        if returncode != 0:
+                            raise subprocess.CalledProcessError(
+                                returncode,
+                                command,
+                                stderr=_read_bounded_git_diagnostic(stderr_file),
+                            )
+                    if len(header) > MAX_GIT_BATCH_HEADER_BYTES:
+                        raise ValueError(
+                            f"Oversized git cat-file header for {ref!r}"
+                        )
+                    raise ValueError(
+                        f"Truncated git cat-file response before header for {ref!r}"
+                    )
+                size = _parse_batch_header(header[:-1], ref)
+                remaining = remaining_limit()
+                if size > remaining:
+                    raise GuardrailError(
+                        "Hash guardrail exceeded: Git blob size exceeds the "
+                        f"{remaining}-byte remaining aggregate budget"
+                    )
+                content = proc.stdout.read(size)
+                if len(content) != size:
+                    raise ValueError(
+                        f"Truncated git cat-file content for {ref!r}: "
+                        f"expected {size} bytes"
+                    )
+                if proc.stdout.read(1) != b"\n":
+                    raise ValueError(
+                        f"Malformed git cat-file terminator for {ref!r}"
+                    )
+                total_bytes += len(content)
+                yield ref, content
+
+            proc.stdin.close()
+            returncode = proc.wait()
+            if returncode != 0:
+                raise subprocess.CalledProcessError(
+                    returncode,
+                    command,
+                    stderr=_read_bounded_git_diagnostic(stderr_file),
+                )
+        finally:
+            if not proc.stdin.closed:
+                try:
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
 def _git_batch_cat(repo_root: Path, refs: List[str]) -> Dict[str, bytes]:
@@ -232,96 +698,21 @@ def _git_batch_cat(repo_root: Path, refs: List[str]) -> Dict[str, bytes]:
     truncated, non-blob, and oversized responses raise instead of being
     confused with a valid empty blob.
     """
-    if not refs:
-        return {}
-    # The widely supported batch protocol uses newline-delimited requests.
-    # Read the rare refs containing CR/LF individually so valid Git filenames
-    # never desynchronize the protocol.
-    batch_refs: List[str] = []
     blobs: Dict[str, bytes] = {}
-    for r in refs:
-        if "\n" in r or "\r" in r:
-            try:
-                blobs[r] = _git_cat_blob(repo_root, r)
-            except subprocess.CalledProcessError as exc:
-                raise ValueError(
-                    f"Git blob not found for ref containing a newline: {r!r}"
-                ) from exc
-        else:
-            batch_refs.append(r)
-    if not batch_refs:
-        return blobs
-    inp = b"\n".join(os.fsencode(ref) for ref in batch_refs) + b"\n"
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), "cat-file", "--batch"],
-        input=inp,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise subprocess.CalledProcessError(
-            proc.returncode, ["git", "cat-file", "--batch"], proc.stderr
-        )
-    data = proc.stdout
-    pos = 0
-    for ref in batch_refs:
-        try:
-            nl = data.index(b"\n", pos)
-        except ValueError as exc:
-            raise ValueError(
-                f"Truncated git cat-file response before header for {ref!r}"
-            ) from exc
-        header = data[pos:nl].decode("ascii", errors="replace")
-        pos = nl + 1
-        # Header format: "<ref> SP <type> SP <size>" or "<ref> SP missing".
-        # Refs may contain spaces (e.g. paths with spaces), so split from the
-        # right where we know the fixed-format suffix lives.
-        if header.endswith(" missing"):
-            raise ValueError(f"Git blob not found for ref {ref!r}")
-        # Expect "<ref> <type> <size>" — size is always the last token.
-        last_space = header.rfind(" ")
-        if last_space < 0:
-            raise ValueError(
-                f"Malformed git cat-file header for {ref!r}: {header!r}"
-            )
-        type_space = header.rfind(" ", 0, last_space)
-        if type_space < 0:
-            raise ValueError(
-                f"Malformed git cat-file header for {ref!r}: {header!r}"
-            )
-        object_type = header[type_space + 1:last_space]
-        if object_type != "blob":
-            raise ValueError(
-                f"Expected a Git blob for {ref!r}, got {object_type!r}"
-            )
-        try:
-            size = int(header[last_space + 1:])
-        except ValueError as exc:
-            raise ValueError(
-                f"Malformed git cat-file size for {ref!r}: {header!r}"
-            ) from exc
-        if size < 0:
-            raise ValueError(f"Negative git blob size for {ref!r}: {size}")
-        if size > MAX_GIT_BLOB_BYTES:
+    total_bytes = 0
+    for ref, content in _iter_git_blobs(
+        repo_root,
+        refs,
+        max_total_bytes=MAX_GIT_BATCH_BYTES,
+    ):
+        total_bytes += len(content)
+        if total_bytes > MAX_GIT_BATCH_BYTES:
             raise GuardrailError(
-                f"Hash guardrail exceeded: Git blob too large "
-                f"({size} bytes) for ref {ref!r}"
+                "Hash guardrail exceeded: Git batch blobs exceed the "
+                f"{MAX_GIT_BATCH_BYTES}-byte aggregate limit"
             )
-        end = pos + size
-        if end >= len(data):
-            raise ValueError(
-                f"Truncated git cat-file content for {ref!r}: "
-                f"expected {size} bytes"
-            )
-        blobs[ref] = data[pos:end]
-        if data[end:end + 1] != b"\n":
-            raise ValueError(
-                f"Malformed git cat-file terminator for {ref!r}"
-            )
-        pos = end + 1
-    if pos != len(data):
-        raise ValueError("Unexpected trailing data from git cat-file --batch")
+        blobs[ref] = content
     return blobs
-
 
 def _to_posix(rel_path: str) -> str:
     # ``Path.as_posix`` converts native Windows separators while preserving a
@@ -347,8 +738,13 @@ def _load_gitignore_patterns(repo_root: Path) -> Optional["_GitignoreRules"]:
     gi = repo_root / ".gitignore"
     if not gi.exists():
         return None
+    raw = _read_bounded_path_bytes(
+        gi,
+        ".gitignore",
+        max_bytes=MAX_GITIGNORE_BYTES,
+    )
     rules = _GitignoreRules()
-    for line in gi.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line in raw.decode("utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -377,6 +773,18 @@ class _GitignoreRules:
             if self._matches(rel_path, parts, pattern):
                 ignored = not negate
         return ignored
+
+    def can_prune_directory(self, rel_path: str) -> bool:
+        """Return whether an ignored directory is safe to skip entirely.
+
+        A later negated rule may re-include a descendant, so retain traversal
+        whenever any negation is present.  This is deliberately conservative:
+        it preserves existing matching behavior while pruning the common
+        all-exclusion case.
+        """
+        if any(negate for negate, _pattern in self._rules):
+            return False
+        return self.is_ignored(rel_path)
 
     @staticmethod
     def _matches(rel_path: str, parts: List[str], pattern: str) -> bool:
@@ -464,14 +872,23 @@ def _matches_gitignore(rel_path: str, patterns: "_GitignoreRules") -> bool:
 def list_head_files(repo_root: Path, path: str) -> List[str]:
     """List files at a repo-relative path as represented in HEAD."""
     try:
-        result = _git_run_bytes(
-            repo_root,
-            ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", path],
+        files = list(
+            _iter_bounded_git_paths(
+                repo_root,
+                [
+                    "--literal-pathspecs",
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--name-only",
+                    "HEAD",
+                    "--",
+                    path,
+                ],
+            )
         )
     except subprocess.CalledProcessError:
         return []
-
-    files = _decode_nul_paths(result.stdout)
     if files:
         return files
 
@@ -490,7 +907,7 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
     args = ["--literal-pathspecs", "ls-files", "--cached", "-z"]
     args.extend(["--", repo_rel_path])
     try:
-        result = _git_run_bytes(repo_root, args)
+        result_files = list(_iter_bounded_git_paths(repo_root, args))
     except subprocess.CalledProcessError:
         if source == "index":
             raise
@@ -506,7 +923,6 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
             raise
     else:
         git_failed = False
-        result_files = _decode_nul_paths(result.stdout)
 
     # For working-tree source, exclude files that are tracked but deleted on disk.
     if result_files and source == "working-tree":
@@ -541,28 +957,62 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
     if target.is_file():
         return [_to_posix(str(target.relative_to(repo_root)))]
     gitignore_patterns = _load_gitignore_patterns(repo_root)
-    results: List[str] = []
-    for f in sorted(target.rglob("*")):
-        if not f.is_file():
-            continue
-        rel = _to_posix(str(f.relative_to(repo_root)))
-        rel_parts = Path(rel).parts
-        if any(_is_ignored(Path(part)) for part in rel_parts):
-            continue
-        if gitignore_patterns is not None:
-            if _matches_gitignore(rel, gitignore_patterns):
+    target_rel = _to_posix(str(target.relative_to(repo_root)))
+    if any(_is_ignored(Path(part)) for part in Path(target_rel).parts):
+        return []
+    if (
+        gitignore_patterns is not None
+        and gitignore_patterns.can_prune_directory(target_rel)
+    ):
+        return []
+
+    def should_descend(directory: Path) -> bool:
+        rel = _to_posix(str(directory.relative_to(repo_root)))
+        if any(_is_ignored(Path(part)) for part in Path(rel).parts):
+            return False
+        return not (
+            gitignore_patterns is not None
+            and gitignore_patterns.can_prune_directory(rel)
+        )
+
+    def eligible_files() -> Iterator[Path]:
+        for file_path in _iter_bounded_filesystem_paths(
+            target,
+            recursive=True,
+            max_entries=MAX_FALLBACK_TRAVERSAL_ENTRIES,
+            exceeded_message=(
+                "Hash guardrail exceeded: filesystem traversal exceeds "
+                f"{MAX_FALLBACK_TRAVERSAL_ENTRIES} entries"
+            ),
+            should_descend=should_descend,
+        ):
+            if not file_path.is_file():
                 continue
-        elif _is_ignored(f):
-            continue
-        results.append(rel)
-        # Enumerate one sentinel beyond the contract limit. Returning a
-        # truncated list would silently exclude files from every fallback
-        # fingerprint instead of enforcing the advertised guardrail.
-        if len(results) > MAX_FALLBACK_FILES:
-            raise GuardrailError(
-                f"Hash guardrail exceeded: >{MAX_FALLBACK_FILES} files"
-            )
-    return results
+            rel = _to_posix(str(file_path.relative_to(repo_root)))
+            rel_parts = Path(rel).parts
+            if any(_is_ignored(Path(part)) for part in rel_parts):
+                continue
+            if gitignore_patterns is not None:
+                if _matches_gitignore(rel, gitignore_patterns):
+                    continue
+            elif _is_ignored(file_path):
+                continue
+            yield file_path
+
+    # Bound the selected paths before sorting.  ``sorted(target.rglob(...))``
+    # would allocate for every filesystem entry before the file-count
+    # contract had a chance to run.
+    files = _bounded_sorted_paths(
+        eligible_files(),
+        max_paths=MAX_FALLBACK_FILES,
+        exceeded_message=(
+            f"Hash guardrail exceeded: >{MAX_FALLBACK_FILES} files"
+        ),
+    )
+    return [
+        _to_posix(str(file_path.relative_to(repo_root)))
+        for file_path in files
+    ]
 
 
 def git_latest_tag(
@@ -592,19 +1042,183 @@ def git_latest_tag(
         return None
 
 
-def changed_components_since_ref(config: dict, repo_root: Path, base_ref: str) -> List[str]:
-    """Return component names with tracked changes since `base_ref`."""
+def _append_bounded_git_path(
+    paths: List[str],
+    raw_path: bytes,
+    total_path_bytes: int,
+) -> int:
+    """Append one decoded Git path and return its bounded aggregate size."""
+    if not raw_path:
+        raise ValueError("Malformed empty path in Git output")
+    if len(raw_path) > MAX_GIT_PATH_BYTES:
+        raise GuardrailError(
+            f"Git path exceeds the {MAX_GIT_PATH_BYTES}-byte limit"
+        )
+    if len(paths) >= MAX_GIT_STATUS_PATHS:
+        raise GuardrailError(
+            "Git status paths exceed the "
+            f"{MAX_GIT_STATUS_PATHS}-path limit"
+        )
+    updated = total_path_bytes + len(raw_path)
+    if updated > MAX_GIT_TOTAL_PATH_BYTES:
+        raise GuardrailError(
+            "Git paths exceed the "
+            f"{MAX_GIT_TOTAL_PATH_BYTES}-byte aggregate limit"
+        )
+    paths.append(os.fsdecode(raw_path))
+    return updated
+
+
+def _parse_name_status_entries(
+    fields: Iterable[bytes],
+) -> List[Tuple[str, str]]:
+    """Return bounded status/path pairs from streamed ``diff --name-status``.
+
+    Renames contribute both the removed source and added destination.  Copies
+    contribute only the destination because the source identity did not
+    change.
+    """
+    fields_iter = iter(fields)
+    paths: List[str] = []
+    entries: List[Tuple[str, str]] = []
+    total_path_bytes = 0
+
+    def append(status: str, raw_path: bytes) -> None:
+        nonlocal total_path_bytes
+        total_path_bytes = _append_bounded_git_path(
+            paths,
+            raw_path,
+            total_path_bytes,
+        )
+        entries.append((status, paths[-1]))
+
+    while True:
+        try:
+            raw_status = next(fields_iter)
+        except StopIteration:
+            break
+        try:
+            status = raw_status.decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Malformed non-ASCII Git diff status") from exc
+        if not status or status[0] not in "ACDMRTUXB":
+            raise ValueError(f"Malformed Git diff status: {status!r}")
+        try:
+            source_path = next(fields_iter)
+        except StopIteration as exc:
+            raise ValueError("Truncated path in Git diff output") from exc
+        if status.startswith(("R", "C")):
+            try:
+                destination_path = next(fields_iter)
+            except StopIteration as exc:
+                raise ValueError(
+                    "Truncated rename/copy in Git diff output"
+                ) from exc
+            if status.startswith("R"):
+                append(status, source_path)
+            append(status, destination_path)
+        else:
+            append(status, source_path)
+    return entries
+
+
+def _parse_name_status_records(fields: Iterable[bytes]) -> List[str]:
+    """Return only path identities from bounded name-status entries."""
+    return [path for _status, path in _parse_name_status_entries(fields)]
+
+
+def _git_name_status(
+    repo_root: Path,
+    args: List[str],
+) -> List[Tuple[str, str]]:
+    """Run a Git name-status command without materializing unbounded stdout."""
+    return _parse_name_status_entries(
+        _iter_git_nul_records(
+            repo_root,
+            args,
+            max_records=MAX_GIT_STATUS_FIELDS,
+        )
+    )
+
+
+def changed_paths_since_ref(
+    repo_root: Path,
+    base_ref: str,
+    source: str = "working-tree",
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> List[str]:
+    """Return tracked path identities changed from *base_ref* to *source*."""
     if not base_ref or not base_ref.strip():
         raise ValueError("--changed-from requires a non-empty Git ref")
     ref = base_ref.strip()
     if ref.startswith("-"):
         raise ValueError(f"Invalid Git ref: {ref!r}")
+    if source not in SOURCE_MODE_SET:
+        raise ValueError(f"Unknown source mode: {source!r}")
     try:
-        _git_run(repo_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"])
-        result = _git_run_bytes(repo_root, ["diff", "--name-only", "-z", ref, "--"])
+        resolved_base = _git_run(
+            repo_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"]
+        ).stdout.strip()
+        if not resolved_base:
+            raise subprocess.CalledProcessError(1, ["git", "rev-parse", ref])
+        if source in {"head", "index"}:
+            captured = snapshot or _capture_git_source_snapshot(repo_root, source)
+            if captured.source != source:
+                raise ValueError(
+                    f"Captured {captured.source!r} snapshot cannot serve "
+                    f"{source!r} changed-path selection"
+                )
+            target = (
+                captured.head_oid or captured.tree_oid
+                if source == "head"
+                else captured.tree_oid
+            )
+            diff_args = [
+                "diff",
+                "--name-status",
+                "-z",
+                "--find-renames",
+                resolved_base,
+                target,
+                "--",
+            ]
+        else:
+            if snapshot is not None and snapshot.source != "index":
+                raise ValueError(
+                    "working-tree changed-path selection accepts only an "
+                    "index tracking snapshot"
+                )
+            diff_args = [
+                "diff",
+                "--name-status",
+                "-z",
+                "--find-renames",
+                resolved_base,
+                "--",
+            ]
+        changed_paths = _parse_name_status_records(
+            _iter_git_nul_records(
+                repo_root,
+                diff_args,
+                max_records=MAX_GIT_STATUS_FIELDS,
+            )
+        )
     except subprocess.CalledProcessError as exc:
         raise ValueError(f"Unable to diff from Git ref {ref!r}") from exc
-    changed_files = _decode_nul_paths(result.stdout)
+    return sorted(set(changed_paths))
+
+
+def changed_components_since_ref(
+    config: dict,
+    repo_root: Path,
+    base_ref: str,
+    source: str = "working-tree",
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> List[str]:
+    """Return component names changed from *base_ref* to *source*."""
+    changed_files = changed_paths_since_ref(
+        repo_root, base_ref, source, snapshot
+    )
     changed: List[str] = []
     config_names = {
         "boundary.config.json", "boundary.config.yaml", "boundary.config.yml",
@@ -652,33 +1266,48 @@ def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[s
     Used to warn users when --source head is used but boundary files have been
     modified locally.
     """
+    dirty_files: List[str] = []
+    total_path_bytes = 0
     try:
-        result = _git_run_bytes(
-            repo_root,
-            ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--"],
+        records = iter(
+            _iter_git_nul_records(
+                repo_root,
+                [
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--",
+                ],
+                max_records=MAX_GIT_STATUS_FIELDS,
+            )
         )
+        for record in records:
+            if len(record) < 4 or record[2:3] != b" ":
+                raise ValueError("Malformed NUL-delimited git status output")
+            status = record[:2]
+            total_path_bytes = _append_bounded_git_path(
+                dirty_files, record[3:], total_path_bytes
+            )
+            if b"R" in status or b"C" in status:
+                try:
+                    source_path = next(records)
+                except StopIteration as exc:
+                    raise ValueError(
+                        "Truncated rename in git status output"
+                    ) from exc
+                total_path_bytes = _append_bounded_git_path(
+                    dirty_files, source_path, total_path_bytes
+                )
     except subprocess.CalledProcessError:
         return []
-    records = [raw for raw in result.stdout.split(b"\0") if raw]
-    dirty_files: List[str] = []
-    index = 0
-    while index < len(records):
-        record = records[index]
-        if len(record) < 3:
-            raise ValueError("Malformed NUL-delimited git status output")
-        status = record[:2]
-        if record[2:3] != b" ":
-            raise ValueError("Malformed NUL-delimited git status output")
-        dirty_files.append(os.fsdecode(record[3:]))
-        if b"R" in status or b"C" in status:
-            index += 1
-            if index >= len(records):
-                raise ValueError("Truncated rename in git status output")
-            dirty_files.append(os.fsdecode(records[index]))
-        index += 1
     dirty: List[str] = []
     for cpath in component_paths:
         cpath_norm = cpath.rstrip("/")
+        if cpath_norm in {"", "."}:
+            if dirty_files:
+                dirty.append(cpath)
+            continue
         prefix = f"{cpath_norm}/"
         if any(f == cpath_norm or f.startswith(prefix) for f in dirty_files):
             dirty.append(cpath)

@@ -27,11 +27,21 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checka
 
 from ._hashing import HASH_DOMAIN_BOUNDARY, _ModeAwareBytes, _hash_framed_entries
 from ._utils import (
+    GuardrailError,
     ProviderError,
+    _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
+    _bounded_json_value_issues,
+    _bounded_int_to_decimal,
     _bounded_json_int,
+    _bounded_yaml_int,
     _is_glob,
+    _json_integer_is_bounded,
+    _iter_bounded_json_values,
+    _json_path_child,
     _match_path_glob,
     _normalize_declared_path,
+    _render_bounded_json_path,
 )
 
 
@@ -76,7 +86,14 @@ def _resolve_declared_files(
     is the single selection path for raw and canonical built-ins, which keeps
     ``*``/``**`` behavior and unmatched-declaration failures identical.
     """
-    if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+    if not isinstance(paths, list):
+        return [], ["Boundary paths must be an array of strings"]
+    if len(paths) > MAX_PROVIDER_DECLARATIONS:
+        return [], [
+            "Boundary paths exceed the "
+            f"{MAX_PROVIDER_DECLARATIONS}-declaration limit"
+        ]
+    if not all(isinstance(path, str) for path in paths):
         return [], ["Boundary paths must be an array of strings"]
 
     seen: set[str] = set()
@@ -94,15 +111,28 @@ def _resolve_declared_files(
         try:
             rel = _normalize_declared_path(declared)
         except ValueError as exc:
-            errors.append(f"Invalid declared boundary path {declared!r}: {exc}")
+            if not _append_builtin_provider_error(
+                errors,
+                "Invalid declared boundary path "
+                f"{_bounded_diagnostic_repr(declared)}: {exc}",
+            ):
+                return [], errors
             continue
 
         if _is_glob(rel):
             matches = []
             for repo_rel in component_files():
                 child_rel = _component_relative_path(ctx.component_path, repo_rel)
-                if _match_path_glob(child_rel, rel):
-                    matches.append((repo_rel, child_rel))
+                try:
+                    if _match_path_glob(child_rel, rel):
+                        matches.append((repo_rel, child_rel))
+                except GuardrailError as exc:
+                    return [], [
+                        _bounded_provider_error_text(
+                            "Boundary glob matching failed closed for "
+                            f"{_bounded_diagnostic_repr(rel)}: {exc}"
+                        )
+                    ]
         else:
             matches = [
                 (repo_rel, _component_relative_path(ctx.component_path, repo_rel))
@@ -110,10 +140,19 @@ def _resolve_declared_files(
             ]
 
         if not matches:
-            errors.append(f"Declared boundary path matched no tracked files: {rel}")
+            if not _append_builtin_provider_error(
+                errors,
+                f"Declared boundary path matched no tracked files: {rel}",
+            ):
+                return [], errors
             continue
         for repo_rel, child_rel in matches:
             if repo_rel not in seen:
+                if len(selected) >= MAX_PROVIDER_ENTRIES:
+                    return [], [
+                        "Resolved boundary files exceed the "
+                        f"{MAX_PROVIDER_ENTRIES}-entry limit"
+                    ]
                 seen.add(repo_rel)
                 selected.append((repo_rel, child_rel))
 
@@ -138,6 +177,11 @@ class ProviderContext:
     # Injected by core — providers use these instead of calling git directly.
     read_file: Callable[[str], bytes]        # repo_rel_path → raw bytes
     list_files: Callable[[str], List[str]]   # repo_rel_prefix → [repo_rel_path, ...]
+    # Newer hosts provide a limit-aware accessor. Built-ins use it to avoid
+    # reading a whole per-entry allowance after most of the aggregate budget is
+    # already occupied. It is optional so existing provider contexts remain
+    # source compatible.
+    read_file_limited: Optional[Callable[[str, int], bytes]] = None
 
 
 @dataclass
@@ -148,7 +192,7 @@ class ResolvedBoundary:
     Core hashes them with boundver's length-delimited, domain-separated wire
     format.
 
-    Labels MUST be deterministic and sorted by the provider.
+    Labels MUST be deterministic, unique, and sorted by encoded label bytes.
     For path-based providers the label is ``file:<component-relative-path>``.
     """
 
@@ -177,7 +221,7 @@ class BoundaryProvider(Protocol):
         """Return the normalised content to be hashed.
 
         MUST:
-        - Return entries in deterministic (sorted) order.
+        - Return entries with unique labels in deterministic sorted order.
         - Not call subprocesses beyond ctx.read_file / ctx.list_files.
         - Not mutate any file on disk.
         - Return status="error" rather than raising for expected failures.
@@ -210,10 +254,13 @@ class BoundaryProvider(Protocol):
 ProviderRegistry = Dict[str, BoundaryProvider]
 
 
-# Provider results are untrusted extension data.  Keep their in-memory and
-# lockfile footprint bounded independently of whichever source accessor a
-# provider chooses to use.
+# Provider results are untrusted extension data. Keep their source and
+# serialized byte footprint bounded independently of whichever source
+# accessor a provider chooses to use. Semantic parsers necessarily have
+# runtime-specific object overhead above the bounded UTF-8 input; these are
+# byte-contract guardrails, not a claim that process RSS equals the limit.
 MAX_PROVIDER_ENTRIES = 50_000
+MAX_PROVIDER_DECLARATIONS = 50_000
 MAX_PROVIDER_ENTRY_BYTES = 50 * 1024 * 1024
 MAX_PROVIDER_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_PROVIDER_LABEL_BYTES = 16 * 1024
@@ -223,8 +270,147 @@ MAX_PROVIDER_ERROR_BYTES = 16 * 1024
 MAX_PROVIDER_METADATA_BYTES = 1024 * 1024
 MAX_PROVIDER_METADATA_DEPTH = 64
 MAX_PROVIDER_METADATA_NODES = 100_000
+MAX_CUSTOM_PROVIDERS = 100
 
 _VALID_BOUNDARY_STATUSES = frozenset({"ok", "partial", "error"})
+
+
+class _CanonicalJsonLimitError(ProviderError):
+    """Canonical JSON could not fit within its caller-provided byte budget."""
+
+
+def _bounded_provider_error_text(message: str) -> str:
+    """Return one retained built-in error within the public byte ceiling."""
+    encoded = message.encode("utf-8", errors="backslashreplace")
+    if len(encoded) <= MAX_PROVIDER_ERROR_BYTES:
+        return encoded.decode("utf-8")
+    suffix = b"... [truncated]"
+    return (
+        encoded[: MAX_PROVIDER_ERROR_BYTES - len(suffix)].decode(
+            "utf-8", errors="ignore"
+        )
+        + suffix.decode("ascii")
+    )
+
+
+def _append_builtin_provider_error(errors: List[str], message: str) -> bool:
+    """Append a bounded error, returning false when collection must stop."""
+    if len(errors) >= MAX_PROVIDER_ERRORS - 1:
+        errors.append(
+            "Provider validation stopped after reaching the "
+            f"{MAX_PROVIDER_ERRORS}-error limit"
+        )
+        return False
+    errors.append(_bounded_provider_error_text(message))
+    return True
+
+
+@dataclass
+class _ProviderEntryCollector:
+    """Accumulate built-in results while enforcing every provider ceiling."""
+
+    entries: List[tuple] = field(default_factory=list)
+    total_bytes: int = 0
+    total_source_bytes: int = 0
+    total_label_bytes: int = 0
+    previous_label: Optional[bytes] = None
+
+    @property
+    def remaining_output_bytes(self) -> int:
+        return MAX_PROVIDER_TOTAL_BYTES - self.total_bytes
+
+    @property
+    def remaining_source_bytes(self) -> int:
+        return MAX_PROVIDER_TOTAL_BYTES - self.total_source_bytes
+
+    def add_source(self, content: bytes) -> None:
+        """Account for canonical-provider input independently of output."""
+        if type(content) not in {bytes, _ModeAwareBytes}:
+            raise ProviderError("source content must be bytes")
+        next_total = self.total_source_bytes + len(content)
+        if next_total > MAX_PROVIDER_TOTAL_BYTES:
+            raise ProviderError(
+                "source files exceed the "
+                f"{MAX_PROVIDER_TOTAL_BYTES}-byte aggregate limit"
+            )
+        self.total_source_bytes = next_total
+
+    def add(self, label: str, content: bytes) -> None:
+        if len(self.entries) >= MAX_PROVIDER_ENTRIES:
+            raise ProviderError(
+                f"entries exceeds the {MAX_PROVIDER_ENTRIES}-item limit"
+            )
+        if type(label) is not str or not label:
+            raise ProviderError("entry labels must be non-empty strings")
+        try:
+            label_bytes = label.encode("utf-8", errors="surrogateescape")
+        except UnicodeEncodeError as exc:
+            raise ProviderError(
+                "entry labels must contain valid Unicode or "
+                "surrogateescaped Git bytes"
+            ) from exc
+        if len(label_bytes) > MAX_PROVIDER_LABEL_BYTES:
+            raise ProviderError(
+                "an entry label exceeds the "
+                f"{MAX_PROVIDER_LABEL_BYTES}-byte limit"
+            )
+        next_label_total = self.total_label_bytes + len(label_bytes)
+        if next_label_total > MAX_PROVIDER_TOTAL_LABEL_BYTES:
+            raise ProviderError(
+                "entry labels exceed the "
+                f"{MAX_PROVIDER_TOTAL_LABEL_BYTES}-byte aggregate limit"
+            )
+        if self.previous_label is not None and label_bytes == self.previous_label:
+            raise ProviderError("entries must have unique labels")
+        if self.previous_label is not None and label_bytes < self.previous_label:
+            raise ProviderError("entries must be in deterministic sorted order")
+        if type(content) not in {bytes, _ModeAwareBytes}:
+            raise ProviderError("entry content must be bytes")
+        if len(content) > MAX_PROVIDER_ENTRY_BYTES:
+            raise ProviderError(
+                f"entry '{label}' exceeds the "
+                f"{MAX_PROVIDER_ENTRY_BYTES}-byte limit"
+            )
+        next_total = self.total_bytes + len(content)
+        if next_total > MAX_PROVIDER_TOTAL_BYTES:
+            raise ProviderError(
+                "entries exceed the "
+                f"{MAX_PROVIDER_TOTAL_BYTES}-byte aggregate limit"
+            )
+        self.entries.append((label, content))
+        self.total_bytes = next_total
+        self.total_label_bytes = next_label_total
+        self.previous_label = label_bytes
+
+
+def _read_provider_file(
+    ctx: ProviderContext,
+    repo_rel: str,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read source content without exceeding the caller's remaining budget.
+
+    A zero remaining budget is intentional: the limit-aware source accessor
+    may return an empty file, but must reject even one byte via its sentinel
+    read.  This keeps zero-byte raw entries valid without giving later entries
+    an unbounded special case.
+    """
+    limit = min(max_bytes, MAX_PROVIDER_ENTRY_BYTES)
+    if limit < 0:
+        raise ProviderError("provider aggregate byte budget was exhausted")
+    if ctx.read_file_limited is not None:
+        content = ctx.read_file_limited(repo_rel, limit)
+    else:
+        content = ctx.read_file(repo_rel)
+    if type(content) not in {bytes, _ModeAwareBytes}:
+        raise ProviderError("source accessor returned non-bytes content")
+    if len(content) > limit:
+        raise ProviderError(
+            f"source content for {repo_rel} exceeds the "
+            f"{limit}-byte remaining limit"
+        )
+    return content
 
 
 def _safe_provider_attribute(provider: Any, attribute: str) -> Any:
@@ -245,10 +431,7 @@ def _bounded_exception(exc: Exception) -> str:
     except Exception:
         detail = ""
     detail = detail or exc.__class__.__name__
-    detail = detail.encode("utf-8", errors="backslashreplace").decode("utf-8")
-    if len(detail) > 500:
-        detail = detail[:497] + "..."
-    return detail
+    return _bounded_diagnostic_text(detail)
 
 
 def _provider_identity_error(provider: Any) -> Optional[str]:
@@ -315,13 +498,9 @@ def _metadata_error(metadata: Any) -> Optional[str]:
         if value is None or type(value) is bool:
             return None
         if type(value) is int:
-            # A decimal integer needs at least roughly one byte per four bits.
-            # Reject absurd values before asking json.dumps() to materialize
-            # their complete decimal representation.
-            if value.bit_length() > MAX_PROVIDER_METADATA_BYTES * 4:
+            if not _json_integer_is_bounded(value):
                 return (
-                    "metadata integer exceeds the "
-                    f"{MAX_PROVIDER_METADATA_BYTES}-byte JSON limit"
+                    "metadata integer exceeds the JSON decimal-digit limit"
                 )
             return None
         if type(value) is float:
@@ -365,19 +544,17 @@ def _metadata_error(metadata: Any) -> Optional[str]:
     if error:
         return error
     try:
-        encoded = _json_mod.dumps(
+        _canonical_json_bytes(
             metadata,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
-        return f"metadata is not safely JSON serializable: {_bounded_exception(exc)}"
-    if len(encoded) > MAX_PROVIDER_METADATA_BYTES:
+            "provider metadata",
+            max_bytes=MAX_PROVIDER_METADATA_BYTES,
+        )
+    except _CanonicalJsonLimitError:
         return (
             f"metadata exceeds the {MAX_PROVIDER_METADATA_BYTES}-byte JSON limit"
         )
+    except ProviderError as exc:
+        return f"metadata is not safely JSON serializable: {_bounded_exception(exc)}"
     return None
 
 
@@ -403,6 +580,12 @@ def _resolved_boundary_error(resolved: Any) -> Optional[str]:
                 "an error message exceeds the "
                 f"{MAX_PROVIDER_ERROR_BYTES}-byte limit"
             )
+    if type(resolved.entries) is not list:
+        return "entries must be a list of (label, bytes) tuples"
+    # Validate the container before any truthiness checks.  Provider results are
+    # untrusted extension data, and an arbitrary object can make ``bool(value)``
+    # execute user code or raise before we have converted the failure into a
+    # controlled provider error.
     if resolved.status == "ok" and resolved.errors:
         return "status 'ok' cannot include errors"
     if resolved.status in {"partial", "error"} and not resolved.errors:
@@ -410,8 +593,6 @@ def _resolved_boundary_error(resolved: Any) -> Optional[str]:
     if resolved.status == "error" and resolved.entries:
         return "status 'error' cannot include hash entries"
 
-    if type(resolved.entries) is not list:
-        return "entries must be a list of (label, bytes) tuples"
     if len(resolved.entries) > MAX_PROVIDER_ENTRIES:
         return f"entries exceeds the {MAX_PROVIDER_ENTRIES}-item limit"
     previous_label: Optional[bytes] = None
@@ -441,8 +622,10 @@ def _resolved_boundary_error(resolved: Any) -> Optional[str]:
                 "entry labels exceed the "
                 f"{MAX_PROVIDER_TOTAL_LABEL_BYTES}-byte aggregate limit"
             )
-        if previous_label is not None and label_bytes <= previous_label:
-            return "entries must have unique labels in deterministic sorted order"
+        if previous_label is not None and label_bytes == previous_label:
+            return "entries must have unique labels"
+        if previous_label is not None and label_bytes < previous_label:
+            return "entries must be in deterministic sorted order"
         previous_label = label_bytes
         if type(content) not in {bytes, _ModeAwareBytes}:
             return "entry content must be bytes"
@@ -675,9 +858,9 @@ class PathHashProvider:
     # The base class is public and useful for behavior slices, so it also has a
     # complete provider identity even though named subclasses override it.
     name: str = "path-hash"
-    # v2 gives *, ?, and character classes segment-local semantics and gives
-    # ** its conventional zero-or-more-directory meaning.
-    version: str = "2"
+    # v2 introduced segment-local glob semantics. v3 adds bounded declaration,
+    # selection, validation, input, and aggregate-output handling.
+    version: str = "3"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -689,25 +872,31 @@ class PathHashProvider:
         selected, errors = _resolve_declared_files(ctx, paths)
         if errors:
             return ResolvedBoundary(status="error", errors=errors)
-        ordered: List[tuple] = []
+        collector = _ProviderEntryCollector()
         for repo_rel, child_rel in selected:
-            content = ctx.read_file(repo_rel)
-            if b"\r\n" in content and b"\x00" not in content:
-                content = content.replace(b"\r\n", b"\n")
-            ordered.append((f"file:{child_rel}", content))
-        if not ordered:
+            try:
+                content = _read_provider_file(
+                    ctx,
+                    repo_rel,
+                    max_bytes=collector.remaining_output_bytes,
+                )
+                if b"\r\n" in content and b"\x00" not in content:
+                    content = content.replace(b"\r\n", b"\n")
+                collector.add(f"file:{child_rel}", content)
+            except (OSError, ValueError) as exc:
+                return ResolvedBoundary(
+                    status="error",
+                    errors=[
+                        f"Boundary content collection failed for {child_rel}: "
+                        f"{_bounded_exception(exc)}"
+                    ],
+                )
+        if not collector.entries:
             return ResolvedBoundary(
                 status="error",
                 errors=["Declared boundary paths produced no digest"],
             )
-        # Sort all entries by label for deterministic digest regardless of
-        # pattern declaration order in config.
-        ordered.sort(
-            key=lambda entry: entry[0].encode(
-                "utf-8", errors="surrogateescape"
-            )
-        )
-        return ResolvedBoundary(entries=ordered)
+        return ResolvedBoundary(entries=collector.entries)
 
     def validate_config(
         self,
@@ -720,7 +909,12 @@ class PathHashProvider:
             try:
                 normalized = _normalize_declared_path(rel)
             except ValueError as exc:
-                errors.append(f"Invalid boundary path {rel!r}: {exc}")
+                if not _append_builtin_provider_error(
+                    errors,
+                    "Invalid boundary path "
+                    f"{_bounded_diagnostic_repr(rel)}: {exc}",
+                ):
+                    return errors
                 continue
             if _is_glob(normalized):
                 # Glob existence is checked against the selected source during
@@ -728,10 +922,12 @@ class PathHashProvider:
                 continue
             full = repo_root / component_path / normalized
             if not full.exists():
-                errors.append(
+                if not _append_builtin_provider_error(
+                    errors,
                     f"Boundary path not found: {component_path}/{normalized}"
-                    " — ensure the file exists before running generate"
-                )
+                    " — ensure the file exists before running generate",
+                ):
+                    return errors
         return errors
 
     def explain_diff(
@@ -755,7 +951,9 @@ class ImplicitProvider:
     """
 
     name = "implicit"
-    version = "2"
+    # v3 inherits the bounded PathHash validation/selection contract whenever
+    # an implicit declaration supplies explicit paths.
+    version = "3"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -936,7 +1134,9 @@ def _unique_json_object(pairs: List[tuple]) -> dict:
     result: dict = {}
     for key, value in pairs:
         if key in result:
-            raise ProviderError(f"duplicate object key {key!r}")
+            raise ProviderError(
+                "duplicate object key " f"{_bounded_diagnostic_repr(key)}"
+            )
         result[key] = value
     return result
 
@@ -1042,13 +1242,26 @@ def _parse_yaml_strict(text: str, path_label: str) -> Any:
                     "response keys (for example, '200')"
                 )
             if key in mapping:
-                raise ProviderError(f"duplicate mapping key {key!r}")
+                raise ProviderError(
+                    "duplicate mapping key " f"{_bounded_diagnostic_repr(key)}"
+                )
             mapping[key] = loader.construct_object(value_node, deep=deep)
         return mapping
+
+    def construct_integer(loader: Any, node: Any) -> int:
+        try:
+            scalar = loader.construct_scalar(node)
+            return _bounded_yaml_int(scalar)
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"invalid YAML integer: {exc}") from exc
 
     StrictOpenApiLoader.add_constructor(
         yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
         construct_mapping,
+    )
+    StrictOpenApiLoader.add_constructor(
+        "tag:yaml.org,2002:int",
+        construct_integer,
     )
     try:
         return yaml.load(text, Loader=StrictOpenApiLoader)
@@ -1091,40 +1304,15 @@ def _parse_yaml_or_json(raw: bytes, path_label: str) -> Any:
 
 def _json_tree_error(value: Any, *, path: str = "$") -> Optional[str]:
     """Reject values that cannot be represented safely and portably as JSON."""
-    if type(value) is str:
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError:
-            return f"{path} contains a string that is not valid Unicode/UTF-8"
+    issues = _bounded_json_value_issues(value, path=path)
+    if not issues:
         return None
-    if value is None or type(value) in {bool, int}:
-        return None
-    if type(value) is float:
-        if not math.isfinite(value):
-            return f"{path} contains a non-finite number"
-        return None
-    if type(value) is list:
-        for index, item in enumerate(value):
-            error = _json_tree_error(item, path=f"{path}[{index}]")
-            if error:
-                return error
-        return None
-    if type(value) is dict:
-        for key, item in value.items():
-            if type(key) is not str:
-                return (
-                    f"{path} has a non-string mapping key; quote numeric response "
-                    "keys (for example, '200')"
-                )
-            try:
-                key.encode("utf-8")
-            except UnicodeEncodeError:
-                return f"{path} contains an object key that is not valid Unicode/UTF-8"
-            error = _json_tree_error(item, path=f"{path}.{key}")
-            if error:
-                return error
-        return None
-    return f"{path} contains unsafe scalar type {type(value).__name__}"
+    error = issues[0]
+    if "non-string mapping key" in error:
+        return (
+            f"{error}; quote numeric response keys (for example, '200')"
+        )
+    return error
 
 
 def _openapi_document_error(document: Any) -> Optional[str]:
@@ -1143,7 +1331,7 @@ def _openapi_document_error(document: Any) -> Optional[str]:
         return "OpenAPI document must not declare both 'openapi' and 'swagger'"
     if has_openapi_version:
         if type(openapi_version) is not str or not re.fullmatch(
-            r"3\.(?:0|1)\.\d+", openapi_version
+            r"3\.(?:0|1)\.[0-9]+", openapi_version
         ):
             return (
                 "unsupported or invalid 'openapi' version; expected an OpenAPI "
@@ -1155,53 +1343,147 @@ def _openapi_document_error(document: Any) -> Optional[str]:
             "'swagger' 2.0"
         )
 
-    def validate_refs(value: Any, path: str = "$") -> Optional[str]:
-        if type(value) is list:
-            for index, item in enumerate(value):
-                error = validate_refs(item, f"{path}[{index}]")
-                if error:
-                    return error
-            return None
-        if type(value) is not dict:
-            return None
-        for key, item in value.items():
-            child_path = f"{path}.{key}"
-            if key == "$ref":
-                if type(item) is not str or not item.startswith("#"):
-                    return (
-                        f"{child_path} uses an external or local-file reference; "
-                        "openapi-canonical accepts only same-document fragment "
-                        "references beginning with '#'"
-                    )
-            error = validate_refs(item, child_path)
-            if error:
-                return error
-        return None
-
-    return validate_refs(document)
-
-
-def _canonical_json_bytes(value: Any, path_label: str) -> bytes:
-    """Serialize validated data deterministically, converting failures to errors."""
     try:
-        encoded = _json_mod.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        for value, value_path in _iter_bounded_json_values(document, path="$"):
+            if type(value) is not dict or "$ref" not in value:
+                continue
+            reference = value["$ref"]
+            if type(reference) is str and reference.startswith("#"):
+                continue
+            reference_path = _render_bounded_json_path(
+                _json_path_child(value_path, "$ref")
+            )
+            return (
+                f"{reference_path} uses an external or local-file reference; "
+                "openapi-canonical accepts only same-document fragment "
+                "references beginning with '#'"
+            )
+    except (GuardrailError, RuntimeError, ValueError) as exc:
+        # The generic tree check above normally catches these first. Keep the
+        # reference walk independently fail-closed if a mutable direct caller
+        # changes the document between validation passes.
+        return str(exc)
+    return None
+
+
+def _canonical_json_bytes(
+    value: Any,
+    path_label: str,
+    *,
+    max_bytes: int = MAX_PROVIDER_ENTRY_BYTES,
+) -> bytes:
+    """Serialize deterministic JSON without crossing the remaining budget.
+
+    Building a complete string and checking its size afterwards can allocate
+    several times the source size when control characters need JSON escaping.
+    Emit into a bounded byte buffer instead.  Large strings are sized before
+    quoting, so even a single scalar cannot create an over-budget temporary.
+    """
+    effective_limit = min(max_bytes, MAX_PROVIDER_ENTRY_BYTES)
+    if effective_limit < 0:
+        raise ProviderError("provider aggregate byte budget was exhausted")
+
+    output = bytearray()
+    active: set[int] = set()
+
+    def over_limit() -> _CanonicalJsonLimitError:
+        return _CanonicalJsonLimitError(
+            f"Canonical JSON for {path_label} exceeds the "
+            f"{effective_limit}-byte remaining provider limit"
+        )
+
+    def emit_bytes(chunk: bytes) -> None:
+        if len(chunk) > effective_limit - len(output):
+            raise over_limit()
+        output.extend(chunk)
+
+    def emit_ascii(chunk: str) -> None:
+        emit_bytes(chunk.encode("ascii"))
+
+    def quoted_utf8_size(text: str) -> int:
+        size = 2  # surrounding quotes
+        if size > effective_limit - len(output):
+            raise over_limit()
+        for character in text:
+            codepoint = ord(character)
+            if character in {'"', "\\", "\b", "\f", "\n", "\r", "\t"}:
+                size += 2
+            elif codepoint < 0x20:
+                size += 6
+            else:
+                size += len(character.encode("utf-8"))
+            if size > effective_limit - len(output):
+                raise over_limit()
+        return size
+
+    def emit_string(text: str) -> None:
+        expected_size = quoted_utf8_size(text)
+        rendered = _json_mod.dumps(text, ensure_ascii=False).encode("utf-8")
+        if len(rendered) != expected_size:  # pragma: no cover - stdlib contract
+            raise ProviderError("JSON string encoding produced an unexpected size")
+        emit_bytes(rendered)
+
+    def encode(item: Any) -> None:
+        if item is None:
+            emit_ascii("null")
+            return
+        if item is True:
+            emit_ascii("true")
+            return
+        if item is False:
+            emit_ascii("false")
+            return
+        if type(item) is str:
+            emit_string(item)
+            return
+        if type(item) is int:
+            emit_ascii(_bounded_int_to_decimal(item))
+            return
+        if type(item) is float:
+            emit_ascii(_json_mod.dumps(item, allow_nan=False))
+            return
+        if type(item) not in {list, dict}:
+            raise TypeError(
+                f"Object of type {type(item).__name__} is not JSON serializable"
+            )
+
+        marker = id(item)
+        if marker in active:
+            raise ValueError("Circular reference detected")
+        active.add(marker)
+        try:
+            if type(item) is list:
+                emit_ascii("[")
+                for index, child in enumerate(item):
+                    if index:
+                        emit_ascii(",")
+                    encode(child)
+                emit_ascii("]")
+                return
+
+            emit_ascii("{")
+            for index, key in enumerate(sorted(item)):
+                if index:
+                    emit_ascii(",")
+                if type(key) is not str:
+                    raise TypeError("JSON object keys must be strings")
+                emit_string(key)
+                emit_ascii(":")
+                encode(item[key])
+            emit_ascii("}")
+        finally:
+            active.remove(marker)
+
+    try:
+        encode(value)
+    except ProviderError:
+        raise
     except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise ProviderError(
             f"Canonical JSON serialization failed for {path_label}: "
             f"{_bounded_exception(exc)}"
         ) from exc
-    if len(encoded) > MAX_PROVIDER_ENTRY_BYTES:
-        raise ProviderError(
-            f"Canonical JSON for {path_label} exceeds the "
-            f"{MAX_PROVIDER_ENTRY_BYTES}-byte provider entry limit"
-        )
-    return encoded
+    return bytes(output)
 
 
 class JsonCanonicalProvider:
@@ -1218,9 +1500,9 @@ class JsonCanonicalProvider:
     """
 
     name = "json-canonical"
-    # v2 rejects duplicate keys and non-finite numbers and uses an explicitly
-    # bounded, fail-closed canonical serialization path.
-    version = "2"
+    # v3 adds setting-independent integer handling and bounded source,
+    # canonicalization, metadata, and aggregate-output processing.
+    version = "3"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -1232,19 +1514,32 @@ class JsonCanonicalProvider:
         selected, errors = _resolve_declared_files(ctx, paths)
         if errors:
             return ResolvedBoundary(status="error", errors=errors)
-        entries: List[tuple] = []
+        collector = _ProviderEntryCollector()
         for repo_rel, child_rel in selected:
             try:
-                raw = ctx.read_file(repo_rel)
-                if type(raw) not in {bytes, _ModeAwareBytes}:
-                    raise ProviderError("source accessor returned non-bytes content")
+                raw = _read_provider_file(
+                    ctx,
+                    repo_rel,
+                    max_bytes=collector.remaining_source_bytes,
+                )
+                collector.add_source(raw)
                 text = raw.decode("utf-8")
                 obj = _parse_json_strict(text, child_rel)
                 tree_error = _json_tree_error(obj)
                 if tree_error:
                     raise ProviderError(tree_error)
-                canonical = _canonical_json_bytes(obj, child_rel)
-            except (ProviderError, UnicodeDecodeError, OSError) as exc:
+                canonical = _canonical_json_bytes(
+                    obj,
+                    child_rel,
+                    max_bytes=collector.remaining_output_bytes,
+                )
+                # Do not retain the source/decoded/tree representations while
+                # reading the next entry. The parser's single-entry object
+                # overhead is unavoidable, but it must not accumulate across
+                # the whole provider result.
+                del raw, text, obj
+                collector.add(f"canonical:{child_rel}", canonical)
+            except (ProviderError, UnicodeDecodeError, OSError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
                     errors=[
@@ -1252,13 +1547,12 @@ class JsonCanonicalProvider:
                         f"{_bounded_exception(exc)}"
                     ],
                 )
-            entries.append((f"canonical:{child_rel}", canonical))
-        if not entries:
+        if not collector.entries:
             return ResolvedBoundary(
                 status="error",
                 errors=["Declared boundary paths produced no digest"],
             )
-        return ResolvedBoundary(entries=entries)
+        return ResolvedBoundary(entries=collector.entries)
 
     def validate_config(
         self,
@@ -1303,9 +1597,9 @@ class OpenApiCanonicalProvider:
     """
 
     name = "openapi-canonical"
-    # v3 validates the OpenAPI root, preserves x-* extensions, rejects
-    # ambiguous YAML/JSON and unsafe references, and uses strict serialization.
-    version = "3"
+    # v4 adds bounded parsing/canonicalization and rejects non-JSON integer
+    # spellings, Unicode patch digits, and over-limit aggregate output.
+    version = "4"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
@@ -1317,12 +1611,15 @@ class OpenApiCanonicalProvider:
         selected, errors = _resolve_declared_files(ctx, paths)
         if errors:
             return ResolvedBoundary(status="error", errors=errors)
-        entries: List[tuple] = []
+        collector = _ProviderEntryCollector()
         for repo_rel, child_rel in selected:
             try:
-                raw = ctx.read_file(repo_rel)
-                if type(raw) not in {bytes, _ModeAwareBytes}:
-                    raise ProviderError("source accessor returned non-bytes content")
+                raw = _read_provider_file(
+                    ctx,
+                    repo_rel,
+                    max_bytes=collector.remaining_source_bytes,
+                )
+                collector.add_source(raw)
                 obj = _parse_yaml_or_json(raw, child_rel)
                 document_error = _openapi_document_error(obj)
                 if document_error:
@@ -1330,8 +1627,14 @@ class OpenApiCanonicalProvider:
                 # Drop top-level metadata blocks, then recursively strip docs.
                 obj = {k: v for k, v in obj.items() if k not in _OPENAPI_DROP_TOP}
                 contract = _strip_openapi(obj)
-                canonical = _canonical_json_bytes(contract, child_rel)
-            except (ProviderError, OSError, RecursionError) as exc:
+                canonical = _canonical_json_bytes(
+                    contract,
+                    child_rel,
+                    max_bytes=collector.remaining_output_bytes,
+                )
+                del raw, obj, contract
+                collector.add(f"canonical:{child_rel}", canonical)
+            except (ProviderError, OSError, RecursionError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
                     errors=[
@@ -1339,13 +1642,12 @@ class OpenApiCanonicalProvider:
                         f"{_bounded_exception(exc)}"
                     ],
                 )
-            entries.append((f"canonical:{child_rel}", canonical))
-        if not entries:
+        if not collector.entries:
             return ResolvedBoundary(
                 status="error",
                 errors=["Declared boundary paths produced no digest"],
             )
-        return ResolvedBoundary(entries=entries)
+        return ResolvedBoundary(entries=collector.entries)
 
     def validate_config(
         self,
@@ -1371,6 +1673,7 @@ class OpenApiCanonicalProvider:
 # ---------------------------------------------------------------------------
 
 _BUILTIN_PROVIDER_TYPES = (
+    PathHashProvider,
     OpenApiProvider,
     JsonFileProvider,
     PythonExportsProvider,
@@ -1470,6 +1773,13 @@ def load_custom_providers(
             "Config declares custom providers but loading is not enabled. "
             "Pass --allow-custom-providers (or the equivalent trusted API argument)."
         ]
+    if type(providers_list) is not list:
+        return ["Config providers must be an array"]
+    if len(providers_list) > MAX_CUSTOM_PROVIDERS:
+        return [
+            "Config providers exceed the "
+            f"{MAX_CUSTOM_PROVIDERS}-provider limit"
+        ]
     errors: List[str] = []
     loaded_names: set[str] = set()
     # Validate module names before importing anything to prevent injection via
@@ -1491,7 +1801,8 @@ def load_custom_providers(
             or not class_name
         ):
             errors.append(
-                f"Provider entry missing required fields 'module'/'class': {entry!r}"
+                "Provider entry missing required fields 'module'/'class': "
+                f"{_bounded_diagnostic_repr(entry)}"
             )
             continue
         if not _VALID_MODULE_RE.match(module_name):
@@ -1548,7 +1859,8 @@ def load_custom_providers(
             continue
         if not provider_name.startswith("custom.") or provider_name == "custom.":
             errors.append(
-                f"Provider '{module_name}.{class_name}' has name={provider_name!r}; "
+                f"Provider '{module_name}.{class_name}' has name="
+                f"{_bounded_diagnostic_repr(provider_name)}; "
                 "custom provider names must start with 'custom.' to avoid collisions "
                 "with built-in providers (e.g. name='custom.my_format')"
             )
@@ -1558,19 +1870,22 @@ def load_custom_providers(
             if type(configured_name) is not str or configured_name != provider_name:
                 errors.append(
                     f"Provider '{module_name}.{class_name}' declares runtime "
-                    f"name={provider_name!r}, which does not match configured "
-                    f"name={configured_name!r}"
+                    f"name={_bounded_diagnostic_repr(provider_name)}, which does "
+                    "not match configured name="
+                    f"{_bounded_diagnostic_repr(configured_name)}"
                 )
                 continue
         target_registry = registry if registry is not None else _REGISTRY
         if provider_name in loaded_names:
             errors.append(
-                f"Duplicate custom provider name {provider_name!r} in providers config"
+                "Duplicate custom provider name "
+                f"{_bounded_diagnostic_repr(provider_name)} in providers config"
             )
             continue
         if provider_name in target_registry:
             errors.append(
-                f"Custom provider name {provider_name!r} is already registered; "
+                "Custom provider name "
+                f"{_bounded_diagnostic_repr(provider_name)} is already registered; "
                 "refusing to replace it while loading config"
             )
             continue

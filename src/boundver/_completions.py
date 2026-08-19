@@ -7,6 +7,10 @@ one shell while silently leaving another behind.
 
 from typing import Dict, List, Tuple
 
+from ._utils import SOURCE_MODES
+
+
+_SOURCE_CHOICES = " ".join(SOURCE_MODES)
 
 _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "generate": "Generate or update the lockfile",
@@ -62,7 +66,10 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "-h", "--help", "--config", "--lock", "--source", "--format",
         "--strict", "--allow-custom-providers",
     ),
-    "explain": ("-h", "--help", "--config", "--base-ref", "--source"),
+    "explain": (
+        "-h", "--help", "--config", "--base-ref", "--source",
+        "--allow-custom-providers",
+    ),
     "why": (
         "-h", "--help", "--config", "--lock", "--source", "--format",
         "--transitive", "--allow-custom-providers",
@@ -106,7 +113,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
 _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--config": ("file", "_files"),
     "--out": ("file", "_files"),
-    "--source": ("source", "(head index working-tree)"),
+    "--source": ("source", f"({_SOURCE_CHOICES})"),
     "--components": ("components", ""),
     "--format": ("format", "(text json)"),
     "--lock": ("file", "_files"),
@@ -119,7 +126,7 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
 }
 
 _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
-    "--source": ("head", "index", "working-tree"),
+    "--source": SOURCE_MODES,
     "--format": ("json", "text"),
     "--shell": ("bash", "zsh", "fish"),
 }
@@ -145,6 +152,56 @@ def _options_after_command(command: str) -> Tuple[str, ...]:
 def _render_bash() -> str:
     command_pattern = "|".join(_COMMANDS)
     root_words = " ".join(_COMMANDS + _GLOBAL_OPTIONS)
+    value_pattern = "|".join(_OPTION_ARGUMENTS)
+    file_options = tuple(
+        option
+        for option, (_label, action) in _OPTION_ARGUMENTS.items()
+        if action == "_files"
+    )
+    file_pattern = "|".join(file_options)
+    file_equals_pattern = "|".join(
+        "{0}=*".format(option) for option in file_options
+    )
+    plain_value_pattern = "|".join(
+        option
+        for option in _OPTION_ARGUMENTS
+        if option not in _OPTION_CHOICES and option not in file_options
+    )
+    plain_value_equals_pattern = "|".join(
+        "{0}=*".format(option)
+        for option in _OPTION_ARGUMENTS
+        if option not in _OPTION_CHOICES and option not in file_options
+    )
+    choice_cases = "\n".join(
+        '        {0}) options="{1}" ;;'.format(
+            option, " ".join(choices)
+        )
+        for option, choices in _OPTION_CHOICES.items()
+    )
+    choice_equals_cases = "\n".join(
+        """        {option}=*)
+            option_prefix="${{cur%%=*}}="
+            value="${{cur#*=}}"
+            COMPREPLY=()
+            while IFS= read -r reply; do
+                COMPREPLY+=("${{option_prefix}}${{reply}}")
+            done < <(compgen -W "{choices}" -- "$value")
+            return
+            ;;""".format(option=option, choices=" ".join(choices))
+        for option, choices in _OPTION_CHOICES.items()
+    )
+    file_position_pattern = "|".join(
+        "{0}:{1}".format(command, index)
+        for command, positionals in _COMMAND_POSITIONALS.items()
+        for index, (_label, action) in enumerate(positionals, start=1)
+        if action == "_files"
+    )
+    plain_position_pattern = "|".join(
+        "{0}:{1}".format(command, index)
+        for command, positionals in _COMMAND_POSITIONALS.items()
+        for index, (_label, action) in enumerate(positionals, start=1)
+        if action != "_files"
+    )
     cases = "\n".join(
         '        {0}) options="{1}" ;;'.format(
             command, " ".join(_options_after_command(command))
@@ -153,25 +210,100 @@ def _render_bash() -> str:
     )
     return """# boundver bash completion
 _boundver_completions() {{
-    local cur prev command options word i
+    local cur prev command command_index options word reply i
+    local option_prefix value
+    local expect_value=0 after_double_dash=0 positional_index=0
     cur="${{COMP_WORDS[COMP_CWORD]}}"
     prev="${{COMP_WORDS[COMP_CWORD-1]}}"
     command=""
+    command_index=0
 
     # Global flags may precede the command, so do not assume COMP_WORDS[1].
     for ((i=1; i<COMP_CWORD; i++)); do
         word="${{COMP_WORDS[i]}}"
         case "$word" in
-            {command_pattern}) command="$word"; break ;;
+            {command_pattern}) command="$word"; command_index=$i; break ;;
         esac
     done
 
-    case "$prev" in
-        --source) COMPREPLY=($(compgen -W "head index working-tree" -- "$cur")); return ;;
-        --format) COMPREPLY=($(compgen -W "text json" -- "$cur")); return ;;
-        --shell) COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")); return ;;
-        --config|--lock|--out) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+    # Count completed positional arguments while skipping option values.  This
+    # keeps value-taking options from falling back to command-option results.
+    if [[ -n "$command" ]]; then
+        for ((i=command_index+1; i<COMP_CWORD; i++)); do
+            word="${{COMP_WORDS[i]}}"
+            if (( after_double_dash )); then
+                positional_index=$((positional_index + 1))
+                continue
+            fi
+            if (( expect_value )); then
+                expect_value=0
+                continue
+            fi
+            case "$word" in
+                --) after_double_dash=1 ;;
+                --*=*) ;;
+                {value_pattern}) expect_value=1 ;;
+                -*) ;;
+                *) positional_index=$((positional_index + 1)) ;;
+            esac
+        done
+    fi
+
+    # Complete --option=value without losing the option prefix.
+    case "$cur" in
+{choice_equals_cases}
+        {file_equals_pattern})
+            option_prefix="${{cur%%=*}}="
+            value="${{cur#*=}}"
+            COMPREPLY=()
+            while IFS= read -r reply; do
+                COMPREPLY+=("${{option_prefix}}${{reply}}")
+            done < <(compgen -f -- "$value")
+            return
+            ;;
+        {plain_value_equals_pattern}) COMPREPLY=(); return ;;
     esac
+
+    if (( ! after_double_dash )); then
+        case "$prev" in
+{choice_cases}
+            {file_pattern})
+                COMPREPLY=()
+                while IFS= read -r reply; do
+                    COMPREPLY+=("$reply")
+                done < <(compgen -f -- "$cur")
+                return
+                ;;
+            {plain_value_pattern}) COMPREPLY=(); return ;;
+        esac
+        if [[ -n "${{options:-}}" ]]; then
+            COMPREPLY=()
+            while IFS= read -r reply; do
+                COMPREPLY+=("$reply")
+            done < <(compgen -W "$options" -- "$cur")
+            return
+        fi
+    fi
+
+    # Positional grammar comes from the same table as zsh completion.
+    if [[ -n "$command" && ( $after_double_dash -eq 1 || "$cur" != -* ) ]]; then
+        case "$command:$((positional_index + 1))" in
+            {file_position_pattern})
+                COMPREPLY=()
+                while IFS= read -r reply; do
+                    COMPREPLY+=("$reply")
+                done < <(compgen -f -- "$cur")
+                return
+                ;;
+            {plain_position_pattern}) COMPREPLY=(); return ;;
+            *)
+                if (( after_double_dash )) || [[ -n "$cur" ]]; then
+                    COMPREPLY=()
+                    return
+                fi
+                ;;
+        esac
+    fi
 
     if [[ -z "$command" ]]; then
         options="{root_words}"
@@ -181,13 +313,25 @@ _boundver_completions() {{
             *) options="" ;;
         esac
     fi
-    COMPREPLY=($(compgen -W "$options" -- "$cur"))
+    COMPREPLY=()
+    while IFS= read -r reply; do
+        COMPREPLY+=("$reply")
+    done < <(compgen -W "$options" -- "$cur")
 }}
 complete -F _boundver_completions boundver
 """.format(
         command_pattern=command_pattern,
         root_words=root_words,
         cases=cases,
+        value_pattern=value_pattern,
+        file_pattern=file_pattern,
+        file_equals_pattern=file_equals_pattern,
+        plain_value_pattern=plain_value_pattern,
+        plain_value_equals_pattern=plain_value_equals_pattern,
+        choice_cases=choice_cases,
+        choice_equals_cases=choice_equals_cases,
+        file_position_pattern=file_position_pattern,
+        plain_position_pattern=plain_position_pattern,
     )
 
 

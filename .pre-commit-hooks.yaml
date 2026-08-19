@@ -9,7 +9,7 @@
     Fails with the documented facet-specific exit code when fingerprints drift;
     blocks the commit until you run
     `boundver generate --source index` and stage the updated lockfile.
-  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
+  additional_dependencies: ["jsonschema==4.25.1", "PyYAML==6.0.3"]
   always_run: true
   stages: [pre-commit]
 
@@ -22,7 +22,7 @@
   description: >
     Verify that boundary.lock.json is up to date with the committed snapshot
     before pushing it.
-  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
+  additional_dependencies: ["jsonschema==4.25.1", "PyYAML==6.0.3"]
   always_run: true
   stages: [pre-push]
 
@@ -35,6 +35,6 @@
   description: >
     Regenerate boundary.lock.json from the staged snapshot. Use this hook on the
     pre-commit stage to auto-update the lockfile before committing.
-  additional_dependencies: ["jsonschema>=4", "PyYAML>=6"]
+  additional_dependencies: ["jsonschema==4.25.1", "PyYAML==6.0.3"]
   always_run: true
   stages: [pre-commit]

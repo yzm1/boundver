@@ -6,7 +6,14 @@ with injected in-memory read_file / list_files callbacks.
 import unittest
 from pathlib import Path
 from typing import List
+from unittest.mock import patch
 
+from boundver._utils import (
+    GuardrailError,
+    MAX_GLOB_PATH_BYTES,
+    MAX_GLOB_SEGMENTS,
+    _match_path_glob,
+)
 from boundver.providers import (
     BoundaryProvider,
     ImplicitProvider,
@@ -334,7 +341,15 @@ class TestRegistry(unittest.TestCase):
         _p._REGISTRY.update(self._registry_snapshot)
 
     def test_builtin_providers_registered(self):
-        for name in ("implicit", "leaf", "openapi", "json-file", "python-exports", "typescript-exports"):
+        for name in (
+            "path-hash",
+            "implicit",
+            "leaf",
+            "openapi",
+            "json-file",
+            "python-exports",
+            "typescript-exports",
+        ):
             self.assertIsNotNone(get_provider(name), f"Provider {name!r} not registered")
 
     def test_get_unknown_returns_none(self):
@@ -500,7 +515,6 @@ class TestJsonCanonicalProvider(unittest.TestCase):
 
     def test_key_ordering_does_not_affect_digest(self):
         """Two JSON files with same content in different key order produce the same digest."""
-        import hashlib
         p = JsonCanonicalProvider()
         ctx1 = _make_ctx(
             boundary_cfg={"paths": ["s.json"]},
@@ -582,6 +596,32 @@ class TestJsonCanonicalProvider(unittest.TestCase):
         d_canonical, _, _ = compute_boundary(JsonCanonicalProvider(), ctx_canonical)
         d_raw, _, _ = compute_boundary(JsonFileProvider(), ctx_raw)
         self.assertNotEqual(d_canonical, d_raw)
+
+    def test_raw_source_budget_is_independent_of_canonical_output(self):
+        raw = b" " * 48 + b"{}"
+        files = {
+            "svc/a.json": raw,
+            "svc/b.json": raw,
+            "svc/c.json": raw,
+        }
+        requested_limits = []
+        ctx = _make_ctx(
+            boundary_cfg={"paths": ["*.json"]},
+            files=files,
+        )
+
+        def read_limited(path, limit):
+            requested_limits.append(limit)
+            return files[path]
+
+        ctx.read_file_limited = read_limited
+        with patch("boundver.providers.MAX_PROVIDER_TOTAL_BYTES", 100):
+            result = JsonCanonicalProvider().resolve(ctx)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.entries, [])
+        self.assertEqual(requested_limits, [100, 50, 0])
+        self.assertIn("0-byte remaining limit", result.errors[0])
 
 
 class TestOpenApiCanonicalProvider(unittest.TestCase):
@@ -692,7 +732,6 @@ components:
 
     def test_endpoint_addition_changes_digest(self):
         from boundver.providers import compute_boundary
-        import yaml
         p = OpenApiCanonicalProvider()
 
         base = {"openapi": "3.0.0", "paths": {"/users": {"get": {"operationId": "listUsers", "responses": {"200": {"content": {"application/json": {"schema": {"type": "array"}}}}}}}} }
@@ -776,6 +815,32 @@ components:
         d_raw, _, _ = compute_boundary(OpenApiProvider(), ctx2)
         self.assertNotEqual(d_can, d_raw)
 
+    def test_canonical_output_budget_is_independent_of_raw_source(self):
+        raw = b"openapi: 3.1.0\npaths: {}"
+        files = {
+            "svc/a.yaml": raw,
+            "svc/b.yaml": raw,
+        }
+        requested_limits = []
+        ctx = _make_ctx(
+            boundary_cfg={"paths": ["*.yaml"]},
+            files=files,
+        )
+
+        def read_limited(path, limit):
+            requested_limits.append(limit)
+            return files[path]
+
+        ctx.read_file_limited = read_limited
+        raw_budget = len(raw) * len(files)
+        with patch("boundver.providers.MAX_PROVIDER_TOTAL_BYTES", raw_budget):
+            result = OpenApiCanonicalProvider().resolve(ctx)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.entries, [])
+        self.assertEqual(requested_limits, [raw_budget, len(raw)])
+        self.assertIn("Canonical JSON", result.errors[0])
+
 
 def _json_to_yaml_bytes(obj: dict) -> bytes:
     """Serialize a dict to YAML bytes for test fixtures."""
@@ -851,6 +916,72 @@ class TestGlobPatterns(unittest.TestCase):
         self.assertTrue(
             any("matched no tracked files" in error for error in result.errors),
             result.errors,
+        )
+
+    def test_matcher_exhaustion_discards_a_prior_successful_match(self):
+        files = {
+            "svc/target": b"short",
+            "svc/z/z/z/z/z/target": b"long",
+        }
+        ctx = _make_ctx(
+            boundary_cfg={"paths": ["**/target"]},
+            files=files,
+        )
+
+        with patch("boundver._utils.MAX_GLOB_MATCH_STEPS", 12):
+            self.assertTrue(_match_path_glob("target", "**/target"))
+            with self.assertRaisesRegex(GuardrailError, "matcher steps"):
+                _match_path_glob("z/z/z/z/z/target", "**/target")
+            result = PathHashProvider().resolve(ctx)
+
+        self.assertEqual(result.status, "error")
+        self.assertEqual(result.entries, [])
+        self.assertTrue(
+            any("matcher steps" in error for error in result.errors),
+            result.errors,
+        )
+
+    def test_candidate_size_limits_raise_controlled_guardrails(self):
+        cases = (
+            ("a" * (MAX_GLOB_PATH_BYTES + 1), "UTF-8 bytes"),
+            ("/".join(["a"] * (MAX_GLOB_SEGMENTS + 1)), "segments"),
+        )
+        for candidate, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(GuardrailError, expected):
+                    _match_path_glob(candidate, "**")
+
+    def test_config_validation_reports_matcher_exhaustion(self):
+        from boundver._config import validate_config
+
+        files = ["svc/target", "svc/z/z/z/z/z/target"]
+        config = {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {
+                        "provider": "openapi",
+                        "paths": ["**/target"],
+                    },
+                    "behavior": {"paths": ["**/target"]},
+                }
+            },
+            "slices": {},
+        }
+        with (
+            patch("boundver._config._list_files_for_source", return_value=files),
+            patch("boundver._utils.MAX_GLOB_MATCH_STEPS", 12),
+        ):
+            errors = validate_config(config, ROOT, source="head")
+
+        self.assertTrue(
+            any(
+                "path expansion could not be validated" in error
+                and "matcher steps" in error
+                for error in errors
+            ),
+            errors,
         )
 
     def test_glob_digest_changes_when_matched_file_changes(self):

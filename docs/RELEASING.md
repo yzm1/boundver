@@ -27,7 +27,7 @@ The repository owner must configure these controls before starting a release:
   exact SemVer tags. In GitHub's **Include by pattern** field, enter
   `v*.*.*`; GitHub represents that pattern in ruleset API responses as
   `refs/tags/v*.*.*`, which is the form verified by the publishing gate. It
-  must not target mutable compatibility aliases such as `v0.11`, and it must
+  must not target mutable compatibility aliases such as `vX.Y`, and it must
   not restrict initial tag creation. Immutable-release protection takes over
   once the Release is published.
 - Create protected GitHub environments named `testpypi`, `pypi`, and
@@ -62,7 +62,7 @@ credentials from the protected environments.
 | Stable Action aliases | Mutable compatibility tags such as `vX.Y` | Advanced only after the exact release and Marketplace listing verify; never create a GitHub Release for aliases and never move a broader alias across a breaking Action contract without explicit approval. |
 | Pre-commit | Git tags | Exact `rev: vX.Y.Z` and compatible aliases resolve to the release commit. |
 | Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the license and bundled schema. |
-| Dockerfile | Release commit | Built and exercised by exact-commit CI. There is currently no promised public container registry; add one only with an explicit supported-image policy. |
+| Dockerfile | Release commit | Built and exercised by exact-commit CI from a digest-pinned multi-architecture Python base, an immutable Debian snapshot, and the checked-in Python hash lock. There is currently no promised public container registry; add one only with an explicit supported-image policy. |
 
 The source distribution contains user-facing guides, specifications, examples,
 and community files. It deliberately excludes tests, repository automation,
@@ -73,6 +73,53 @@ material.
 PyPI and Marketplace render the README embedded in the distribution or tag.
 They do not update when a later documentation commit lands. All public-facing
 release wording therefore belongs in the release commit.
+
+Automation dependencies use pip's secure-install model. The reviewed version
+policy is `scripts/release-tool-lock.toml`; its purpose-specific Action, CI,
+and release profiles generate `scripts/requirements/*.lock`. CI and release
+each reuse the minimal Action base without sharing unrelated tools. Every direct and
+transitive requirement is exact-pinned, and every permitted non-yanked wheel
+has a checked-in SHA-256 digest. Installs force `--require-hashes` and
+`--only-binary :all:` against the canonical PyPI index. Local boundver source
+is then installed offline with `--no-deps --no-build-isolation`, so neither its
+runtime nor build backend can open an unchecked resolver path.
+
+The Dockerfile uses that same Action lock to download a hash-verified
+wheelhouse, builds boundver with dependencies and build isolation disabled, and
+performs the final install offline. The builder clamps archive timestamps with
+`SOURCE_DATE_EPOCH`, so identical source inputs produce identical wheel bytes.
+Its official Python base is pinned to a
+multi-architecture manifest digest, and its required Git client resolves from
+the immutable Debian snapshot recorded by that base image. Review base-digest
+and snapshot updates together; the build verifies that they still match and
+fails closed on an incomplete update. Digest pinning deliberately stops
+automatic security updates, so weekly Docker Dependabot checks surface base
+updates for review.
+
+`scripts/release-tool-artifacts.json` records the PyPI wheel filenames behind
+the local hashes for review. The generator reads only the official versioned
+PyPI JSON API over HTTPS; copying those digests into a reviewed commit makes
+them local trust inputs rather than accepting an index-provided hash during an
+install. The locks include wheels for Python 3.9+ on Linux, macOS Intel and
+Apple silicon, and Windows; pip still selects only the compatible wheel.
+
+Use Python 3.12 or newer to maintain the locks:
+
+```bash
+# Networked, intentional dependency update; inspect every resulting diff.
+python scripts/lock_release_tools.py generate
+
+# Network-free manifest/artifact/lock consistency check.
+python scripts/lock_release_tools.py verify
+
+# Networked proof that checked-in bytes still match official PyPI metadata.
+python scripts/lock_release_tools.py check
+```
+
+Never hand-edit a generated lock or artifact-evidence file. A changed version
+belongs in the TOML policy first. A newly published wheel at an already pinned
+version is also a trust-set change and must arrive through a reviewed generated
+diff; it is never accepted implicitly by an install.
 
 ## Prepare the release pull request
 
@@ -87,13 +134,18 @@ release wording therefore belongs in the release commit.
 4. Pin machine-readable schema URLs and `$id` values to the exact release tag.
    Living documentation may link to `main`; generated configs and locks must
    not silently adopt a future branch schema.
+   Between releases, a schema document changed on `main` uses a `main` `$id`,
+   while generators continue to reference the last released schema until the
+   next release-preparation commit pins both to its new exact tag.
 5. Regenerate the repository and all example locks from the final hash/provider
    contract. Validate every config, schema, lock, and machine-readable example.
 6. Run `python3 scripts/check_repo_hygiene.py`; remove generated caches and
    build outputs, then confirm only intentional source and release files remain.
-7. Build the wheel, sdist, and versioned standalone archive. Run Twine checks
+7. Review `scripts/release-tool-lock.toml`, regenerate the locks, run both
+   `verify` and `check`, then inspect every version, filename, and SHA-256 diff.
+   Build the wheel, sdist, and versioned standalone archive. Run Twine checks
    and install each Python distribution in a clean environment.
-8. Confirm `action.yml`, the Dockerfile, and both pre-commit hooks execute the
+8. Confirm `action.yml`, the Dockerfile, and all three pre-commit hooks execute the
    public installed form. Test the supported Python/OS matrix.
 9. Resolve every relevant review thread and blocking review. Merge only after
    the exact release-preparation commit passes required CI.
@@ -103,11 +155,18 @@ threads, changes-requested state, and pending human or team review requests.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.
-Codex evidence is accepted from its `COMMENTED` review commit or the single
-`**Reviewed commit:**` marker line in its issue comment. The audit pins the bot's
-numeric account ID, resolves abbreviated commit IDs through GitHub, and rejects
-spoofed identities or evidence that does not match the latest PR head or merge
-commit.
+Codex evidence is accepted only from one authenticated current-commit bot
+record whose verdict line is exactly
+`Codex Review: Didn't find any major issues.`, optionally followed by the
+finite `Breezy!` or `Hooray!` status used by the app. A `COMMENTED` review
+binds that clean body to its review commit; an
+issue comment must also contain exactly one `**Reviewed commit:**` marker. The
+audit permits only the bot's recognized informational footer after that
+evidence, pins the bot's numeric account ID, resolves abbreviated commit IDs,
+and snapshots those resolutions to detect collisions or drift before mutation.
+It rejects spoofed identities, ambiguous commit IDs, duplicate evidence,
+mixed clean/adverse bodies, or evidence that does not match the latest PR head
+or merge commit.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
@@ -125,7 +184,24 @@ the canonical origin and exact remote-main SHA, inspects GitHub controls and
 CI, and runs readiness, review, test, reproducible-build, Twine, TestPyPI, and
 PyPI preflights in a disposable checkout.
 
+Candidate-owned commands receive a minimal allowlisted process environment.
+Their home, temporary, Git, GitHub CLI, pip, container, cloud, and XDG paths all
+point into disposable directories, so maintainer home-directory credentials and
+ambient CI/cloud variables are not inherited. Inline parsers, environment
+creation, and pip/tool installation also start with Python isolated mode
+(`-I`), with pip retaining its own `--isolated` configuration mode. This
+isolates credentials; it does not provide a network sandbox. Candidate checks
+intentionally contact GitHub and package indexes. Before `check` or `start`, set
+`BOUNDVER_RELEASE_REVIEW_TOKEN` to a fine-grained token restricted to this
+repository with read-only Contents, Issues, Metadata, and Pull requests access.
+The gate does not fall back to the maintainer's ambient `gh` token, and only the
+trusted review-audit subprocess receives this credential. Run the local gate
+only on a trusted, isolated maintainer host and review changes to release
+scripts as security-sensitive code.
+
 ```bash
+read -rsp "Read-only release-review token: " BOUNDVER_RELEASE_REVIEW_TOKEN
+export BOUNDVER_RELEASE_REVIEW_TOKEN
 python3 scripts/publish_release.py check --tag vX.Y.Z
 sha=$(git rev-parse HEAD)
 python3 scripts/publish_release.py start --tag vX.Y.Z \
@@ -136,8 +212,11 @@ Use `--alias none` when no compatibility alias is approved. `start` repeats
 the complete gate and makes exactly one local-side mutation: it dispatches the
 tag-creation workflow with the explicitly confirmed tag, SHA, and alias policy.
 It never creates a local tag, uploads a package, publishes a Release, or calls
-the publication workflow directly. The protected workflows then perform these
-gates in order:
+the publication workflow directly. Both workflows encode the complete dispatch
+identity in their run title. The local command checks for that exact run before
+dispatch and polls for it after both successful and ambiguous API responses, so
+an accepted request is reused rather than submitted twice. The protected
+workflows then perform these gates in order:
 
 1. Reconfirm that package version, current `main`, successful CI, changelog,
    reviews, and Action behavior all refer to the exact same commit.
@@ -153,9 +232,13 @@ gates in order:
    compare every remote file name and SHA-256 digest with the candidate, then
    install the exact TestPyPI wheel URL with dependencies disabled. Do not use
    an extra index that could substitute the production package. Verify each
-   TestPyPI file's trusted-publisher attestation against this repository.
+   TestPyPI file's trusted-publisher attestation against this repository. The
+   OIDC job checks out no repository code: it only downloads the preflight's
+   immutable artifact ID and invokes the commit-pinned publisher action.
 5. Prepare a draft GitHub Release with the exact changelog notes and release
-   assets. Draft first so immutable-release protection does not freeze an
+   assets. A read-only job generates and retains the notes first; the mutation
+   job checks out no candidate tree and treats the retained notes and assets as
+   data. Draft first so immutable-release protection does not freeze an
    incomplete asset set.
 6. Open the prepared GitHub draft. Select **Publish this Action to the GitHub
    Marketplace**, confirm its categories and version, then publish with 2FA.
@@ -165,13 +248,17 @@ gates in order:
    environment while the owner publishes the draft. Once approved, that same
    run revalidates the immutable tag, release assets, Marketplace listing, and
    TestPyPI candidate. After approval in the `pypi` environment, publish the
-   same identified wheel/sdist artifact to production PyPI and verify its
-   remote hashes, metadata, clean installation, and trusted-publisher
+   read-only preflight's immutable subset of the same identified wheel/sdist
+   artifact to production PyPI; the OIDC job executes no repository code.
+   Verify its remote hashes, metadata, clean installation, and trusted-publisher
    attestations. Do not rebuild in a second event-triggered run.
 8. Verify every public surface, then advance only the Action aliases approved
-   for this compatibility line. For breaking `0.11.0`, create or advance
-   `v0.11`; leave the existing `v0` alias on the compatible `0.10.x` line unless
-   an owner explicitly approves and announces that migration.
+   for this compatibility line. Alias ancestry and monotonicity validation runs
+   in a separate read-only job; the write-capable job starts from an empty Git
+   repository and applies only the validated lease. For breaking `0.12.0`,
+   create or advance `v0.12`; leave the existing `v0.11` and `v0` aliases on
+   their prior compatibility lines unless an owner explicitly approves and
+   announces those migrations.
 
 If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote

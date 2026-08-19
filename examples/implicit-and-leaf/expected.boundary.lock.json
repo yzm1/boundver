@@ -1,15 +1,15 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v1",
-  "config_digest": "958d54beb1929050615d79c1b6d93f420ebc8e57f09b30be700d339c2a2a2e32",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "26806a1145914695842590af9a58a2aecb81cb93599322e76fc0d498efe0c0e9",
   "project": "example-implicit-leaf",
   "components": {
     "worker": {
       "version": null,
       "path": "examples/implicit-and-leaf/worker",
       "boundary_provider": "implicit",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "partial",
       "consumers": [],
       "external_consumers": [],

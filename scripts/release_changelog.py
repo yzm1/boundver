@@ -5,17 +5,87 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Optional, Sequence
 
 
-_TAG_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+_TAG_RE = re.compile(
+    r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+)
 _HEADING_RE = re.compile(r"(?m)^## \[([^\]]+)\](.*)$")
+_MODES = ("post-release", "pre-tag")
+MAX_CHANGELOG_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 
 
-def extract_release_notes(changelog: str, tag: str) -> str:
+def _is_windows_reparse_point(identity: os.stat_result) -> bool:
+    attributes = getattr(identity, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _changed(before: os.stat_result, after: os.stat_result) -> bool:
+    return (
+        (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+        or before.st_mode != after.st_mode
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+    )
+
+
+def _read_changelog(path: Path) -> str:
+    """Read a stable regular changelog through a one-byte sentinel."""
+    try:
+        initial = path.lstat()
+        if not stat.S_ISREG(initial.st_mode) or _is_windows_reparse_point(initial):
+            raise ValueError(f"changelog is not a regular file: {path}")
+        if initial.st_size > MAX_CHANGELOG_BYTES:
+            raise ValueError(
+                f"changelog exceeds the {MAX_CHANGELOG_BYTES}-byte limit: {path}"
+            )
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or _changed(initial, opened):
+                raise ValueError(f"changelog changed while opening: {path}")
+            content = bytearray()
+            while True:
+                remaining = MAX_CHANGELOG_BYTES - len(content)
+                chunk = stream.read(min(_READ_CHUNK_BYTES, remaining + 1))
+                if not chunk:
+                    break
+                if len(chunk) > remaining:
+                    raise ValueError(
+                        "changelog exceeds the "
+                        f"{MAX_CHANGELOG_BYTES}-byte limit: {path}"
+                    )
+                content.extend(chunk)
+            finished = os.fstat(stream.fileno())
+        current = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError(f"changelog disappeared while reading: {path}") from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or _is_windows_reparse_point(current)
+        or _changed(opened, finished)
+        or _changed(finished, current)
+        or finished.st_size != len(content)
+    ):
+        raise ValueError(f"changelog changed while reading: {path}")
+    return bytes(content).decode("utf-8")
+
+
+def extract_release_notes(
+    changelog: str, tag: str, *, mode: str = "post-release"
+) -> str:
     """Return one non-empty, current release section or raise ``ValueError``."""
+    if mode not in _MODES:
+        raise ValueError(
+            f"invalid changelog validation mode {mode!r}; "
+            f"expected one of: {', '.join(_MODES)}"
+        )
     tag_match = _TAG_RE.fullmatch(tag)
     if tag_match is None:
         raise ValueError(f"invalid release tag: {tag!r}")
@@ -30,9 +100,14 @@ def extract_release_notes(changelog: str, tag: str) -> str:
                     "CHANGELOG.md Unreleased heading must be exactly '## [Unreleased]'"
                 )
             continue
-        if re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", label) is None:
+        if re.fullmatch(
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+            label,
+        ) is None:
             raise ValueError(f"CHANGELOG.md has invalid release heading: {item.group(0)!r}")
-        date_match = re.fullmatch(r"\s+-\s+(\d{4}-\d{2}-\d{2})\s*", suffix)
+        date_match = re.fullmatch(
+            r"\s+-\s+([0-9]{4}-[0-9]{2}-[0-9]{2})\s*", suffix
+        )
         if date_match is None:
             raise ValueError(
                 f"CHANGELOG.md release section for {label} must include an ISO date"
@@ -64,6 +139,12 @@ def extract_release_notes(changelog: str, tag: str) -> str:
         raise ValueError(
             f"CHANGELOG.md newest release is {actual}, not package release {version}; "
             "move the completed Unreleased notes into the exact release section"
+        )
+    unreleased_notes = changelog[unreleased[0].end() : release.start()].strip()
+    if mode == "pre-tag" and unreleased_notes:
+        raise ValueError(
+            "CHANGELOG.md Unreleased section must be empty before creating the "
+            f"{tag} release tag"
         )
 
     next_heading = next(
@@ -117,6 +198,12 @@ def _parser() -> argparse.ArgumentParser:
         "--changelog", type=Path, default=Path("CHANGELOG.md")
     )
     parser.add_argument(
+        "--mode",
+        choices=_MODES,
+        default="post-release",
+        help="pre-tag additionally requires an empty Unreleased section",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Write extracted notes here; otherwise print them to stdout.",
@@ -127,8 +214,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        changelog = args.changelog.read_text(encoding="utf-8")
-        notes = extract_release_notes(changelog, args.tag)
+        changelog = _read_changelog(args.changelog)
+        notes = extract_release_notes(changelog, args.tag, mode=args.mode)
     except (OSError, UnicodeError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     if args.output is None:

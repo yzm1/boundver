@@ -8,6 +8,7 @@ means that value changed. It is not, by itself, a compatibility judgment.
 
 | Provider | Interpretation |
 |---|---|
+| `path-hash` | Hash arbitrary selected artifacts without format-specific parsing |
 | `openapi` / `openapi-raw` | Hash selected OpenAPI/Swagger artifacts without parsing them |
 | `json-file` / `json-file-raw` | Hash selected JSON artifacts without parsing them |
 | `python-exports` / `python-exports-raw` | Hash selected Python export files |
@@ -104,6 +105,13 @@ Each component lock entry records `boundary_provider` and
 selection, validation, normalization, or output identity changes. Verification
 checks that metadata independently of the digest.
 
+The v0.12 built-ins record these versions:
+
+- Raw `path-hash`, `openapi`, `json-file`, `python-exports`, and
+  `typescript-exports`: v3.
+- `implicit`: v3; `leaf`: v1.
+- `json-canonical`: v3; `openapi-canonical`: v4.
+
 The top-level v3 semantic configuration digest also binds provider names,
 options, declarations, and custom-provider registration data. A policy change
 cannot remain invisible just because current output happens to be equal.
@@ -131,6 +139,21 @@ alone never imports code. A trusted caller must opt in:
 ```bash
 boundver verify --allow-custom-providers
 ```
+
+Because that opt-in executes arbitrary in-process Python, it is also the memory
+and process-isolation boundary. Boundver validates returned entries, labels,
+metadata, and errors against hard limits before hashing them, but it cannot
+prevent trusted extension code from allocating memory or performing other
+Python operations while `resolve()` is running. Run providers that are not
+fully trusted in a separately resource-limited process or container instead of
+enabling them in the main verification process. Built-in providers enforce
+their entry and aggregate budgets while collecting source content.
+Configuration is limited to 100 custom-provider declarations, and that limit is
+checked before any module import. Provider validation retains no more than 100
+bounded error messages. Returned metadata is limited to 64 nesting levels,
+100,000 JSON values, and 1 MiB of canonical JSON. The canonical form is emitted
+under that byte budget, so repeated large numeric values are rejected before
+their complete serialized representation can accumulate in memory.
 
 Trusted automation may set `BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1`. Do not set that
 globally for workflows that evaluate untrusted forks. The public GitHub Action

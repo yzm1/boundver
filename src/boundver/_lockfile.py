@@ -19,7 +19,6 @@ from ._git import (
     _resolve_head_oid,
     _snapshot_files,
     _to_posix,
-    _working_tree_mode,
     git_latest_tag,
 )
 from ._hashing import (
@@ -29,11 +28,19 @@ from ._hashing import (
     _content_only_digest,
     _enforce_content_size,
     _hash_framed_entries,
+    _read_bounded_path_bytes,
+    _read_path_content,
     canonical_json,
     sha256_hex,
     source_tree_digest,
 )
 from ._utils import (
+    FACETS,
+    FACET_SET,
+    SOURCE_MODE_SET,
+    _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
+    _bounded_json_dumps,
     _bounded_json_int,
     _available_component_facets,
     _issue_facet,
@@ -53,11 +60,11 @@ from .providers import (
     get_provider,
     load_custom_providers,
 )
-from .versions import extract_version, parse_semver
+from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
 
 LOCKFILE_SCHEMA = "boundary-lock/v3"
-LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json"
-SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v1"
+LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json"
+SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v2"
 MAX_LOCKFILE_BYTES = 10 * 1024 * 1024
 
 # Persisted fields whose integrity matters independently of the four digests.
@@ -76,13 +83,18 @@ def _lock_json_object_without_duplicates(pairs: List[tuple]) -> dict:
     value: dict = {}
     for key, item in pairs:
         if key in value:
-            raise LockfileError(f"duplicate JSON object key {key!r}")
+            raise LockfileError(
+                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}"
+            )
         value[key] = item
     return value
 
 
 def _reject_nonfinite_lock_constant(value: str) -> object:
-    raise LockfileError(f"non-finite JSON number {value!r} is not supported")
+    raise LockfileError(
+        "non-finite JSON number "
+        f"{_bounded_diagnostic_repr(value)} is not supported"
+    )
 
 
 def parse_lockfile_text(text: str, path_label: object = "lockfile") -> dict:
@@ -149,37 +161,45 @@ def load_lockfile_file(
                 f"source: {label} (mode={entry.mode}, type={entry.object_type})"
             )
         try:
-            data = _git_cat_blob(repo_root, entry.oid)
-        except (subprocess.CalledProcessError, GuardrailError) as exc:
+            data = _git_cat_blob(
+                repo_root,
+                entry.oid,
+                max_bytes=MAX_LOCKFILE_BYTES,
+            )
+        except GuardrailError as exc:
+            raise LockfileError(
+                f"Cannot read lockfile from captured {snapshot.source} source: "
+                f"{label}: file too large or transport limit exceeded"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
             raise LockfileError(
                 f"Cannot read lockfile from captured {snapshot.source} source: "
                 f"{label}"
             ) from exc
         return parse_lockfile_bytes(data, label)
+    if not path.exists():
+        raise FileNotFoundError(path)
     try:
-        size = path.stat().st_size
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise LockfileError(f"Cannot stat lockfile {path}: {exc}") from exc
-    if size > MAX_LOCKFILE_BYTES:
+        data = _read_bounded_path_bytes(
+            path,
+            str(path),
+            max_bytes=MAX_LOCKFILE_BYTES,
+        )
+    except GuardrailError as exc:
         raise LockfileError(
             f"Lockfile exceeds the {MAX_LOCKFILE_BYTES}-byte limit at {path}"
-        )
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
+        ) from exc
+    except (OSError, ValueError) as exc:
         raise LockfileError(f"Cannot read lockfile {path}: {exc}") from exc
     return parse_lockfile_bytes(data, path)
 
 
 def _normalize_source(source: Union[str, SourceMode]) -> str:
     value = source.value if isinstance(source, SourceMode) else source
-    if value not in {"head", "index", "working-tree"}:
+    if value not in SOURCE_MODE_SET:
         raise ConfigError(
-            f"Unknown source mode {value!r}; expected head, index, or working-tree"
+            "Unknown source mode "
+            f"{_bounded_diagnostic_repr(value)}; expected head, index, or working-tree"
         )
     return value
 
@@ -244,7 +264,7 @@ def _semantic_config(config: dict) -> dict:
                 key: value
                 for key, value in raw_component.items()
                 if key not in {
-                    "path", "boundary", "behavior", "version_source",
+                    "path", "ecosystem", "boundary", "behavior", "version_source",
                     "vendored_copies", "consumers", "external_consumers",
                     "verify_facets",
                 }
@@ -252,9 +272,14 @@ def _semantic_config(config: dict) -> dict:
             component["path"] = _normalized_semantic_path(
                 raw_component.get("path")
             )
-            component["boundary"] = _normalized_path_config(
+            normalized_boundary = _normalized_path_config(
                 raw_component.get("boundary", {})
             )
+            if isinstance(normalized_boundary, dict):
+                # Human-facing annotations describe a declaration but do not
+                # change provider selection, options, or generated lock data.
+                normalized_boundary.pop("note", None)
+            component["boundary"] = normalized_boundary
             component["behavior"] = _normalized_path_config(
                 raw_component.get("behavior")
             )
@@ -463,10 +488,21 @@ class _SourceAccessor:
 
     def read_file(self, repo_rel: str) -> bytes:
         """Read file bytes carrying canonical Git mode/type metadata."""
+        return self.read_file_limited(repo_rel, MAX_HASH_FILE_BYTES)
+
+    def read_file_limited(self, repo_rel: str, max_bytes: int) -> bytes:
+        """Read source bytes without exceeding a caller-supplied hard limit."""
+        if max_bytes < 0:
+            raise ValueError("File byte limit must be non-negative")
+        effective_limit = min(max_bytes, MAX_HASH_FILE_BYTES)
         src = self.source
         if src in {"head", "index"}:
             entry = self._captured_entry(repo_rel)
-            data = _git_cat_blob(self.repo_root, entry.oid)
+            data = _git_cat_blob(
+                self.repo_root,
+                entry.oid,
+                max_bytes=effective_limit,
+            )
             mode, object_type = entry.mode, entry.object_type
         else:
             full = self.repo_root / repo_rel
@@ -475,25 +511,19 @@ class _SourceAccessor:
                 if self.snapshot is not None
                 else None
             )
-            mode, object_type = _working_tree_mode(
+            data = _read_path_content(
                 self.repo_root,
-                repo_rel,
-                tracked_entry,
+                full,
+                "working-tree",
+                max_bytes=effective_limit,
+                tracked_entry=tracked_entry,
                 core_filemode=(
                     self.snapshot.filemode if self.snapshot is not None else True
                 ),
+                normalize=False,
             )
-            if full.is_symlink():
-                # Hash symlink target string (matches git's blob storage for symlinks).
-                target = os.readlink(full)
-                data = target.encode("utf-8") if isinstance(target, str) else target
-            else:
-                sz = full.stat().st_size
-                if sz > MAX_HASH_FILE_BYTES:
-                    raise GuardrailError(
-                        f"Hash guardrail exceeded: file too large ({sz} bytes) at {repo_rel}"
-                    )
-                data = full.read_bytes()
+            mode = data.git_mode
+            object_type = data.git_object_type
         _enforce_content_size(data, repo_rel)
         return _ModeAwareBytes(data, mode, object_type)
 
@@ -542,12 +572,10 @@ class _SourceAccessor:
                 raise ConfigError(
                     f"Version source escapes repository: {repo_rel}"
                 ) from exc
-            size = fpath.stat().st_size
-            if size > MAX_HASH_FILE_BYTES:
-                raise GuardrailError(
-                    f"Version source file too large ({size} bytes): {repo_rel}"
-                )
-        return self.read_file(repo_rel)
+        data = self.read_file_limited(repo_rel, MAX_VERSION_FILE_BYTES)
+        if getattr(data, "git_mode", None) == "120000":
+            raise ConfigError(f"Version source must not be a symlink: {repo_rel}")
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +607,8 @@ def _compute_component_entry(
             version_errors.append("Configured version source did not produce a version")
         elif compat is None:
             version_errors.append(
-                f"Configured version is not valid SemVer: {version!r}"
+                "Configured version is not valid SemVer: "
+                f"{_bounded_diagnostic_repr(version)}"
             )
     compat_mode = defaults.get("compat_mode", "major")
 
@@ -611,7 +640,9 @@ def _compute_component_entry(
     if provider is None:
         api_digest = None
         boundary_status = "error"
-        boundary_errors: List[str] = [f"Unknown boundary provider: {bp_name!r}"]
+        boundary_errors: List[str] = [
+            "Unknown boundary provider: " f"{_bounded_diagnostic_repr(bp_name)}"
+        ]
     else:
         try:
             provider_version = provider.version
@@ -631,6 +662,7 @@ def _compute_component_entry(
             boundary_cfg=boundary,
             source=source,
             read_file=accessor.read_file,
+            read_file_limited=accessor.read_file_limited,
             list_files=accessor.list_files,
         )
         try:
@@ -655,6 +687,7 @@ def _compute_component_entry(
             boundary_cfg=behavior_cfg,
             source=source,
             read_file=accessor.read_file,
+            read_file_limited=accessor.read_file_limited,
             list_files=accessor.list_files,
         )
         try:
@@ -767,8 +800,21 @@ def _generation_errors(lockfile: dict) -> List[str]:
             errors.append(f"{name}: {message}")
         for message in entry.get("vendored_errors", []):
             errors.append(f"{name}: {message}")
-        if entry.get("boundary_status") == "error":
+        boundary_status = entry.get("boundary_status")
+        boundary_provider = entry.get("boundary_provider")
+        if boundary_status == "error":
             messages = entry.get("boundary_errors", []) or ["Boundary computation failed"]
+            for message in messages:
+                errors.append(f"{name}: {message}")
+        elif boundary_status == "partial" and boundary_provider != "implicit":
+            # ``partial`` is an intentional built-in state only for the
+            # implicit provider, which publishes no separate boundary.  A
+            # custom provider's partial output is incomplete executable-policy
+            # output and must not be blessed merely because it supplied some
+            # hashable entries.
+            messages = entry.get("boundary_errors", []) or [
+                "Boundary provider returned an incomplete partial result"
+            ]
             for message in messages:
                 errors.append(f"{name}: {message}")
     return errors
@@ -866,7 +912,10 @@ def generate_lockfile_for_components(
     # Work on a detached JSON tree so callers' parsed source lock is never
     # mutated while composing a working-tree output.
     try:
-        merged = json.loads(json.dumps(merged, allow_nan=False))
+        merged = json.loads(
+            _bounded_json_dumps(merged, allow_nan=False),
+            parse_int=_bounded_json_int,
+        )
     except (TypeError, ValueError, RecursionError) as exc:
         raise ConfigError(f"Existing lockfile cannot be copied safely: {exc}") from exc
     if not isinstance(merged, dict):
@@ -875,7 +924,8 @@ def generate_lockfile_for_components(
         )
     if merged.get("schema") != LOCKFILE_SCHEMA:
         raise ConfigError(
-            f"Cannot partially update schema {merged.get('schema')!r}; "
+            "Cannot partially update schema "
+            f"{_bounded_diagnostic_repr(merged.get('schema'))}; "
             f"run a full `boundver generate` to create {LOCKFILE_SCHEMA}."
         )
     structure_issues = _lockfile_structure_issues(merged)
@@ -955,7 +1005,10 @@ def _lockfile_schema_issues(lockfile: dict) -> List[str]:
     if schema is None:
         return [f"LOCKFILE schema missing (expected {LOCKFILE_SCHEMA})"]
     if schema != LOCKFILE_SCHEMA:
-        return [f"LOCKFILE schema unsupported: {schema} (expected {LOCKFILE_SCHEMA})"]
+        return [
+            "LOCKFILE schema unsupported: "
+            f"{_bounded_diagnostic_text(schema)} (expected {LOCKFILE_SCHEMA})"
+        ]
     return []
 
 
@@ -967,10 +1020,40 @@ def _is_sha256_digest(value: object) -> bool:
     )
 
 
+def _append_unknown_field_issues(
+    issues: List[str],
+    value: object,
+    allowed: Set[str],
+    context: str,
+) -> None:
+    """Mirror JSON Schema ``additionalProperties: false`` without jsonschema."""
+    if not isinstance(value, dict):
+        return
+    for field in value:
+        if not isinstance(field, str):
+            issues.append(f"LOCKFILE malformed: {context} field names must be strings")
+        elif field not in allowed:
+            issues.append(f"LOCKFILE malformed: unknown field in {context}: {field}")
+
+
 def _lockfile_structure_issues(lockfile: dict) -> List[str]:
     issues: List[str] = []
     if not isinstance(lockfile, dict):
         return ["LOCKFILE malformed: root must be an object"]
+    _append_unknown_field_issues(
+        issues,
+        lockfile,
+        {
+            "$schema",
+            "schema",
+            "config_contract",
+            "config_digest",
+            "project",
+            "components",
+            "slices",
+        },
+        "lockfile",
+    )
     if not isinstance(lockfile.get("project"), str) or not lockfile.get("project"):
         issues.append("LOCKFILE malformed: project must be a non-empty string")
     if lockfile.get("config_contract") != SEMANTIC_CONFIG_VERSION:
@@ -989,9 +1072,17 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
     if not isinstance(lockfile.get("slices"), dict):
         issues.append("LOCKFILE malformed: slices must be an object")
     for name, comp in lockfile.get("components", {}).items():
+        if not isinstance(name, str) or not name:
+            issues.append("LOCKFILE malformed: component names must be non-empty strings")
         if not isinstance(comp, dict):
             issues.append(f"LOCKFILE malformed: component '{name}' must be an object")
             continue
+        _append_unknown_field_issues(
+            issues,
+            comp,
+            set(COMPONENT_METADATA_FIELDS) | {"fingerprints"},
+            f"component '{name}'",
+        )
         for field in ("version", "boundary_provider_version"):
             value = comp.get(field)
             if field not in comp or (value is not None and not isinstance(value, str)):
@@ -1025,7 +1116,13 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
         if not isinstance(fps, dict):
             issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints object")
         else:
-            for required in ("exact", "behavior", "boundary", "compat"):
+            _append_unknown_field_issues(
+                issues,
+                fps,
+                FACET_SET,
+                f"component '{name}' fingerprints",
+            )
+            for required in FACETS:
                 if required not in fps:
                     issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints.{required}")
                 elif fps[required] is not None and not _is_sha256_digest(
@@ -1041,6 +1138,12 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                 f"LOCKFILE malformed: component '{name}' semver must be an object"
             )
         else:
+            _append_unknown_field_issues(
+                issues,
+                semver,
+                {"compat_family", "api_surface", "exact_version"},
+                f"component '{name}' semver",
+            )
             for field in ("compat_family", "api_surface", "exact_version"):
                 value = semver.get(field)
                 if field not in semver or (
@@ -1082,9 +1185,23 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
             )
     if isinstance(lockfile.get("slices"), dict):
         for name, slice_entry in lockfile["slices"].items():
+            if not isinstance(name, str) or not name:
+                issues.append("LOCKFILE malformed: slice names must be non-empty strings")
             if not isinstance(slice_entry, dict):
                 issues.append(f"LOCKFILE malformed: slice '{name}' must be an object")
                 continue
+            _append_unknown_field_issues(
+                issues,
+                slice_entry,
+                {
+                    "description",
+                    "mode",
+                    "components",
+                    "fingerprint",
+                    "component_digests",
+                },
+                f"slice '{name}'",
+            )
             fingerprint = slice_entry.get("fingerprint")
             if not _is_sha256_digest(fingerprint):
                 issues.append(
@@ -1095,9 +1212,7 @@ def _lockfile_structure_issues(lockfile: dict) -> List[str]:
                 issues.append(
                     f"LOCKFILE malformed: slice '{name}' description must be a string"
                 )
-            if slice_entry.get("mode") not in {
-                "exact", "behavior", "boundary", "compat",
-            }:
+            if slice_entry.get("mode") not in FACET_SET:
                 issues.append(
                     f"LOCKFILE malformed: slice '{name}' mode must be one of "
                     "exact, behavior, boundary, or compat"
@@ -1178,20 +1293,21 @@ def verify_lockfile(
     if lockfile.get("config_digest") != current_config_digest:
         issues.append(
             "METADATA MISMATCH config_digest: "
-            f"lockfile={lockfile.get('config_digest')!r} "
-            f"current={current_config_digest!r}"
+            f"lockfile={_bounded_diagnostic_repr(lockfile.get('config_digest'))} "
+            f"current={_bounded_diagnostic_repr(current_config_digest)}"
         )
     if lockfile.get("project") != config.get("project", "unknown"):
         issues.append(
-            f"METADATA MISMATCH project: lockfile={lockfile.get('project')!r} "
-            f"current={config.get('project', 'unknown')!r}"
+            "METADATA MISMATCH project: lockfile="
+            f"{_bounded_diagnostic_repr(lockfile.get('project'))} current="
+            f"{_bounded_diagnostic_repr(config.get('project', 'unknown'))}"
         )
         if fail_fast:
             return issues
 
     selected = set(components_filter or [])
     use_filter = len(selected) > 0
-    supported_facets = {"exact", "behavior", "boundary", "compat"}
+    supported_facets = FACET_SET
     explicit_gated_facets: Optional[Set[str]] = (
         set(facets) if facets is not None else None
     )
@@ -1319,9 +1435,19 @@ def verify_lockfile(
 
         for field in COMPONENT_METADATA_FIELDS:
             if locked_comp.get(field) != current_comp.get(field):
+                locked_value = _bounded_json_dumps(
+                    locked_comp.get(field),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                )
+                current_value = _bounded_json_dumps(
+                    current_comp.get(field),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                )
                 issues.append(
                     f"METADATA MISMATCH {name}.{field}: "
-                    f"lockfile={locked_comp.get(field)!r} current={current_comp.get(field)!r}"
+                    f"lockfile={locked_value} current={current_value}"
                 )
                 if fail_fast:
                     return issues
@@ -1504,8 +1630,9 @@ def migrate_lockfile(lockfile: dict) -> dict:
     Raises ``MigrationError`` if the schema is absent, unrecognised, or needs
     repository content to regenerate its fingerprints.
 
-    Hash contract v1/v2 lockfiles cannot be mechanically upgraded because
-    their fingerprints must be recomputed from repository content.
+    Hash contract v1/v2 lockfiles and v3 locks with an older semantic-config
+    contract cannot be mechanically upgraded because their fingerprints must
+    be recomputed from repository content.
     """
     schema = lockfile.get("schema")
     if schema is None:
@@ -1523,6 +1650,15 @@ def migrate_lockfile(lockfile: dict) -> dict:
             f"{schema} does not bind every file's Git mode/type and semantic "
             "configuration, so it cannot be migrated without repository content. "
             f"Run `boundver generate` to create a {LOCKFILE_SCHEMA} lockfile."
+        )
+    config_contract = lockfile.get("config_contract")
+    if config_contract != SEMANTIC_CONFIG_VERSION:
+        actual = config_contract if isinstance(config_contract, str) else "missing"
+        raise MigrationError(
+            f"{schema} uses semantic configuration contract {actual!r}, but this "
+            f"release requires {SEMANTIC_CONFIG_VERSION!r}. Semantic digests "
+            "cannot be relabelled or migrated without repository content. Run "
+            f"`boundver generate` to create a current {LOCKFILE_SCHEMA} lockfile."
         )
     migrated = dict(lockfile)
     migrated.pop("generated_at", None)          # legacy field removed in v1 final

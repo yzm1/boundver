@@ -1,16 +1,39 @@
 # Development artifacts
+.Python
 .venv/
+venv/
+env/
+ENV/
+__pypackages__/
+.pdm-python
+.pdm-build/
+.pixi/
 __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.tox/
+.nox/
+.hypothesis/
+.cache/
 .mypy_cache/
+.pyre/
+.pytype/
 .ruff_cache/
 htmlcov/
 .coverage
+.coverage.*
+coverage.xml
 *.egg-info/
+.eggs/
+*.egg
+.installed.cfg
+MANIFEST
 dist/
 build/
+sdist/
+wheels/
+site/
 
 # Git metadata (not needed inside the image build context)
 .git/
@@ -20,6 +43,7 @@ build/
 .env.*
 .npmrc
 .pypirc
+.pyirc
 *.key
 *.pem
 
@@ -28,13 +52,22 @@ build/
 Thumbs.db
 *.swp
 *.swo
+*~
+tempCodeRunnerFile.py
+*.log
+pip-delete-this-directory.txt
 
 # Docs (not needed at runtime)
 docs/
 spec/
 examples/
 tests/
-scripts/
+
+# Only the reviewed hash lock is an image-build input from scripts/.
+scripts/*
+!scripts/requirements/
+scripts/requirements/*
+!scripts/requirements/action.lock
 
 # CI configs (not needed in image)
 .github/

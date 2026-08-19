@@ -1,15 +1,15 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v1",
-  "config_digest": "eb1302fd9a4d8124e4491b7ce2a3b5021480c3b0a61a838cb0c27e719e58593d",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "e1c6720a5a490d738ac54a41a93aa249266dccda3f5dd1d2c43c68d753467744",
   "project": "example-python-package",
   "components": {
     "pkg": {
       "version": "1.4.0",
       "path": "examples/python-package/pkg",
       "boundary_provider": "python-exports",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "ok",
       "consumers": [],
       "external_consumers": [],

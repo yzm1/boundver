@@ -1,22 +1,22 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v1",
-  "config_digest": "f9477a97145be72bf7afbe83416aa10397b284875522a344a848c5ce5c23d6e1",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "0be146fd7df021a21d5ad9c71c58f3919473669acdbcecb6031dbaae1668484f",
   "project": "boundver",
   "components": {
     "boundver": {
       "version": null,
       "path": "src/boundver",
       "boundary_provider": "python-exports",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "ok",
       "consumers": [],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "246aa0c33d5dcd4534d4cbb779d34c350a94b7aed17f5cad0d3f5922c9d1e2b5",
+        "exact": "c227cf3b187bfbfcbf6af59a6642157460423ab63903b179ad9b24e6144e183f",
         "behavior": null,
-        "boundary": "a2549aeb979bdce09392c4f92450f3ad113f5c762b9f0ac97efb6ef57b527667",
+        "boundary": "69c942ff600a0cd45e3992785b2261c512dc46e2f8d855baf7b960d20911b485",
         "compat": null
       },
       "semver": {
@@ -29,16 +29,16 @@
       "version": null,
       "path": "spec",
       "boundary_provider": "json-file",
-      "boundary_provider_version": "2",
+      "boundary_provider_version": "3",
       "boundary_status": "ok",
       "consumers": [
         "boundver"
       ],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "433c760e33844f87968316568376120ac021f473325142857623aa3059b67077",
+        "exact": "4989111f6d6e4d7bb8d7ca756d96e5298cc111f1e71fc5b04e7e89266d4dd1dc",
         "behavior": null,
-        "boundary": "9ba4f4336e34c2c02cd2a619a3c2717cf2aa59696bb351d627db49170ed78ffb",
+        "boundary": "943a461280a6c2b2ed10512dc2e2e83239e41f9d17703f3e90ead6e756179cb3",
         "compat": null
       },
       "semver": {
@@ -55,9 +55,9 @@
       "components": [
         "boundver"
       ],
-      "fingerprint": "c048ba5bcb8dc1ea2b869c814fde1bab1dbd5061a342b36c17f4ee05e7f81093",
+      "fingerprint": "d3cc060e88900f4c4fc6c418937911a8c75335f4f816be8ca549097d8abebfcd",
       "component_digests": {
-        "boundver": "a2549aeb979bdce09392c4f92450f3ad113f5c762b9f0ac97efb6ef57b527667"
+        "boundver": "69c942ff600a0cd45e3992785b2261c512dc46e2f8d855baf7b960d20911b485"
       }
     },
     "spec": {
@@ -66,9 +66,9 @@
       "components": [
         "spec"
       ],
-      "fingerprint": "24f57450198ed7e846bb61d355404f7f4a22b2a31fa88c585e6df470e4552482",
+      "fingerprint": "26ec1ceb780d5cc8b4a0be90ed4829d94becb1357cdcc3f31c0884606eb66e0f",
       "component_digests": {
-        "spec": "433c760e33844f87968316568376120ac021f473325142857623aa3059b67077"
+        "spec": "4989111f6d6e4d7bb8d7ca756d96e5298cc111f1e71fc5b04e7e89266d4dd1dc"
       }
     },
     "all": {
@@ -78,10 +78,10 @@
         "boundver",
         "spec"
       ],
-      "fingerprint": "1f8b190a371a6272fd41f705de3b815e4b4445087a47aa889cb2d07f013e6fb6",
+      "fingerprint": "5269321205eaa83d38f0effb3705db47519ed0c3306ee828ffd8d2efe0ae8369",
       "component_digests": {
-        "boundver": "246aa0c33d5dcd4534d4cbb779d34c350a94b7aed17f5cad0d3f5922c9d1e2b5",
-        "spec": "433c760e33844f87968316568376120ac021f473325142857623aa3059b67077"
+        "boundver": "c227cf3b187bfbfcbf6af59a6642157460423ab63903b179ad9b24e6144e183f",
+        "spec": "4989111f6d6e4d7bb8d7ca756d96e5298cc111f1e71fc5b04e7e89266d4dd1dc"
       }
     }
   }

@@ -1,12 +1,253 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.diff.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/cli-output.diff.schema.json",
   "title": "boundver diff --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver diff --format json <old> <new>`.",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullableSha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nullableString": {
+      "type": ["string", "null"]
+    },
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "uniqueStringList": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "nullableStringList": {
+      "oneOf": [
+        { "$ref": "#/$defs/stringList" },
+        { "type": "null" }
+      ]
+    },
+    "semver": {
+      "type": "object",
+      "required": ["compat_family", "api_surface", "exact_version"],
+      "properties": {
+        "compat_family": { "$ref": "#/$defs/nullableString" },
+        "api_surface": { "$ref": "#/$defs/nullableString" },
+        "exact_version": { "$ref": "#/$defs/nullableString" }
+      },
+      "additionalProperties": false
+    },
+    "nullableObject": {
+      "type": ["object", "null"]
+    },
+    "digestMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    },
+    "nullableDigestMap": {
+      "oneOf": [
+        { "$ref": "#/$defs/digestMap" },
+        { "type": "null" }
+      ]
+    },
+    "sliceDigestMap": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/nullableSha256" }
+    },
+    "projectChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nonEmptyString" },
+        "new": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+    "configDigestChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/sha256" },
+        "new": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "versionChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableString" },
+        "new": { "$ref": "#/$defs/nullableString" }
+      },
+      "additionalProperties": false
+    },
+    "pathChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nonEmptyString" },
+        "new": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+    "boundaryProviderChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nonEmptyString" },
+        "new": { "$ref": "#/$defs/nonEmptyString" }
+      },
+      "additionalProperties": false
+    },
+    "boundaryProviderVersionChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableString" },
+        "new": { "$ref": "#/$defs/nullableString" }
+      },
+      "additionalProperties": false
+    },
+    "boundaryStatusChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "type": "string", "enum": ["ok", "partial", "error"] },
+        "new": { "type": "string", "enum": ["ok", "partial", "error"] }
+      },
+      "additionalProperties": false
+    },
+    "semverChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/semver" },
+        "new": { "$ref": "#/$defs/semver" }
+      },
+      "additionalProperties": false
+    },
+    "consumerListChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/uniqueStringList" },
+        "new": { "$ref": "#/$defs/uniqueStringList" }
+      },
+      "additionalProperties": false
+    },
+    "boundaryMetadataChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableObject" },
+        "new": { "$ref": "#/$defs/nullableObject" }
+      },
+      "additionalProperties": false
+    },
+    "optionalStringListChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableStringList" },
+        "new": { "$ref": "#/$defs/nullableStringList" }
+      },
+      "additionalProperties": false
+    },
+    "optionalDigestMapChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableDigestMap" },
+        "new": { "$ref": "#/$defs/nullableDigestMap" }
+      },
+      "additionalProperties": false
+    },
+    "descriptionChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "type": "string" },
+        "new": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "modeChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "type": "string", "enum": ["exact", "behavior", "boundary", "compat"] },
+        "new": { "type": "string", "enum": ["exact", "behavior", "boundary", "compat"] }
+      },
+      "additionalProperties": false
+    },
+    "sliceComponentsChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/stringList" },
+        "new": { "$ref": "#/$defs/stringList" }
+      },
+      "additionalProperties": false
+    },
+    "sliceComponentDigestsChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/sliceDigestMap" },
+        "new": { "$ref": "#/$defs/sliceDigestMap" }
+      },
+      "additionalProperties": false
+    },
+    "digestChange": {
+      "type": "object",
+      "required": ["old", "new"],
+      "properties": {
+        "old": { "$ref": "#/$defs/nullableSha256" },
+        "new": { "$ref": "#/$defs/nullableSha256" }
+      },
+      "additionalProperties": false
+    },
+    "componentPresence": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "slicePresence": {
+      "type": "object",
+      "required": ["name", "fingerprint"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "fingerprint": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    }
+  },
   "type": "object",
-  "required": ["components", "slices"],
+  "required": ["changed_metadata", "components", "slices"],
   "additionalProperties": false,
   "properties": {
+    "changed_metadata": {
+      "type": "object",
+      "description": "Changed lockfile-level semantic metadata.",
+      "properties": {
+        "project": { "$ref": "#/$defs/projectChange" },
+        "config_digest": { "$ref": "#/$defs/configDigestChange" }
+      },
+      "additionalProperties": false
+    },
     "components": {
       "type": "object",
       "required": ["added", "removed", "changed", "unchanged"],
@@ -14,25 +255,11 @@
       "properties": {
         "added": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "properties": {
-              "name": { "type": "string" },
-              "version": { "type": ["string", "null"] }
-            }
-          }
+          "items": { "$ref": "#/$defs/componentPresence" }
         },
         "removed": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "properties": {
-              "name": { "type": "string" },
-              "version": { "type": ["string", "null"] }
-            }
-          }
+          "items": { "$ref": "#/$defs/componentPresence" }
         },
         "changed": {
           "type": "array",
@@ -40,41 +267,52 @@
             "type": "object",
             "required": ["name", "old_version", "new_version", "changed_facets", "changed_metadata", "summary"],
             "properties": {
-              "name": { "type": "string" },
+              "name": { "type": "string", "minLength": 1 },
               "old_version": { "type": ["string", "null"] },
               "new_version": { "type": ["string", "null"] },
-              "summary": { "type": "string" },
+              "summary": { "type": "string", "minLength": 1 },
               "changed_facets": {
                 "type": "object",
                 "description": "Map of facet name to old/new digest pair.",
-                "additionalProperties": {
-                  "type": "object",
-                  "required": ["old", "new"],
-                  "properties": {
-                    "old": { "type": ["string", "null"] },
-                    "new": { "type": ["string", "null"] }
-                  }
-                }
+                "properties": {
+                  "exact": { "$ref": "#/$defs/digestChange" },
+                  "behavior": { "$ref": "#/$defs/digestChange" },
+                  "boundary": { "$ref": "#/$defs/digestChange" },
+                  "compat": { "$ref": "#/$defs/digestChange" }
+                },
+                "additionalProperties": false
               },
               "changed_metadata": {
                 "type": "object",
-                "description": "Map of metadata field name to old/new values.",
-                "additionalProperties": {
-                  "type": "object",
-                  "required": ["old", "new"],
-                  "properties": {
-                    "old": {},
-                    "new": {}
-                  },
-                  "additionalProperties": false
-                }
+                "description": "Changed persisted component metadata.",
+                "properties": {
+                  "version": { "$ref": "#/$defs/versionChange" },
+                  "path": { "$ref": "#/$defs/pathChange" },
+                  "boundary_provider": { "$ref": "#/$defs/boundaryProviderChange" },
+                  "boundary_provider_version": { "$ref": "#/$defs/boundaryProviderVersionChange" },
+                  "boundary_status": { "$ref": "#/$defs/boundaryStatusChange" },
+                  "semver": { "$ref": "#/$defs/semverChange" },
+                  "consumers": { "$ref": "#/$defs/consumerListChange" },
+                  "external_consumers": { "$ref": "#/$defs/consumerListChange" },
+                  "boundary_metadata": { "$ref": "#/$defs/boundaryMetadataChange" },
+                  "version_errors": { "$ref": "#/$defs/optionalStringListChange" },
+                  "exact_errors": { "$ref": "#/$defs/optionalStringListChange" },
+                  "behavior_errors": { "$ref": "#/$defs/optionalStringListChange" },
+                  "boundary_errors": { "$ref": "#/$defs/optionalStringListChange" },
+                  "warnings": { "$ref": "#/$defs/optionalStringListChange" },
+                  "vendored_copies": { "$ref": "#/$defs/optionalStringListChange" },
+                  "vendored_digests": { "$ref": "#/$defs/optionalDigestMapChange" },
+                  "vendored_errors": { "$ref": "#/$defs/optionalStringListChange" }
+                },
+                "additionalProperties": false
               }
-            }
+            },
+            "additionalProperties": false
           }
         },
         "unchanged": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },
@@ -85,41 +323,39 @@
       "properties": {
         "added": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "properties": {
-              "name": { "type": "string" },
-              "fingerprint": { "type": ["string", "null"] }
-            }
-          }
+          "items": { "$ref": "#/$defs/slicePresence" }
         },
         "removed": {
           "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "properties": {
-              "name": { "type": "string" },
-              "fingerprint": { "type": ["string", "null"] }
-            }
-          }
+          "items": { "$ref": "#/$defs/slicePresence" }
         },
         "changed": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["name", "old", "new"],
+            "required": ["name", "old", "new", "changed_metadata"],
             "properties": {
-              "name": { "type": "string" },
-              "old": { "type": ["string", "null"] },
-              "new": { "type": ["string", "null"] }
-            }
+              "name": { "type": "string", "minLength": 1 },
+              "old": { "$ref": "#/$defs/sha256" },
+              "new": { "$ref": "#/$defs/sha256" },
+              "changed_metadata": {
+                "type": "object",
+                "description": "Changed non-fingerprint slice fields.",
+                "properties": {
+                  "description": { "$ref": "#/$defs/descriptionChange" },
+                  "mode": { "$ref": "#/$defs/modeChange" },
+                  "components": { "$ref": "#/$defs/sliceComponentsChange" },
+                  "component_digests": { "$ref": "#/$defs/sliceComponentDigestsChange" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
           }
         },
         "unchanged": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     }

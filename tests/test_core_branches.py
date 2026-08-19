@@ -10,12 +10,7 @@ import unittest
 from pathlib import Path
 
 import boundver.core as core
-
-
-def _init_git_repo(root: Path) -> None:
-    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+from tests._repo_fixtures import init_git_repo
 
 
 class GenerateLockfileCompatModeTests(unittest.TestCase):
@@ -38,10 +33,10 @@ class GenerateLockfileCompatModeTests(unittest.TestCase):
         }
 
     def test_semver_major_minor_compat_mode(self):
-        """Lines 105-106: semver_major_minor compat mode uses major.minor as compat family."""
+        """semver_major_minor compatibility uses major.minor as its family."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -57,7 +52,7 @@ class GenerateLockfileCompatModeTests(unittest.TestCase):
         """A declared tag source that resolves no version remains fatal."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -76,7 +71,7 @@ class GenerateLockfileUnknownProviderTests(unittest.TestCase):
         """Allowing null slice inputs does not bless an unknown provider."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -103,10 +98,10 @@ class SliceStrictModeTests(unittest.TestCase):
         (root / "svc" / "main.py").write_text("x=1\n")
 
     def test_compat_slice_strict_raises_when_compat_none(self):
-        """Line 167: compat slice with strict=True raises when compat is None."""
+        """A strict compatibility slice raises when compatibility is unavailable."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             self._setup(root)
             cfg = {
                 "project": "p",
@@ -126,10 +121,10 @@ class SliceStrictModeTests(unittest.TestCase):
             self.assertIn("compat", str(cm.exception).lower())
 
     def test_boundary_slice_strict_raises_when_boundary_none(self):
-        """Lines 519-520 (core.py pre-refactor): boundary slice strict raises."""
+        """A strict boundary slice raises when a boundary digest is unavailable."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             self._setup(root)
             cfg = {
                 "project": "p",
@@ -147,10 +142,10 @@ class SliceStrictModeTests(unittest.TestCase):
                 core.generate_lockfile(cfg, root, source="working-tree", strict=True)
 
     def test_unknown_slice_mode_raises(self):
-        """Line 170 / 211: unknown slice mode raises ValueError."""
+        """An unknown slice mode raises ValueError."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             self._setup(root)
             cfg = {
                 "project": "p",
@@ -168,7 +163,7 @@ class SliceMissingComponentTests(unittest.TestCase):
     """Test _recompute_slice_entry when component map is missing a component."""
 
     def test_recompute_slice_entry_missing_component_gives_none_digest(self):
-        """Line 156-157: if comp_entry is None, digest_parts entry is None."""
+        """A missing component entry contributes a null digest part."""
         result = core._recompute_slice_entry(
             "s1",
             {"mode": "exact", "components": ["ghost"]},
@@ -178,7 +173,7 @@ class SliceMissingComponentTests(unittest.TestCase):
         self.assertIsNone(result["component_digests"]["ghost"])
 
     def test_recompute_slice_entry_unknown_mode_raises(self):
-        """Line 211 / 575 (core.py): unknown mode in _recompute_slice_entry raises."""
+        """_recompute_slice_entry rejects an unknown slice mode."""
         comp = {"fingerprints": {"exact": "abc", "boundary": None, "compat": None}}
         with self.assertRaises(ValueError):
             core._recompute_slice_entry(
@@ -207,10 +202,10 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
         }
 
     def test_unknown_component_raises(self):
-        """Line 235: generate_lockfile_for_components raises for unknown component."""
+        """generate_lockfile_for_components rejects an unknown component."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             with self.assertRaises(ValueError) as cm:
                 core.generate_lockfile_for_components(
@@ -224,7 +219,7 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
         """A subset cannot silently create an incomplete first lockfile."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             out_path = root / "boundary.lock.json"
             self.assertFalse(out_path.exists())
@@ -241,7 +236,7 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
         """Partial updates must not mix v1 and v3 hashing contracts."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             out_path = root / "boundary.lock.json"
             out_path.write_text(
@@ -268,7 +263,7 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
         """generate_lockfile_for_components merges into an existing lockfile."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             cfg = self._setup(root)
             out_path = root / "boundary.lock.json"
             # Generate full lockfile first
@@ -292,7 +287,7 @@ class VendoredDriftTests(unittest.TestCase):
         """Allowing null slice inputs does not bless vendored drift."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "vendor" / "svc").mkdir(parents=True)
@@ -321,10 +316,10 @@ class ValidateConfigBranchTests(unittest.TestCase):
     """Tests for validate_config edge cases."""
 
     def test_validate_config_boundary_path_not_found_reports_error(self):
-        """Lines 761-762: boundary path that doesn't exist produces an error."""
+        """A nonexistent boundary path produces a validation error."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             cfg = {
                 "project": "p",
@@ -346,7 +341,7 @@ class ValidateConfigBranchTests(unittest.TestCase):
         """Availability is enforced by strict generation, not base validation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             cfg = {
                 "project": "p",
@@ -429,18 +424,13 @@ class DiffLockfilesTests(unittest.TestCase):
 class ExplainComponentChangesTests(unittest.TestCase):
     """Tests for explain_component_changes boundary paths section."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_explain_component_with_boundary_paths_and_changes(self):
-        """Lines 1108-1110: explain shows boundary-relevant changed files."""
+        """explain shows boundary-relevant changed files."""
         import io
         from contextlib import redirect_stdout
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("v: 1\n")
             (root / "svc" / "impl.py").write_text("x=1\n")
@@ -466,12 +456,12 @@ class ExplainComponentChangesTests(unittest.TestCase):
             self.assertIn("api.yaml", out)
 
     def test_explain_component_with_boundary_paths_no_boundary_changes(self):
-        """Lines 1116: explain shows 'Boundary-relevant changed files: none' when no boundary changes."""
+        """explain reports when no boundary-relevant files changed."""
         import io
         from contextlib import redirect_stdout
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("v: 1\n")
             (root / "svc" / "impl.py").write_text("x=1\n")
@@ -498,16 +488,11 @@ class ExplainComponentChangesTests(unittest.TestCase):
 class ImplicitProviderWithPathsTests(unittest.TestCase):
     """Test ImplicitProvider when paths are declared (delegates to PathHashProvider)."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_implicit_provider_with_paths_produces_boundary_digest(self):
-        """Line 224: ImplicitProvider delegates to PathHashProvider when paths declared."""
+        """ImplicitProvider delegates to PathHashProvider when paths are declared."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("v: 1\n")
             cfg = {
@@ -532,19 +517,14 @@ class ImplicitProviderWithPathsTests(unittest.TestCase):
 class LeafProviderTests(unittest.TestCase):
     """Test LeafProvider methods."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_leaf_provider_validate_config_returns_empty(self):
-        """Line 269: LeafProvider.validate_config returns []."""
+        """LeafProvider.validate_config accepts its minimal configuration."""
         from boundver.providers import LeafProvider
         result = LeafProvider().validate_config({}, "svc", Path("."))
         self.assertEqual(result, [])
 
     def test_leaf_provider_explain_diff_returns_string(self):
-        """Line 277: LeafProvider.explain_diff returns message."""
+        """LeafProvider.explain_diff describes a leaf-boundary change."""
         from boundver.providers import LeafProvider
         result = LeafProvider().explain_diff(None, None, None)
         self.assertIsInstance(result, str)
@@ -554,7 +534,7 @@ class LeafProviderTests(unittest.TestCase):
         """Leaf provider generates no boundary digest but status is 'ok'."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             cfg = {
@@ -576,13 +556,8 @@ class LeafProviderTests(unittest.TestCase):
 class PathHashProviderTests(unittest.TestCase):
     """Test PathHashProvider edge cases."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_path_hash_provider_validate_config_missing_path(self):
-        """Lines 188-196: PathHashProvider.validate_config reports missing paths."""
+        """PathHashProvider.validate_config reports missing paths."""
         from boundver.providers import PathHashProvider
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -593,13 +568,13 @@ class PathHashProviderTests(unittest.TestCase):
             self.assertTrue(any("api.yaml" in e or "not found" in e.lower() for e in errors))
 
     def test_path_hash_provider_explain_diff(self):
-        """Line 204: PathHashProvider.explain_diff returns appropriate string."""
+        """PathHashProvider.explain_diff describes path-content changes."""
         from boundver.providers import PathHashProvider
         result = PathHashProvider().explain_diff(None, None, None)
         self.assertIsInstance(result, str)
 
     def test_implicit_provider_explain_diff(self):
-        """Line 245: ImplicitProvider.explain_diff returns appropriate string."""
+        """ImplicitProvider.explain_diff describes implicit-boundary changes."""
         from boundver.providers import ImplicitProvider
         result = ImplicitProvider().explain_diff(None, None, None)
         self.assertIsInstance(result, str)
@@ -628,7 +603,7 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
         """Boundary path containing '..' that escapes component root is rejected."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "outside.yaml").write_bytes(b"data")
             cfg = {
@@ -651,7 +626,7 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
         """vendored_copies that is not a list of strings is rejected."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             cfg = {
                 "project": "p",
@@ -671,7 +646,7 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
         """version_source that is not a dict is rejected."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             cfg = {
                 "project": "p",
@@ -691,7 +666,7 @@ class ValidateConfigMiscBranchTests(unittest.TestCase):
         """Boundary path that escapes repository root via symlink traversal is rejected."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             # Place the component at repo root itself so .. escapes the repo
             cfg = {
                 "project": "p",
@@ -856,17 +831,13 @@ class ValidateConfigEdgeCaseTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class MainDryRunTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_generate_dry_run_does_not_write_lockfile(self):
         import io, sys as _sys
         from contextlib import redirect_stdout
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -901,10 +872,6 @@ import os as import_os
 
 
 class MainVerifyDriftTextTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_verify_drifted_outputs_red_text(self):
         """verify command prints a LOCKFILE OUT OF DATE header when drift is found."""
@@ -912,7 +879,7 @@ class MainVerifyDriftTextTests(unittest.TestCase):
         from contextlib import redirect_stdout
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -972,16 +939,12 @@ class MainVerifyDriftTextTests(unittest.TestCase):
 
 
 class MainExplainNonZeroTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_explain_unknown_component_exits_2(self):
         import sys as _sys
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1009,17 +972,13 @@ class MainExplainNonZeroTests(unittest.TestCase):
 
 
 class MainInitDefaultsTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_init_creates_config_with_components_key(self):
         """boundver init writes boundary.config.json with a components block."""
         import sys as _sys
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             old_argv = _sys.argv[:]
             old_dir = import_os.getcwd()
             import_os.chdir(str(root))
@@ -1043,10 +1002,6 @@ class MainInitDefaultsTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ExplainComponentSourceTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_explain_no_boundary_paths_returns_early(self):
         """explain_component_changes returns 0 and notes no boundary paths."""
@@ -1055,7 +1010,7 @@ class ExplainComponentSourceTests(unittest.TestCase):
         from boundver.core import explain_component_changes
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1082,7 +1037,7 @@ class ExplainComponentSourceTests(unittest.TestCase):
         from boundver.core import explain_component_changes
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1110,10 +1065,6 @@ class ExplainComponentSourceTests(unittest.TestCase):
 
 
 class WhyComponentVersionTests(unittest.TestCase):
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
 
     def test_why_shows_version_when_present(self):
         """why_component prints Version: line when lockfile has a version."""
@@ -1121,7 +1072,7 @@ class WhyComponentVersionTests(unittest.TestCase):
         from contextlib import redirect_stdout
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             (root / "svc" / "version.json").write_text('{"version": "1.0.0"}\n')
@@ -1226,18 +1177,13 @@ class ValidateConfigCustomProviderListTests(unittest.TestCase):
 class ExplainGitDiffFailureTests(unittest.TestCase):
     """explain_component_changes returns exit 2 when git diff fails."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_explain_returns_2_when_git_diff_fails(self):
-        """explain_component_changes returns 2 when the git diff subprocess fails (lines 150-152)."""
+        """explain_component_changes returns 2 when the Git diff subprocess fails."""
         from unittest.mock import patch
         import subprocess as _sp
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("openapi: 3.0.0\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1253,10 +1199,10 @@ class ExplainGitDiffFailureTests(unittest.TestCase):
             self.assertEqual(rc, 2)
 
     def test_explain_index_source_uses_cached_diff(self):
-        """explain_component_changes with source='index' exercises the --cached diff path (_output.py:142)."""
+        """Index-source explain uses Git's cached diff."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x = 1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1273,7 +1219,7 @@ class ExplainGitDiffFailureTests(unittest.TestCase):
             self.assertIn(rc, (0, 1, 2))
 
     def test_explain_skips_malformed_diff_lines(self):
-        """Diff output lines with no tab are silently skipped (_output.py:158)."""
+        """Malformed diff records without a tab are silently skipped."""
         from unittest.mock import patch, MagicMock
         mock_result = MagicMock()
         # Mix of a valid line and a malformed line lacking a tab.
@@ -1294,14 +1240,9 @@ class ExplainGitDiffFailureTests(unittest.TestCase):
 class WyComponentErrorPathTests(unittest.TestCase):
     """why_component error branches in _output.py."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def _base_fixtures(self, root: Path):
         """Create minimal committed state and return (config, lockfile)."""
-        self._init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "main.py").write_text("x = 1\n")
         subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1317,7 +1258,7 @@ class WyComponentErrorPathTests(unittest.TestCase):
         return cfg, lockfile
 
     def test_why_component_generate_failure_returns_2(self):
-        """why_component returns 2 when generate_lockfile throws (_output.py:264-266)."""
+        """why_component returns 2 when lockfile generation raises."""
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1328,7 +1269,7 @@ class WyComponentErrorPathTests(unittest.TestCase):
             self.assertEqual(rc, 2)
 
     def test_why_component_git_diff_failure_is_graceful(self):
-        """why_component continues when git diff fails (_output.py:327-328).
+        """why_component continues when Git diff fails.
 
         The git diff section in why_component only runs for source='working-tree'.
         When _git_run raises CalledProcessError, the except block fires and the
@@ -1357,16 +1298,10 @@ class WyComponentErrorPathTests(unittest.TestCase):
 
 
 class LockfileWorkingTreeReadTests(unittest.TestCase):
-    """_lockfile.py line 78: working-tree full.read_bytes() path in _make_read_file."""
-
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+    """Working-tree reads performed by _make_read_file."""
 
     def test_working_tree_boundary_reads_file_bytes(self):
-        """generate_lockfile with working-tree source and explicit boundary paths reads files
-        via full.read_bytes() (_lockfile.py:80-81)."""
+        """Working-tree generation reads explicit boundary paths from disk."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "svc").mkdir()
@@ -1387,7 +1322,7 @@ class LockfileWorkingTreeReadTests(unittest.TestCase):
             self.assertIsNotNone(fp.get("boundary"))
 
     def test_working_tree_boundary_digest_changes_with_content(self):
-        """Changing a boundary file on disk changes the boundary digest (confirms line 80 is active)."""
+        """Changing a boundary file on disk changes the boundary digest."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "svc").mkdir()
@@ -1410,11 +1345,10 @@ class LockfileWorkingTreeReadTests(unittest.TestCase):
             self.assertNotEqual(fp1, fp2)
 
     def test_index_source_boundary_reads_via_git_cat_blob(self):
-        """generate_lockfile with source='index' reads boundary files via git cat-file
-        (_lockfile.py:78 — the index branch of _make_read_file)."""
+        """Index-source generation reads boundary files through Git blobs."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.py").write_text("def api(): pass\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1434,8 +1368,7 @@ class LockfileWorkingTreeReadTests(unittest.TestCase):
             self.assertIsNotNone(fp.get("boundary"))
 
     def test_version_file_read_working_tree_source(self):
-        """generate_lockfile reads version from a file on disk for working-tree source
-        (_lockfile.py:52 — the working-tree branch of _version_read_file)."""
+        """Working-tree generation reads version metadata from disk."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "svc").mkdir()
@@ -1455,11 +1388,10 @@ class LockfileWorkingTreeReadTests(unittest.TestCase):
             self.assertEqual(lock["components"]["svc"]["version"], "2.0.0")
 
     def test_version_file_read_index_source(self):
-        """generate_lockfile reads version from staged file for index source
-        (_lockfile.py:50 — the index branch of _version_read_file)."""
+        """Index-source generation reads version metadata from the staged file."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "package.json").write_text('{"version": "3.0.0"}\n')
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -1479,11 +1411,10 @@ class LockfileWorkingTreeReadTests(unittest.TestCase):
 
 
 class StrictBoundarySliceTests(unittest.TestCase):
-    """_lockfile.py lines 162-163: slice references a component absent from lockfile."""
+    """Strict slices referencing components absent from a partial lockfile."""
 
     def test_slice_component_not_in_lockfile_gets_null_digest(self):
-        """When a slice lists a component name not present in the lockfile components dict,
-        the component is assigned None and the slice digest reflects that (_lockfile.py:162-163)."""
+        """A component absent from a partial lockfile contributes a null slice digest."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "svc").mkdir()
@@ -1513,20 +1444,14 @@ class StrictBoundarySliceTests(unittest.TestCase):
 
 
 class GitListHeadFilesFallbackTests(unittest.TestCase):
-    """_git.py lines 135-139: list_head_files cat-file fallback for a single committed file."""
-
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+    """list_head_files cat-file fallback for a single committed file."""
 
     def test_list_head_files_returns_single_file_path(self):
-        """list_head_files with a path pointing at a single file (blob) falls back to cat-file -t
-        and returns the single file path (_git.py:135-139)."""
+        """A single-file path falls back to cat-file and returns that file."""
         from boundver._git import list_head_files
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "readme.txt").write_text("hello\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -1535,49 +1460,46 @@ class GitListHeadFilesFallbackTests(unittest.TestCase):
             self.assertEqual(result, ["readme.txt"])
 
     def test_list_head_files_cat_file_fallback_via_mock(self):
-        """When ls-tree returns empty output, cat-file -t is tried (lines 135-139).
+        """When ls-tree returns empty output, cat-file -t is tried.
         Uses mock to force ls-tree to return empty so the fallback branch is taken."""
         from unittest.mock import patch, MagicMock
         from boundver._git import list_head_files
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            ls_tree = MagicMock(stdout=b"")
             cat_file = MagicMock(stdout="blob")
-            with patch("boundver._git._git_run_bytes", return_value=ls_tree) as run_bytes, patch(
+            with patch(
+                "boundver._git._iter_bounded_git_paths", return_value=iter(())
+            ) as iter_paths, patch(
                 "boundver._git._git_run", return_value=cat_file
             ) as run_text:
                 result = list_head_files(root, "readme.txt")
             self.assertEqual(result, ["readme.txt"])
-            run_bytes.assert_called_once()
+            iter_paths.assert_called_once()
             run_text.assert_called_once()
 
     def test_list_head_files_cat_file_not_blob_returns_empty(self):
-        """When cat-file -t returns 'tree' (not 'blob'), returns [] (line 139 false branch)."""
+        """When cat-file identifies a tree rather than a blob, no files are returned."""
         from unittest.mock import patch, MagicMock
         from boundver._git import list_head_files
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with patch(
-                "boundver._git._git_run_bytes", return_value=MagicMock(stdout=b"")
-            ), patch(
                 "boundver._git._git_run", return_value=MagicMock(stdout="tree")
             ):
                 result = list_head_files(root, "somedir")
             self.assertEqual(result, [])
 
     def test_list_head_files_cat_file_raises_returns_empty(self):
-        """When cat-file -t raises CalledProcessError, returns [] (_git.py:137-138)."""
-        from unittest.mock import patch, MagicMock
+        """A cat-file subprocess failure produces an empty file list."""
+        from unittest.mock import patch
         import subprocess as _sp
         from boundver._git import list_head_files
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with patch(
-                "boundver._git._git_run_bytes", return_value=MagicMock(stdout=b"")
-            ), patch(
                 "boundver._git._git_run",
                 side_effect=_sp.CalledProcessError(128, "git"),
             ):
@@ -1586,7 +1508,7 @@ class GitListHeadFilesFallbackTests(unittest.TestCase):
 
 
 class DetectProviderTests(unittest.TestCase):
-    """Tests for _config._detect_provider — covers lines 367, 371, 376, 380, 385, 387."""
+    """Provider detection behavior for recognized and fallback file layouts."""
 
     def setUp(self):
         from boundver._config import _detect_provider
@@ -1602,7 +1524,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertIn("openapi.yaml", paths)
 
     def test_detects_openapi_like_file_by_prefix(self):
-        """File starting with 'openapi' but not in the exact-name list → fallback glob (line 367)."""
+        """An unrecognized openapi-prefixed file falls back to a glob provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "openapi-v2.yaml").write_text("openapi: 2.0\n")
@@ -1610,7 +1532,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertEqual(provider, "openapi")
 
     def test_detects_boundary_json(self):
-        """boundary.json → provider 'json-file' (line 371)."""
+        """boundary.json selects the json-file provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "boundary.json").write_text("{}")
@@ -1619,7 +1541,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertIn("boundary.json", paths)
 
     def test_detects_python_exports(self):
-        """__init__.py → provider 'python-exports' (line 376)."""
+        """__init__.py selects the python-exports provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "__init__.py").write_text("")
@@ -1627,7 +1549,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertEqual(provider, "python-exports")
 
     def test_detects_typescript_src_index(self):
-        """src/index.ts → provider 'typescript-exports' (line 380)."""
+        """src/index.ts selects the typescript-exports provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "src").mkdir()
@@ -1637,7 +1559,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertIn("src/index.ts", paths)
 
     def test_detects_typescript_root_index(self):
-        """index.ts at root → provider 'typescript-exports' (line 385)."""
+        """A root index.ts selects the typescript-exports provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "index.ts").write_text("")
@@ -1646,7 +1568,7 @@ class DetectProviderTests(unittest.TestCase):
             self.assertIn("index.ts", paths)
 
     def test_falls_back_to_implicit(self):
-        """No recognisable files → provider 'implicit' (line 387)."""
+        """A layout without recognized boundary files selects the implicit provider."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "random.txt").write_text("hello")
@@ -1656,16 +1578,10 @@ class DetectProviderTests(unittest.TestCase):
 
 
 class HashingContentOnlyValueErrorTests(unittest.TestCase):
-    """_hashing.py:125-126,135-136: ValueError fallback when file not under base path."""
-
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
+    """Content-only digest behavior when a file is outside the base path."""
 
     def test_content_only_digest_file_outside_base_uses_repo_rel(self):
-        """When a file returned by _list_files_for_source is not relative to base,
-        the ValueError fallback uses the full repo-relative path (_hashing.py:135-136)."""
+        """A file outside the base uses its full repository-relative path."""
         from unittest.mock import patch
         from boundver._hashing import _content_only_digest
 
@@ -1681,12 +1597,12 @@ class HashingContentOnlyValueErrorTests(unittest.TestCase):
 
     def test_content_only_head_snapshot_cannot_select_file_outside_base(self):
         """Captured Git-tree selection stays confined to the requested base."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
         from boundver._hashing import _content_only_digest
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
             (root / "readme.txt").write_text("hello\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
@@ -1699,12 +1615,11 @@ class HashingContentOnlyValueErrorTests(unittest.TestCase):
 
 
 class PathHashProviderGlobTests(unittest.TestCase):
-    """providers.py:211: fnmatch glob pattern expansion in PathHashProvider."""
+    """Glob expansion behavior in PathHashProvider."""
 
     def test_glob_pattern_expands_matching_files(self):
-        """A boundary path with '*' expands against component files (providers.py:211)."""
+        """A boundary path with '*' expands against component files."""
         from boundver.providers import PathHashProvider, ProviderContext
-        from unittest.mock import MagicMock
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1742,20 +1657,15 @@ class PathHashProviderGlobTests(unittest.TestCase):
 class GitLatestTagFallbackTests(unittest.TestCase):
     """git_latest_tag never falls back to repository-wide unreachable tags."""
 
-    def _init_git_repo(self, root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "T"], cwd=root, check=True, capture_output=True)
-
     def test_latest_tag_returns_none_when_describe_fails(self):
         """A failed reachability lookup cannot select a repository-wide tag."""
-        from unittest.mock import patch, call
+        from unittest.mock import patch
         import subprocess as _sp
         from boundver._git import git_latest_tag
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
 
             call_count = [0]
             def fake_git_run(repo_root, args, **kw):
@@ -1764,7 +1674,6 @@ class GitLatestTagFallbackTests(unittest.TestCase):
                     raise _sp.CalledProcessError(128, "git")
                 raise AssertionError("repository-wide tag fallback must not run")
 
-            from unittest.mock import MagicMock
             with patch("boundver._git._git_run", side_effect=fake_git_run):
                 version = git_latest_tag(root, "svc-v")
             self.assertIsNone(version)
@@ -1778,7 +1687,7 @@ class GitLatestTagFallbackTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
 
             def fake_git_run(repo_root, args, **kw):
                 if "describe" in args:
@@ -1800,7 +1709,7 @@ class GitLatestTagFallbackTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            self._init_git_repo(root)
+            init_git_repo(root)
 
             def fake_git_run(repo_root, args, **kw):
                 raise _sp.CalledProcessError(128, "git")
@@ -1818,7 +1727,7 @@ class BehaviorTierGenerationTests(unittest.TestCase):
     """Tests for the behavior fingerprint tier in lockfile generation."""
 
     def _make_repo(self, root: Path) -> None:
-        _init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "main.py").write_text("x=1\n")
         (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
@@ -2029,7 +1938,7 @@ class BehaviorTierSliceTests(unittest.TestCase):
     """Tests for behavior slice mode."""
 
     def _make_repo(self, root: Path) -> None:
-        _init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "main.py").write_text("x=1\n")
         (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
@@ -2173,7 +2082,7 @@ class BehaviorTierVerifyTests(unittest.TestCase):
     """Tests for behavior fingerprint in verify."""
 
     def _make_repo(self, root: Path) -> None:
-        _init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "main.py").write_text("x=1\n")
         (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
@@ -2327,7 +2236,7 @@ class BehaviorTierContainmentTests(unittest.TestCase):
     """Tests verifying the containment hierarchy: exact ⊇ behavior ⊇ boundary."""
 
     def _make_repo(self, root: Path) -> None:
-        _init_git_repo(root)
+        init_git_repo(root)
         (root / "svc").mkdir()
         (root / "svc" / "main.py").write_text("x=1\n")
         (root / "svc" / "api.yaml").write_text("openapi: 3.0\n")
@@ -2405,7 +2314,7 @@ class BehaviorTierConfigValidationTests(unittest.TestCase):
         """Config with mode=behavior passes validation."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "api.yaml").write_text("x\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2429,13 +2338,13 @@ class BehaviorTierConfigValidationTests(unittest.TestCase):
 
 
 class BehaviorDigestErrorPathTests(unittest.TestCase):
-    """Tests for behavior digest computation failure paths (_lockfile.py lines 134-135)."""
+    """Behavior digest computation failure paths."""
 
     def test_behavior_missing_path_fails_when_non_strict(self):
         """Allowing null slice inputs does not bless behavior selection failure."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2458,7 +2367,7 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
         """An empty behavior glob remains a computation error."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
@@ -2482,7 +2391,7 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "svc" / "api.yaml").write_text("api\n")
@@ -2517,7 +2426,7 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
         from boundver import _lockfile
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "svc" / "api.yaml").write_text("api\n")
@@ -2551,7 +2460,7 @@ class BehaviorDigestErrorPathTests(unittest.TestCase):
         from boundver import _lockfile
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "svc" / "api.yaml").write_text("api\n")
@@ -2659,7 +2568,7 @@ class GenerateLockfileForComponentsBehaviorTests(unittest.TestCase):
         """When regenerating one component, other components' behavior is preserved."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "svc" / "api.yaml").write_text("api\n")
@@ -2703,7 +2612,7 @@ class GenerateLockfileForComponentsBehaviorTests(unittest.TestCase):
         """When a component in a behavior slice is regenerated, slice is recomputed."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
+            init_git_repo(root)
             (root / "svc").mkdir()
             (root / "svc" / "main.py").write_text("x=1\n")
             (root / "svc" / "api.yaml").write_text("api\n")

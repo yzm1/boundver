@@ -1,19 +1,42 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.11.0/spec/cli-output.verify.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/cli-output.verify.schema.json",
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
-  "required": ["ok", "updated", "issues", "observations", "facets", "facet_policy", "components_filter"],
+  "required": ["ok", "updated", "issues", "resolved_issues", "observations", "facets", "facet_policy", "components_filter", "changed_components"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"ok": {"const": true}}, "required": ["ok"]},
+      "then": {"properties": {"issues": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"ok": {"const": false}}, "required": ["ok"]},
+      "then": {"properties": {"updated": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"updated": {"const": false}}, "required": ["updated"]},
+      "then": {"properties": {"resolved_issues": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"resolved_issues": {"minItems": 1}}, "required": ["resolved_issues"]},
+      "then": {"properties": {"updated": {"const": true}}}
+    }
+  ],
   "properties": {
     "ok": {
       "type": "boolean",
-      "description": "true when the lockfile matches current repo state; false when any issues were found."
+      "description": "true when no gated issue remains after the requested operation; false when unresolved issues remain."
     },
     "issues": {
       "type": "array",
       "description": "Human-readable issue strings. Empty when ok=true.",
+      "items": { "type": "string" }
+    },
+    "resolved_issues": {
+      "type": "array",
+      "description": "Gated issues found and repaired by a successful --update. Empty when no repair was written.",
       "items": { "type": "string" }
     },
     "updated": {
@@ -89,7 +112,12 @@
     },
     "components_filter": {
       "type": "array",
-      "description": "Component names actually verified. Empty list means all components were checked.",
+      "description": "Selected fingerprint verification scope. Empty means all components were checked; lock preflight is always global.",
+      "items": { "type": "string" }
+    },
+    "changed_components": {
+      "type": "array",
+      "description": "Components selected by --changed-from as a scheduling hint. Verification still uses the scope in components_filter.",
       "items": { "type": "string" }
     }
   }

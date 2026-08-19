@@ -57,10 +57,10 @@ def generate(
     Also writes to *out_path* (relative to repo root). Pass ``out_path=None``
     to skip writing.
     """
-    import json
     from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import generate_lockfile
     from ._git import git_root
+    from ._utils import _bounded_json_dumps
     from .core import (
         _capture_operation_snapshot,
         _ensure_lock_outside_components,
@@ -93,7 +93,7 @@ def generate(
         snapshot=snapshot,
     )
     if out_path is not None:
-        _write_text_atomic(dest, json.dumps(lockfile, indent=2) + "\n")
+        _write_text_atomic(dest, _bounded_json_dumps(lockfile, indent=2) + "\n")
     return lockfile
 
 
@@ -121,6 +121,7 @@ def verify(
         _capture_operation_snapshot,
         _ensure_lock_outside_components,
         _load_lockfile,
+        _verify_lock_preflight_issues,
     )
 
     repo_root = git_root()
@@ -145,6 +146,9 @@ def verify(
     lf = _load_lockfile(
         resolved_lock_path, repo_root=repo_root, snapshot=snapshot
     )
+    preflight_issues = _verify_lock_preflight_issues(config, lf)
+    if preflight_issues:
+        return preflight_issues
     return verify_lockfile(
         config, lf, repo_root, source=source,
         components_filter=components,
