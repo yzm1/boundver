@@ -783,7 +783,7 @@ jobs:
       compatibility-alias: ${{ steps.validate.outputs.alias }}
     steps:
       - name: Checkout the exact candidate
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -1117,7 +1117,7 @@ jobs:
             --output "$RUNNER_TEMP/release-notes.md"
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -1154,7 +1154,7 @@ jobs:
       review-state-digest: ${{ steps.mutable-state.outputs.review-state-digest }}
     steps:
       - name: Checkout the exact candidate
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -1244,7 +1244,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout the exact candidate
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false

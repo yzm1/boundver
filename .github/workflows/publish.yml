@@ -112,7 +112,7 @@ jobs:
 
       - name: Checkout the recovery control commit
         if: inputs.resume_run_id != ''
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -159,7 +159,7 @@ jobs:
           fi
 
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -175,7 +175,7 @@ jobs:
           bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -478,7 +478,7 @@ jobs:
       - name: Upload verified distributions
         if: inputs.resume_run_id == ''
         id: upload-python-dist
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-dist-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -506,7 +506,7 @@ jobs:
       - name: Upload verified GitHub Release assets
         if: inputs.resume_run_id == ''
         id: upload-release-assets
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets-${{ inputs.release_tag }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-assets/*
@@ -1110,7 +1110,7 @@ jobs:
 
       - name: Download recovered Python distributions
         if: inputs.resume_run_id != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
           path: recovered-python-dist
@@ -1121,7 +1121,7 @@ jobs:
 
       - name: Download recovered GitHub Release assets
         if: inputs.resume_run_id != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
           path: recovered-release-assets
@@ -1448,25 +1448,25 @@ jobs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Download the immutable Python distributions by artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -1476,7 +1476,7 @@ jobs:
           merge-multiple: true
 
       - name: Download exact GitHub Release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
@@ -1567,7 +1567,7 @@ jobs:
     steps:
       - name: Download the immutable Python distributions by artifact ID
         if: needs.testpypi-preflight.outputs.upload-required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -1594,18 +1594,18 @@ jobs:
       contents: read
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Download the immutable Python distributions by artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -1682,7 +1682,7 @@ jobs:
       release-notes-artifact-id: ${{ steps.upload-release-notes.outputs.artifact-id }}
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
@@ -1700,7 +1700,7 @@ jobs:
 
       - name: Upload the exact release notes
         id: upload-release-notes
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-notes-${{ inputs.release_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-notes.md
@@ -1716,7 +1716,7 @@ jobs:
       contents: write
     steps:
       - name: Download release assets by immutable artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
@@ -1726,7 +1726,7 @@ jobs:
           merge-multiple: true
 
       - name: Download release notes by immutable artifact ID
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.prepare-release-notes.outputs.release-notes-artifact-id }}
           path: ${{ runner.temp }}/release-notes
@@ -2410,21 +2410,21 @@ jobs:
       contents: read
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
       - name: Download exact distribution and release artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -2434,7 +2434,7 @@ jobs:
           merge-multiple: true
 
       - name: Download exact GitHub Release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
@@ -2490,18 +2490,18 @@ jobs:
       upload-required: ${{ steps.preflight.outputs.upload-required }}
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Download exact Python distributions
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -2534,7 +2534,7 @@ jobs:
     steps:
       - name: Download the exact immutable candidate by artifact ID
         if: needs.pypi-preflight.outputs.upload-required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -2564,18 +2564,18 @@ jobs:
       contents: read
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
       - name: Download exact Python distributions
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -2649,14 +2649,14 @@ jobs:
       expected-current: ${{ steps.validate-alias.outputs.expected-current }}
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control implementation
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
@@ -2754,20 +2754,20 @@ jobs:
       contents: read
     steps:
       - name: Checkout the released commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.release_sha }}
 
       - name: Checkout the reviewed release-control commit
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
       - name: Download exact Python distributions
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.python-dist-artifact-id }}
           path: dist
@@ -2777,7 +2777,7 @@ jobs:
           merge-multiple: true
 
       - name: Download exact GitHub Release assets
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.verify-release.outputs.release-assets-artifact-id }}
           path: release-assets
