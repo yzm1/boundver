@@ -426,8 +426,10 @@ class CreateTagReviewStateContracts(unittest.TestCase):
             self.assertIn(field, source)
         self.assertIn('"$pr_state" != "closed"', source)
         self.assertIn('"$pr_base_ref" != "main"', source)
+        self.assertIn("github_repository_lower=$(", source)
+        self.assertIn("pr_base_repository_lower=$(", source)
         self.assertIn(
-            '"${pr_base_repository,,}" != "${GITHUB_REPOSITORY,,}"',
+            '"$pr_base_repository_lower" != "$github_repository_lower"',
             source,
         )
         capture_helper = source.split("capture_bounded() {", 1)[1].split("\n}", 1)[0]

@@ -113,7 +113,9 @@ else
   commit_range="$release_sha"
 fi
 
-declare -A release_prs=()
+release_prs_file="$capture_temp_dir/release-prs"
+: > "$release_prs_file"
+release_pr_record_count=0
 missing_pr=0
 if ! capture_bounded commit_output "release commit list" "$max_capture_bytes" \
     git rev-list "$commit_range"; then
@@ -124,7 +126,10 @@ if [[ -z "$commit_output" ]]; then
   echo "Release range $commit_range contains no commits to review." >&2
   exit 1
 fi
-mapfile -t release_commits <<< "$commit_output"
+release_commits=()
+while IFS= read -r commit_sha; do
+  release_commits[${#release_commits[@]}]=$commit_sha
+done <<< "$commit_output"
 if (( ${#release_commits[@]} > max_records )); then
   echo "Release range contains too many commits to audit." >&2
   exit 1
@@ -141,7 +146,9 @@ for commit_sha in "${release_commits[@]}"; do
   fi
   associated_prs=()
   if [[ -n "$associated_output" ]]; then
-    mapfile -t associated_prs <<< "$associated_output"
+    while IFS= read -r associated_pr; do
+      associated_prs[${#associated_prs[@]}]=$associated_pr
+    done <<< "$associated_output"
   fi
   if (( ${#associated_prs[@]} > max_records )); then
     echo "GitHub API returned too many associated pull requests for $commit_sha." >&2
@@ -157,15 +164,16 @@ for commit_sha in "${release_commits[@]}"; do
       echo "GitHub API returned an invalid pull request number: $pr_number" >&2
       exit 1
     fi
-    release_prs["$pr_number"]=1
-    if (( ${#release_prs[@]} > max_records )); then
+    release_pr_record_count=$((release_pr_record_count + 1))
+    if (( release_pr_record_count > max_records )); then
       echo "Release range contains too many associated pull requests." >&2
       exit 1
     fi
+    printf '%s\n' "$pr_number" >> "$release_prs_file"
   done
 done
 
-if [[ "$missing_pr" -ne 0 || "${#release_prs[@]}" -eq 0 ]]; then
+if [[ "$missing_pr" -ne 0 || ! -s "$release_prs_file" ]]; then
   echo "Every release commit must arrive through a reviewed pull request." >&2
   exit 1
 fi
@@ -198,11 +206,16 @@ if [[ "$repository_owner" == *$'\n'* ]]; then
 fi
 IFS='|' read -r repository_owner_id repository_owner_login \
   repository_owner_type repository_owner_extra <<< "$repository_owner"
+repository_owner_login_lower=$(printf '%s' "$repository_owner_login" | \
+  LC_ALL=C tr '[:upper:]' '[:lower:]')
+owner_lower=$(printf '%s' "$owner" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+github_repository_lower=$(printf '%s' "$GITHUB_REPOSITORY" | \
+  LC_ALL=C tr '[:upper:]' '[:lower:]')
 if [[ ! "$repository_owner_id" =~ ^[1-9][0-9]*$ || \
       ! "$repository_owner_login" =~ ^[A-Za-z0-9-]{1,39}$ || \
       ! "$repository_owner_type" =~ ^(User|Organization)$ || \
       -n "$repository_owner_extra" || \
-      "${repository_owner_login,,}" != "${owner,,}" ]]; then
+      "$repository_owner_login_lower" != "$owner_lower" ]]; then
   echo "GitHub API returned malformed repository ownership." >&2
   exit 1
 fi
@@ -303,15 +316,18 @@ codex_comment_has_unique_marker() {
 }
 
 failed=0
-release_prs_file="$capture_temp_dir/release-prs"
-printf '%s\n' "${!release_prs[@]}" > "$release_prs_file"
 if ! capture_bounded sorted_output "sorted release pull requests" \
-    "$max_capture_bytes" sort -n "$release_prs_file"; then
+    "$max_capture_bytes" sort -nu "$release_prs_file"; then
   echo "Failed to sort associated pull requests." >&2
   exit 1
 fi
 rm -f -- "$release_prs_file"
-mapfile -t sorted_prs <<< "$sorted_output"
+sorted_prs=()
+if [[ -n "$sorted_output" ]]; then
+  while IFS= read -r sorted_pr; do
+    sorted_prs[${#sorted_prs[@]}]=$sorted_pr
+  done <<< "$sorted_output"
+fi
 for pr_number in "${sorted_prs[@]}"; do
   if ! capture_bounded pr_metadata "metadata for PR #$pr_number" \
     "$max_small_capture_bytes" \
@@ -327,6 +343,8 @@ for pr_number in "${sorted_prs[@]}"; do
   IFS='|' read -r author_id author_login author_type pr_head_sha \
     pr_merge_sha pending_reviewers pending_teams pr_state pr_merged_at \
     pr_base_repository pr_base_ref pr_metadata_extra <<< "$pr_metadata"
+  pr_base_repository_lower=$(printf '%s' "$pr_base_repository" | \
+    LC_ALL=C tr '[:upper:]' '[:lower:]')
   if [[ ! "$author_id" =~ ^[1-9][0-9]*$ || \
         ! "$author_login" =~ ^[A-Za-z0-9-]{1,39}$ || \
         ! "$author_type" =~ ^(User|Bot)$ || \
@@ -343,7 +361,7 @@ for pr_number in "${sorted_prs[@]}"; do
     exit 1
   fi
   if [[ "$pr_state" != "closed" || -z "$pr_merged_at" || \
-        "${pr_base_repository,,}" != "${GITHUB_REPOSITORY,,}" || \
+        "$pr_base_repository_lower" != "$github_repository_lower" || \
         "$pr_base_ref" != "main" ]]; then
     echo "PR #$pr_number is not release-ready: associated PR must be merged into ${GITHUB_REPOSITORY}:main." >&2
     failed=1
@@ -409,7 +427,9 @@ for pr_number in "${sorted_prs[@]}"; do
   codex_conflict=0
   review_records=()
   if [[ -n "$reviews_output" ]]; then
-    mapfile -t review_records <<< "$reviews_output"
+    while IFS= read -r review_record; do
+      review_records[${#review_records[@]}]=$review_record
+    done <<< "$reviews_output"
   fi
   if (( ${#review_records[@]} > max_records )); then
     echo "GitHub API returned too many reviews for PR #$pr_number." >&2
@@ -487,7 +507,9 @@ for pr_number in "${sorted_prs[@]}"; do
   fi
   comment_records=()
   if [[ -n "$comments_output" ]]; then
-    mapfile -t comment_records <<< "$comments_output"
+    while IFS= read -r comment_record; do
+      comment_records[${#comment_records[@]}]=$comment_record
+    done <<< "$comments_output"
   fi
   if (( ${#comment_records[@]} > max_records )); then
     echo "GitHub API returned too many issue comments for PR #$pr_number." >&2

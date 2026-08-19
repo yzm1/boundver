@@ -3,6 +3,7 @@
 import io
 import os
 import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -137,7 +138,10 @@ class GitSourceContractTests(unittest.TestCase):
             self.assertEqual(head, index)
             self.assertEqual(index, working)
 
-    @unittest.skipIf(os.name == "nt", "Test requires POSIX byte filenames")
+    @unittest.skipIf(
+        os.name == "nt" or sys.platform == "darwin",
+        "Test requires a filesystem that accepts non-UTF-8 POSIX byte filenames",
+    )
     def test_non_utf8_filename_bytes_round_trip_from_git(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
