@@ -1908,10 +1908,16 @@ class ReleaseChangelogTests(unittest.TestCase):
 
 
 class ReleaseReviewAuditTests(unittest.TestCase):
-    def _codex_comment(self, commit: str, *, duplicate: bool = False) -> str:
+    def _codex_comment(
+        self,
+        commit: str,
+        *,
+        duplicate: bool = False,
+        verdict: str = "Codex Review: Didn't find any major issues. Breezy!",
+    ) -> str:
         marker = f"**Reviewed commit:** `{commit}`"
         lines = [
-            "Codex Review: Didn't find any major issues. Breezy!",
+            verdict,
             "",
             marker,
         ]
@@ -2128,6 +2134,29 @@ exit 74
             FAKE_COMMENTS=comment,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
+        head = "a" * 40
+        verdicts = (
+            "Codex Review: Didn't find any major issues. Keep it up!",
+            "Codex Review: Didn't find any major issues. Keep them coming!",
+            "Codex Review: Didn't find any major issues. "
+            "Already looking forward to the next diff.",
+            "Codex Review: Didn't find any major issues. "
+            "More of your lovely PRs please.",
+        )
+        for verdict in verdicts:
+            with self.subTest(verdict=verdict):
+                comment = self._comment_record(
+                    self._codex_comment(head[:10], verdict=verdict)
+                )
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_REVIEWS="",
+                    FAKE_COMMENTS=comment,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_human_approval_requires_non_author_push_access_and_current_commit(self):

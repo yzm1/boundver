@@ -193,7 +193,7 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 # Keep this a finite allowlist.  A free-form suffix would let a contradictory
 # finding share the authenticated clean-verdict line and still satisfy the
 # release gate.
-readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (Breezy|Hooray)!)?$"
+readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (Breezy|Hooray|Keep it up|Keep them coming)!| (Already looking forward to the next diff|More of your lovely PRs please)\\.)?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
 
 if ! capture_bounded repository_owner "repository ownership" \
