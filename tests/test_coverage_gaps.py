@@ -138,7 +138,7 @@ class TestGitBatchCatEdgeCases(unittest.TestCase):
             user_email="test@test.com",
             user_name="Test",
         )
-        (self.tmpdir / "hello.txt").write_text("hello world\n")
+        (self.tmpdir / "hello.txt").write_bytes(b"hello world\n")
         commit_all(self.tmpdir, "init")
 
     def test_missing_ref_raises(self):
@@ -170,7 +170,7 @@ class TestGitBatchCatEdgeCases(unittest.TestCase):
 
     def test_ref_with_spaces_works(self):
         # Create a file with space in name
-        (self.tmpdir / "has space.txt").write_text("spaced\n")
+        (self.tmpdir / "has space.txt").write_bytes(b"spaced\n")
         commit_all(self.tmpdir, "space")
         result = _git_batch_cat(self.tmpdir, ["HEAD:has space.txt"])
         self.assertEqual(result["HEAD:has space.txt"], b"spaced\n")

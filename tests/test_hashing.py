@@ -458,7 +458,7 @@ class GitBatchCatTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)
-            (root / "hello.txt").write_text("hello world\n")
+            (root / "hello.txt").write_bytes(b"hello world\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             blobs = _git_batch_cat(root, ["HEAD:hello.txt"])
@@ -482,8 +482,8 @@ class GitBatchCatTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)
-            (root / "a.txt").write_text("aaa\n")
-            (root / "b.txt").write_text("bbb\n")
+            (root / "a.txt").write_bytes(b"aaa\n")
+            (root / "b.txt").write_bytes(b"bbb\n")
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             blobs = _git_batch_cat(root, ["HEAD:a.txt", "HEAD:b.txt"])
