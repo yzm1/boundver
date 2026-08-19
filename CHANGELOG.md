@@ -61,6 +61,9 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
 
 ### Fixed
 
+- The release-review audit accepts the trusted Codex bot's observed positive
+  clean-verdict status allowlist while still rejecting arbitrary,
+  contradictory, stale, spoofed, or multiply marked evidence.
 - The public `path-hash` v3 provider is registered as a built-in and documented
   as the format-neutral raw provider for arbitrary declared artifacts.
 - Local and protected workflow dispatches bind deduplication to the exact tag,
