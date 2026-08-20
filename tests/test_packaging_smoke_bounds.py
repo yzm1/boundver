@@ -195,12 +195,15 @@ def test_shell_output_capture_is_fixed_or_avoided():
     assert SCRIPT_SOURCE.count("$(") == 2
     assert "expected_version=$(python -I - <<'PY' | head -c 129" in SCRIPT_SOURCE
     assert "MAX_VERSION_BYTES = 128" in PROJECT_PROGRAM
-    assert 'mktemp -d "${TMPDIR:-/tmp}/boundver-packaging-smoke.XXXXXXXXXX"' in (
+    assert 'mktemp -d "${TMPDIR:-/tmp}/bv-pkg.XXXXXXXXXX"' in (
         SCRIPT_SOURCE
     )
     assert "head -c 4097" in SCRIPT_SOURCE
     assert "${#smoke_root} -gt 4096" in SCRIPT_SOURCE
-    assert '"$smoke_leaf" != boundver-packaging-smoke.*' in SCRIPT_SOURCE
+    assert '"$smoke_leaf" != bv-pkg.*' in SCRIPT_SOURCE
+    assert 'wheel_venv="$smoke_root/w"' in SCRIPT_SOURCE
+    assert 'sdist_venv="$smoke_root/s"' in SCRIPT_SOURCE
+    assert 'standalone_venv="$smoke_root/a"' in SCRIPT_SOURCE
     assert "wheel_python=$resolved_venv_python" in SCRIPT_SOURCE
     assert "wheel_python=$(" not in SCRIPT_SOURCE
 

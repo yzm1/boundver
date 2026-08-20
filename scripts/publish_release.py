@@ -1539,10 +1539,13 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             f"{REVIEW_TOKEN_ENV} must contain an explicit fine-grained, read-only "
             "token for the release review audit"
         )
-    with tempfile.TemporaryDirectory(prefix="boundver-release-check-") as temporary:
-        checkout = Path(temporary) / "checkout"
+    # Keep the Windows path budget small.  The packaging smoke creates nested
+    # virtual environments, and build-tool wheels can contain paths more than
+    # 130 characters below those environments.
+    with tempfile.TemporaryDirectory(prefix="bv-rel-") as temporary:
+        checkout = Path(temporary) / "c"
         tool_env = _sanitized_tool_environment(
-            sandbox_root=Path(temporary) / "environment"
+            sandbox_root=Path(temporary) / "e"
         )
         bash = resolve_bash(tool_env.get("PATH"))
         if bash is None:
@@ -1582,7 +1585,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             cwd=repo,
             env=audit_env,
         )
-        tooling = Path(temporary) / "tooling"
+        tooling = Path(temporary) / "t"
         _run(
             (sys.executable, "-I", "-m", "venv", str(tooling)),
             cwd=checkout,
