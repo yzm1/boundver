@@ -3,7 +3,7 @@
 import argparse
 import io
 import os
-import shutil
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -17,21 +17,10 @@ from boundver import core
 
 
 def _find_bash():
-    candidates = []
-    if sys.platform == "win32":
-        for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
-            base = os.environ.get(variable)
-            if base:
-                candidates.append(Path(base) / "Git" / "bin" / "bash.exe")
-        local_app_data = os.environ.get("LOCALAPPDATA")
-        if local_app_data:
-            candidates.append(
-                Path(local_app_data) / "Git" / "bin" / "bash.exe"
-            )
-    resolved = shutil.which("bash")
-    if resolved:
-        candidates.append(Path(resolved))
-    return next((str(candidate) for candidate in candidates if candidate.is_file()), None)
+    platform_helpers = runpy.run_path(
+        str(Path(__file__).resolve().parents[1] / "scripts" / "_release_platform.py")
+    )
+    return platform_helpers["resolve_bash"](os.environ.get("PATH"))
 
 
 _BASH = _find_bash()
