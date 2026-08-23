@@ -12,6 +12,11 @@ from typing import Any
 
 import pytest
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 compatibility
+    import tomli as tomllib
+
 from tests._project_metadata import (
     CURRENT_MINOR_TAG,
     CURRENT_TAG,
@@ -39,6 +44,16 @@ def _load_verifier():
 
 
 verifier = _load_verifier()
+
+
+def test_registry_contract_constants_match_project_metadata():
+    with (REPO_ROOT / "pyproject.toml").open("rb") as pyproject_file:
+        project = tomllib.load(pyproject_file)["project"]
+
+    assert verifier.PROJECT == project["name"]
+    assert verifier.SUMMARY == project["description"]
+    assert verifier.REQUIRES_PYTHON == project["requires-python"]
+    assert verifier.REQUIRED_PROJECT_URLS == project["urls"]
 
 
 class FakeFetcher:
