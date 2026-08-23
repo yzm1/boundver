@@ -3,7 +3,7 @@
 This guide takes a Git repository from no configuration to a reviewed v3
 lockfile and a useful pull-request gate.
 
-> This guide describes boundver 0.12's v3/semantic-config-v2 contract. Version
+> This guide describes boundver 0.13's v3/semantic-config-v2 contract. Version
 > 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
 > [Upgrade to 0.12](#upgrade-to-012) before combining an existing lock with
 > these instructions.
@@ -31,8 +31,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
-python -c "import boundver; assert boundver.__version__ == '0.12.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -72,7 +72,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -114,14 +114,10 @@ vendored-copy, and file version-source paths use `/` separators and are relative
 to the scope documented by the schema. Empty, absolute, traversing, and
 backslash-separated declarations are rejected.
 
-Released v0.12 treats component `ecosystem` and `boundary.note` as
-presentation-only, so they can record classification and review rationale
-without rotating `config_digest`; do not use them to hide contract selection or
-policy. Unreleased v0.13 development builds also accept a component-level
-`note` for ownership, migration, or review context that applies to the whole
-component. That field is not valid under the released v0.12 schema; development
-configurations using it must identify the `main` schema until v0.13 release
-preparation pins the new immutable schema.
+v0.13 treats component `ecosystem`, component `note`, and `boundary.note` as
+presentation-only, so they can record classification, ownership, migration,
+and review rationale without rotating `config_digest`; do not use them to hide
+contract selection or policy.
 
 Path selectors are case-sensitive:
 
@@ -250,7 +246,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.12.0
+      - uses: yzm1/boundver@v0.13.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -350,7 +346,7 @@ v2 lock also does not bind file mode/type or the complete semantic
 configuration. There is no safe metadata-only migration for either source:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml

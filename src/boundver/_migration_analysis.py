@@ -28,7 +28,7 @@ from .providers import MAX_PROVIDER_DECLARATIONS
 
 MIGRATION_ANALYSIS_SCHEMA = "boundver-migration-analysis/v1"
 MIGRATION_ANALYSIS_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/yzm1/boundver/main/"
+    "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/"
     "spec/cli-output.migrate-lock.schema.json"
 )
 MAX_ANALYZED_DECLARATIONS = min(MAX_PROVIDER_DECLARATIONS, 2_000)

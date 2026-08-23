@@ -62,7 +62,7 @@ from .providers import (
 from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
 
 LOCKFILE_SCHEMA = "boundary-lock/v3"
-LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json"
+LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json"
 SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v2"
 # Historical semantic contracts that retain the current boundary-lock/v3
 # structure closely enough for a bounded, read-only comparison.  Mutation and

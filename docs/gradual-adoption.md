@@ -47,10 +47,9 @@ identity change below `services/auth` rotates the exact digest. `implicit`
 intentionally produces no separate boundary digest, so do not use it in a
 boundary slice.
 
-The optional `boundary.note` is a human-facing annotation and does not rotate
-the semantic configuration digest. Unreleased v0.13 development builds add the
-same presentation-only behavior for a component-level `note`; released v0.12
-does not accept that component field.
+The optional boundary and component `note` fields are human-facing annotations
+and do not rotate the semantic configuration digest. The same is true of a
+component's optional `ecosystem` classification.
 
 ## Stage 2: declare the public artifact
 
@@ -319,7 +318,7 @@ or the semantic configuration, and their path selection followed the old glob
 behavior. Both require regeneration:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/auth/openapi/new-route.yaml

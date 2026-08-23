@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-23
+
 ### Added
 
 - Presentation-only component `note` metadata for migration context, ownership
@@ -437,7 +439,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/yzm1/boundver/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/yzm1/boundver/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yzm1/boundver/releases/tag/v0.10.0

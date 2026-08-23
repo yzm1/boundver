@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.migrate-lock.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.migrate-lock.schema.json",
   "title": "boundver migrate-lock --explain --format json output",
   "description": "Bounded, provider-aware comparison of v0.10 selector semantics and current segment-aware selectors on one captured source.",
   "type": "object",
@@ -8,7 +8,7 @@
   "additionalProperties": false,
   "properties": {
     "$schema": {
-      "const": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.migrate-lock.schema.json"
+      "const": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.migrate-lock.schema.json"
     },
     "schema": {"const": "boundver-migration-analysis/v1"},
     "lock": {

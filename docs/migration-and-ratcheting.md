@@ -4,9 +4,8 @@ This guide covers the review tools intended for an existing repository rather
 than a first-time setup: selector analysis for a 0.10 upgrade, discovery gaps,
 and an explicit baseline that lets CI reject new verification debt.
 
-These tools are unreleased v0.13 development features and are not available in
-the v0.12 package or Action. Test them only from an exact reviewed development
-commit until v0.13 is published.
+The inspection and ratcheting tools in this guide are available in v0.13 and
+later. They are not available in the v0.12 package or Action.
 
 All commands that accept `--source` default to `head`. That means committed
 state, not unstaged local edits. Use `index` for a staged review and

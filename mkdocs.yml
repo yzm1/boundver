@@ -56,6 +56,7 @@ nav:
       - Public and custom providers: public-vs-custom-providers.md
   - Operate it:
       - CI cookbook: ci-cookbook.md
+      - Migration and ratcheting: migration-and-ratcheting.md
       - Distribution: distribution.md
       - Lockfile merges: LOCKFILE_MERGE.md
   - Maintainers:

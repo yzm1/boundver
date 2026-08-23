@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
   "config_contract": "boundver-semantic-config/v2",
   "config_digest": "0be146fd7df021a21d5ad9c71c58f3919473669acdbcecb6031dbaae1668484f",
@@ -14,7 +14,7 @@
       "consumers": [],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "d0df52bce755a8f57a0ebe7d0a31ae87bc35175e20f663f0fee4ba09462c6213",
+        "exact": "c1b2df44508c60789c049665668e575b7d0978b186dfe6e23ddba2355bc01bad",
         "behavior": null,
         "boundary": "cdb10af54c1b1e8ed8ebebed30d8881d611dcb1dc5e3551866f637db86fee7a5",
         "compat": null
@@ -36,9 +36,9 @@
       ],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "5c88c223d3f628720e76c2e68216ae238e9c5a672b18495eea9e732c5ba4933c",
+        "exact": "7b5f43edfef5a6a46658cc6768457016452a54ad3e3601fdb958dba89211f0dd",
         "behavior": null,
-        "boundary": "f3186eeaa7fb010fcab4e85c038733e0544c3fc89b10472044e04a6bf78592da",
+        "boundary": "eee8b35f435141caaba9edc48e1db40096e3dbcb90a3ccbfc499686d07be9fbd",
         "compat": null
       },
       "semver": {
@@ -66,9 +66,9 @@
       "components": [
         "spec"
       ],
-      "fingerprint": "8f11fdf0ca59458296e46acbe6664ef6959e06be69901812753b1f5490fe1076",
+      "fingerprint": "6a092abacde34761cb42b260e30ac739012d05eef8b5d8e0d1b9e333dcaf9b4b",
       "component_digests": {
-        "spec": "5c88c223d3f628720e76c2e68216ae238e9c5a672b18495eea9e732c5ba4933c"
+        "spec": "7b5f43edfef5a6a46658cc6768457016452a54ad3e3601fdb958dba89211f0dd"
       }
     },
     "all": {
@@ -78,10 +78,10 @@
         "boundver",
         "spec"
       ],
-      "fingerprint": "ce095db813cc45e06b3b4a327992f8faa8a4ddfb098f52e20cd169012264e039",
+      "fingerprint": "7c1ae6ee51ec46481f2c2b0255425b59e4dd0f9a17e8cabdf0d0c288f427ff27",
       "component_digests": {
-        "boundver": "d0df52bce755a8f57a0ebe7d0a31ae87bc35175e20f663f0fee4ba09462c6213",
-        "spec": "5c88c223d3f628720e76c2e68216ae238e9c5a672b18495eea9e732c5ba4933c"
+        "boundver": "c1b2df44508c60789c049665668e575b7d0978b186dfe6e23ddba2355bc01bad",
+        "spec": "7b5f43edfef5a6a46658cc6768457016452a54ad3e3601fdb958dba89211f0dd"
       }
     }
   }

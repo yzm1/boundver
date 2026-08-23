@@ -1488,7 +1488,7 @@ def _cmd_init(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered

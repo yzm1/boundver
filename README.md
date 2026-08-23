@@ -20,9 +20,8 @@ visible without being confused with public-contract changes.
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
-The stable install and Action examples below target released v0.12. Features
-listed under [Unreleased](CHANGELOG.md#unreleased) are v0.13 development work
-and are not available from the v0.12 package or Action.
+The install and Action examples below target the exact v0.13.0 release so local
+writers and CI verifiers use the same contract implementation.
 
 ## Try it in one minute
 
@@ -80,7 +79,7 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -123,11 +122,9 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
 Component paths are repository-relative. Boundary, behavior, and version-source
 files are component-relative. Use POSIX `/` separators.
 
-In released v0.12, component `ecosystem` and boundary `note` are
+In v0.13, component `ecosystem`, component `note`, and boundary `note` are
 presentation-only: use them for classification and review rationale, not hidden
 contract selection, and editing them does not rotate `config_digest`.
-Unreleased v0.13 development builds extend the same rationale-only treatment to
-component `note`; that field is not accepted by the v0.12 schema.
 
 ### Glob rules
 
@@ -242,7 +239,7 @@ the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 ## GitHub Actions
 
 Pin the Action to the same lock-contract release used by local writers (for
-the latest stable release, `yzm1/boundver@v0.12.0`). The
+the latest stable release, `yzm1/boundver@v0.13.0`). The
 [CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
 the canonical workflow recipe and covers outputs, changed-path reporting,
 GitLab, pre-commit, and caching.
@@ -290,16 +287,15 @@ provider metadata still change. Investigate any facet/slice value change rather
 than treating it as metadata churn. The equivalent raw-provider case for
 `json-file-raw` and `path-hash` is documented in the
 [provider guide](docs/public-vs-custom-providers.md#provider-versions-and-v3-locks).
-The unreleased v0.13 `diff` command can compare canonical `boundary-lock/v3`
+The v0.13 `diff` command can compare canonical `boundary-lock/v3`
 semantic-config/v1 and v2 locks read-only so this regeneration remains
 reviewable. Full generation recomputes and emits v2 without trusting the old
 lock; verification and generation paths that reuse an existing lock reject v1.
 
 ## Useful commands
 
-`discover --diff-config`, `migrate-lock --explain`, and the verification
-baseline flags below are unreleased v0.13 features. Test them only from a
-reviewed development checkout until v0.13 is published.
+v0.13 adds `discover --diff-config`, `migrate-lock --explain`, and the
+verification baseline flags shown below.
 
 ```bash
 boundver discover
@@ -329,8 +325,8 @@ container, install the repository's exact pin with `--upgrade` and assert the
 imported version before generating or verifying a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
-python -c "import boundver; assert boundver.__version__ == '0.12.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
 ```
 
 In persistent automation, invoke commands as `python -m boundver ...` with that
