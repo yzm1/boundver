@@ -227,8 +227,9 @@ boundver verify --source index
 ```
 
 There is no executable `derived_from` config hook: repository config is not a
-trusted command-execution boundary. A future declarative derivation contract is
-roadmap work.
+trusted command-execution boundary. Run the generator's deterministic check
+before verifying; see
+[docs/reference.md](docs/reference.md#generated-artifacts-are-not-bound-to-their-generator).
 
 ## Source modes
 
@@ -280,7 +281,7 @@ differs from 0.12's semantic-config/v2. Version 0.10's `boundary-lock/v2` also
 omits identities required by v3. Neither lock can be relabelled safely: upgrade
 writers and verifiers together and regenerate from the snapshot CI will
 verify. Follow the canonical
-[0.12 upgrade procedure](docs/gradual-adoption.md#upgrading-to-012).
+[upgrade procedure](docs/reference.md#upgrading).
 
 Regeneration is still mandatory even when its content fingerprints are
 digest-neutral. With the same source bytes and effective selectors, a v3/v1 to

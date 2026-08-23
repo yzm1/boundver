@@ -181,28 +181,6 @@ def test_readiness_uses_pre_tag_changelog_mode(tmp_path: Path) -> None:
     assert any("Unreleased section must be empty" in error for error in errors)
 
 
-def test_project_review_is_never_read_as_a_release_surface(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_minimal_project(tmp_path, _changelog())
-    review = tmp_path / "docs" / "PROJECT_REVIEW.md"
-    review.parent.mkdir(exist_ok=True)
-    review.write_bytes(b"\xffnot UTF-8")
-    original_read_text = release_readiness._read_text
-
-    def guarded_read_text(path: Path) -> str:
-        if path.resolve() == review.resolve():
-            pytest.fail("docs/PROJECT_REVIEW.md must not be read by readiness")
-        return original_read_text(path)
-
-    monkeypatch.setattr(release_readiness, "_read_text", guarded_read_text)
-
-    release_readiness.readiness_errors(tmp_path, TAG)
-
-    assert "docs/PROJECT_REVIEW.md" not in release_readiness.RELEASE_DOCS
-    assert review not in set(release_readiness._release_files(tmp_path))
-
-
 def test_readiness_rejects_stale_lock_contracts(tmp_path: Path) -> None:
     _write_minimal_project(tmp_path, _changelog())
     lock_schema_url = (

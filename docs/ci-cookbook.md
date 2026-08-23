@@ -182,33 +182,22 @@ tag.
 
 ## Match source mode to the lifecycle
 
-| Lifecycle | Source | Reason |
-|---|---|---|
-| Pull request / post-commit CI | `head` | Captures one immutable commit tree |
-| Pre-commit | `index` | Captures exactly the staged tree |
-| Local review before staging | `working-tree` | Reads disk bytes for Git-known paths |
+| Lifecycle | Source |
+|---|---|
+| Pull request / post-commit CI | `head` |
+| Pre-commit | `index` |
+| Local review before staging | `working-tree` |
 
-After the first commit, untracked files are excluded. Stage new files before
-`index`; make them Git-known before relying on working-tree glob expansion. Use
-the same mode for generation and the verification it is meant to satisfy.
-
-Configuration and the verification lock are source-bound too: `head` reads
-both from the captured commit, and `index` reads both from the captured staged
-tree. This is a breaking correction from 0.10, which could combine staged
-artifacts with unstaged config/lock content. A complete staged refresh is:
-
-```bash
-# Stage every changed input; include boundary.config.json only when changed.
-git add services/payment/main.yaml services/payment/openapi.generated.yaml
-boundver generate --source index
-git add boundary.lock.json
-boundver verify --source index
-```
+Config and lock are bound to the snapshot for `head` and `index`, so a staged
+pipeline must stage the lock before it verifies. The full rules, including the
+staged-refresh command sequence, are in
+[reference](reference.md#source-modes).
 
 ## Check generated artifacts before verifying them
 
-boundver hashes a generated contract but does not currently bind it to its
-source or generator. Run a deterministic freshness check first:
+Boundver hashes a generated contract but does not bind it to its generator, so
+a stale committed artifact verifies clean. Run the generator's deterministic
+check first:
 
 ```yaml
 - name: Check generated OpenAPI is current
@@ -217,11 +206,8 @@ source or generator. Run a deterministic freshness check first:
   run: boundver verify --source head
 ```
 
-The check must fail when regeneration would change the tracked output. For
-index workflows, stage the derivation source and generated output together,
-then generate and stage the lock as shown above. There is no executable
-`derived_from` config field; command execution from untrusted repository config
-is deliberately not part of the current model.
+See [reference](reference.md#generated-artifacts-are-not-bound-to-their-generator)
+for why there is no executable `derived_from` field.
 
 ## Report in CI; update during review
 
@@ -270,37 +256,22 @@ does not preserve old non-gating fields.
 
 ## Exit-code-aware automation
 
-| Code | Highest selected result |
-|---:|---|
-| `0` | Clean |
-| `1` | Exact or metadata drift |
-| `2` | Usage, configuration, or digest error |
-| `3` | Behavior drift |
-| `4` | Boundary drift |
-| `5` | Compatibility-family drift |
+Boundver's exit code carries the drift class, so a pipeline can route on it
+directly. The code table and a complete `case` dispatcher are in
+[reference](reference.md#exit-codes).
+
+The one distinction worth building your pipeline around: exit `2` means
+boundver could not perform a reliable check, not that something drifted. Fail
+the build on `2` — never treat it as an acceptable result:
 
 ```bash
-set +e
-boundver verify \
-  --source head \
-  --facets behavior,boundary,compat \
-  --format json > boundver-result.json
+boundver verify --source head --facets behavior,boundary,compat
 code=$?
-set -e
-
-case "$code" in
-  0) echo "Declared contracts are current" ;;
-  2) echo "boundver could not perform a reliable check" >&2; exit 2 ;;
-  3) echo "Behavior contract changed" >&2; exit 3 ;;
-  4) echo "Boundary changed; re-verify affected consumers" >&2; exit 4 ;;
-  5) echo "Compatibility family changed" >&2; exit 5 ;;
-  *) echo "Unexpected boundver result: $code" >&2; exit "$code" ;;
-esac
+if [ "$code" -eq 2 ]; then
+  echo "boundver could not perform a reliable check" >&2
+  exit 2
+fi
 ```
-
-If several selected facets drift, the highest severity wins. `--fail-fast`
-limits output to one highest-severity issue rather than stopping before other
-components have been evaluated.
 
 ## GitLab CI
 

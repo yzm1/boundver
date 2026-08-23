@@ -3,9 +3,10 @@
 You do not need to model an entire repository on day one. Start with one
 component, make one signal trustworthy, then expand the contract deliberately.
 
-This guide uses boundver 0.12's v3/semantic-config-v2 contract. If the
-repository has a v3/semantic-config-v1 lock from 0.11 or a v1/v2 lock, perform
-the [0.12 upgrade](#upgrading-to-012) before mixing old and new writers.
+This guide uses the current `boundary-lock/v3` +
+`boundver-semantic-config/v2` contract. If the repository has a v3/v1 lock
+from 0.11 or a v1/v2 lock, [upgrade](reference.md#upgrading) before mixing
+old and new writers.
 
 ## Stage 1: record exact drift
 
@@ -310,29 +311,12 @@ PY
 Treat that value as a deterministic change signal, not as a replacement for
 consumer tests when the signal rotates.
 
-## Upgrading to 0.12
+## Upgrading
 
-Version 0.11's v3 locks carry semantic-config/v1, whose digest cannot be
-relabelled as v2. Version 0.10's v2 hashes do not bind every file's mode/type
-or the semantic configuration, and their path selection followed the old glob
-behavior. Both require regeneration:
-
-```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
-boundver validate-config
-# Stage changed config and every changed/newly selected contract input.
-git add boundary.config.json services/auth/openapi/new-route.yaml
-boundver generate --source index
-git add boundary.lock.json
-boundver verify --source index
-git diff --cached -- boundary.config.json boundary.lock.json
-```
-
-When upgrading directly from 0.10, review all changed selectors and provider
-versions. Then commit the regenerated v3/v2 lock. Replace the illustrative
-source path with every changed or newly selected input, and omit the config
-from `git add` if unchanged. A head-based alternative must commit config/source
-changes before generation. Update CI, local tooling, and automation together.
+Every upgrade regenerates the lock from reviewed source; hash-bearing locks are
+never relabelled. The procedure is in [reference](reference.md#upgrading), and
+what the regeneration diff should show on each upgrade path is in
+[migration and ratcheting](migration-and-ratcheting.md).
 
 ## Common mistakes
 
@@ -353,28 +337,24 @@ index baseline and make them Git-known before a working-tree baseline.
 
 ### Mixing source modes
 
-Generate and verify against the same snapshot. Use `working-tree` while editing,
-`index` in pre-commit, and `head` for committed CI.
-
-For `index` and `head`, that snapshot also supplies the config and verification
-lock. Stage config, source, and generated boundary outputs before an index
-generation, then stage the new lock before index verification. This source
-binding is stricter than 0.10.
+Generate and verify against the same snapshot. For `index` and `head` that
+snapshot supplies the config and the lock as well, which is stricter than 0.10.
+See [reference](reference.md#source-modes).
 
 ### Assuming `--allow-partial` hides extraction failures
 
 It only allows intentional null slice inputs, such as a boundary slice that
 temporarily includes an `implicit` component. Missing declared paths, provider
-errors, broken version sources, and vendored-copy errors remain fatal.
+errors, broken version sources, and vendored-copy errors remain fatal. See
+[reference](reference.md#-allow-partial).
 
 ### Fingerprinting a stale generated artifact
 
-boundver does not currently know that an OpenAPI file, GraphQL schema, or
-descriptor was generated from another source. Give the generator a deterministic
-`--check` mode and run it before `boundver verify`. Stage source, derived output,
-config, and lock together for an index baseline. Executable derivation commands
-are not accepted from repository config; declarative derivation support is
-roadmap work.
+Boundver does not know that an OpenAPI file, GraphQL schema, or descriptor was
+generated from something else, so a stale committed artifact verifies clean.
+Give the generator a deterministic `--check` mode and run it before
+`boundver verify`. See
+[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator).
 
 ### Treating canonical output as compatibility proof
 

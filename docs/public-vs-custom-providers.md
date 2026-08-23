@@ -6,17 +6,27 @@ means that value changed. It is not, by itself, a compatibility judgment.
 
 ## Built-in providers
 
-| Provider | Interpretation |
-|---|---|
-| `path-hash` | Hash arbitrary selected artifacts without format-specific parsing |
-| `openapi` / `openapi-raw` | Hash selected OpenAPI/Swagger artifacts without parsing them |
-| `json-file` / `json-file-raw` | Hash selected JSON artifacts without parsing them |
-| `python-exports` / `python-exports-raw` | Hash selected Python export files |
-| `typescript-exports` / `typescript-exports-raw` | Hash selected TypeScript declaration or export files |
-| `json-canonical` | Strictly parse JSON and hash a deterministic compact value |
-| `openapi-canonical` | Parse OpenAPI/Swagger and hash a reduced deterministic contract value |
-| `implicit` | Record exact drift while leaving the boundary intentionally partial |
-| `leaf` | Record that the component intentionally publishes no boundary |
+| Provider | Parses the format? | Interpretation |
+|---|---|---|
+| `path-hash` | No | Hash arbitrary selected artifacts without format-specific parsing |
+| `openapi` / `openapi-raw` | No | Hash selected OpenAPI/Swagger artifacts without parsing them |
+| `json-file` / `json-file-raw` | No | Hash selected JSON artifacts without parsing them |
+| `python-exports` / `python-exports-raw` | No | Hash selected Python export files |
+| `typescript-exports` / `typescript-exports-raw` | No | Hash selected TypeScript declaration or export files |
+| `json-canonical` | Yes | Strictly parse JSON and hash a deterministic compact value |
+| `openapi-canonical` | Yes | Parse OpenAPI/Swagger and hash a reduced deterministic contract value |
+| `implicit` | n/a | Record exact drift while leaving the boundary intentionally partial |
+| `leaf` | n/a | Record that the component intentionally publishes no boundary |
+
+The `Parses` column is the column that decides how noisy your boundary gate
+will be. The five raw providers differ only in the name recorded in the lock;
+they run identical selection and hashing. In particular `python-exports` and
+`typescript-exports` do **not** analyse an export surface — a reformat, a new
+comment, or a reordered import in a selected file rotates the boundary digest.
+Only `json-canonical` and `openapi-canonical` currently reduce a document to
+its contract. For Python and TypeScript, either scope the selection narrowly
+and accept formatting noise, or supply a trusted custom provider that performs
+real export analysis.
 
 Use `path-hash` for a format-neutral raw boundary, including SQL migrations,
 protobuf definitions, or another artifact type without a named provider. It
@@ -98,8 +108,9 @@ snapshot.
 
 There is intentionally no executable `derived_from.command` field. A checked-
 out config is not authorization to execute repository commands, and a sound
-design also has to bind tool identity and source materialization. Declarative
-derived-artifact support remains roadmap work.
+design also has to bind tool identity and source materialization. See
+[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator)
+for the freshness check to run instead.
 
 ## Provider versions and v3 locks
 
