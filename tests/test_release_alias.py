@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -247,7 +248,20 @@ class AliasDispatchTests(unittest.TestCase):
             "delay_seconds": 0,
         }
 
-    def test_recovery_dispatches_current_main_control_and_requires_alias(self):
+    def test_release_tag_checkout_must_contain_regular_alias_workflow(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with self.assertRaisesRegex(
+                self.alias.AliasError, "predates the secretless exact-tag"
+            ):
+                self.alias._require_release_alias_workflow(root, TAG)
+
+            workflow = root / self.alias.WORKFLOW_PATH
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: alias\n", encoding="utf-8")
+            self.alias._require_release_alias_workflow(root, TAG)
+
+    def test_recovery_dispatches_release_tag_mutation_and_requires_alias(self):
         completed = {
             "id": 111,
             "run_attempt": 1,
@@ -259,6 +273,8 @@ class AliasDispatchTests(unittest.TestCase):
         with mock.patch.object(
             self.alias, "_remote_ref", side_effect=[SHA, None, SHA]
         ), mock.patch.object(
+            self.alias, "_require_release_alias_workflow"
+        ), mock.patch.object(
             self.alias, "_find_alias_run", side_effect=[None, completed]
         ), mock.patch.object(
             self.alias, "_run", return_value=command_result
@@ -269,7 +285,7 @@ class AliasDispatchTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ("gh", "workflow", "run", "advance-release-alias.yml"))
         self.assertIn("--ref", command)
-        self.assertEqual(command[command.index("--ref") + 1], "main")
+        self.assertEqual(command[command.index("--ref") + 1], TAG)
         for field in (
             f"release_tag={TAG}",
             f"release_sha={SHA}",
@@ -291,6 +307,8 @@ class AliasDispatchTests(unittest.TestCase):
         with mock.patch.object(
             self.alias, "_remote_ref", side_effect=[SHA, None]
         ), mock.patch.object(
+            self.alias, "_require_release_alias_workflow"
+        ), mock.patch.object(
             self.alias, "_find_alias_run", return_value=None
         ) as find, mock.patch.object(
             self.alias, "_run", return_value=command_result
@@ -302,11 +320,13 @@ class AliasDispatchTests(unittest.TestCase):
         self.assertEqual(find.call_args.kwargs["control_ref"], TAG)
         self.assertEqual(find.call_args.kwargs["control_sha"], SHA)
 
-    def test_recovery_ref_remains_main_when_control_sha_equals_release(self):
+    def test_recovery_dispatch_ref_remains_release_tag_when_control_sha_matches(self):
         arguments = {**self._arguments(), "publication_sha": SHA}
         command_result = subprocess.CompletedProcess([], 1, "", "queued")
         with mock.patch.object(
             self.alias, "_remote_ref", side_effect=[SHA, None]
+        ), mock.patch.object(
+            self.alias, "_require_release_alias_workflow"
         ), mock.patch.object(
             self.alias, "_find_alias_run", return_value=None
         ), mock.patch.object(
@@ -315,7 +335,21 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias.dispatch_alias_workflow(**arguments)
 
         command = run.call_args.args[0]
-        self.assertEqual(command[command.index("--ref") + 1], "main")
+        self.assertEqual(command[command.index("--ref") + 1], TAG)
+
+    def test_missing_release_tag_alias_workflow_fails_before_dispatch(self):
+        with mock.patch.object(
+            self.alias, "_remote_ref", side_effect=[SHA, None]
+        ), mock.patch.object(
+            self.alias,
+            "_require_release_alias_workflow",
+            side_effect=self.alias.AliasError("immutable release predates workflow"),
+        ), mock.patch.object(self.alias, "_run") as run, self.assertRaisesRegex(
+            self.alias.AliasError, "predates workflow"
+        ):
+            self.alias.dispatch_alias_workflow(**self._arguments())
+
+        run.assert_not_called()
 
     def test_rejects_unknown_or_mismatched_publication_control(self):
         for overrides, message in (
@@ -344,8 +378,8 @@ class AliasDispatchTests(unittest.TestCase):
             "display_title": title,
             "path": ".github/workflows/advance-release-alias.yml",
             "event": "workflow_dispatch",
-            "head_branch": "main",
-            "head_sha": PUBLICATION_SHA,
+            "head_branch": TAG,
+            "head_sha": SHA,
             "status": "queued",
             "conclusion": None,
             "html_url": "https://example.invalid/run/1",
@@ -354,8 +388,8 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias._matching_alias_runs(
                 {"total_count": 2, "workflow_runs": [base, {**base, "id": 2}]},
                 title=title,
-                control_ref="main",
-                control_sha=PUBLICATION_SHA,
+                control_ref=TAG,
+                control_sha=SHA,
             )
 
         wrong = {**base, "head_sha": "d" * 40}
@@ -363,16 +397,16 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias._matching_alias_runs(
                 {"total_count": 1, "workflow_runs": [wrong]},
                 title=title,
-                control_ref="main",
-                control_sha=PUBLICATION_SHA,
+                control_ref=TAG,
+                control_sha=SHA,
             )
 
         with self.assertRaisesRegex(self.alias.AliasError, "listing is incomplete"):
             self.alias._matching_alias_runs(
                 {"total_count": 2, "workflow_runs": [base]},
                 title=title,
-                control_ref="main",
-                control_sha=PUBLICATION_SHA,
+                control_ref=TAG,
+                control_sha=SHA,
             )
 
 

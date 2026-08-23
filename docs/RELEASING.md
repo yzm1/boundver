@@ -287,21 +287,22 @@ workflows then perform these gates in order:
    GitHub's package settings, then approve `container-public`; the verification
    job logs out before proving anonymous pull, labels, runtime version, and
    attestation by digest.
-9. Dispatch the dedicated alias workflow from the exact commit controlling the
-   active publication: the immutable `vX.Y.Z` tag for an initial promotion, or
-   reviewed current `main` for recovery of an older tag. The child separately
-   checks out the immutable release commit, rebinds itself to the active parent
-   and its successful PyPI-verification job, downloads the immutable Release
-   assets, verifies every public surface except the alias, performs one
-   ancestral, monotonic, force-with-lease alias update, and then verifies all
-   surfaces again. The parent publication waits for that result and performs
-   its own final comparison. A failed-jobs rerun may reuse exact
-   successful publication gates from an earlier attempt of the same active
-   run; it never treats a different run or commit as evidence. This secretless
-   handoff is required. A recovery run executes the alias workflow from its
-   exact reviewed `main` control commit, while all release identity and public
-   bytes remain bound to the immutable tag. Do not store a maintainer PAT to
-   bypass that protection. Advance
+9. Dispatch the dedicated alias workflow from the immutable `vX.Y.Z` tag for
+   both initial publication and recovery. The child separately checks out the
+   reviewed publication-control commit—the tag itself initially or current
+   `main` during recovery—rebinds itself to the active parent and its successful
+   PyPI-verification job, downloads the immutable Release assets, verifies every
+   public surface except the alias, performs one ancestral, monotonic,
+   force-with-lease alias update, and then verifies all surfaces again. Running
+   the mutation workflow from the target release commit lets the repository
+   `GITHUB_TOKEN` update the alias without separate workflow-write credentials.
+   The parent publication waits for that result and performs its own final
+   comparison. A failed-jobs rerun may reuse exact successful publication gates
+   from an earlier attempt of the same active run; it never treats a different
+   run or commit as evidence. This secretless handoff is required. Immutable
+   tags before v0.13.0 do not contain the child workflow, so recovery that still
+   needs to create or move an alias fails before dispatch. Do not store a
+   maintainer PAT to bypass that protection. Advance
    only aliases explicitly approved for the compatibility line; for breaking
    `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
    lines unless an owner explicitly approves and announces those migrations.
@@ -378,10 +379,16 @@ must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
 unreadable GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
 artifact identity remain bound to the immutable tagged source. Once PyPI is
-verified, current `main` dispatches its own exact reviewed version of
-`advance-release-alias.yml` and waits. The child checks out the immutable tag,
-must prove the parent run is still active at the exact attempt, and must observe
-its successful PyPI-verification job before any ref update. An ad hoc fresh
+verified, current `main` dispatches `advance-release-alias.yml` from the
+immutable release tag and waits. The child loads its publication-control scripts
+from the separately checked-out current `main` commit, must prove the parent run
+is still active at the exact attempt, and must observe its successful
+PyPI-verification job before any ref update. This recovery path can move an
+alias only for v0.13.0 and later immutable tags, which contain the exact-tag
+child workflow. For an older tag, the launcher fails before dispatch unless the
+approved alias already resolves to the release SHA. An original, immutable
+`--alias none` policy also needs no child workflow, but that option cannot be
+substituted for a release that originally approved an alias. An ad hoc fresh
 publication dispatch is not a recovery path.
 
 ## Post-release checks

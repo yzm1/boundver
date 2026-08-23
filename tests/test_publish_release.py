@@ -702,6 +702,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "_release_is_on_main": "ancestor",
             "_github_controls": "controls",
             "_source_release_artifacts": "artifacts",
+            "_release_alias_workflow_at_commit": "alias workflow",
         }
         patches = [
             mock.patch.object(publisher, name, return_value=value)
@@ -715,7 +716,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             6
         ] as tag_state, patches[7] as ancestry, patches[8] as controls, patches[
             9
-        ] as artifacts:
+        ] as artifacts, patches[10] as alias_workflow:
             resolved_repo = Path(td).resolve()
             control_sha, checks = publisher._evaluate_resume(
                 Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
@@ -731,6 +732,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         artifacts.assert_called_once_with(
             resolved_repo, RUN_ID, TAG, SHA, ALIAS
+        )
+        alias_workflow.assert_called_once_with(
+            resolved_repo, "origin", SHA, TAG, ALIAS
         )
         for called in (surfaces, identity, clean, hygiene, project):
             called.assert_called_once()
@@ -758,6 +762,81 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         self.assertIn(TAG[1:], detail)
         self.assertIn(release_sha, detail)
+
+    def test_alias_recovery_requires_workflow_in_immutable_release_commit(self):
+        publisher = _load_script()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old_sha = _init_repo(root)
+            workflow = root / ".github" / "workflows" / "advance-release-alias.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: alias\n", encoding="utf-8")
+            subprocess.run(["git", "add", str(workflow)], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "add alias workflow"], cwd=root, check=True
+            )
+            current_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+
+            with mock.patch.object(publisher, "_remote_ref", return_value=None):
+                with self.assertRaisesRegex(
+                    publisher.GateError, "predates the secretless exact-tag"
+                ):
+                    publisher._release_alias_workflow_at_commit(
+                        root, "origin", old_sha, TAG, ALIAS
+                    )
+            with mock.patch.object(
+                publisher, "_remote_ref", return_value=old_sha
+            ):
+                exact_detail = publisher._release_alias_workflow_at_commit(
+                    root, "origin", old_sha, TAG, ALIAS
+                )
+            detail = publisher._release_alias_workflow_at_commit(
+                root, "origin", current_sha, TAG, ALIAS
+            )
+
+            symlink_blob = subprocess.check_output(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=root,
+                input="alias-target\n",
+                text=True,
+            ).strip()
+            subprocess.run(
+                [
+                    "git",
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    f"120000,{symlink_blob},.github/workflows/advance-release-alias.yml",
+                ],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "replace alias workflow with symlink"],
+                cwd=root,
+                check=True,
+            )
+            symlink_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+            with self.assertRaisesRegex(publisher.GateError, "regular"):
+                publisher._release_alias_workflow_at_commit(
+                    root, "origin", symlink_sha, TAG, ALIAS
+                )
+
+        self.assertIn("already resolves", exact_detail)
+        self.assertIn(current_sha, detail)
+        self.assertIn("advance-release-alias.yml", detail)
+
+    def test_no_alias_recovery_does_not_require_child_workflow(self):
+        publisher = _load_script()
+        detail = publisher._release_alias_workflow_at_commit(
+            Path("missing"), "origin", SHA, TAG, "none"
+        )
+
+        self.assertEqual(detail, "no compatibility alias was requested")
 
     def test_release_control_reads_and_distribution_copies_are_bounded(self):
         publisher = _load_script()
@@ -860,7 +939,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         alias_workflow = "\n".join(
             (
                 "  advance:",
-                "Bind this run to the exact reviewed publication control",
+                "Bind mutation authority to the exact release tag",
                 "Checkout the reviewed publication-control commit",
                 "publication_ref:",
                 '--publication-ref "$PUBLICATION_REF"',

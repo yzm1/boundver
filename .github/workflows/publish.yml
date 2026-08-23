@@ -2685,7 +2685,7 @@ jobs:
         shell: bash
         run: echo "No compatibility alias was approved for $RELEASE_TAG."
 
-      - name: Dispatch exact-control alias verification and advancement
+      - name: Dispatch exact-tag alias verification and advancement
         if: inputs.compatibility_alias != 'none'
         shell: bash
         env:

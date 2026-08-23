@@ -514,7 +514,7 @@ class AutomationContractTests(unittest.TestCase):
             step
             for step in alias_job["steps"]
             if step.get("name")
-            == "Dispatch exact-control alias verification and advancement"
+            == "Dispatch exact-tag alias verification and advancement"
         )
         self.assertIn(".release-control/scripts/release_alias.py\" dispatch", alias_step["run"])
         self.assertIn('publication-run-id "$GITHUB_RUN_ID"', alias_step["run"])
@@ -601,7 +601,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertNotIn("git tag --force v0 ", workflow)
         self.assertEqual(workflow.count("retention-days: 90"), 3)
 
-    def test_alias_workflow_is_exact_control_bound_and_uses_no_maintainer_secret(self):
+    def test_alias_workflow_uses_exact_tag_mutation_and_no_maintainer_secret(self):
         import yaml
 
         path = REPO_ROOT / ".github/workflows/advance-release-alias.yml"
@@ -614,18 +614,19 @@ class AutomationContractTests(unittest.TestCase):
         advance = workflow["jobs"]["advance"]
         first = advance["steps"][0]
         self.assertEqual(
-            first["name"], "Bind this run to the exact reviewed publication control"
+            first["name"], "Bind mutation authority to the exact release tag"
         )
         binding = first["run"]
         for invariant in (
-            'expected_ref_type=tag',
-            'expected_ref_type=branch',
-            'expected_ref_name=main',
             '"$PUBLICATION_REF" == "$RELEASE_TAG"',
             '"$PUBLICATION_REF" == main',
-            '"$DISPATCH_SHA" != "$PUBLICATION_SHA"',
+            '"$DISPATCH_REF_TYPE" != tag',
+            '"$DISPATCH_REF_NAME" != "$RELEASE_TAG"',
+            '"$DISPATCH_SHA" != "$RELEASE_SHA"',
         ):
             self.assertIn(invariant, binding)
+        self.assertNotIn('expected_ref_type=branch', binding)
+        self.assertNotIn('"$DISPATCH_SHA" != "$PUBLICATION_SHA"', binding)
         parent = next(
             step
             for step in advance["steps"]
@@ -893,7 +894,7 @@ class AutomationContractTests(unittest.TestCase):
                 ("prepare-release-draft", "Create or reconcile the exact release draft"),
                 (
                     "advance-compatibility-alias",
-                    "Dispatch exact-control alias verification and advancement",
+                    "Dispatch exact-tag alias verification and advancement",
                 ),
             ],
         )
@@ -1013,7 +1014,7 @@ class AutomationContractTests(unittest.TestCase):
             step
             for step in alias_dispatch["steps"]
             if step.get("name")
-            == "Dispatch exact-control alias verification and advancement"
+            == "Dispatch exact-tag alias verification and advancement"
         )
         self.assertIn("python3 -I", dispatch_step["run"])
         self.assertIn("clean_python_cwd=$(mktemp -d)", dispatch_step["run"])

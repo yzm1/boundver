@@ -47,6 +47,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Compatibility-alias mutation now always executes from the immutable release
+  tag while recovery loads reviewed publication controls from current `main`,
+  keeping the secretless `GITHUB_TOKEN` workflow-tree authorization exact.
+  Recovery fails before dispatch when a pre-v0.13 immutable tag lacks the child
+  workflow and its approved alias still needs to move.
 - Verification no longer recommends `--update` for unavailable facets that
   configuration cannot produce, explains when the lock remains untouched, and
   tells first-time `--source head` users to commit a generated lock or verify
@@ -172,14 +177,6 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
   Production PyPI retries reuse the complete exact artifact with duplicate
   tolerance, followed by byte-for-byte public verification, so a partial upload
   cannot make a failed-job retry unsafe.
-- Compatibility aliases are advanced by a dedicated workflow dispatched from
-  the exact publication-control commit after production PyPI verification: the
-  immutable release tag for an initial promotion or reviewed current `main` for
-  recovery, including tags that predate the child workflow. It separately
-  checks out the immutable released source, rebinds to the active parent
-  attempt, verifies every public artifact before and after a leased monotonic
-  ref update, and avoids a maintainer PAT.
-
 ## [0.11.0] - 2026-08-14
 
 This release changes the meaning of stored fingerprints and requires a fresh

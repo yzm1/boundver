@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Dispatch and apply a verified compatibility-alias update.
 
-``dispatch`` starts a narrowly scoped workflow from the exact commit controlling
-the active publication and waits for it.  A first publication is controlled by
-the immutable release tag itself; recovery is controlled by reviewed current
-``main`` even when the older tag predates the alias workflow.  ``advance``
-revalidates the originating publication and immutable release checkout before
-performing one leased, monotonic alias update.
+``dispatch`` always starts the narrowly scoped mutation workflow from the
+immutable release tag and waits for it.  During recovery that workflow loads
+the reviewed publication controls from current ``main`` without moving the
+mutation authority away from the tagged release.  ``advance`` revalidates the
+originating publication and immutable release checkout before performing one
+leased, monotonic alias update.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -209,6 +210,25 @@ def _run_title(alias: str, tag: str, publication_run_id: int, attempt: int) -> s
     )
 
 
+def _require_release_alias_workflow(repo: Path, tag: str) -> None:
+    """Require the immutable checkout to contain the secretless child workflow."""
+    workflow = repo / WORKFLOW_PATH
+    try:
+        metadata = workflow.lstat()
+    except FileNotFoundError as error:
+        raise AliasError(
+            f"immutable release {tag} predates the secretless exact-tag alias "
+            "workflow; automatic alias recovery cannot move its compatibility "
+            "alias without separate workflow-mutation credentials"
+        ) from error
+    except OSError as error:
+        raise AliasError(f"cannot inspect {WORKFLOW_PATH}: {error}") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise AliasError(
+            f"immutable release {tag} has no regular {WORKFLOW_PATH} workflow"
+        )
+
+
 def _validate_publication_control(
     publication_ref: str,
     publication_sha: str,
@@ -320,6 +340,7 @@ def dispatch_alias_workflow(
         raise AliasError("exact release tag moved or disappeared before alias dispatch")
     if _remote_ref(repo, remote, alias_ref) == sha:
         return f"{alias} already resolves to {sha}"
+    _require_release_alias_workflow(repo, tag)
 
     title = _run_title(alias, tag, publication_run_id, publication_attempt)
     dispatched = False
@@ -329,8 +350,8 @@ def dispatch_alias_workflow(
             repo,
             repository,
             title=title,
-            control_ref=publication_ref,
-            control_sha=publication_sha,
+            control_ref=tag,
+            control_sha=sha,
         )
         if run is None and not dispatched:
             result = _run(
@@ -342,7 +363,7 @@ def dispatch_alias_workflow(
                     "--repo",
                     repository,
                     "--ref",
-                    publication_ref,
+                    tag,
                     "--field",
                     f"release_tag={tag}",
                     "--field",

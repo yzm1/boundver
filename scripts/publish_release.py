@@ -77,6 +77,7 @@ MAX_GITHUB_API_PAGES = 100
 MAX_GITHUB_API_ITEMS = 10_000
 MAX_RELEASE_METADATA_BYTES = 1024 * 1024
 MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
+ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 MAX_DISTRIBUTION_FILE_BYTES = 128 * 1024 * 1024
 MAX_DISTRIBUTION_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_DISTRIBUTION_DIRECTORY_ENTRIES = 10_000
@@ -1144,6 +1145,46 @@ def _project_at_commit(repo: Path, sha: str, tag: str) -> str:
     return f"boundver {project['version']} at {sha}"
 
 
+def _release_alias_workflow_at_commit(
+    repo: Path, remote: str, release_sha: str, tag: str, alias: str
+) -> str:
+    """Require secretless alias recovery support in the immutable release."""
+    if alias == "none":
+        return "no compatibility alias was requested"
+    entry = _git(
+        repo,
+        "ls-tree",
+        "--full-tree",
+        release_sha,
+        "--",
+        ALIAS_WORKFLOW_PATH,
+        max_stdout_bytes=1024,
+    )
+    if not entry:
+        if _remote_ref(repo, remote, f"refs/tags/{alias}") == release_sha:
+            return f"{alias} already resolves to immutable release {release_sha}"
+        raise GateError(
+            f"immutable release {tag} at {release_sha} predates the secretless "
+            "exact-tag alias workflow; automatic alias recovery cannot move "
+            f"{alias} without separate workflow-mutation credentials"
+        )
+    header, separator, path = entry.partition("\t")
+    fields = header.split()
+    if (
+        separator != "\t"
+        or len(fields) != 3
+        or fields[0] not in {"100644", "100755"}
+        or fields[1] != "blob"
+        or SHA_RE.fullmatch(fields[2]) is None
+        or path != ALIAS_WORKFLOW_PATH
+    ):
+        raise GateError(
+            f"immutable release {tag} does not contain a regular "
+            f"{ALIAS_WORKFLOW_PATH} workflow"
+        )
+    return f"{ALIAS_WORKFLOW_PATH} is present at immutable release {release_sha}"
+
+
 def _clean(repo: Path) -> str:
     state = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     if state:
@@ -1779,7 +1820,7 @@ def _surface_inventory(repo: Path) -> str:
         "GitHub Release assets": ("scripts/verify_release_surfaces.py",),
         "compatibility alias": (
             ".github/workflows/publish.yml",
-            ".github/workflows/advance-release-alias.yml",
+            ALIAS_WORKFLOW_PATH,
             "scripts/release_alias.py",
         ),
         "GHCR multi-platform container": (
@@ -1857,13 +1898,13 @@ def _surface_inventory(repo: Path) -> str:
             + ", ".join(missing_container_contracts)
         )
     alias_workflow = _read_bounded_text(
-        repo / ".github/workflows/advance-release-alias.yml",
-        ".github/workflows/advance-release-alias.yml",
+        repo / ALIAS_WORKFLOW_PATH,
+        ALIAS_WORKFLOW_PATH,
         max_bytes=MAX_RELEASE_WORKFLOW_BYTES,
     )
     required_alias_contracts = (
         "  advance:",
-        "Bind this run to the exact reviewed publication control",
+        "Bind mutation authority to the exact release tag",
         "Checkout the reviewed publication-control commit",
         "publication_ref:",
         '--publication-ref "$PUBLICATION_REF"',
@@ -1949,6 +1990,14 @@ def _evaluate_resume(
             "release commit ancestry",
             lambda: _release_is_on_main(repo, release_sha, control_sha),
         )
+        if alias != "none" and all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "release alias recovery capability",
+                lambda: _release_alias_workflow_at_commit(
+                    repo, remote, release_sha, tag, alias
+                ),
+            )
         if all(item.status == "passed" for item in checks):
             _record(
                 checks,

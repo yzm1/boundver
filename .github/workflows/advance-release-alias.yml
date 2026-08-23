@@ -60,7 +60,7 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Bind this run to the exact reviewed publication control
+      - name: Bind mutation authority to the exact release tag
         shell: bash
         env:
           DISPATCH_EVENT: ${{ github.event_name }}
@@ -98,22 +98,17 @@ jobs:
               echo "Exact-tag publication control must match the release SHA" >&2
               exit 1
             fi
-            expected_ref_type=tag
-            expected_ref_name=$RELEASE_TAG
-            expected_ref="refs/tags/$RELEASE_TAG"
           elif [[ "$PUBLICATION_REF" == main ]]; then
-            expected_ref_type=branch
-            expected_ref_name=main
-            expected_ref=refs/heads/main
+            : # Recovery logic comes from the separately checked-out reviewed main.
           else
             echo "Publication ref must be the exact release tag or main" >&2
             exit 1
           fi
-          if [[ "$DISPATCH_REF_TYPE" != "$expected_ref_type" || \
-                "$DISPATCH_REF_NAME" != "$expected_ref_name" || \
-                "$DISPATCH_REF" != "$expected_ref" || \
-                "$DISPATCH_SHA" != "$PUBLICATION_SHA" ]]; then
-            echo "Alias workflow must execute from the exact publication-control commit" >&2
+          if [[ "$DISPATCH_REF_TYPE" != tag || \
+                "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
+                "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" || \
+                "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Alias mutation workflow must execute from the exact release tag" >&2
             exit 1
           fi
 
