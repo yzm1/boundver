@@ -1,0 +1,76 @@
+spec:
+  description: Classify declared contract drift and report downstream consumers.
+  component: [version]
+  inputs:
+    stage:
+      description: Pipeline stage for the verification job.
+      default: test
+    job-name:
+      description: Unique name for the generated verification job.
+      default: boundver-verify
+    config:
+      description: Path to boundary.config.json.
+      default: boundary.config.json
+    lock:
+      description: Path to boundary.lock.json.
+      default: boundary.lock.json
+    source:
+      description: Git snapshot to verify.
+      default: head
+      options: [head, index, working-tree]
+    facets:
+      description: Optional comma-separated facet override; empty uses config policy.
+      default: ""
+    components:
+      description: Optional comma-separated component subset.
+      default: ""
+    changed-from:
+      description: Optional Git ref used only to report changed components.
+      default: ""
+    transitive:
+      description: Include the downstream consumer closure in impact output.
+      type: boolean
+      default: false
+    fail-fast:
+      description: Report only the highest-severity gated issue.
+      type: boolean
+      default: false
+---
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image:
+    name: ghcr.io/yzm1/boundver:$[[ component.version ]]
+    entrypoint: [""]
+  variables:
+    BOUNDVER_CONFIG: "$[[ inputs.config ]]"
+    BOUNDVER_LOCK: "$[[ inputs.lock ]]"
+    BOUNDVER_SOURCE: "$[[ inputs.source ]]"
+    BOUNDVER_FACETS: "$[[ inputs.facets ]]"
+    BOUNDVER_COMPONENTS: "$[[ inputs.components ]]"
+    BOUNDVER_CHANGED_FROM: "$[[ inputs.changed-from ]]"
+    BOUNDVER_TRANSITIVE: "$[[ inputs.transitive ]]"
+    BOUNDVER_FAIL_FAST: "$[[ inputs.fail-fast ]]"
+  script:
+    - |
+      set -eu
+      set -- boundver verify \
+        --config "$BOUNDVER_CONFIG" \
+        --lock "$BOUNDVER_LOCK" \
+        --source "$BOUNDVER_SOURCE" \
+        --format json
+      if [ -n "$BOUNDVER_FACETS" ]; then
+        set -- "$@" --facets "$BOUNDVER_FACETS"
+      fi
+      if [ -n "$BOUNDVER_COMPONENTS" ]; then
+        set -- "$@" --components "$BOUNDVER_COMPONENTS"
+      fi
+      if [ -n "$BOUNDVER_CHANGED_FROM" ]; then
+        set -- "$@" --changed-from "$BOUNDVER_CHANGED_FROM"
+      fi
+      if [ "$BOUNDVER_TRANSITIVE" = true ]; then
+        set -- "$@" --transitive
+      fi
+      if [ "$BOUNDVER_FAIL_FAST" = true ]; then
+        set -- "$@" --fail-fast
+      fi
+      "$@"

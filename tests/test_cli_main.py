@@ -45,6 +45,13 @@ def _run_main(*args: str, repo_root: Path = None) -> tuple[int, str, str]:
 
 
 class MainNoCommandTests(unittest.TestCase):
+    def test_version_uses_the_stable_public_program_name(self):
+        code, out, error = _run_main("--version")
+
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"^boundver [0-9]+\.[0-9]+\.[0-9]+\n$")
+        self.assertEqual(error, "")
+
     def test_no_command_exits_2(self):
         """main() with no subcommand exits 2 (usage error) and prints help."""
         code, out, _ = _run_main()

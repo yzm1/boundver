@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Fail closed when versioned public release surfaces disagree.
 
-This check covers repository content that PyPI, GitHub Releases, and GitHub
-Marketplace snapshot from the release commit.  Remote publication state is
-verified separately after each service accepts the immutable artifacts.
+This check covers repository content that the documentation site, package
+indexes, GitHub Releases, GitHub Marketplace, GHCR, Homebrew, and GitLab
+distribution surfaces derive from the release commit. Remote publication
+state is verified separately after each service accepts the immutable
+artifacts.
 """
 
 from __future__ import annotations
@@ -61,8 +63,12 @@ SKIP_PARTS = {
 EXCLUDED_RELEASE_PATHS = frozenset({"docs/PROJECT_REVIEW.md"})
 RELEASE_DOCS = (
     "README.md",
+    "docs/index.md",
+    "docs/demo.md",
     "docs/getting-started.md",
     "docs/ci-cookbook.md",
+    "docs/comparison.md",
+    "docs/distribution.md",
     "docs/WHY_BOUNDVER.md",
 )
 
@@ -665,11 +671,13 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         )
     required_urls = {
         "Homepage": "https://github.com/yzm1/boundver",
-        "Documentation": "https://github.com/yzm1/boundver/tree/main/docs",
+        "Documentation": "https://yzm1.github.io/boundver/",
         "Changelog": "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md",
         "Issues": "https://github.com/yzm1/boundver/issues",
         "Repository": "https://github.com/yzm1/boundver",
         "GitHub Action": "https://github.com/marketplace/actions/boundver",
+        "Container": "https://github.com/yzm1/boundver/pkgs/container/boundver",
+        "Homebrew": "https://github.com/yzm1/homebrew-boundver",
     }
     urls = project.get("urls")
     if not isinstance(urls, dict):
@@ -714,6 +722,10 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         f"yzm1/boundver@{tag}",
         "https://pypi.org/project/boundver/",
         "https://github.com/marketplace/actions/boundver",
+        "https://yzm1.github.io/boundver/",
+        "ghcr.io/yzm1/boundver:",
+        "brew install yzm1/boundver/boundver",
+        "https://yzm1.github.io/boundver/assets/verify-demo.svg",
         "docs/RELEASING.md",
     ):
         if required not in readme:

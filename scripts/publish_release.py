@@ -53,6 +53,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
 
 
 REPOSITORY = "yzm1/boundver"
+HOMEBREW_REPOSITORY = "yzm1/homebrew-boundver"
 REVIEW_TOKEN_ENV = "BOUNDVER_RELEASE_REVIEW_TOKEN"
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -89,7 +90,7 @@ DISPATCH_DISCOVERY_ATTEMPTS = 12
 DISPATCH_DISCOVERY_DELAY_SECONDS = 5.0
 SURFACES = (
     "repository hygiene",
-    "README and documentation",
+    "README and hosted documentation",
     "changelog and release notes",
     "schema URLs, configs, and locks",
     "CI and review state",
@@ -99,7 +100,9 @@ SURFACES = (
     "PyPI",
     "GitHub Release assets",
     "compatibility alias",
-    "Docker",
+    "GHCR multi-platform container",
+    "Homebrew tap",
+    "GitLab CI/CD Catalog component",
     "pre-commit",
 )
 
@@ -1225,12 +1228,62 @@ def _github_controls(
         collection="environments",
     )
     by_name = {item.get("name"): item for item in values if isinstance(item, dict)}
-    for name in ("testpypi", "pypi", "marketplace"):
+    for name in (
+        "testpypi",
+        "pypi",
+        "marketplace",
+        "container",
+        "container-public",
+    ):
         item = by_name.get(name)
         if not _environment_requires_review(item):
             raise GateError(
                 f"GitHub environment {name!r} must require at least one reviewer"
             )
+    pages = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/pages")
+    if (
+        not isinstance(pages, dict)
+        or pages.get("build_type") != "workflow"
+        or pages.get("html_url") != "https://yzm1.github.io/boundver/"
+        or pages.get("https_enforced") is not True
+        or pages.get("public") is not True
+    ):
+        raise GateError(
+            "GitHub Pages must use the public HTTPS GitHub Actions deployment"
+        )
+    tap = _gh_json(repo, HOMEBREW_REPOSITORY, f"repos/{HOMEBREW_REPOSITORY}")
+    if (
+        not isinstance(tap, dict)
+        or tap.get("full_name") != HOMEBREW_REPOSITORY
+        or tap.get("default_branch") != "main"
+        or tap.get("archived") is not False
+        or tap.get("visibility") != "public"
+    ):
+        raise GateError("the canonical Homebrew tap must be public and active")
+    for path in ("Formula/boundver.rb", ".github/workflows/update-formula.yml"):
+        item = _gh_json(
+            repo,
+            HOMEBREW_REPOSITORY,
+            f"repos/{HOMEBREW_REPOSITORY}/contents/{path}?ref=main",
+        )
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "file"
+            or not isinstance(item.get("sha"), str)
+            or SHA_RE.fullmatch(item["sha"]) is None
+            or not isinstance(item.get("size"), int)
+            or not 0 < item["size"] <= MAX_RELEASE_WORKFLOW_BYTES
+        ):
+            raise GateError(f"Homebrew tap contract is absent or malformed: {path}")
+    tap_environment = _gh_json(
+        repo,
+        HOMEBREW_REPOSITORY,
+        f"repos/{HOMEBREW_REPOSITORY}/environments/formula-update",
+    )
+    if not _environment_requires_review(tap_environment):
+        raise GateError(
+            "Homebrew formula-update environment must require at least one reviewer"
+        )
     immutable = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/immutable-releases")
     if not isinstance(immutable, dict) or immutable.get("enabled") is not True:
         raise GateError("immutable GitHub Releases are not enabled")
@@ -1269,7 +1322,11 @@ def _github_controls(
     ):
         raise GateError("no successful completed ci.yml push run for exact main SHA")
     active_states = {"requested", "pending", "queued", "in_progress", "waiting"}
-    for workflow in ("create-release-tag.yml", "publish.yml"):
+    for workflow in (
+        "create-release-tag.yml",
+        "publish.yml",
+        "publish-container.yml",
+    ):
         runs_value = _gh_paginated_list(
             repo,
             f"repos/{REPOSITORY}/actions/workflows/{workflow}/runs?per_page=100",
@@ -1298,7 +1355,10 @@ def _github_controls(
                 "an existing public GitHub Release must be stable and immutable "
                 "before recovery"
             )
-    return "repository, exact CI, environments, immutability, and promotion state verified"
+    return (
+        "repository, exact CI, Pages, Homebrew tap, environments, immutability, "
+        "and promotion state verified"
+    )
 
 
 def _resume_release_state(repo: Path, remote: str, tag: str, sha: str) -> str:
@@ -1685,7 +1745,19 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
 def _surface_inventory(repo: Path) -> str:
     required = {
         "repository hygiene": ("scripts/check_repo_hygiene.py", ".gitignore", ".gitattributes"),
-        "README and documentation": ("README.md", "docs/RELEASING.md"),
+        "README and hosted documentation": (
+            "README.md",
+            "mkdocs.yml",
+            "docs/index.md",
+            "docs/demo.md",
+            "docs/comparison.md",
+            "docs/distribution.md",
+            "docs/RELEASING.md",
+            "docs/assets/verify-demo.svg",
+            "docs/assets/social-preview.png",
+            ".github/workflows/docs.yml",
+            "scripts/requirements/docs.lock",
+        ),
         "changelog and release notes": ("CHANGELOG.md", "scripts/release_changelog.py"),
         "schema URLs, configs, and locks": ("boundary.config.schema.json", "spec/boundary.lock.schema.json", "boundary.lock.json"),
         "CI and review state": (".github/workflows/ci.yml", "scripts/audit_release_reviews.sh"),
@@ -1710,7 +1782,20 @@ def _surface_inventory(repo: Path) -> str:
             ".github/workflows/advance-release-alias.yml",
             "scripts/release_alias.py",
         ),
-        "Docker": ("Dockerfile",),
+        "GHCR multi-platform container": (
+            "Dockerfile",
+            ".github/workflows/publish-container.yml",
+            ".github/workflows/publish.yml",
+        ),
+        "Homebrew tap": (
+            "scripts/render_homebrew_formula.py",
+            "docs/distribution.md",
+        ),
+        "GitLab CI/CD Catalog component": (
+            ".gitlab-ci.yml",
+            "templates/boundver.yml",
+            "scripts/validate_gitlab_component.py",
+        ),
         "pre-commit": (".pre-commit-hooks.yaml",),
     }
     missing = [
@@ -1736,6 +1821,7 @@ def _surface_inventory(repo: Path) -> str:
         "pypi-preflight",
         "publish-pypi",
         "verify-pypi",
+        "publish-container",
         "advance-compatibility-alias",
         "verify-public-surfaces",
     )
@@ -1743,6 +1829,31 @@ def _surface_inventory(repo: Path) -> str:
     if absent_jobs:
         raise GateError(
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
+        )
+    container_workflow = _read_bounded_text(
+        repo / ".github/workflows/publish-container.yml",
+        ".github/workflows/publish-container.yml",
+        max_bytes=MAX_RELEASE_WORKFLOW_BYTES,
+    )
+    required_container_contracts = (
+        "environment: container",
+        "environment: container-public",
+        "linux/amd64,linux/arm64",
+        "tonistiigi/binfmt:qemu-v10.2.3@sha256:",
+        "version: v0.36.1",
+        "image=moby/buildkit:v0.32.2@sha256:",
+        "push-to-registry: true",
+        "oras cp --from-oci-layout",
+        'DOCKER_CONFIG="$anonymous_config" docker pull',
+        'gh attestation verify "oci://$IMAGE@$DIGEST"',
+    )
+    missing_container_contracts = [
+        value for value in required_container_contracts if value not in container_workflow
+    ]
+    if missing_container_contracts:
+        raise GateError(
+            "container workflow is missing release contracts: "
+            + ", ".join(missing_container_contracts)
         )
     alias_workflow = _read_bounded_text(
         repo / ".github/workflows/advance-release-alias.yml",

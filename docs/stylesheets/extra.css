@@ -1,0 +1,20 @@
+:root {
+  --md-primary-fg-color: #4051b5;
+  --md-accent-fg-color: #00a7c4;
+}
+
+.md-typeset h1 {
+  font-weight: 750;
+  letter-spacing: -0.025em;
+}
+
+.md-typeset .md-button {
+  border-radius: 0.45rem;
+}
+
+.md-typeset img[alt*="boundver verification"] {
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 0.75rem;
+  box-shadow: 0 1rem 2.5rem rgb(16 24 40 / 16%);
+  margin-top: 1.25rem;
+}

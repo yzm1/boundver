@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A strict, hash-locked GitHub Pages documentation site, runnable
+  consumer-impact demo, comparison guide, and distribution guide.
+- Protected multi-platform GHCR publication with a read-only OCI build,
+  retained digest handoff, anonymous-pull verification, immutable OCI labels,
+  and GitHub artifact attestation.
+- A deterministic Homebrew formula renderer and a typed GitLab CI/CD Catalog
+  component that binds each component release to the matching GHCR version.
+
+### Changed
+
+- Public positioning now describes boundver narrowly as declared contract-drift
+  classification and downstream-impact routing, with explicit relationships to
+  build-graph, schema-compatibility, and release-automation tools.
+
+### Fixed
+
+- CLI help and `--version` now use the stable `boundver` program name on
+  Python 3.14 instead of exposing the interpreter and script path.
+
 ## [0.12.0] - 2026-08-19
 
 This release advances the semantic configuration digest contract to v2.

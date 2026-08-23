@@ -7,8 +7,8 @@
 #   docker run --rm -v "$(pwd):/repo" -w /repo boundver verify
 #   docker run --rm -v "$(pwd):/repo" -w /repo boundver generate --source head
 #
-# No public container image is currently published or supported. The
-# Dockerfile is exercised from the exact source commit in CI.
+# Release images are published at ghcr.io/yzm1/boundver. Prefer an immutable
+# version tag or digest; the Dockerfile is also exercised from exact source in CI.
 
 # Keep the multi-architecture base digest and Debian snapshot together. The
 # snapshot timestamp is the one recorded by this exact official Python image.
@@ -50,6 +50,17 @@ RUN python -I -m pip wheel \
 
 
 FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+
+ARG BOUNDVER_VERSION=development
+ARG BOUNDVER_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/yzm1/boundver" \
+      org.opencontainers.image.url="https://yzm1.github.io/boundver/" \
+      org.opencontainers.image.documentation="https://yzm1.github.io/boundver/" \
+      org.opencontainers.image.title="boundver" \
+      org.opencontainers.image.description="Contract-drift classification and downstream impact for polyglot repositories" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$BOUNDVER_VERSION" \
+      org.opencontainers.image.revision="$BOUNDVER_REVISION"
 
 # git is required — boundver reads HEAD/index via git subprocess calls.
 # Resolve it only from the immutable Debian archive snapshot recorded by the

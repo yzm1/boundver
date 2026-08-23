@@ -65,11 +65,13 @@ version = '1.2.3'
 
 [project.urls]
 Homepage = 'https://github.com/yzm1/boundver'
-Documentation = 'https://github.com/yzm1/boundver/tree/main/docs'
+Documentation = 'https://yzm1.github.io/boundver/'
 Changelog = 'https://github.com/yzm1/boundver/blob/main/CHANGELOG.md'
 Issues = 'https://github.com/yzm1/boundver/issues'
 Repository = 'https://github.com/yzm1/boundver'
 'GitHub Action' = 'https://github.com/marketplace/actions/boundver'
+Container = 'https://github.com/yzm1/boundver/pkgs/container/boundver'
+Homebrew = 'https://github.com/yzm1/homebrew-boundver'
 """,
         encoding="utf-8",
     )
@@ -80,12 +82,24 @@ Repository = 'https://github.com/yzm1/boundver'
         f"""yzm1/boundver@{TAG}
 https://pypi.org/project/boundver/
 https://github.com/marketplace/actions/boundver
+https://yzm1.github.io/boundver/
+ghcr.io/yzm1/boundver:1.2.3
+brew install yzm1/boundver/boundver
+https://yzm1.github.io/boundver/assets/verify-demo.svg
 docs/RELEASING.md
 {config_schema_url}
 """,
         encoding="utf-8",
     )
-    for name in ("getting-started.md", "ci-cookbook.md", "WHY_BOUNDVER.md"):
+    for name in (
+        "index.md",
+        "demo.md",
+        "getting-started.md",
+        "ci-cookbook.md",
+        "comparison.md",
+        "distribution.md",
+        "WHY_BOUNDVER.md",
+    ):
         (docs / name).write_text("Release guide.\n", encoding="utf-8")
     config_schema = json.dumps({"$id": config_schema_url}) + "\n"
     (repo / "boundary.config.schema.json").write_text(

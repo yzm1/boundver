@@ -1,0 +1,304 @@
+name: Publish release container
+run-name: container:${{ inputs.release_tag }}@${{ inputs.release_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable vMAJOR.MINOR.PATCH release tag.
+        required: true
+        type: string
+      release_sha:
+        description: Exact commit referenced by the release tag.
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Immutable vMAJOR.MINOR.PATCH release tag.
+        required: true
+        type: string
+      release_sha:
+        description: Exact commit referenced by the release tag.
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  IMAGE: ghcr.io/yzm1/boundver
+  IMAGE_ARTIFACT: boundver-container-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Bind the read-only build to the immutable release tag
+        id: identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid exact release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid release SHA: $RELEASE_SHA" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq '.sha')
+          if [[ ! "$tag_sha" =~ ^[0-9a-f]{40}$ || "$tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "Release tag does not reference the approved commit" >&2
+            exit 1
+          fi
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the released commit without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ inputs.release_sha }}
+
+      - name: Record the reproducible image timestamp
+        id: timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          timestamp=$(git show -s --format=%ct "$RELEASE_SHA")
+          if [[ ! "$timestamp" =~ ^[1-9][0-9]{0,11}$ ]]; then
+            echo "Release commit timestamp is malformed" >&2
+            exit 1
+          fi
+          echo "epoch=$timestamp" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.36.1
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+
+      - name: Build the retained multi-platform OCI image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.timestamp.outputs.epoch }}
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ steps.identity.outputs.version }}
+          build-args: |
+            BUILDKIT_MULTI_PLATFORM=1
+            BOUNDVER_VERSION=${{ steps.identity.outputs.version }}
+            BOUNDVER_REVISION=${{ inputs.release_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://yzm1.github.io/boundver/
+            org.opencontainers.image.documentation=https://yzm1.github.io/boundver/
+            org.opencontainers.image.title=boundver
+            org.opencontainers.image.description=Contract-drift classification and downstream impact for polyglot repositories
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.identity.outputs.version }}
+            org.opencontainers.image.revision=${{ inputs.release_sha }}
+          outputs: type=oci,dest=${{ runner.temp }}/boundver.oci.tar,rewrite-timestamp=true
+
+      - name: Retain the exact OCI image for the protected publisher
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.IMAGE_ARTIFACT }}
+          path: ${{ runner.temp }}/boundver.oci.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: container
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      digest: ${{ steps.identity.outputs.digest }}
+    steps:
+      - name: Install the pinned OCI registry client
+        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        with:
+          version: 1.3.2
+
+      - name: Download the retained read-only build output
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ env.IMAGE_ARTIFACT }}
+          path: ${{ runner.temp }}/container
+
+      - name: Validate the retained OCI archive identity
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/container/boundver.oci.tar"
+          if [[ ! -f "$archive" || -L "$archive" ]]; then
+            echo "Retained OCI archive is absent or not a regular file" >&2
+            exit 1
+          fi
+          size=$(stat --format=%s "$archive")
+          if [[ ! "$size" =~ ^[1-9][0-9]*$ || "$size" -gt 2147483648 ]]; then
+            echo "Retained OCI archive is empty or exceeds 2 GiB" >&2
+            exit 1
+          fi
+          if [[ $(tar -tf "$archive" | grep -c '^index.json$') -ne 1 ]]; then
+            echo "Retained OCI archive must contain one root index" >&2
+            exit 1
+          fi
+          tar -xOf "$archive" index.json > "$RUNNER_TEMP/container-index.json"
+          digest=$(jq -er '
+            select(.schemaVersion == 2)
+            | .manifests
+            | select(type == "array" and length == 1)
+            | .[0].digest
+            | select(test("^sha256:[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/container-index.json")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR with the repository token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Reject conflicting exact image state
+        id: preflight
+        shell: bash
+        env:
+          ARCHIVE_DIGEST: ${{ steps.archive.outputs.digest }}
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          descriptor=$(mktemp)
+          diagnostic=$(mktemp)
+          set +e
+          oras manifest fetch --descriptor "$IMAGE:$version" >"$descriptor" 2>"$diagnostic"
+          inspect_exit=$?
+          set -e
+          if [[ $(wc -c <"$descriptor") -gt 65536 || $(wc -c <"$diagnostic") -gt 65536 ]]; then
+            echo "Registry inspection exceeded its diagnostic limit" >&2
+            exit 1
+          fi
+          if [[ $inspect_exit -eq 0 ]]; then
+            digest=$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' "$descriptor")
+            if [[ "$digest" != "$ARCHIVE_DIGEST" ]]; then
+              echo "Existing exact image differs from the retained release build" >&2
+              exit 1
+            fi
+            echo "state=existing" >> "$GITHUB_OUTPUT"
+          elif grep -Eiq '404|manifest unknown|not found|name unknown' "$diagnostic"; then
+            echo "state=missing" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cannot classify GHCR preflight failure" >&2
+            sed -n '1,40p' "$diagnostic" >&2
+            exit 1
+          fi
+
+      - name: Publish the missing OCI image without executing candidate code
+        if: steps.preflight.outputs.state == 'missing'
+        shell: bash
+        env:
+          ARCHIVE_DIGEST: ${{ steps.archive.outputs.digest }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/container/boundver.oci.tar"
+          version=${RELEASE_TAG#v}
+          oras cp --from-oci-layout \
+            "$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"
+          published=$(oras manifest fetch --descriptor "$IMAGE:$version" \
+            | jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))')
+          if [[ "$published" != "$ARCHIVE_DIGEST" ]]; then
+            echo "GHCR changed the retained manifest identity" >&2
+            exit 1
+          fi
+
+      - name: Select and validate the one exact image digest
+        id: identity
+        shell: bash
+        env:
+          ARCHIVE_DIGEST: ${{ steps.archive.outputs.digest }}
+        run: |
+          set -euo pipefail
+          oras manifest fetch "$IMAGE@$ARCHIVE_DIGEST" \
+            > "$RUNNER_TEMP/published-manifest.json"
+          jq -e '
+            .mediaType == "application/vnd.oci.image.index.v1+json"
+            and (.manifests | type == "array" and length == 2)
+            and ([.manifests[].platform | "\(.os)/\(.architecture)"] | sort
+                 == ["linux/amd64", "linux/arm64"])
+          ' "$RUNNER_TEMP/published-manifest.json" >/dev/null
+          echo "digest=$ARCHIVE_DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the exact image digest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.identity.outputs.digest }}
+          push-to-registry: true
+
+  verify-public:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: container-public
+    permissions:
+      attestations: read
+      contents: read
+      packages: read
+    steps:
+      - name: Verify anonymous pull, immutable labels, runtime, and attestation
+        shell: bash
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=${RELEASE_TAG#v}
+          anonymous_config=$(mktemp -d)
+          DOCKER_CONFIG="$anonymous_config" docker pull \
+            --platform linux/amd64 "$IMAGE@$DIGEST"
+          actual_version=$(docker image inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' \
+            "$IMAGE@$DIGEST")
+          actual_revision=$(docker image inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+            "$IMAGE@$DIGEST")
+          actual_source=$(docker image inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.source" }}' \
+            "$IMAGE@$DIGEST")
+          test "$actual_version" = "$version"
+          test "$actual_revision" = "$RELEASE_SHA"
+          test "$actual_source" = "https://github.com/$GITHUB_REPOSITORY"
+          DOCKER_CONFIG="$anonymous_config" docker run --rm \
+            --platform linux/amd64 "$IMAGE@$DIGEST" --version \
+            | grep -Fx "boundver $version"
+          gh attestation verify "oci://$IMAGE@$DIGEST" --repo "$GITHUB_REPOSITORY"

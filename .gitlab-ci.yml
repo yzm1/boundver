@@ -1,0 +1,25 @@
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH
+
+stages:
+  - validate
+  - release
+
+validate-component-source:
+  stage: validate
+  image: python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+  script:
+    - python -I scripts/validate_gitlab_component.py
+
+publish-catalog-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:v1.114.0@sha256:797256f9f46c6da08a337566eb11b3e53dee31fdef7d2d41b379d5841ed10cd7
+  script:
+    - glab --version
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^\d+\.\d+\.\d+$/'
+  release:
+    tag_name: $CI_COMMIT_TAG
+    description: boundver GitLab CI/CD component $CI_COMMIT_TAG

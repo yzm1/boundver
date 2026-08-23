@@ -354,5 +354,5 @@ tests.
 - [Choose a provider](public-vs-custom-providers.md).
 - [Adopt one component at a time](gradual-adoption.md).
 - [Copy a CI recipe](ci-cookbook.md).
-- [Explore example configurations](../examples/README.md).
+- [Explore example configurations](examples.md).
 - [Resolve concurrent lock updates](LOCKFILE_MERGE.md).

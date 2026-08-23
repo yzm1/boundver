@@ -179,6 +179,10 @@ jobs:
           python -I -m pre_commit try-repo . boundver-generate --all-files
           git diff --exit-code -- boundary.lock.json
 
+      - name: Run the public consumer-impact demo
+        if: matrix.os == 'ubuntu-latest'
+        run: python -I scripts/demo_consumer_impact.py
+
       - name: Build and exercise the public Dockerfile
         if: matrix.os == 'ubuntu-latest'
         shell: bash
