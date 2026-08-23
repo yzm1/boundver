@@ -487,6 +487,66 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             )
             jsonschema.validate(payload, schema)
 
+    def test_explain_working_tree_uses_filesystem_for_unborn_empty_index(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "svc" / "api" / "nested").mkdir(parents=True)
+            (root / "svc" / "api" / "top.yaml").write_text("top\n")
+            (root / "svc" / "api" / "nested" / "deep.yaml").write_text(
+                "deep\n"
+            )
+            config = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "version_source": None,
+                        "boundary": {
+                            "provider": "openapi",
+                            "paths": ["api/*.yaml"],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(json.dumps(config))
+            lock_path = root / "old.lock.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "boundary-lock/v2",
+                        "project": "p",
+                        "components": {},
+                        "slices": {},
+                    }
+                )
+            )
+
+            code, out, err = _run_main(
+                "migrate-lock",
+                "--lock",
+                str(lock_path),
+                "--explain",
+                "--config",
+                "boundary.config.json",
+                "--source",
+                "working-tree",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, 0, err)
+            declaration = json.loads(out)["declarations"][0]
+            self.assertEqual(declaration["impact"], "narrowed")
+            self.assertEqual(declaration["legacy_match_count"], 2)
+            self.assertEqual(declaration["current_match_count"], 1)
+            self.assertEqual(
+                declaration["legacy_only_examples"],
+                ["api/nested/deep.yaml"],
+            )
+
     def test_analysis_skips_file_listing_without_selectors(self):
         config = {
             "project": "p",
