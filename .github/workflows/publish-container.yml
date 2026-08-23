@@ -232,6 +232,8 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/container/boundver.oci.tar"
           version=${RELEASE_TAG#v}
+          # ORAS 1.3.2 supports OCI layout tar archives as --from-oci-layout
+          # sources. Address the retained Buildx archive by its root digest.
           oras cp --from-oci-layout \
             "$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"
           published=$(oras manifest fetch --descriptor "$IMAGE:$version" \

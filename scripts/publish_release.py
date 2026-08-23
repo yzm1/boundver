@@ -1844,6 +1844,7 @@ def _surface_inventory(repo: Path) -> str:
         "image=moby/buildkit:v0.32.2@sha256:",
         "push-to-registry: true",
         "oras cp --from-oci-layout",
+        '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"',
         'DOCKER_CONFIG="$anonymous_config" docker pull',
         'gh attestation verify "oci://$IMAGE@$DIGEST"',
     )

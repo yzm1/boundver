@@ -77,5 +77,6 @@ def test_docs_and_container_publish_from_pinned_dependencies():
     assert "image=moby/buildkit:v0.32.2@sha256:" in container
     assert "push-to-registry: true" in container
     assert "oras cp --from-oci-layout" in container
+    assert '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"' in container
     assert 'DOCKER_CONFIG="$anonymous_config" docker pull' in container
     assert 'gh attestation verify "oci://$IMAGE@$DIGEST"' in container
