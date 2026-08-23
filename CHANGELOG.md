@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Release-surface verification now expects the published package summary from
+  the canonical project metadata, with a CI parity test covering the registry
+  name, summary, Python requirement, and project URLs to prevent stale release
+  controls from blocking exact-artifact recovery.
+
 ## [0.13.0] - 2026-08-23
 
 ### Added
