@@ -105,10 +105,17 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
   the release gate, and evidence is accepted only from a PR merged into this
   repository's `main`. The mutation boundary requires identical review-state
   snapshots before and after the semantic audit and immediately before push.
-- Registry and repository mutation jobs no longer execute candidate code with
-  OIDC or write credentials. Production PyPI retries reuse the complete exact
-  artifact with duplicate tolerance, followed by byte-for-byte public
-  verification, so a partial upload cannot make a failed-job retry unsafe.
+- Registry OIDC jobs execute no repository code, and repository mutations use
+  isolated reviewed control code; compatibility-alias mutation is additionally
+  bound to the immutable exact release tag. Production PyPI retries reuse the
+  complete exact artifact with duplicate tolerance, followed by byte-for-byte
+  public verification, so a partial upload cannot make a failed-job retry unsafe.
+- Compatibility aliases are advanced by a dedicated workflow dispatched from
+  the immutable release tag after production PyPI verification. It rebinds to
+  the active parent attempt, verifies every public artifact before and after a
+  leased monotonic ref update, and avoids both a maintainer PAT and the default
+  token failure that occurs when a newer recovery workflow points a ref back to
+  a commit containing a different workflow definition.
 
 ## [0.11.0] - 2026-08-14
 

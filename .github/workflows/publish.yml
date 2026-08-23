@@ -2638,15 +2638,14 @@ jobs:
           pypi-attestations verify pypi \
             --repository https://github.com/yzm1/boundver "$sdist_url"
 
-  validate-compatibility-alias:
-    name: Validate the explicit Action alias decision without mutation authority
+  advance-compatibility-alias:
+    name: Apply the explicit Action alias decision
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: verify-pypi
     permissions:
+      actions: write
       contents: read
-    outputs:
-      update-required: ${{ steps.validate-alias.outputs.update-required }}
-      expected-current: ${{ steps.validate-alias.outputs.expected-current }}
     steps:
       - name: Checkout the released commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2655,95 +2654,42 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
 
-      - name: Checkout the reviewed release-control implementation
+      - name: Checkout the reviewed release-control commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ github.sha }}
           path: .release-control
 
-      - name: Validate the approved vX.Y alias without rollback or races
-        id: validate-alias
-        if: inputs.compatibility_alias != 'none'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -I \
-            "$GITHUB_WORKSPACE/.release-control/scripts/validate_compatibility_alias.py" \
-            --release-tag "$RELEASE_TAG" \
-            --release-sha "$RELEASE_SHA" \
-            --alias "$COMPATIBILITY_ALIAS" \
-            --repo "$GITHUB_WORKSPACE" \
-            --runner-temp "$RUNNER_TEMP" \
-            --github-output "$GITHUB_OUTPUT"
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
 
-  advance-compatibility-alias:
-    name: Apply only the validated Action alias decision
-    runs-on: ubuntu-latest
-    needs: [verify-pypi, validate-compatibility-alias]
-    permissions:
-      contents: write
-    steps:
       - name: Record the explicit no-alias decision
         if: inputs.compatibility_alias == 'none'
         shell: bash
         run: echo "No compatibility alias was approved for $RELEASE_TAG."
 
-      - name: Push only the validated compatibility-alias update
-        if: >-
-          inputs.compatibility_alias != 'none' &&
-          needs.validate-compatibility-alias.outputs.update-required == 'true'
+      - name: Dispatch exact-tag alias verification and advancement
+        if: inputs.compatibility_alias != 'none'
         shell: bash
         env:
-          EXPECTED_CURRENT: ${{ needs.validate-compatibility-alias.outputs.expected-current }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ || \
-                ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
-                ! "$COMPATIBILITY_ALIAS" =~ ^v[0-9]+\.[0-9]+$ || \
-                ( -n "$EXPECTED_CURRENT" && \
-                  ! "$EXPECTED_CURRENT" =~ ^[0-9a-f]{40}$ ) ]]; then
-            echo "Validated alias mutation inputs are malformed" >&2
-            exit 1
-          fi
-          readonly repository_url="https://github.com/$GITHUB_REPOSITORY.git"
-          mutation_repo=$(mktemp -d)
-          cd "$mutation_repo"
-          git init --quiet
-          git remote add origin "$repository_url"
-          alias_ref="refs/tags/$COMPATIBILITY_ALIAS"
-          current=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
-          if [[ "$current" != "$EXPECTED_CURRENT" ]]; then
-            echo "Compatibility alias changed before the push boundary" >&2
-            exit 1
-          fi
-          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')
-          if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
-            echo "Exact release tag moved at the alias push boundary" >&2
-            exit 1
-          fi
-          if [[ -n "$EXPECTED_CURRENT" ]]; then
-            lease="--force-with-lease=$alias_ref:$EXPECTED_CURRENT"
-          else
-            lease="--force-with-lease=$alias_ref:"
-          fi
-          git fetch --no-tags origin \
-            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          fetched_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
-          if [[ "$fetched_sha" != "$RELEASE_SHA" ]]; then
-            echo "Fetched release tag disagrees at the alias push boundary" >&2
-            exit 1
-          fi
-          cleanup_auth() {
-            git config --global --unset-all \
-              credential.https://github.com.helper >/dev/null 2>&1 || true
-          }
-          trap cleanup_auth EXIT
-          gh auth setup-git
-          git push "$lease" origin "refs/tags/$RELEASE_TAG:$alias_ref"
-          remote_sha=$(git ls-remote origin "$alias_ref" | awk '{print $1}')
-          test "$remote_sha" = "$RELEASE_SHA"
+          clean_python_cwd=$(mktemp -d)
+          cd "$clean_python_cwd"
+          python3 -I \
+            "$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" dispatch \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --publication-run-id "$GITHUB_RUN_ID" \
+            --publication-attempt "$GITHUB_RUN_ATTEMPT" \
+            --publication-sha "$GITHUB_SHA"
 
   verify-public-surfaces:
     name: Verify every public release surface
