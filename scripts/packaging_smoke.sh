@@ -319,7 +319,7 @@ fi
 # Keep the captured path plus one growth sentinel bounded. `pipefail` also
 # preserves a failing `mktemp` status through the limiter.
 smoke_root=$(
-  mktemp -d "${TMPDIR:-/tmp}/boundver-packaging-smoke.XXXXXXXXXX" |
+  mktemp -d "${TMPDIR:-/tmp}/bv-pkg.XXXXXXXXXX" |
     head -c 4097
 )
 smoke_leaf=${smoke_root##*/}
@@ -327,7 +327,7 @@ if [[
   -z "$smoke_root" ||
   ${#smoke_root} -gt 4096 ||
   "$smoke_root" == *$'\n'* ||
-  "$smoke_leaf" != boundver-packaging-smoke.* ||
+  "$smoke_leaf" != bv-pkg.* ||
   ! -d "$smoke_root" ||
   -L "$smoke_root"
 ]]; then
@@ -914,9 +914,9 @@ finally:
         pass
 PY
 
-wheel_venv="$smoke_root/wheel-venv"
-sdist_venv="$smoke_root/sdist-venv"
-standalone_venv="$smoke_root/standalone-venv"
+wheel_venv="$smoke_root/w"
+sdist_venv="$smoke_root/s"
+standalone_venv="$smoke_root/a"
 python -I -m venv "$wheel_venv"
 python -I -m venv "$sdist_venv"
 python -I -m venv "$standalone_venv"
@@ -948,7 +948,7 @@ standalone_python=$resolved_venv_python
 "$sdist_python" -I -m pip --isolated install \
   --no-index --no-deps --no-build-isolation "$sdist_path"
 
-repo="$smoke_root/repo"
+repo="$smoke_root/r"
 mkdir "$repo"
 git -C "$repo" init -q
 git -C "$repo" config user.email smoke@example.com

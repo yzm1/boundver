@@ -74,6 +74,9 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
 - Windows release checks resolve Git-for-Windows Bash instead of the WSL
   launcher, and credentialed review checks run from trusted control code with
   an explicit fine-grained read-only token and invoking Python interpreter.
+- Windows release smoke environments use bounded short temporary paths so
+  deeply nested build-tool files remain installable without weakening the
+  isolated packaging checks or requiring legacy path-limit configuration.
 - Publication recovery can continue after the exact GitHub Release has already
   become public and immutable, but only after reconciling its metadata and
   retained asset bytes. Public-surface verification runs reviewed control code

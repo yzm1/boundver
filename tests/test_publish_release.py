@@ -1021,6 +1021,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         gate = source[source.index("def _disposable_gate") : source.index("def _surface_inventory")]
         self.assertIn("TemporaryDirectory", gate)
+        self.assertIn('TemporaryDirectory(prefix="bv-rel-")', gate)
+        self.assertIn('checkout = Path(temporary) / "c"', gate)
+        self.assertIn('sandbox_root=Path(temporary) / "e"', gate)
+        self.assertIn('tooling = Path(temporary) / "t"', gate)
         self.assertIn('"clone"', gate)
         self.assertIn('source = f"https://github.com/{REPOSITORY}.git"', gate)
         self.assertIn('"checkout", "--quiet", "--detach", sha', gate)
