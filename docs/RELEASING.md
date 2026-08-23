@@ -179,21 +179,22 @@ threads, changes-requested state, and pending human or team review requests.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.
-Codex evidence is accepted only from one authenticated current-commit bot
-record whose verdict line is exactly
-`Codex Review: Didn't find any major issues.`, optionally followed by the
-positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
-`Keep them coming!`, `Swish!`, `Already looking forward to the next diff.`, or
-`More of your lovely PRs please.` Those are the statuses emitted by the app in
-this repository; arbitrary or adverse suffixes fail closed. A `COMMENTED`
-review binds that clean body to its review commit; an
-issue comment must also contain exactly one `**Reviewed commit:**` marker. The
-audit permits only the bot's recognized informational footer after that
-evidence, pins the bot's numeric account ID, resolves abbreviated commit IDs,
-and snapshots those resolutions to detect collisions or drift before mutation.
-It rejects spoofed identities, ambiguous commit IDs, duplicate evidence,
-mixed clean/adverse bodies, or evidence that does not match the latest PR head
-or merge commit.
+Codex evidence must be an authenticated record for the latest PR head or merge
+commit. A standard Codex suggestions review counts only after every review
+thread is resolved. A later exact-commit record supersedes earlier feedback;
+equal timestamps are ambiguous and fail closed. A clean verdict line must be
+exactly `Codex Review: Didn't find any major issues.`, optionally followed by
+the positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
+`Keep them coming!`, `Swish!`, `Already looking forward to the next diff.`,
+`Chef's kiss.`, `More of your lovely PRs please.`, or `You're on a roll.`
+Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its
+body to the review commit; an issue comment must also contain exactly one
+`**Reviewed commit:**` marker. The audit permits only the bot's recognized
+informational footer, pins the bot's numeric account ID, resolves abbreviated
+commit IDs, and snapshots record IDs, timestamps, bodies, threads, and those
+resolutions to detect collisions or drift before mutation. It rejects spoofed
+identities, ambiguous commit IDs or timestamps, unresolved feedback, or stale
+evidence.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
@@ -286,19 +287,21 @@ workflows then perform these gates in order:
    GitHub's package settings, then approve `container-public`; the verification
    job logs out before proving anonymous pull, labels, runtime version, and
    attestation by digest.
-9. Dispatch the dedicated alias workflow
-   from the immutable `vX.Y.Z` tag. That exact-tag run binds itself to the
-   active publication and its successful PyPI-verification job, downloads the
-   immutable Release assets, verifies every public surface except the alias,
-   performs one ancestral, monotonic, force-with-lease alias update, and then
-   verifies all surfaces again. The parent publication waits for that result
-   and performs its own final comparison. A failed-jobs rerun may reuse exact
+9. Dispatch the dedicated alias workflow from the exact commit controlling the
+   active publication: the immutable `vX.Y.Z` tag for an initial promotion, or
+   reviewed current `main` for recovery of an older tag. The child separately
+   checks out the immutable release commit, rebinds itself to the active parent
+   and its successful PyPI-verification job, downloads the immutable Release
+   assets, verifies every public surface except the alias, performs one
+   ancestral, monotonic, force-with-lease alias update, and then verifies all
+   surfaces again. The parent publication waits for that result and performs
+   its own final comparison. A failed-jobs rerun may reuse exact
    successful publication gates from an earlier attempt of the same active
    run; it never treats a different run or commit as evidence. This secretless
-   handoff is required:
-   a recovery run executes from newer `main`, whose default Actions token is
-   not allowed to create a ref back to a commit containing a different workflow
-   definition. Do not store a maintainer PAT to bypass that protection. Advance
+   handoff is required. A recovery run executes the alias workflow from its
+   exact reviewed `main` control commit, while all release identity and public
+   bytes remain bound to the immutable tag. Do not store a maintainer PAT to
+   bypass that protection. Advance
    only aliases explicitly approved for the compatibility line; for breaking
    `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
    lines unless an owner explicitly approves and announces those migrations.
@@ -375,8 +378,8 @@ must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
 unreadable GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
 artifact identity remain bound to the immutable tagged source. Once PyPI is
-verified, current `main` dispatches `advance-release-alias.yml` at that tagged
-source and waits; the alias workflow must already exist in the immutable tag,
+verified, current `main` dispatches its own exact reviewed version of
+`advance-release-alias.yml` and waits. The child checks out the immutable tag,
 must prove the parent run is still active at the exact attempt, and must observe
 its successful PyPI-verification job before any ref update. An ad hoc fresh
 publication dispatch is not a recovery path.

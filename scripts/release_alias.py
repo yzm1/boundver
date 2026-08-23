@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Dispatch and apply a verified compatibility-alias update.
 
-The publication workflow can execute from a newer recovery-control commit than
-the immutable release tag.  GitHub's default Actions token cannot create a ref
-back to a commit containing a different workflow definition.  ``dispatch``
-therefore starts a narrowly scoped workflow at the exact release tag and waits
-for it.  ``advance`` runs only in that exact-tag workflow, revalidates the
-originating publication run, and performs one leased, monotonic alias update.
+``dispatch`` starts a narrowly scoped workflow from the exact commit controlling
+the active publication and waits for it.  A first publication is controlled by
+the immutable release tag itself; recovery is controlled by reviewed current
+``main`` even when the older tag predates the alias workflow.  ``advance``
+revalidates the originating publication and immutable release checkout before
+performing one leased, monotonic alias update.
 """
 
 from __future__ import annotations
@@ -209,12 +209,26 @@ def _run_title(alias: str, tag: str, publication_run_id: int, attempt: int) -> s
     )
 
 
+def _validate_publication_control(
+    publication_ref: str,
+    publication_sha: str,
+    *,
+    tag: str,
+    release_sha: str,
+) -> None:
+    """Require an exact-tag initial control or an exact-main recovery control."""
+    if publication_ref not in {tag, "main"}:
+        raise AliasError("publication ref must be the exact release tag or main")
+    if publication_ref == tag and publication_sha != release_sha:
+        raise AliasError("exact-tag publication control must match the release SHA")
+
+
 def _matching_alias_runs(
     payload: object,
     *,
     title: str,
-    tag: str,
-    sha: str,
+    control_ref: str,
+    control_sha: str,
 ) -> list[dict]:
     if not isinstance(payload, dict) or not isinstance(
         payload.get("workflow_runs"), list
@@ -234,8 +248,8 @@ def _matching_alias_runs(
         if (
             item.get("path") != WORKFLOW_PATH
             or item.get("event") != "workflow_dispatch"
-            or item.get("head_branch") != tag
-            or item.get("head_sha") != sha
+            or item.get("head_branch") != control_ref
+            or item.get("head_sha") != control_sha
         ):
             raise AliasError("matching alias workflow run is bound to different inputs")
         _positive_int(item.get("id"), "alias workflow run ID")
@@ -258,15 +272,18 @@ def _find_alias_run(
     repository: str,
     *,
     title: str,
-    tag: str,
-    sha: str,
+    control_ref: str,
+    control_sha: str,
 ) -> dict | None:
     endpoint = (
         f"repos/{repository}/actions/workflows/{WORKFLOW_FILE}/runs"
-        f"?event=workflow_dispatch&head_sha={sha}&per_page=100"
+        f"?event=workflow_dispatch&head_sha={control_sha}&per_page=100"
     )
     runs = _matching_alias_runs(
-        _gh_json(repo, endpoint), title=title, tag=tag, sha=sha
+        _gh_json(repo, endpoint),
+        title=title,
+        control_ref=control_ref,
+        control_sha=control_sha,
     )
     return runs[0] if runs else None
 
@@ -281,6 +298,7 @@ def dispatch_alias_workflow(
     alias: str,
     publication_run_id: int,
     publication_attempt: int,
+    publication_ref: str,
     publication_sha: str,
     attempts: int = 240,
     delay_seconds: float = 5.0,
@@ -290,6 +308,9 @@ def dispatch_alias_workflow(
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:
         raise AliasError("publication SHA must be 40 lowercase hexadecimal characters")
+    _validate_publication_control(
+        publication_ref, publication_sha, tag=tag, release_sha=sha
+    )
     if attempts <= 0 or delay_seconds < 0:
         raise AliasError("poll attempts must be positive and delay cannot be negative")
 
@@ -305,7 +326,11 @@ def dispatch_alias_workflow(
     dispatch_error = ""
     for poll in range(attempts):
         run = _find_alias_run(
-            repo, repository, title=title, tag=tag, sha=sha
+            repo,
+            repository,
+            title=title,
+            control_ref=publication_ref,
+            control_sha=publication_sha,
         )
         if run is None and not dispatched:
             result = _run(
@@ -317,7 +342,7 @@ def dispatch_alias_workflow(
                     "--repo",
                     repository,
                     "--ref",
-                    tag,
+                    publication_ref,
                     "--field",
                     f"release_tag={tag}",
                     "--field",
@@ -328,6 +353,8 @@ def dispatch_alias_workflow(
                     f"publication_run_id={publication_run_id}",
                     "--field",
                     f"publication_attempt={publication_attempt}",
+                    "--field",
+                    f"publication_ref={publication_ref}",
                     "--field",
                     f"publication_sha={publication_sha}",
                 ),
@@ -344,7 +371,7 @@ def dispatch_alias_workflow(
             if status == "completed":
                 if run.get("conclusion") != "success":
                     raise AliasError(
-                        "exact-tag alias workflow failed: " + run["html_url"]
+                        "release-control alias workflow failed: " + run["html_url"]
                     )
                 if _remote_ref(repo, remote, alias_ref) != sha:
                     raise AliasError(
@@ -368,14 +395,22 @@ def _validate_publication_payloads(
     repository: str,
     publication_run_id: int,
     publication_attempt: int,
+    publication_ref: str,
     publication_sha: str,
     tag: str,
+    release_sha: str,
 ) -> int:
     if not isinstance(run, dict):
         raise AliasError("originating publication run is malformed")
     run_id = _positive_int(run.get("id"), "originating publication run ID")
     run_attempt = _positive_int(
         run.get("run_attempt"), "originating publication run attempt"
+    )
+    _validate_publication_control(
+        publication_ref,
+        publication_sha,
+        tag=tag,
+        release_sha=release_sha,
     )
     if (
         run_id != publication_run_id
@@ -385,7 +420,7 @@ def _validate_publication_payloads(
         or run.get("conclusion") is not None
         or run.get("path") != PUBLICATION_WORKFLOW_PATH
         or run.get("head_sha") != publication_sha
-        or run.get("head_branch") not in {tag, "main"}
+        or run.get("head_branch") != publication_ref
     ):
         raise AliasError("originating publication run is not the active exact workflow")
     repository_payload = run.get("repository")
@@ -466,6 +501,7 @@ def verify_originating_publication(
     repository: str,
     publication_run_id: int,
     publication_attempt: int,
+    publication_ref: str,
     publication_sha: str,
     tag: str,
     release_sha: str,
@@ -483,8 +519,10 @@ def verify_originating_publication(
         repository=repository,
         publication_run_id=publication_run_id,
         publication_attempt=publication_attempt,
+        publication_ref=publication_ref,
         publication_sha=publication_sha,
         tag=tag,
+        release_sha=release_sha,
     )
     _require_release_input_evidence(
         _gh_job_log(repo, repository, verify_release_job_id),
@@ -521,6 +559,7 @@ def advance_alias(
     alias: str,
     publication_run_id: int,
     publication_attempt: int,
+    publication_ref: str,
     publication_sha: str,
 ) -> str:
     _validate_release_identity(tag, sha, alias, repository)
@@ -528,12 +567,16 @@ def advance_alias(
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:
         raise AliasError("publication SHA must be 40 lowercase hexadecimal characters")
+    _validate_publication_control(
+        publication_ref, publication_sha, tag=tag, release_sha=sha
+    )
 
     verify_originating_publication(
         repo=repo,
         repository=repository,
         publication_run_id=publication_run_id,
         publication_attempt=publication_attempt,
+        publication_ref=publication_ref,
         publication_sha=publication_sha,
         tag=tag,
         release_sha=sha,
@@ -585,6 +628,7 @@ def advance_alias(
         repository=repository,
         publication_run_id=publication_run_id,
         publication_attempt=publication_attempt,
+        publication_ref=publication_ref,
         publication_sha=publication_sha,
         tag=tag,
         release_sha=sha,
@@ -613,6 +657,7 @@ def verify_alias_request(
     alias: str,
     publication_run_id: int,
     publication_attempt: int,
+    publication_ref: str,
     publication_sha: str,
 ) -> str:
     """Fail early unless the immutable tag and parent publication are exact."""
@@ -621,6 +666,9 @@ def verify_alias_request(
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:
         raise AliasError("publication SHA must be 40 lowercase hexadecimal characters")
+    _validate_publication_control(
+        publication_ref, publication_sha, tag=tag, release_sha=sha
+    )
     if _remote_ref(repo, remote, f"refs/tags/{tag}") != sha:
         raise AliasError("exact release tag moved or disappeared before alias verification")
     verify_originating_publication(
@@ -628,6 +676,7 @@ def verify_alias_request(
         repository=repository,
         publication_run_id=publication_run_id,
         publication_attempt=publication_attempt,
+        publication_ref=publication_ref,
         publication_sha=publication_sha,
         tag=tag,
         release_sha=sha,
@@ -651,6 +700,7 @@ def _parser() -> argparse.ArgumentParser:
         subparser.add_argument("--alias", required=True)
         subparser.add_argument("--publication-run-id", required=True)
         subparser.add_argument("--publication-attempt", required=True)
+        subparser.add_argument("--publication-ref", required=True)
         subparser.add_argument("--publication-sha", required=True)
 
     dispatch = subparsers.add_parser("dispatch")
@@ -684,6 +734,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             alias=args.alias,
             publication_run_id=publication_run_id,
             publication_attempt=publication_attempt,
+            publication_ref=args.publication_ref,
             publication_sha=args.publication_sha,
         )
         if args.command == "dispatch":

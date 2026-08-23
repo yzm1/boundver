@@ -116,9 +116,10 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
 
 ### Fixed
 
-- The release-review audit accepts the trusted Codex bot's observed positive
-  clean-verdict status allowlist while still rejecting arbitrary,
-  contradictory, stale, spoofed, or multiply marked evidence.
+- The release-review audit accepts authenticated exact-commit Codex review
+  evidence once every finding thread is resolved, lets one later exact verdict
+  supersede earlier feedback, and still rejects adverse latest verdicts,
+  equal-time ambiguity, unresolved threads, stale commits, and spoofing.
 - The public `path-hash` v3 provider is registered as a built-in and documented
   as the format-neutral raw provider for arbitrary declared artifacts.
 - Local and protected workflow dispatches bind deduplication to the exact tag,
@@ -155,22 +156,25 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
   longer mistaken for global verbosity flags.
 - Local release verification prefers Git-for-Windows Bash over the incompatible
   WSL launcher while retaining normal Bash discovery on other platforms.
-- Trusted Codex release-review evidence must contain the authenticated clean
-  verdict for the exact reviewed commit; adverse or mixed bodies cannot satisfy
-  the release gate, and evidence is accepted only from a PR merged into this
-  repository's `main`. The mutation boundary requires identical review-state
-  snapshots before and after the semantic audit and immediately before push.
+- Trusted Codex release-review evidence must bind the exact reviewed commit;
+  standard suggestion reviews count only after all threads are resolved, while
+  a later exact verdict supersedes earlier feedback. Evidence is accepted only
+  from a PR merged into this repository's `main`, and the mutation boundary
+  requires identical timestamped review-state snapshots before and after the
+  semantic audit and immediately before push.
 - Registry OIDC jobs execute no repository code, and repository mutations use
-  isolated reviewed control code; compatibility-alias mutation is additionally
-  bound to the immutable exact release tag. Production PyPI retries reuse the
-  complete exact artifact with duplicate tolerance, followed by byte-for-byte
-  public verification, so a partial upload cannot make a failed-job retry unsafe.
+  isolated reviewed control code; compatibility-alias mutation additionally
+  binds an exact publication-control workflow to an immutable release checkout.
+  Production PyPI retries reuse the complete exact artifact with duplicate
+  tolerance, followed by byte-for-byte public verification, so a partial upload
+  cannot make a failed-job retry unsafe.
 - Compatibility aliases are advanced by a dedicated workflow dispatched from
-  the immutable release tag after production PyPI verification. It rebinds to
-  the active parent attempt, verifies every public artifact before and after a
-  leased monotonic ref update, and avoids both a maintainer PAT and the default
-  token failure that occurs when a newer recovery workflow points a ref back to
-  a commit containing a different workflow definition.
+  the exact publication-control commit after production PyPI verification: the
+  immutable release tag for an initial promotion or reviewed current `main` for
+  recovery, including tags that predate the child workflow. It separately
+  checks out the immutable released source, rebinds to the active parent
+  attempt, verifies every public artifact before and after a leased monotonic
+  ref update, and avoids a maintainer PAT.
 
 ## [0.11.0] - 2026-08-14
 

@@ -194,9 +194,10 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 # app.  A free-form suffix would let contradictory review state share the
 # authenticated clean-verdict line and still satisfy the release gate.
 readonly codex_clean_bang_status_regex='(Breezy|Delightful|Hooray|Keep it up|Keep them coming|Swish)!'
-readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Chef's kiss|More of your lovely PRs please)\."
+readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Chef's kiss|More of your lovely PRs please|You're on a roll)\."
 readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
+readonly github_timestamp_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 
 if ! capture_bounded repository_owner "repository ownership" \
   "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" \
@@ -270,11 +271,11 @@ codex_body_is_clean() {
       continue
     fi
     if [[ "$footer_state" == closed ]]; then
-      [[ -z "$line" ]] || return 1
+      [[ "$line" =~ ^[[:space:]]*$ ]] || return 1
       continue
     fi
 
-    if [[ -z "$line" ]]; then
+    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
       continue
     elif [[ "$line" =~ $codex_clean_verdict_regex ]]; then
       # The verdict must be the first meaningful line and may occur once.
@@ -317,6 +318,64 @@ codex_comment_has_unique_marker() {
     fi
   done <<< "$body"
   [[ "$codex_marker_count" -eq 1 ]]
+}
+
+codex_body_is_suggestions_review() {
+  local body=$1
+  local state=heading
+  local footer_state=outside
+  local line
+  codex_marker_sha=
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    if [[ "$footer_state" == inside ]]; then
+      if [[ "$line" == "</details>" ]]; then
+        footer_state=closed
+      elif [[ "$line" == "<details>"* ]]; then
+        return 1
+      fi
+      continue
+    fi
+    if [[ "$footer_state" == closed ]]; then
+      [[ "$line" =~ ^[[:space:]]*$ ]] || return 1
+      continue
+    fi
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    case "$state" in
+      heading)
+        [[ "$line" == "### "*"Codex Review" ]] || return 1
+        state=summary
+        ;;
+      summary)
+        [[ "$line" == "Here are some automated review suggestions for this pull request." ]] || return 1
+        state=marker
+        ;;
+      marker)
+        [[ "$line" =~ $codex_marker_regex ]] || return 1
+        codex_marker_sha=${BASH_REMATCH[1]}
+        state=footer
+        ;;
+      footer)
+        [[ "$line" =~ $codex_footer_open_regex ]] || return 1
+        footer_state=inside
+        ;;
+      *) return 1 ;;
+    esac
+  done <<< "$body"
+  [[ "$state" == footer && "$footer_state" == closed ]]
+}
+
+record_codex_evidence() {
+  local timestamp=$1
+  local kind=$2
+  if [[ -z "$codex_latest_timestamp" || \
+        "$timestamp" > "$codex_latest_timestamp" ]]; then
+    codex_latest_timestamp=$timestamp
+    codex_latest_kind=$kind
+    codex_latest_count=1
+  elif [[ "$timestamp" == "$codex_latest_timestamp" ]]; then
+    codex_latest_count=$((codex_latest_count + 1))
+  fi
 }
 
 failed=0
@@ -421,15 +480,16 @@ for pr_number in "${sorted_prs[@]}"; do
   if ! capture_bounded reviews_output "reviews for PR #$pr_number" \
       "$max_capture_bytes" gh api --paginate \
       "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/reviews?per_page=100" \
-      --jq '.[] | [ .state, ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), (.commit_id // ""), ((.body // "") | @base64) ] | join("|")'; then
+      --jq '.[] | [ .state, ((.id // "") | tostring), (.submitted_at // ""), ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), (.commit_id // ""), ((.body // "") | @base64) ] | join("|")'; then
     echo "GitHub API failed while reading reviews for PR #$pr_number." >&2
     exit 1
   fi
 
   human_evidence=0
   codex_evidence=0
-  codex_current_records=0
-  codex_clean_records=0
+  codex_latest_timestamp=
+  codex_latest_kind=
+  codex_latest_count=0
   codex_conflict=0
   review_records=()
   if [[ -n "$reviews_output" ]]; then
@@ -444,9 +504,13 @@ for pr_number in "${sorted_prs[@]}"; do
   if (( ${#review_records[@]} > 0 )); then
   for review_record in "${review_records[@]}"; do
     [[ -z "$review_record" ]] && continue
-    IFS='|' read -r review_state reviewer_id reviewer_login reviewer_type \
-      evidence_sha encoded_review_body review_extra <<< "$review_record"
+    IFS='|' read -r review_state review_id review_submitted_at reviewer_id \
+      reviewer_login reviewer_type evidence_sha encoded_review_body \
+      review_extra <<< "$review_record"
     if [[ ! "$review_state" =~ ^(APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED|PENDING)$ || \
+          ! "$review_id" =~ ^[1-9][0-9]*$ || \
+          ( -n "$review_submitted_at" && \
+            ! "$review_submitted_at" =~ $github_timestamp_regex ) || \
           ( -n "$reviewer_id" && ! "$reviewer_id" =~ ^[1-9][0-9]*$ ) || \
           ( -n "$reviewer_login" && ! "$reviewer_login" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ) || \
           ( -n "$reviewer_type" && ! "$reviewer_type" =~ ^(User|Bot)$ ) || \
@@ -495,11 +559,24 @@ for pr_number in "${sorted_prs[@]}"; do
           { [[ "$resolved_evidence_sha" == "$pr_head_sha" ]] || \
             { [[ -n "$pr_merge_sha" ]] && \
               [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
-        codex_current_records=$((codex_current_records + 1))
+        if [[ -z "$review_submitted_at" ]]; then
+          echo "GitHub API returned a current Codex review without a submission time for PR #$pr_number." >&2
+          exit 1
+        fi
         if codex_body_is_clean "$review_body" forbidden; then
-          codex_clean_records=$((codex_clean_records + 1))
+          record_codex_evidence "$review_submitted_at" clean
+        elif codex_body_is_suggestions_review "$review_body"; then
+          review_evidence_sha=$resolved_evidence_sha
+          marker_sha=$codex_marker_sha
+          resolved_evidence_sha=
+          if resolve_evidence_sha "$marker_sha" "$pr_number" && \
+              [[ "$resolved_evidence_sha" == "$review_evidence_sha" ]]; then
+            record_codex_evidence "$review_submitted_at" suggestions
+          else
+            record_codex_evidence "$review_submitted_at" adverse
+          fi
         else
-          codex_conflict=1
+          record_codex_evidence "$review_submitted_at" adverse
         fi
       fi
     fi
@@ -509,7 +586,7 @@ for pr_number in "${sorted_prs[@]}"; do
   if ! capture_bounded comments_output "issue comments for PR #$pr_number" \
       "$max_capture_bytes" gh api --paginate \
       "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
-      --jq '.[] | [ ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), ((.body // "") | @base64) ] | join("|")'; then
+      --jq '.[] | [ ((.id // "") | tostring), (.created_at // ""), ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), ((.body // "") | @base64) ] | join("|")'; then
     echo "GitHub API failed while reading issue comments for PR #$pr_number." >&2
     exit 1
   fi
@@ -526,9 +603,11 @@ for pr_number in "${sorted_prs[@]}"; do
   if (( ${#comment_records[@]} > 0 )); then
   for comment_record in "${comment_records[@]}"; do
     [[ -z "$comment_record" ]] && continue
-    IFS='|' read -r commenter_id commenter_login commenter_type encoded_body \
-      comment_extra <<< "$comment_record"
-    if [[ ( -n "$commenter_id" && ! "$commenter_id" =~ ^[1-9][0-9]*$ ) || \
+    IFS='|' read -r comment_id comment_created_at commenter_id commenter_login \
+      commenter_type encoded_body comment_extra <<< "$comment_record"
+    if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || \
+          ! "$comment_created_at" =~ $github_timestamp_regex || \
+          ( -n "$commenter_id" && ! "$commenter_id" =~ ^[1-9][0-9]*$ ) || \
           ( -n "$commenter_login" && ! "$commenter_login" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ) || \
           ( -n "$commenter_type" && ! "$commenter_type" =~ ^(User|Bot)$ ) || \
           -z "$encoded_body" || -n "$comment_extra" ]]; then
@@ -548,13 +627,12 @@ for pr_number in "${sorted_prs[@]}"; do
         resolved_evidence_sha=
         if resolve_evidence_sha "$marker_sha" "$pr_number" && \
             { [[ "$resolved_evidence_sha" == "$pr_head_sha" ]] || \
-              { [[ -n "$pr_merge_sha" ]] && \
-                [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
-          codex_current_records=$((codex_current_records + 1))
+            { [[ -n "$pr_merge_sha" ]] && \
+              [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
           if codex_body_is_clean "$comment_body" required; then
-            codex_clean_records=$((codex_clean_records + 1))
+            record_codex_evidence "$comment_created_at" clean
           else
-            codex_conflict=1
+            record_codex_evidence "$comment_created_at" adverse
           fi
         fi
       elif [[ "$codex_marker_count" -gt 0 ]]; then
@@ -564,11 +642,18 @@ for pr_number in "${sorted_prs[@]}"; do
   done
   fi
 
-  if [[ "$codex_current_records" -eq 1 && \
-        "$codex_clean_records" -eq 1 && "$codex_conflict" -eq 0 ]]; then
-    codex_evidence=1
-  elif [[ "$codex_current_records" -gt 0 ]]; then
+  if [[ "$codex_latest_count" -gt 1 ]]; then
     codex_conflict=1
+  elif [[ "$codex_latest_count" -eq 1 ]]; then
+    case "$codex_latest_kind" in
+      clean) codex_evidence=1 ;;
+      suggestions)
+        if [[ "$unresolved" -eq 0 ]]; then
+          codex_evidence=1
+        fi
+        ;;
+      *) codex_conflict=1 ;;
+    esac
   fi
 
   if [[ "$decision" == "CHANGES_REQUESTED" ]]; then

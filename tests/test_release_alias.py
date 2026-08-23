@@ -63,15 +63,24 @@ class PublicationBindingTests(unittest.TestCase):
     def setUp(self):
         self.alias = _load_script()
 
-    def _validate(self, run, jobs):
+    def _validate(
+        self,
+        run,
+        jobs,
+        *,
+        publication_ref="main",
+        publication_sha=PUBLICATION_SHA,
+    ):
         return self.alias._validate_publication_payloads(
             run,
             jobs,
             repository=REPOSITORY,
             publication_run_id=RUN_ID,
             publication_attempt=ATTEMPT,
-            publication_sha=PUBLICATION_SHA,
+            publication_ref=publication_ref,
+            publication_sha=publication_sha,
             tag=TAG,
+            release_sha=SHA,
         )
 
     def test_accepts_only_one_successful_exact_pypi_verification_job(self):
@@ -83,6 +92,22 @@ class PublicationBindingTests(unittest.TestCase):
             self.alias.AliasError, "duplicate successful"
         ):
             self._validate(run, duplicate)
+
+    def test_accepts_explicit_exact_tag_control_for_initial_publication(self):
+        run, jobs = _publication_payloads()
+        run["head_branch"] = TAG
+        run["head_sha"] = SHA
+        for job in jobs["jobs"]:
+            job["head_sha"] = SHA
+        self.assertEqual(
+            self._validate(
+                run,
+                jobs,
+                publication_ref=TAG,
+                publication_sha=SHA,
+            ),
+            988,
+        )
 
     def test_accepts_successful_prerequisites_from_an_earlier_attempt(self):
         run, jobs = _publication_payloads()
@@ -190,6 +215,7 @@ class PublicationBindingTests(unittest.TestCase):
                 repository=REPOSITORY,
                 publication_run_id=RUN_ID,
                 publication_attempt=ATTEMPT,
+                publication_ref="main",
                 publication_sha=PUBLICATION_SHA,
                 tag=TAG,
                 release_sha=SHA,
@@ -215,12 +241,13 @@ class AliasDispatchTests(unittest.TestCase):
             "alias": ALIAS,
             "publication_run_id": RUN_ID,
             "publication_attempt": ATTEMPT,
+            "publication_ref": "main",
             "publication_sha": PUBLICATION_SHA,
             "attempts": 3,
             "delay_seconds": 0,
         }
 
-    def test_dispatches_exact_tag_workflow_and_requires_resulting_alias(self):
+    def test_recovery_dispatches_current_main_control_and_requires_alias(self):
         completed = {
             "id": 111,
             "run_attempt": 1,
@@ -242,16 +269,64 @@ class AliasDispatchTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ("gh", "workflow", "run", "advance-release-alias.yml"))
         self.assertIn("--ref", command)
-        self.assertEqual(command[command.index("--ref") + 1], TAG)
+        self.assertEqual(command[command.index("--ref") + 1], "main")
         for field in (
             f"release_tag={TAG}",
             f"release_sha={SHA}",
             f"compatibility_alias={ALIAS}",
             f"publication_run_id={RUN_ID}",
             f"publication_attempt={ATTEMPT}",
+            "publication_ref=main",
             f"publication_sha={PUBLICATION_SHA}",
         ):
             self.assertIn(field, command)
+
+    def test_initial_publication_dispatches_exact_release_tag_control(self):
+        arguments = {
+            **self._arguments(),
+            "publication_ref": TAG,
+            "publication_sha": SHA,
+        }
+        command_result = subprocess.CompletedProcess([], 1, "", "queued")
+        with mock.patch.object(
+            self.alias, "_remote_ref", side_effect=[SHA, None]
+        ), mock.patch.object(
+            self.alias, "_find_alias_run", return_value=None
+        ) as find, mock.patch.object(
+            self.alias, "_run", return_value=command_result
+        ) as run, self.assertRaisesRegex(self.alias.AliasError, "polling window"):
+            self.alias.dispatch_alias_workflow(**arguments)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--ref") + 1], TAG)
+        self.assertEqual(find.call_args.kwargs["control_ref"], TAG)
+        self.assertEqual(find.call_args.kwargs["control_sha"], SHA)
+
+    def test_recovery_ref_remains_main_when_control_sha_equals_release(self):
+        arguments = {**self._arguments(), "publication_sha": SHA}
+        command_result = subprocess.CompletedProcess([], 1, "", "queued")
+        with mock.patch.object(
+            self.alias, "_remote_ref", side_effect=[SHA, None]
+        ), mock.patch.object(
+            self.alias, "_find_alias_run", return_value=None
+        ), mock.patch.object(
+            self.alias, "_run", return_value=command_result
+        ) as run, self.assertRaisesRegex(self.alias.AliasError, "polling window"):
+            self.alias.dispatch_alias_workflow(**arguments)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--ref") + 1], "main")
+
+    def test_rejects_unknown_or_mismatched_publication_control(self):
+        for overrides, message in (
+            ({"publication_ref": "feature"}, "exact release tag or main"),
+            ({"publication_ref": TAG}, "must match the release SHA"),
+        ):
+            with self.subTest(overrides=overrides):
+                with self.assertRaisesRegex(self.alias.AliasError, message):
+                    self.alias.dispatch_alias_workflow(
+                        **{**self._arguments(), **overrides}
+                    )
 
     def test_exact_existing_alias_is_idempotent_without_dispatch(self):
         with mock.patch.object(
@@ -269,8 +344,8 @@ class AliasDispatchTests(unittest.TestCase):
             "display_title": title,
             "path": ".github/workflows/advance-release-alias.yml",
             "event": "workflow_dispatch",
-            "head_branch": TAG,
-            "head_sha": SHA,
+            "head_branch": "main",
+            "head_sha": PUBLICATION_SHA,
             "status": "queued",
             "conclusion": None,
             "html_url": "https://example.invalid/run/1",
@@ -279,8 +354,8 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias._matching_alias_runs(
                 {"total_count": 2, "workflow_runs": [base, {**base, "id": 2}]},
                 title=title,
-                tag=TAG,
-                sha=SHA,
+                control_ref="main",
+                control_sha=PUBLICATION_SHA,
             )
 
         wrong = {**base, "head_sha": "d" * 40}
@@ -288,16 +363,16 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias._matching_alias_runs(
                 {"total_count": 1, "workflow_runs": [wrong]},
                 title=title,
-                tag=TAG,
-                sha=SHA,
+                control_ref="main",
+                control_sha=PUBLICATION_SHA,
             )
 
         with self.assertRaisesRegex(self.alias.AliasError, "listing is incomplete"):
             self.alias._matching_alias_runs(
                 {"total_count": 2, "workflow_runs": [base]},
                 title=title,
-                tag=TAG,
-                sha=SHA,
+                control_ref="main",
+                control_sha=PUBLICATION_SHA,
             )
 
 
@@ -316,6 +391,7 @@ class AliasMutationTests(unittest.TestCase):
             "alias": ALIAS,
             "publication_run_id": RUN_ID,
             "publication_attempt": ATTEMPT,
+            "publication_ref": "main",
             "publication_sha": PUBLICATION_SHA,
         }
 

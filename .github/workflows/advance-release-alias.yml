@@ -24,6 +24,10 @@ on:
         description: Exact active publication run attempt.
         required: true
         type: string
+      publication_ref:
+        description: Exact tag or main ref controlling the active publication.
+        required: true
+        type: string
       publication_sha:
         description: Workflow commit controlling the active publication run.
         required: true
@@ -44,6 +48,7 @@ env:
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
   PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
   PUBLICATION_ATTEMPT: ${{ inputs.publication_attempt }}
+  PUBLICATION_REF: ${{ inputs.publication_ref }}
   PUBLICATION_SHA: ${{ inputs.publication_sha }}
 
 jobs:
@@ -55,7 +60,7 @@ jobs:
       actions: read
       contents: write
     steps:
-      - name: Bind this run to the exact immutable release tag
+      - name: Bind this run to the exact reviewed publication control
         shell: bash
         env:
           DISPATCH_EVENT: ${{ github.event_name }}
@@ -88,11 +93,27 @@ jobs:
             echo "Publication run ID and attempt must be positive decimal integers" >&2
             exit 1
           fi
-          if [[ "$DISPATCH_REF_TYPE" != tag || \
-                "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
-                "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" || \
-                "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
-            echo "Alias workflow must execute from the exact immutable release tag" >&2
+          if [[ "$PUBLICATION_REF" == "$RELEASE_TAG" ]]; then
+            if [[ "$PUBLICATION_SHA" != "$RELEASE_SHA" ]]; then
+              echo "Exact-tag publication control must match the release SHA" >&2
+              exit 1
+            fi
+            expected_ref_type=tag
+            expected_ref_name=$RELEASE_TAG
+            expected_ref="refs/tags/$RELEASE_TAG"
+          elif [[ "$PUBLICATION_REF" == main ]]; then
+            expected_ref_type=branch
+            expected_ref_name=main
+            expected_ref=refs/heads/main
+          else
+            echo "Publication ref must be the exact release tag or main" >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_REF_TYPE" != "$expected_ref_type" || \
+                "$DISPATCH_REF_NAME" != "$expected_ref_name" || \
+                "$DISPATCH_REF" != "$expected_ref" || \
+                "$DISPATCH_SHA" != "$PUBLICATION_SHA" ]]; then
+            echo "Alias workflow must execute from the exact publication-control commit" >&2
             exit 1
           fi
 
@@ -102,6 +123,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.release_sha }}
+
+      - name: Checkout the reviewed publication-control commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.publication_sha }}
+          path: .release-control
 
       - name: Setup Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -116,7 +144,7 @@ jobs:
           set -euo pipefail
           clean_python_cwd=$(mktemp -d)
           cd "$clean_python_cwd"
-          python3 -I "$GITHUB_WORKSPACE/scripts/release_alias.py" verify \
+          python3 -I "$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" verify \
             --repo-root "$GITHUB_WORKSPACE" \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
@@ -124,6 +152,7 @@ jobs:
             --alias "$COMPATIBILITY_ALIAS" \
             --publication-run-id "$PUBLICATION_RUN_ID" \
             --publication-attempt "$PUBLICATION_ATTEMPT" \
+            --publication-ref "$PUBLICATION_REF" \
             --publication-sha "$PUBLICATION_SHA"
 
       - name: Download the immutable public release assets
@@ -170,9 +199,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -I scripts/release_changelog.py --tag "$RELEASE_TAG" \
+          python3 -I .release-control/scripts/release_changelog.py \
+            --changelog CHANGELOG.md --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
-          python3 -I scripts/verify_release_surfaces.py \
+          python3 -I .release-control/scripts/verify_release_surfaces.py \
             --tag "$RELEASE_TAG" \
             --sha "$RELEASE_SHA" \
             --alias "$COMPATIBILITY_ALIAS" \
@@ -198,7 +228,7 @@ jobs:
           gh auth setup-git
           clean_python_cwd=$(mktemp -d)
           cd "$clean_python_cwd"
-          python3 -I "$GITHUB_WORKSPACE/scripts/release_alias.py" advance \
+          python3 -I "$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" advance \
             --repo-root "$GITHUB_WORKSPACE" \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
@@ -206,13 +236,14 @@ jobs:
             --alias "$COMPATIBILITY_ALIAS" \
             --publication-run-id "$PUBLICATION_RUN_ID" \
             --publication-attempt "$PUBLICATION_ATTEMPT" \
+            --publication-ref "$PUBLICATION_REF" \
             --publication-sha "$PUBLICATION_SHA"
 
       - name: Verify every public surface after alias mutation
         shell: bash
         run: |
           set -euo pipefail
-          python3 -I scripts/verify_release_surfaces.py \
+          python3 -I .release-control/scripts/verify_release_surfaces.py \
             --tag "$RELEASE_TAG" \
             --sha "$RELEASE_SHA" \
             --alias "$COMPATIBILITY_ALIAS" \

@@ -860,7 +860,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         alias_workflow = "\n".join(
             (
                 "  advance:",
-                "Bind this run to the exact immutable release tag",
+                "Bind this run to the exact reviewed publication control",
+                "Checkout the reviewed publication-control commit",
+                "publication_ref:",
+                '--publication-ref "$PUBLICATION_REF"',
                 "Require the active originating publication and verified PyPI job",
                 "--skip-alias",
                 "Advance the leased monotonic compatibility alias",

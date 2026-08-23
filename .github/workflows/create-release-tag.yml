@@ -49,6 +49,9 @@ env:
     MAX_JSON_NUMBER_DIGITS = 4300
     READ_CHUNK_BYTES = 64 * 1024
     TRUSTED_CODEX_BOT_ID = 199175422
+    GITHUB_TIMESTAMP_RE = re.compile(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+    )
     consumed_api_bytes = 0
 
     release_sha, release_tag, repository = sys.argv[1:]
@@ -352,11 +355,15 @@ env:
                 raise SystemExit("GitHub returned a malformed review")
             review_id = review.get("id")
             state = review.get("state")
+            submitted_at = review.get("submitted_at")
             commit_id = review.get("commit_id")
             body = review.get("body")
             reviewer = actor(review.get("user"))
             if (type(review_id) is not int or review_id <= 0 or review_id in review_ids or
                     not isinstance(state, str) or
+                    (submitted_at is not None and
+                     (not isinstance(submitted_at, str) or
+                      GITHUB_TIMESTAMP_RE.fullmatch(submitted_at) is None)) or
                     (commit_id is not None and not isinstance(commit_id, str)) or
                     (body is not None and not isinstance(body, str))):
                 raise SystemExit("GitHub returned a malformed or duplicate review")
@@ -364,6 +371,7 @@ env:
             reviews.append({
                 "id": review_id,
                 "state": state,
+                "submitted_at": submitted_at,
                 "commit_id": commit_id,
                 "body": body,
                 "actor": reviewer,
@@ -386,15 +394,19 @@ env:
             if not isinstance(comment, dict):
                 raise SystemExit("GitHub returned a malformed issue comment")
             comment_id = comment.get("id")
+            created_at = comment.get("created_at")
             body = comment.get("body")
             if (type(comment_id) is not int or comment_id <= 0 or
                     comment_id in comment_ids or
+                    not isinstance(created_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(created_at) is None or
                     (body is not None and not isinstance(body, str))):
                 raise SystemExit("GitHub returned a malformed or duplicate issue comment")
             comment_ids.add(comment_id)
             commenter = actor(comment.get("user"))
             comments.append({
                 "id": comment_id,
+                "created_at": created_at,
                 "body": body,
                 "actor": commenter,
             })

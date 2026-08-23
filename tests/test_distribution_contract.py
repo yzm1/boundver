@@ -514,11 +514,12 @@ class AutomationContractTests(unittest.TestCase):
             step
             for step in alias_job["steps"]
             if step.get("name")
-            == "Dispatch exact-tag alias verification and advancement"
+            == "Dispatch exact-control alias verification and advancement"
         )
         self.assertIn(".release-control/scripts/release_alias.py\" dispatch", alias_step["run"])
         self.assertIn('publication-run-id "$GITHUB_RUN_ID"', alias_step["run"])
         self.assertIn('publication-attempt "$GITHUB_RUN_ATTEMPT"', alias_step["run"])
+        self.assertIn('publication-ref "$GITHUB_REF_NAME"', alias_step["run"])
         self.assertIn('publication-sha "$GITHUB_SHA"', alias_step["run"])
         self.assertIn("compatibility_alias:", workflow)
         self.assertIn("COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}", workflow)
@@ -600,7 +601,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertNotIn("git tag --force v0 ", workflow)
         self.assertEqual(workflow.count("retention-days: 90"), 3)
 
-    def test_alias_workflow_is_exact_tag_bound_and_uses_no_maintainer_secret(self):
+    def test_alias_workflow_is_exact_control_bound_and_uses_no_maintainer_secret(self):
         import yaml
 
         path = REPO_ROOT / ".github/workflows/advance-release-alias.yml"
@@ -613,14 +614,16 @@ class AutomationContractTests(unittest.TestCase):
         advance = workflow["jobs"]["advance"]
         first = advance["steps"][0]
         self.assertEqual(
-            first["name"], "Bind this run to the exact immutable release tag"
+            first["name"], "Bind this run to the exact reviewed publication control"
         )
         binding = first["run"]
         for invariant in (
-            '"$DISPATCH_REF_TYPE" != tag',
-            '"$DISPATCH_REF_NAME" != "$RELEASE_TAG"',
-            '"$DISPATCH_REF" != "refs/tags/$RELEASE_TAG"',
-            '"$DISPATCH_SHA" != "$RELEASE_SHA"',
+            'expected_ref_type=tag',
+            'expected_ref_type=branch',
+            'expected_ref_name=main',
+            '"$PUBLICATION_REF" == "$RELEASE_TAG"',
+            '"$PUBLICATION_REF" == main',
+            '"$DISPATCH_SHA" != "$PUBLICATION_SHA"',
         ):
             self.assertIn(invariant, binding)
         parent = next(
@@ -637,6 +640,16 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertIn('scripts/release_alias.py" verify', parent["run"])
         self.assertIn('scripts/release_alias.py" advance', mutation["run"])
+        self.assertIn(".release-control/scripts/release_alias.py", parent["run"])
+        control_checkout = next(
+            step
+            for step in advance["steps"]
+            if step.get("name") == "Checkout the reviewed publication-control commit"
+        )
+        self.assertEqual(
+            control_checkout["with"]["ref"], "${{ inputs.publication_sha }}"
+        )
+        self.assertEqual(control_checkout["with"]["path"], ".release-control")
         self.assertNotIn("secrets.", text)
         self.assertNotIn("personal access token", text.lower())
 
@@ -837,7 +850,10 @@ class AutomationContractTests(unittest.TestCase):
             if step.get("name") == "Advance the leased monotonic compatibility alias"
         )
         self.assertIn("python3 -I", mutation["run"])
-        self.assertIn('"$GITHUB_WORKSPACE/scripts/release_alias.py" advance', mutation["run"])
+        self.assertIn(
+            '"$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" advance',
+            mutation["run"],
+        )
         self.assertIn("gh auth setup-git", mutation["run"])
 
     def test_token_scoped_steps_cannot_import_from_the_candidate_checkout(self):
@@ -877,7 +893,7 @@ class AutomationContractTests(unittest.TestCase):
                 ("prepare-release-draft", "Create or reconcile the exact release draft"),
                 (
                     "advance-compatibility-alias",
-                    "Dispatch exact-tag alias verification and advancement",
+                    "Dispatch exact-control alias verification and advancement",
                 ),
             ],
         )
@@ -997,7 +1013,7 @@ class AutomationContractTests(unittest.TestCase):
             step
             for step in alias_dispatch["steps"]
             if step.get("name")
-            == "Dispatch exact-tag alias verification and advancement"
+            == "Dispatch exact-control alias verification and advancement"
         )
         self.assertIn("python3 -I", dispatch_step["run"])
         self.assertIn("clean_python_cwd=$(mktemp -d)", dispatch_step["run"])
@@ -1458,6 +1474,8 @@ class AutomationContractTests(unittest.TestCase):
         compile(snapshot_program, "<review-state-program>", "exec")
         self.assertIn("reviewThreads(first:100,after:$endCursor)", snapshot_program)
         self.assertIn("collaborators/{encoded_login}/permission", snapshot_program)
+        self.assertIn('submitted_at = review.get("submitted_at")', snapshot_program)
+        self.assertIn('created_at = comment.get("created_at")', snapshot_program)
         self.assertEqual(
             jobs["revalidate-release-state"]["outputs"]["review-state-digest"],
             "${{ steps.mutable-state.outputs.review-state-digest }}",
@@ -1572,6 +1590,7 @@ elif endpoint.startswith("repos/owner/repository/pulls/17/reviews"):
     payload = [{
         "id": 301,
         "state": "COMMENTED",
+        "submitted_at": os.environ["FAKE_REVIEW_TIME"],
         "commit_id": sha,
         "body": os.environ["FAKE_REVIEW_BODY"],
         "user": actor,
@@ -1593,6 +1612,7 @@ print(json.dumps(payload, separators=(",", ":")))
                     "RUNNER_TEMP": str(root),
                     "FAKE_RELEASE_SHA": release_sha,
                     "FAKE_REVIEW_BODY": "Codex Review: Didn't find any major issues.",
+                    "FAKE_REVIEW_TIME": "2026-08-18T12:00:00Z",
                 }
             )
 
@@ -1634,6 +1654,20 @@ print(json.dumps(payload, separators=(",", ":")))
                 text=True,
             ).stdout.strip()
             self.assertNotEqual(changed, first)
+
+            environment["FAKE_REVIEW_BODY"] = (
+                "Codex Review: Didn't find any major issues."
+            )
+            environment["FAKE_REVIEW_TIME"] = "2026-08-18T12:00:01Z"
+            retimed = subprocess.run(
+                command,
+                cwd=root,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertNotEqual(retimed, first)
 
     def test_action_and_container_install_complete_public_extras(self):
         action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
@@ -2301,6 +2335,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             verdict,
             "",
             marker,
+            "    ",
         ]
         if duplicate:
             lines.extend(("", marker))
@@ -2320,18 +2355,24 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         self,
         body: str,
         *,
+        record_id: str = "201",
+        timestamp: str = "2026-08-18T12:01:00Z",
         actor_id: str = "199175422",
         login: str = "chatgpt-codex-connector[bot]",
         actor_type: str = "Bot",
     ) -> str:
         encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
-        return f"{actor_id}|{login}|{actor_type}|{encoded}"
+        return (
+            f"{record_id}|{timestamp}|{actor_id}|{login}|{actor_type}|{encoded}"
+        )
 
     def _review_record(
         self,
         commit: str,
         body: str | None = None,
         *,
+        record_id: str = "101",
+        timestamp: str = "2026-08-18T12:00:00Z",
         state: str = "COMMENTED",
         actor_id: str = "199175422",
         login: str = "chatgpt-codex-connector[bot]",
@@ -2345,7 +2386,25 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             )
         encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
         return (
-            f"{state}|{actor_id}|{login}|{actor_type}|{commit}|{encoded}"
+            f"{state}|{record_id}|{timestamp}|{actor_id}|{login}|{actor_type}|"
+            f"{commit}|{encoded}"
+        )
+
+    def _suggestions_review(self, commit: str) -> str:
+        return "\n".join(
+            (
+                "",
+                "### 💡 Codex Review",
+                "",
+                "Here are some automated review suggestions for this pull request.",
+                "",
+                f"**Reviewed commit:** `{commit}`",
+                "    ",
+                "",
+                "<details> <summary>ℹ️ About Codex in GitHub</summary>",
+                "review guidance",
+                "</details>",
+            )
         )
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
@@ -2529,6 +2588,7 @@ exit 74
             "Already looking forward to the next diff.",
             "Codex Review: Didn't find any major issues. "
             "More of your lovely PRs please.",
+            "Codex Review: Didn't find any major issues. You're on a roll.",
         )
         for verdict in verdicts:
             with self.subTest(verdict=verdict):
@@ -2702,12 +2762,15 @@ exit 74
                 self.assertIn("no current exact-commit review evidence", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
-    def test_codex_evidence_rejects_multiple_current_contradictory_records(self):
+    def test_codex_evidence_uses_latest_current_record_and_rejects_ties(self):
         head = "6" * 40
-        clean = self._review_record(head)
+        clean = self._review_record(
+            head, timestamp="2026-08-18T12:01:00Z"
+        )
         adverse = self._review_record(
             head,
             "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:02:00Z",
         )
         result = self._run_audit(
             FAKE_HEAD_SHA=head,
@@ -2717,14 +2780,54 @@ exit 74
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
 
-        empty = self._review_record(head, "")
+        earlier_adverse = self._review_record(
+            head,
+            "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:00:00Z",
+        )
         result = self._run_audit(
             FAKE_HEAD_SHA=head,
-            FAKE_REVIEWS=f"{clean}\n{empty}",
+            FAKE_REVIEWS=f"{earlier_adverse}\n{clean}",
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
+        clean_comment = self._comment_record(self._codex_comment(head[:10]))
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=earlier_adverse,
+            FAKE_COMMENTS=clean_comment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        tied_adverse = self._review_record(
+            head,
+            "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{tied_adverse}",
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exact_codex_suggestions_count_after_every_thread_is_resolved(self):
+        head = "a" * 40
+        review = self._review_record(
+            head,
+            self._suggestions_review(head[:10]),
+        )
+        result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_REVIEWS=review)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=review,
+            FAKE_UNRESOLVED="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unresolvedThreads=1", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_stale_evidence_cannot_consume_later_current_comment(self):
@@ -2771,6 +2874,17 @@ exit 74
                 result = self._run_audit(FAKE_FAILURE=failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("GitHub API failed", result.stderr)
+
+        malformed_review = self._review_record(
+            "6" * 40,
+            timestamp="not-a-timestamp",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA="6" * 40,
+            FAKE_REVIEWS=malformed_review,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed review data", result.stderr)
 
         human = self._review_record(
             "6" * 40, "", state="APPROVED", actor_id="202", login="reviewer",

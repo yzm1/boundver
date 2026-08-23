@@ -2685,7 +2685,7 @@ jobs:
         shell: bash
         run: echo "No compatibility alias was approved for $RELEASE_TAG."
 
-      - name: Dispatch exact-tag alias verification and advancement
+      - name: Dispatch exact-control alias verification and advancement
         if: inputs.compatibility_alias != 'none'
         shell: bash
         env:
@@ -2703,6 +2703,7 @@ jobs:
             --alias "$COMPATIBILITY_ALIAS" \
             --publication-run-id "$GITHUB_RUN_ID" \
             --publication-attempt "$GITHUB_RUN_ATTEMPT" \
+            --publication-ref "$GITHUB_REF_NAME" \
             --publication-sha "$GITHUB_SHA"
 
   verify-public-surfaces:
