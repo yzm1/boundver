@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boundver"
 version = "0.13.0"
-description = "Detect API boundary, behavioral contract, and component changes in CI"
+description = "Classify contract drift and downstream impact across polyglot repositories"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
@@ -48,11 +48,13 @@ dependencies = ["tomli>=2.0; python_version < '3.11'"]
 
 [project.urls]
 Homepage = "https://github.com/yzm1/boundver"
-Documentation = "https://github.com/yzm1/boundver/tree/main/docs"
+Documentation = "https://yzm1.github.io/boundver/"
 Changelog = "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md"
 Issues = "https://github.com/yzm1/boundver/issues"
 Repository = "https://github.com/yzm1/boundver"
 "GitHub Action" = "https://github.com/marketplace/actions/boundver"
+Container = "https://github.com/yzm1/boundver/pkgs/container/boundver"
+Homebrew = "https://github.com/yzm1/homebrew-boundver"
 
 [project.optional-dependencies]
 schema = ["jsonschema>=4"]

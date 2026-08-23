@@ -358,7 +358,16 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
         self.assertIn("verify-marketplace", jobs["publish-pypi"]["needs"])
         self.assertIn("publish-pypi", jobs["verify-pypi"]["needs"])
-        self.assertEqual(jobs["advance-compatibility-alias"]["needs"], "verify-pypi")
+        self.assertEqual(jobs["publish-container"]["needs"], "verify-pypi")
+        self.assertEqual(
+            jobs["publish-container"]["uses"],
+            "./.github/workflows/publish-container.yml",
+        )
+        self.assertEqual(jobs["publish-container"]["permissions"]["actions"], "read")
+        self.assertEqual(
+            jobs["advance-compatibility-alias"]["needs"],
+            ["verify-pypi", "publish-container"],
+        )
         alias_job = jobs["advance-compatibility-alias"]
         self.assertEqual(alias_job["permissions"]["actions"], "write")
         self.assertEqual(alias_job["permissions"]["contents"], "read")
@@ -595,8 +604,15 @@ class AutomationContractTests(unittest.TestCase):
                 "publish-testpypi",
                 "prepare-release-draft",
                 "publish-pypi",
+                "publish-container",
             },
         )
+        container_call = elevated.pop("publish-container")
+        self.assertEqual(
+            container_call["uses"], "./.github/workflows/publish-container.yml"
+        )
+        self.assertNotIn("steps", container_call)
+
         for job_name, job in elevated.items():
             steps = job["steps"]
             scripts = "\n".join(str(step.get("run", "")) for step in steps)
@@ -610,6 +626,31 @@ class AutomationContractTests(unittest.TestCase):
             self.assertNotIn("scripts/", scripts, job_name)
             self.assertNotIn("python3 - ", scripts, job_name)
             self.assertNotIn("python3 -c ", scripts, job_name)
+
+        container_jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish-container.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        self.assertEqual(container_jobs["build"]["permissions"], {"contents": "read"})
+        self.assertEqual(container_jobs["publish"]["needs"], "build")
+        publisher_steps = container_jobs["publish"]["steps"]
+        self.assertFalse(
+            any(
+                str(step.get("uses", "")).startswith("actions/checkout@")
+                for step in publisher_steps
+            )
+        )
+        self.assertFalse(
+            any(
+                str(step.get("uses", "")).startswith("docker/build-push-action@")
+                for step in publisher_steps
+            )
+        )
+        publisher_scripts = "\n".join(
+            str(step.get("run", "")) for step in publisher_steps
+        )
+        self.assertIn("oras cp --from-oci-layout", publisher_scripts)
 
         draft_script = next(
             step["run"]

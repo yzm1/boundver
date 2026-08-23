@@ -19,6 +19,13 @@ All notable changes to this project are documented here. The format follows
   and configured roots absent from discovery; `migrate-lock --explain` audits
   0.10 whole-path glob behavior against current segment-aware selection before
   regeneration.
+- A strict, hash-locked GitHub Pages documentation site, runnable
+  consumer-impact demo, comparison guide, and distribution guide.
+- Protected multi-platform GHCR publication with a read-only OCI build,
+  retained digest handoff, anonymous-pull verification, immutable OCI labels,
+  and GitHub artifact attestation.
+- A deterministic Homebrew formula renderer and a typed GitLab CI/CD Catalog
+  component that binds each component release to the matching GHCR version.
 
 ### Changed
 
@@ -31,6 +38,9 @@ All notable changes to this project are documented here. The format follows
   documents the raw `json-file-raw` to `path-hash` transition, and requires
   persistent developer, hook, and container environments to upgrade and assert
   their exact pinned boundver version.
+- Public positioning now describes boundver narrowly as declared contract-drift
+  classification and downstream-impact routing, with explicit relationships to
+  build-graph, schema-compatibility, and release-automation tools.
 
 ### Fixed
 
@@ -42,6 +52,8 @@ All notable changes to this project are documented here. The format follows
   calling a well-formed historical lock malformed.
 - Index snapshot failures retain bounded, terminal-safe Git or OS detail from
   `git write-tree`/`ls-tree`, making intermittent capture failures diagnosable.
+- CLI help and `--version` now use the stable `boundver` program name on
+  Python 3.14 instead of exposing the interpreter and script path.
 
 ## [0.12.0] - 2026-08-19
 

@@ -469,12 +469,14 @@ def load_manifest(path: Path = MANIFEST) -> tuple[str, dict[str, Profile]]:
         )
         profiles[name] = Profile(name, lock, tuple(raw_includes), requirements)
 
-    if tuple(profiles) != ("action", "ci", "release"):
-        raise LockError("profiles must be declared in action, ci, release order")
+    if tuple(profiles) != ("action", "ci", "docs", "release"):
+        raise LockError("profiles must be declared in action, ci, docs, release order")
     if profiles["action"].includes:
         raise LockError("action must not include another profile")
     if profiles["ci"].includes != ("action",):
         raise LockError("ci must include exactly action")
+    if profiles["docs"].includes:
+        raise LockError("docs must not include another profile")
     if profiles["release"].includes != ("action",):
         raise LockError("release must include exactly action")
 

@@ -1,5 +1,5 @@
 name: boundver
-description: Detect API boundary, behavioral contract, and component changes in CI.
+description: Classify contract drift and downstream impact across polyglot repositories.
 author: yzm1
 
 branding:

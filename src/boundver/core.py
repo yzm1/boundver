@@ -1874,6 +1874,7 @@ def main():
         sys.argv.pop(option_index)
         sys.argv.insert(1, option)
     parser = argparse.ArgumentParser(
+        prog="boundver",
         description="Detect declared component, behavior, boundary, and compatibility drift",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,

@@ -837,8 +837,23 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "pypi-preflight",
                 "publish-pypi",
                 "verify-pypi",
+                "publish-container",
                 "advance-compatibility-alias",
                 "verify-public-surfaces",
+            )
+        )
+        container_workflow = "\n".join(
+            (
+                "environment: container",
+                "environment: container-public",
+                "linux/amd64,linux/arm64",
+                "tonistiigi/binfmt:qemu-v10.2.3@sha256:",
+                "version: v0.36.1",
+                "image=moby/buildkit:v0.32.2@sha256:",
+                "push-to-registry: true",
+                "oras cp --from-oci-layout",
+                'DOCKER_CONFIG="$anonymous_config" docker pull',
+                'gh attestation verify "oci://$IMAGE@$DIGEST"',
             )
         )
         alias_workflow = "\n".join(
@@ -855,13 +870,20 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         with mock.patch.object(
             publisher.Path, "exists", return_value=True
         ), mock.patch.object(
-            publisher, "_read_bounded_text", side_effect=[workflow, alias_workflow]
+            publisher,
+            "_read_bounded_text",
+            side_effect=[workflow, container_workflow, alias_workflow],
         ) as read:
             publisher._surface_inventory(Path("repo"))
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 3)
         read.assert_any_call(
             Path("repo/.github/workflows/publish.yml"),
             ".github/workflows/publish.yml",
+            max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
+        )
+        read.assert_any_call(
+            Path("repo/.github/workflows/publish-container.yml"),
+            ".github/workflows/publish-container.yml",
             max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
         )
         read.assert_any_call(
@@ -1123,10 +1145,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         for surface in (
             "readme",
             "documentation",
+            "hosted documentation",
             "changelog",
             "schema",
             "action",
-            "docker",
+            "ghcr",
+            "homebrew",
+            "gitlab",
             "pre-commit",
             "testpypi",
             "pypi",
@@ -1154,6 +1179,31 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "semantic-versioning",
                     ],
                 }
+            if endpoint == "repos/yzm1/boundver/pages":
+                return {
+                    "build_type": "workflow",
+                    "html_url": "https://yzm1.github.io/boundver/",
+                    "https_enforced": True,
+                    "public": True,
+                }
+            if endpoint == "repos/yzm1/homebrew-boundver":
+                return {
+                    "full_name": "yzm1/homebrew-boundver",
+                    "default_branch": "main",
+                    "archived": False,
+                    "visibility": "public",
+                }
+            if "/homebrew-boundver/contents/" in endpoint:
+                return {"type": "file", "sha": "a" * 40, "size": 100}
+            if endpoint.endswith("/homebrew-boundver/environments/formula-update"):
+                return {
+                    "protection_rules": [
+                        {
+                            "type": "required_reviewers",
+                            "reviewers": [{"type": "User", "reviewer": {"id": 1}}],
+                        }
+                    ]
+                }
             if endpoint.endswith("/environments"):
                 return {
                     "environments": [
@@ -1166,7 +1216,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                                 }
                             ],
                         }
-                        for name in ("testpypi", "pypi", "marketplace")
+                        for name in (
+                            "testpypi",
+                            "pypi",
+                            "marketplace",
+                            "container",
+                            "container-public",
+                        )
                     ]
                 }
             if endpoint.endswith("/immutable-releases"):
@@ -1694,6 +1750,31 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "semantic-versioning",
                     ],
                 }
+            if endpoint == "repos/yzm1/boundver/pages":
+                return {
+                    "build_type": "workflow",
+                    "html_url": "https://yzm1.github.io/boundver/",
+                    "https_enforced": True,
+                    "public": True,
+                }
+            if endpoint == "repos/yzm1/homebrew-boundver":
+                return {
+                    "full_name": "yzm1/homebrew-boundver",
+                    "default_branch": "main",
+                    "archived": False,
+                    "visibility": "public",
+                }
+            if "/homebrew-boundver/contents/" in endpoint:
+                return {"type": "file", "sha": "a" * 40, "size": 100}
+            if endpoint.endswith("/homebrew-boundver/environments/formula-update"):
+                return {
+                    "protection_rules": [
+                        {
+                            "type": "required_reviewers",
+                            "reviewers": [{"type": "User"}],
+                        }
+                    ]
+                }
             if endpoint.endswith("/environments"):
                 return {
                     "environments": [
@@ -1706,7 +1787,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                                 }
                             ],
                         }
-                        for name in ("testpypi", "pypi", "marketplace")
+                        for name in (
+                            "testpypi",
+                            "pypi",
+                            "marketplace",
+                            "container",
+                            "container-public",
+                        )
                     ]
                 }
             if endpoint.endswith("/immutable-releases"):
@@ -1902,6 +1989,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "pypi-preflight",
             "publish-pypi",
             "verify-pypi",
+            "publish-container",
+            "publish-container.yml",
+            "render_homebrew_formula.py",
+            "templates/boundver.yml",
             "advance-compatibility-alias",
             "advance-release-alias.yml",
             "release_alias.py",

@@ -1,20 +1,24 @@
-# boundver — see contract drift before consumers do
+# boundver
+
+> Know which contracts changed — and which consumers to verify.
 
 [![CI](https://github.com/yzm1/boundver/actions/workflows/ci.yml/badge.svg)](https://github.com/yzm1/boundver/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-4051b5)](https://yzm1.github.io/boundver/)
 [![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-boundver-blue?logo=github)](https://github.com/marketplace/actions/boundver)
 [![Python 3.9+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
-**boundver is Git-aware contract-drift detection for polyglot repositories.**
-It records four fingerprints per component—exact, behavior, boundary, and
-compatibility—so CI can block consumer-facing changes without rejecting every
-internal refactor.
+**boundver classifies declared contract drift and downstream impact across
+polyglot repositories.** It records four identities per component—exact,
+behavior, boundary, and compatibility family—then tells CI what changed and
+which declared consumers may need re-verification.
 
-> Version 0.12 uses `boundary-lock/v3` with
-> `boundver-semantic-config/v2`. Version 0.11 writes v3/v1 locks and 0.10.x
-> writes v2 locks; both require regeneration before using these instructions.
-> See the [migration note](#upgrade-to-012).
+Use it when APIs, schemas, generated contracts, configuration, or package
+surfaces cross language and build-system boundaries. Internal refactors stay
+visible without being confused with public-contract changes.
+
+[![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
 The stable install and Action examples below target released v0.12. Features
 listed under [Unreleased](CHANGELOG.md#unreleased) are v0.13 development work
@@ -60,6 +64,17 @@ CLI-wide gate over all tracked component bytes and file identities.
 boundver detects drift in **declared artifacts**. It does not prove semantic or
 backward compatibility, execute consumer tests, or infer every runtime behavior.
 A clean result means the declared inputs and their recorded identities agree.
+
+## Where boundver fits
+
+| Need | Use | Relationship to boundver |
+|---|---|---|
+| Determine affected projects and tasks from a build graph | Nx, Pants, Bazel | These tools discover build impact; boundver classifies declared contract drift across build systems. |
+| Prove schema-specific compatibility | oasdiff, Buf, GraphQL Inspector | Run these semantic checkers alongside boundver for the formats they understand. |
+| Plan package versions and release notes | Changesets, semantic-release | These automate releases; boundver supplies review and CI signals before promotion. |
+| Detect contract-family drift and route downstream verification | boundver | Language-neutral, Git-aware fingerprints plus an explicit consumer graph. |
+
+See the full [comparison and integration guide](https://yzm1.github.io/boundver/comparison/).
 
 ## A practical configuration
 
@@ -321,13 +336,26 @@ python -c "import boundver; assert boundver.__version__ == '0.12.0', boundver.__
 In persistent automation, invoke commands as `python -m boundver ...` with that
 same interpreter so an older executable elsewhere on `PATH` cannot take over.
 
-- [Getting started](https://github.com/yzm1/boundver/blob/main/docs/getting-started.md)
-- [Examples](https://github.com/yzm1/boundver/blob/main/examples/README.md)
-- [CI cookbook](https://github.com/yzm1/boundver/blob/main/docs/ci-cookbook.md)
-- [Gradual adoption](https://github.com/yzm1/boundver/blob/main/docs/gradual-adoption.md)
-- [Migration inspection and verification ratchets](https://github.com/yzm1/boundver/blob/main/docs/migration-and-ratcheting.md)
-- [Why boundver?](https://github.com/yzm1/boundver/blob/main/docs/WHY_BOUNDVER.md)
-- [Lockfile merge strategy](https://github.com/yzm1/boundver/blob/main/docs/LOCKFILE_MERGE.md)
+You can also use the release container, Homebrew tap, or GitLab CI/CD component:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" -w /repo \
+  ghcr.io/yzm1/boundver:<version> verify --source head
+brew install yzm1/boundver/boundver
+```
+
+Exact-version and digest-pinned examples are in the
+[distribution guide](https://yzm1.github.io/boundver/distribution/).
+
+- [Documentation](https://yzm1.github.io/boundver/)
+- [Getting started](https://yzm1.github.io/boundver/getting-started/)
+- [Runnable demo](https://yzm1.github.io/boundver/demo/)
+- [Examples](https://yzm1.github.io/boundver/examples/)
+- [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/)
+- [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)
+- [Migration inspection and verification ratchets](https://yzm1.github.io/boundver/migration-and-ratcheting/)
+- [Why boundver?](https://yzm1.github.io/boundver/WHY_BOUNDVER/)
+- [Lockfile merge strategy](https://yzm1.github.io/boundver/LOCKFILE_MERGE/)
 - [Maintainer release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md)
 - [Changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md)
 - [Support](https://github.com/yzm1/boundver/blob/main/SUPPORT.md), [contributing](https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md), and [security](https://github.com/yzm1/boundver/blob/main/SECURITY.md)

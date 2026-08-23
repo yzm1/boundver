@@ -1,0 +1,11 @@
+openapi: 3.0.3
+info:
+  title: Payments API
+  version: 1.2.0
+paths:
+  /payments:
+    post:
+      operationId: createPayment
+      responses:
+        "202":
+          description: Payment accepted

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">boundver</title>
+  <desc id="desc">Know which contracts changed and which consumers to verify.</desc>
+  <defs>
+    <linearGradient id="background" x1="60" y1="30" x2="1220" y2="610" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11162c"/>
+      <stop offset="1" stop-color="#0d2630"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="98" y1="154" x2="342" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7180ff"/>
+      <stop offset="1" stop-color="#00b8d4"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <circle cx="1120" cy="110" r="250" fill="#4051b5" opacity=".16"/>
+  <circle cx="1110" cy="590" r="330" fill="#00b8d4" opacity=".09"/>
+  <path fill="url(#mark)" d="M220 114 356 165v96c0 88-55 151-136 181-81-30-136-93-136-181v-96l136-51Z"/>
+  <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="27" d="m145 270 45 45 103-103"/>
+  <text x="430" y="260" fill="#fff" font-family="Inter, Segoe UI, sans-serif" font-size="92" font-weight="750">boundver</text>
+  <text x="434" y="338" fill="#aeb9ee" font-family="Inter, Segoe UI, sans-serif" font-size="35">Know which contracts changed.</text>
+  <text x="434" y="390" fill="#8be9fd" font-family="Inter, Segoe UI, sans-serif" font-size="35">Verify the consumers that matter.</text>
+  <text x="434" y="490" fill="#9ba8c7" font-family="ui-monospace, Consolas, monospace" font-size="24">exact · behavior · boundary · compat</text>
+</svg>

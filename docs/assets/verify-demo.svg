@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 390" role="img" aria-labelledby="title desc">
+  <title id="title">boundver consumer-impact demo</title>
+  <desc id="desc">A terminal shows boundary drift in payments-api and the transitive consumers checkout-web, mobile-app, and payments-sdk.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1040" y2="390" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11162c"/>
+      <stop offset="1" stop-color="#101e29"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <rect width="1040" height="390" rx="22" fill="#edf1ff"/>
+  <rect x="28" y="26" width="984" height="338" rx="15" fill="url(#bg)" filter="url(#shadow)"/>
+  <circle cx="59" cy="57" r="7" fill="#ff6b6b"/>
+  <circle cx="83" cy="57" r="7" fill="#ffd166"/>
+  <circle cx="107" cy="57" r="7" fill="#4dd599"/>
+  <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="20">
+    <text x="58" y="112" fill="#8be9fd">$</text>
+    <text x="82" y="112" fill="#f8f8f2">boundver verify --source working-tree --transitive</text>
+    <text x="58" y="164" fill="#ffcb6b">MISMATCH payments-api.boundary</text>
+    <text x="58" y="206" fill="#a6accd">lockfile=9cf4bb1be668...</text>
+    <text x="58" y="242" fill="#ffcb6b">current=d734da4251c8...</text>
+    <text x="58" y="294" fill="#82aaff">AFFECTED CONSUMERS (TRANSITIVE)</text>
+    <text x="58" y="330" fill="#c3e88d">checkout-web, mobile-app, payments-sdk</text>
+  </g>
+</svg>

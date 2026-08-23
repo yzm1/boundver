@@ -2,7 +2,8 @@
 
 This is the maintainer runbook for promoting one reviewed commit through every
 public boundver surface. A release is complete only when the same version and
-commit are visible on GitHub, GitHub Marketplace, PyPI, TestPyPI, and every
+commit are visible on the documentation site, GitHub, GitHub Marketplace,
+PyPI, TestPyPI, GHCR, the Homebrew tap, the GitLab CI/CD Catalog, and every
 Action alias that was explicitly approved for that compatibility line.
 
 Do not repair a partial release by rebuilding from a different checkout,
@@ -30,9 +31,14 @@ The repository owner must configure these controls before starting a release:
   must not target mutable compatibility aliases such as `vX.Y`, and it must
   not restrict initial tag creation. Immutable-release protection takes over
   once the Release is published.
-- Create protected GitHub environments named `testpypi`, `pypi`, and
-  `marketplace`. Require at least one reviewer for every environment; a wait
-  timer alone is not approval.
+- Set GitHub Pages to **GitHub Actions** and retain the protected
+  `github-pages` deployment environment created by Pages.
+- Create protected GitHub environments named `testpypi`, `pypi`,
+  `marketplace`, `container`, and `container-public`. Require at least one
+  reviewer for every release environment; a wait timer alone is not approval.
+  `container` authorizes the registry write. `container-public` is approved
+  only after the exact GHCR package is publicly readable, which matters on its
+  first publication because a new GHCR package is private by default.
 - Configure separate trusted publishers for the `boundver` project on PyPI and
   TestPyPI. Both publishers must identify repository `yzm1/boundver`, workflow
   `.github/workflows/publish.yml`, and their matching environment name. The two
@@ -44,6 +50,13 @@ The repository owner must configure these controls before starting a release:
 - Keep the repository homepage pointed at the public Marketplace listing and
   keep the repository description/topics current. These are discovery
   metadata, not versioned release content.
+- Maintain the public `yzm1/homebrew-boundver` tap. Formula changes must use
+  the immutable `.pyz` release asset and its SHA-256, pass `brew audit` and
+  `brew test`, and merge through normal review.
+- Mirror the release source into the GitLab Catalog project with top-level
+  `templates/`. GitHub tags retain the `vX.Y.Z` spelling; the GitLab component
+  release uses the Catalog's exact `X.Y.Z` semantic-version tag and must point
+  at the matching GHCR image. Never reuse a GitLab version tag.
 
 Record configuration changes through normal repository/owner review. Never add
 an API token or `.pypirc` to this repository; PyPI uploads use short-lived OIDC
@@ -54,6 +67,7 @@ credentials from the protected environments.
 | Surface | Source of truth | Release requirement |
 |---|---|---|
 | Git source and documentation | Exact commit on `main` | Version, schemas, examples, migration text, and links describe the release—not a future or already-published state. |
+| Hosted documentation | `mkdocs.yml`, `docs/`, and the hash-locked docs profile | Strict build passes and GitHub Pages deploys the exact `main` documentation commit. |
 | Version tag | `vX.Y.Z` | Immutable tag resolves to the tested `main` commit. |
 | TestPyPI | Verified wheel and sdist artifact | File names and SHA-256 digests equal the candidate; the wheel installs directly from TestPyPI. |
 | PyPI | The same verified wheel and sdist artifact | Trusted publication, metadata/README/links correct, direct wheel install succeeds. |
@@ -62,7 +76,9 @@ credentials from the protected environments.
 | Stable Action aliases | Mutable compatibility tags such as `vX.Y` | Advanced only after the exact release and Marketplace listing verify; never create a GitHub Release for aliases and never move a broader alias across a breaking Action contract without explicit approval. |
 | Pre-commit | Git tags | Exact `rev: vX.Y.Z` and compatible aliases resolve to the release commit. |
 | Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the license and bundled schema. |
-| Dockerfile | Release commit | Built and exercised by exact-commit CI from a digest-pinned multi-architecture Python base, an immutable Debian snapshot, and the checked-in Python hash lock. There is currently no promised public container registry; add one only with an explicit supported-image policy. |
+| GHCR container | Release commit and `Dockerfile` | `linux/amd64` and `linux/arm64` share one exact version tag, immutable manifest digest, release SHA label, public pull, and GitHub artifact attestation. Do not publish `latest`. |
+| Homebrew | Immutable standalone archive | `yzm1/homebrew-boundver` installs the exact `.pyz` release asset with its reviewed SHA-256 and passes tap audit/test before merge. |
+| GitLab CI/CD Catalog | `templates/boundver.yml` mirrored to GitLab | Exact Catalog version runs the matching GHCR image; GitLab's release tag is `X.Y.Z`, not GitHub's `vX.Y.Z`. |
 
 The source distribution contains user-facing guides, specifications, examples,
 and community files. It deliberately excludes tests, repository automation,
@@ -76,7 +92,7 @@ release wording therefore belongs in the release commit.
 
 Automation dependencies use pip's secure-install model. The reviewed version
 policy is `scripts/release-tool-lock.toml`; its purpose-specific Action, CI,
-and release profiles generate `scripts/requirements/*.lock`. CI and release
+docs, and release profiles generate `scripts/requirements/*.lock`. CI and release
 each reuse the minimal Action base without sharing unrelated tools. Every direct and
 transitive requirement is exact-pinned, and every permitted non-yanked wheel
 has a checked-in SHA-256 digest. Installs force `--require-hashes` and
@@ -145,9 +161,15 @@ diff; it is never accepted implicitly by an install.
    `verify` and `check`, then inspect every version, filename, and SHA-256 diff.
    Build the wheel, sdist, and versioned standalone archive. Run Twine checks
    and install each Python distribution in a clean environment.
-8. Confirm `action.yml`, the Dockerfile, and all three pre-commit hooks execute the
-   public installed form. Test the supported Python/OS matrix.
-9. Resolve every relevant review thread and blocking review. Merge only after
+8. Run the public consumer-impact demo, build MkDocs with `--strict`, validate
+   the GitLab component source, and render a Homebrew formula from a known
+   release digest. Confirm `action.yml`, the Dockerfile, and all three
+   pre-commit hooks execute the public installed form. Test the supported
+   Python/OS and container architecture matrices.
+9. Confirm the Homebrew tap and GitLab Catalog project are writable by their
+   reviewed promotion paths, and that all five release environments still
+   require a reviewer.
+10. Resolve every relevant review thread and blocking review. Merge only after
    the exact release-preparation commit passes required CI.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
@@ -255,7 +277,14 @@ workflows then perform these gates in order:
    artifact to production PyPI; the OIDC job executes no repository code.
    Verify its remote hashes, metadata, clean installation, and trusted-publisher
    attestations. Do not rebuild in a second event-triggered run.
-8. After production PyPI verification, dispatch the dedicated alias workflow
+8. After production PyPI verification, build and publish the exact release
+   container for `linux/amd64` and `linux/arm64` under
+   `ghcr.io/yzm1/boundver:X.Y.Z`. Record the manifest digest and GitHub
+   attestation. For a first package publication, make the package public in
+   GitHub's package settings, then approve `container-public`; the verification
+   job logs out before proving anonymous pull, labels, runtime version, and
+   attestation by digest.
+9. Dispatch the dedicated alias workflow
    from the immutable `vX.Y.Z` tag. That exact-tag run binds itself to the
    active publication and its successful PyPI-verification job, downloads the
    immutable Release assets, verifies every public surface except the alias,
@@ -271,6 +300,20 @@ workflows then perform these gates in order:
    only aliases explicitly approved for the compatibility line; for breaking
    `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
    lines unless an owner explicitly approves and announces those migrations.
+
+The Homebrew tap and GitLab Catalog are downstream promotion surfaces because
+they consume an immutable public Release or GHCR image. After the protected
+publication workflow succeeds:
+
+1. Render `Formula/boundver.rb` from `boundver-X.Y.Z.pyz` and the matching
+   `SHA256SUMS` entry, run the tap's macOS audit/test workflow, review, and merge
+   the formula update.
+2. Mirror the exact released source into the GitLab component project, create
+   the unprefixed `X.Y.Z` tag, and let `.gitlab-ci.yml` create the Catalog
+   Release only after component validation passes.
+3. Treat the release as incomplete until both public install paths resolve the
+   exact version. If either downstream service is unavailable, record the
+   partial state instead of substituting mutable assets or credentials.
 
 If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote
@@ -357,6 +400,15 @@ Then verify:
   attached to the expected SHA, and contains the expected assets and notes.
 - `https://github.com/marketplace/actions/boundver` marks `vX.Y.Z` as Latest
   and displays the release's current inputs and documentation.
+- `https://yzm1.github.io/boundver/` serves the current strict documentation
+  build, including the runnable demo, comparison, and distribution guide.
+- `docker pull ghcr.io/yzm1/boundver:X.Y.Z` works without authentication;
+  both platform manifests resolve, labels bind the release SHA, and
+  `gh attestation verify` succeeds for the manifest digest.
+- `brew install yzm1/boundver/boundver` installs `X.Y.Z` from the immutable
+  `.pyz` asset and the tap formula's checksum matches `SHA256SUMS`.
+- The GitLab Catalog lists exact component version `X.Y.Z`, and a minimal
+  consumer pipeline resolves it to `ghcr.io/yzm1/boundver:X.Y.Z`.
 - `git ls-remote origin refs/tags/vX.Y.Z refs/tags/vX.Y` resolves the exact tag
   and intended compatibility-line alias to the release commit; broader aliases
   remain on their deliberately supported line.
