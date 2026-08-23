@@ -52,6 +52,9 @@ All notable changes to this project are documented here. The format follows
   keeping the secretless `GITHUB_TOKEN` workflow-tree authorization exact.
   Recovery fails before dispatch when a pre-v0.13 immutable tag lacks the child
   workflow and its approved alias still needs to move.
+- Windows test cleanup retries only transient sharing violations for freshly
+  closed temporary Git repositories, while persistent or unrelated permission
+  errors still fail the supported-platform gate.
 - Verification no longer recommends `--update` for unavailable facets that
   configuration cannot produce, explains when the lock remains untouched, and
   tells first-time `--source head` users to commit a generated lock or verify

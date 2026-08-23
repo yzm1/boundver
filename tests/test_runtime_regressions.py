@@ -53,8 +53,64 @@ from boundver._utils import (
     _bounded_yaml_int,
     _match_path_glob,
 )
+from tests import conftest as test_conftest
 from tests._repo_fixtures import commit_all as _commit_all
 from tests._repo_fixtures import init_git_repo as _init_repo
+
+
+class WindowsTemporaryDirectoryHarnessTests(unittest.TestCase):
+    def test_transient_windows_sharing_violation_is_retried(self):
+        directory = object.__new__(
+            test_conftest._WindowsRetryingTemporaryDirectory
+        )
+        transient = PermissionError(13, "directory is temporarily busy")
+        transient.winerror = 32
+        with patch.object(
+            test_conftest._BASE_TEMPORARY_DIRECTORY,
+            "cleanup",
+            side_effect=(transient, None),
+        ) as cleanup, patch.object(test_conftest.time, "sleep") as sleep:
+            directory.cleanup()
+
+        self.assertEqual(cleanup.call_count, 2)
+        sleep.assert_called_once_with(0.01)
+
+    def test_non_sharing_permission_error_is_not_retried(self):
+        directory = object.__new__(
+            test_conftest._WindowsRetryingTemporaryDirectory
+        )
+        denied = PermissionError(13, "not a transient sharing violation")
+        denied.winerror = 123
+        with patch.object(
+            test_conftest._BASE_TEMPORARY_DIRECTORY,
+            "cleanup",
+            side_effect=denied,
+        ) as cleanup, patch.object(test_conftest.time, "sleep") as sleep:
+            with self.assertRaises(PermissionError):
+                directory.cleanup()
+
+        cleanup.assert_called_once_with()
+        sleep.assert_not_called()
+
+    def test_persistent_windows_sharing_violation_still_fails(self):
+        directory = object.__new__(
+            test_conftest._WindowsRetryingTemporaryDirectory
+        )
+        persistent = PermissionError(13, "directory remains busy")
+        persistent.winerror = 32
+        with patch.object(
+            test_conftest._BASE_TEMPORARY_DIRECTORY,
+            "cleanup",
+            side_effect=persistent,
+        ) as cleanup, patch.object(test_conftest.time, "sleep") as sleep:
+            with self.assertRaises(PermissionError):
+                directory.cleanup()
+
+        self.assertEqual(
+            cleanup.call_count,
+            len(directory._CLEANUP_DELAYS) + 1,
+        )
+        self.assertEqual(sleep.call_count, len(directory._CLEANUP_DELAYS))
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
