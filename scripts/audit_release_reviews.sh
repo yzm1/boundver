@@ -194,7 +194,7 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 # app.  A free-form suffix would let contradictory review state share the
 # authenticated clean-verdict line and still satisfy the release gate.
 readonly codex_clean_bang_status_regex='(Breezy|Delightful|Hooray|Keep it up|Keep them coming|Swish)!'
-readonly codex_clean_period_status_regex='(Already looking forward to the next diff|More of your lovely PRs please)\.'
+readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Chef's kiss|More of your lovely PRs please)\."
 readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
 
@@ -352,7 +352,7 @@ for pr_number in "${sorted_prs[@]}"; do
   pr_base_repository_lower=$(printf '%s' "$pr_base_repository" | \
     LC_ALL=C tr '[:upper:]' '[:lower:]')
   if [[ ! "$author_id" =~ ^[1-9][0-9]*$ || \
-        ! "$author_login" =~ ^[A-Za-z0-9-]{1,39}$ || \
+        ! "$author_login" =~ ^[A-Za-z0-9-]{1,39}(\[bot\])?$ || \
         ! "$author_type" =~ ^(User|Bot)$ || \
         ! "$pr_head_sha" =~ ^[0-9a-f]{40}$ || \
         ( -n "$pr_merge_sha" && ! "$pr_merge_sha" =~ ^[0-9a-f]{40}$ ) || \

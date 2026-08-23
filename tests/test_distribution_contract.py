@@ -2520,6 +2520,7 @@ exit 74
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
         head = "a" * 40
         verdicts = (
+            "Codex Review: Didn't find any major issues. Chef's kiss.",
             "Codex Review: Didn't find any major issues. Delightful!",
             "Codex Review: Didn't find any major issues. Swish!",
             "Codex Review: Didn't find any major issues. Keep it up!",
@@ -2549,6 +2550,16 @@ exit 74
             actor_type="User",
         )
         result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=approval,
+            FAKE_DECISION="APPROVED",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self._run_audit(
+            FAKE_AUTHOR_ID="303",
+            FAKE_AUTHOR_LOGIN="dependabot[bot]",
+            FAKE_AUTHOR_TYPE="Bot",
             FAKE_HEAD_SHA=head,
             FAKE_REVIEWS=approval,
             FAKE_DECISION="APPROVED",

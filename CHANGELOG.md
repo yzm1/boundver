@@ -47,6 +47,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The release review audit recognizes standard GitHub App bot logins and the
+  current authenticated Codex clean-verdict wording without relaxing its
+  exact-commit or positive-allowlist requirements.
 - Read-only lock diffs now accept canonical `boundary-lock/v3` semantic-config/v1
   and v2 inputs and report the contract transition, while incompatible lock
   schemas or unknown contracts still produce one bounded diagnostic.
