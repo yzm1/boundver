@@ -1,0 +1,224 @@
+name: Advance verified release alias
+run-name: Advance ${{ inputs.compatibility_alias }} to ${{ inputs.release_tag }} for publication ${{ inputs.publication_run_id }} attempt ${{ inputs.publication_attempt }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable vMAJOR.MINOR.PATCH release tag.
+        required: true
+        type: string
+      release_sha:
+        description: Exact commit referenced by the immutable release tag.
+        required: true
+        type: string
+      compatibility_alias:
+        description: Exact vMAJOR.MINOR alias to create or advance.
+        required: true
+        type: string
+      publication_run_id:
+        description: Active publish.yml run that verified production PyPI.
+        required: true
+        type: string
+      publication_attempt:
+        description: Exact active publication run attempt.
+        required: true
+        type: string
+      publication_sha:
+        description: Workflow commit controlling the active publication run.
+        required: true
+        type: string
+
+concurrency:
+  # The parent publication keeps the repository-wide promotion lock. This
+  # separate alias lock avoids deadlocking that parent while serializing any
+  # direct or retried dispatch for one compatibility line.
+  group: boundver-release-alias-${{ inputs.compatibility_alias }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
+  PUBLICATION_RUN_ID: ${{ inputs.publication_run_id }}
+  PUBLICATION_ATTEMPT: ${{ inputs.publication_attempt }}
+  PUBLICATION_SHA: ${{ inputs.publication_sha }}
+
+jobs:
+  advance:
+    name: Verify public release and advance compatibility alias
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Bind this run to the exact immutable release tag
+        shell: bash
+        env:
+          DISPATCH_EVENT: ${{ github.event_name }}
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REF_NAME: ${{ github.ref_name }}
+          DISPATCH_REF_TYPE: ${{ github.ref_type }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$DISPATCH_EVENT" != workflow_dispatch ]]; then
+            echo "Alias advancement must use workflow_dispatch" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid exact release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          expected_alias="${RELEASE_TAG%.*}"
+          if [[ "$COMPATIBILITY_ALIAS" != "$expected_alias" ]]; then
+            echo "Compatibility alias must be $expected_alias" >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ || \
+                ! "$PUBLICATION_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release and publication SHAs must be full lowercase Git object IDs" >&2
+            exit 1
+          fi
+          if [[ ! "$PUBLICATION_RUN_ID" =~ ^[1-9][0-9]*$ || \
+                ! "$PUBLICATION_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Publication run ID and attempt must be positive decimal integers" >&2
+            exit 1
+          fi
+          if [[ "$DISPATCH_REF_TYPE" != tag || \
+                "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
+                "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" || \
+                "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Alias workflow must execute from the exact immutable release tag" >&2
+            exit 1
+          fi
+
+      - name: Checkout the exact released commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.release_sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Require the active originating publication and verified PyPI job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          clean_python_cwd=$(mktemp -d)
+          cd "$clean_python_cwd"
+          python3 -I "$GITHUB_WORKSPACE/scripts/release_alias.py" verify \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --publication-run-id "$PUBLICATION_RUN_ID" \
+            --publication-attempt "$PUBLICATION_ATTEMPT" \
+            --publication-sha "$PUBLICATION_SHA"
+
+      - name: Download the immutable public release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets dist
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release-assets
+
+      - name: Validate and stage the immutable release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I - "$RELEASE_TAG" release-assets dist <<'PY'
+          import pathlib
+          import shutil
+          import sys
+
+          tag, assets_value, dist_value = sys.argv[1:]
+          version = tag.removeprefix("v")
+          assets = pathlib.Path(assets_value)
+          dist = pathlib.Path(dist_value)
+          wheel = f"boundver-{version}-py3-none-any.whl"
+          sdist = f"boundver-{version}.tar.gz"
+          expected = {wheel, sdist, f"boundver-{version}.pyz", "SHA256SUMS"}
+          entries = list(assets.iterdir())
+          if any(entry.is_symlink() or not entry.is_file() for entry in entries):
+              raise SystemExit("GitHub Release assets must be regular files")
+          actual = {entry.name for entry in entries}
+          if actual != expected:
+              raise SystemExit(
+                  "GitHub Release asset set differs from the expected candidate: "
+                  f"{sorted(actual)!r}"
+              )
+          for name in (wheel, sdist):
+              shutil.copyfile(assets / name, dist / name)
+          PY
+
+      - name: Verify every public surface before alias mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release_changelog.py --tag "$RELEASE_TAG" \
+            --output "$RUNNER_TEMP/release-notes.md"
+          python3 -I scripts/verify_release_surfaces.py \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --dist-dir dist \
+            --release-notes "$RUNNER_TEMP/release-notes.md" \
+            --release-assets-dir release-assets \
+            --phase complete \
+            --skip-alias \
+            --attempts 18 \
+            --delay-seconds 10
+
+      - name: Advance the leased monotonic compatibility alias
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cleanup_auth() {
+            git config --global --unset-all \
+              credential.https://github.com.helper >/dev/null 2>&1 || true
+          }
+          trap cleanup_auth EXIT
+          gh auth setup-git
+          clean_python_cwd=$(mktemp -d)
+          cd "$clean_python_cwd"
+          python3 -I "$GITHUB_WORKSPACE/scripts/release_alias.py" advance \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --publication-run-id "$PUBLICATION_RUN_ID" \
+            --publication-attempt "$PUBLICATION_ATTEMPT" \
+            --publication-sha "$PUBLICATION_SHA"
+
+      - name: Verify every public surface after alias mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/verify_release_surfaces.py \
+            --tag "$RELEASE_TAG" \
+            --sha "$RELEASE_SHA" \
+            --alias "$COMPATIBILITY_ALIAS" \
+            --dist-dir dist \
+            --release-notes "$RUNNER_TEMP/release-notes.md" \
+            --release-assets-dir release-assets \
+            --phase complete \
+            --attempts 18 \
+            --delay-seconds 10

@@ -328,11 +328,9 @@ class AutomationContractTests(unittest.TestCase):
     def test_release_workflow_orders_marketplace_before_production_and_uses_explicit_alias(self):
         import yaml
 
-        jobs = yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
-                encoding="utf-8"
-            )
-        )["jobs"]
+        publish_path = REPO_ROOT / ".github/workflows/publish.yml"
+        workflow = publish_path.read_text(encoding="utf-8")
+        jobs = yaml.safe_load(workflow)["jobs"]
         self.assertIn("prepare-release-draft", jobs["verify-marketplace"]["needs"])
         self.assertEqual(
             jobs["pypi-preflight"]["needs"],
@@ -341,16 +339,20 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
         self.assertIn("verify-marketplace", jobs["publish-pypi"]["needs"])
         self.assertIn("publish-pypi", jobs["verify-pypi"]["needs"])
-        self.assertEqual(
-            jobs["validate-compatibility-alias"]["needs"], "verify-pypi"
+        self.assertEqual(jobs["advance-compatibility-alias"]["needs"], "verify-pypi")
+        alias_job = jobs["advance-compatibility-alias"]
+        self.assertEqual(alias_job["permissions"]["actions"], "write")
+        self.assertEqual(alias_job["permissions"]["contents"], "read")
+        alias_step = next(
+            step
+            for step in alias_job["steps"]
+            if step.get("name")
+            == "Dispatch exact-tag alias verification and advancement"
         )
-        self.assertEqual(
-            jobs["advance-compatibility-alias"]["needs"],
-            ["verify-pypi", "validate-compatibility-alias"],
-        )
-        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
-            encoding="utf-8"
-        )
+        self.assertIn(".release-control/scripts/release_alias.py\" dispatch", alias_step["run"])
+        self.assertIn('publication-run-id "$GITHUB_RUN_ID"', alias_step["run"])
+        self.assertIn('publication-attempt "$GITHUB_RUN_ATTEMPT"', alias_step["run"])
+        self.assertIn('publication-sha "$GITHUB_SHA"', alias_step["run"])
         self.assertIn("compatibility_alias:", workflow)
         self.assertIn("COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}", workflow)
         self.assertIn("inputs.compatibility_alias == 'none'", workflow)
@@ -358,6 +360,35 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("verification_alias_args=(--skip-alias)", workflow)
         self.assertIn("--phase complete", workflow)
         self.assertNotIn("refs/tags/v0", workflow)
+
+        alias_workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/advance-release-alias.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        advance = alias_workflow["jobs"]["advance"]
+        self.assertEqual(advance["permissions"]["actions"], "read")
+        self.assertEqual(advance["permissions"]["contents"], "write")
+        steps = advance["steps"]
+        preflight = next(
+            step
+            for step in steps
+            if step.get("name") == "Verify every public surface before alias mutation"
+        )
+        mutation = next(
+            step
+            for step in steps
+            if step.get("name") == "Advance the leased monotonic compatibility alias"
+        )
+        postflight = next(
+            step
+            for step in steps
+            if step.get("name") == "Verify every public surface after alias mutation"
+        )
+        self.assertLess(steps.index(preflight), steps.index(mutation))
+        self.assertLess(steps.index(mutation), steps.index(postflight))
+        self.assertIn("--skip-alias", preflight["run"])
+        self.assertNotIn("--skip-alias", postflight["run"])
 
     def test_publish_requires_dispatch_main_ancestry_and_distribution_smoke(self):
         workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
@@ -401,6 +432,46 @@ class AutomationContractTests(unittest.TestCase):
         self.assertNotIn("--clobber", workflow)
         self.assertNotIn("git tag --force v0 ", workflow)
         self.assertEqual(workflow.count("retention-days: 90"), 3)
+
+    def test_alias_workflow_is_exact_tag_bound_and_uses_no_maintainer_secret(self):
+        import yaml
+
+        path = REPO_ROOT / ".github/workflows/advance-release-alias.yml"
+        text = path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(text)
+        self.assertEqual(
+            workflow["concurrency"]["group"],
+            "boundver-release-alias-${{ inputs.compatibility_alias }}",
+        )
+        advance = workflow["jobs"]["advance"]
+        first = advance["steps"][0]
+        self.assertEqual(
+            first["name"], "Bind this run to the exact immutable release tag"
+        )
+        binding = first["run"]
+        for invariant in (
+            '"$DISPATCH_REF_TYPE" != tag',
+            '"$DISPATCH_REF_NAME" != "$RELEASE_TAG"',
+            '"$DISPATCH_REF" != "refs/tags/$RELEASE_TAG"',
+            '"$DISPATCH_SHA" != "$RELEASE_SHA"',
+        ):
+            self.assertIn(invariant, binding)
+        parent = next(
+            step
+            for step in advance["steps"]
+            if step.get("name")
+            == "Require the active originating publication and verified PyPI job"
+        )
+        mutation = next(
+            step
+            for step in advance["steps"]
+            if step.get("name")
+            == "Advance the leased monotonic compatibility alias"
+        )
+        self.assertIn('scripts/release_alias.py" verify', parent["run"])
+        self.assertIn('scripts/release_alias.py" advance', mutation["run"])
+        self.assertNotIn("secrets.", text)
+        self.assertNotIn("personal access token", text.lower())
 
     def test_publish_is_bound_to_exact_tag_sha_and_serializes_all_promotions(self):
         import yaml
@@ -485,7 +556,7 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertNotIn('gh release view "$RELEASE_TAG"', workflow)
 
-    def test_elevated_publish_jobs_never_execute_candidate_code(self):
+    def test_elevated_registry_and_release_jobs_isolate_code_execution(self):
         import yaml
 
         jobs = yaml.safe_load(
@@ -505,7 +576,6 @@ class AutomationContractTests(unittest.TestCase):
                 "publish-testpypi",
                 "prepare-release-draft",
                 "publish-pypi",
-                "advance-compatibility-alias",
             },
         )
         for job_name, job in elevated.items():
@@ -546,6 +616,31 @@ class AutomationContractTests(unittest.TestCase):
                 job_name,
             )
 
+        alias_workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/advance-release-alias.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        alias_job = alias_workflow["jobs"]["advance"]
+        self.assertEqual(
+            alias_job["permissions"], {"actions": "read", "contents": "write"}
+        )
+        checkout = next(
+            step
+            for step in alias_job["steps"]
+            if step.get("name") == "Checkout the exact released commit"
+        )
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.release_sha }}")
+        self.assertIs(checkout["with"]["persist-credentials"], False)
+        mutation = next(
+            step
+            for step in alias_job["steps"]
+            if step.get("name") == "Advance the leased monotonic compatibility alias"
+        )
+        self.assertIn("python3 -I", mutation["run"])
+        self.assertIn('"$GITHUB_WORKSPACE/scripts/release_alias.py" advance', mutation["run"])
+        self.assertIn("gh auth setup-git", mutation["run"])
+
     def test_token_scoped_steps_cannot_import_from_the_candidate_checkout(self):
         import re
         import yaml
@@ -581,6 +676,10 @@ class AutomationContractTests(unittest.TestCase):
                     "Fail on any recovered artifact archive digest mismatch",
                 ),
                 ("prepare-release-draft", "Create or reconcile the exact release draft"),
+                (
+                    "advance-compatibility-alias",
+                    "Dispatch exact-tag alias verification and advancement",
+                ),
             ],
         )
 
@@ -598,18 +697,42 @@ class AutomationContractTests(unittest.TestCase):
             self.assertNotIn("GH_TOKEN", step.get("env", {}))
             self.assertIn("python3 -I", step["run"])
 
+        alias_workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/advance-release-alias.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        alias_token_python_steps = []
+        for step in alias_workflow["jobs"]["advance"]["steps"]:
+            if "GH_TOKEN" not in (step.get("env") or {}):
+                continue
+            script = str(step.get("run", ""))
+            self.assertIsNone(re.search(r"\bpython(?:3)?\s+-(?:c|\s)", script))
+            self.assertNotIn("python3 scripts/", script)
+            if "python" in script:
+                alias_token_python_steps.append(step["name"])
+                self.assertIn("python3 -I", script)
+                self.assertIn("clean_python_cwd=$(mktemp -d)", script)
+        self.assertEqual(
+            alias_token_python_steps,
+            [
+                "Require the active originating publication and verified PyPI job",
+                "Advance the leased monotonic compatibility alias",
+            ],
+        )
+
     def test_publish_python_and_pip_startup_is_always_isolated(self):
         import re
         import yaml
 
-        jobs = yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
-                encoding="utf-8"
-            )
-        )["jobs"]
+        workflow_paths = (
+            REPO_ROOT / ".github/workflows/publish.yml",
+            REPO_ROOT / ".github/workflows/advance-release-alias.yml",
+        )
         scripts = "\n".join(
             str(step.get("run", ""))
-            for job in jobs.values()
+            for path in workflow_paths
+            for job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].values()
             for step in job.get("steps", [])
         )
         forbidden = (
@@ -633,7 +756,7 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(scripts.count("-I -m pip --isolated"), 3)
 
-    def test_release_notes_and_alias_validation_are_read_only_handoffs(self):
+    def test_release_notes_and_alias_dispatch_are_read_only_handoffs(self):
         import yaml
 
         jobs = yaml.safe_load(
@@ -658,44 +781,29 @@ class AutomationContractTests(unittest.TestCase):
             jobs["prepare-release-draft"]["steps"][1]["with"]["artifact-ids"],
             "${{ needs.prepare-release-notes.outputs.release-notes-artifact-id }}",
         )
-        alias_validation = jobs["validate-compatibility-alias"]
-        self.assertEqual(alias_validation["permissions"], {"contents": "read"})
+        alias_dispatch = jobs["advance-compatibility-alias"]
         self.assertEqual(
-            set(alias_validation["outputs"]),
-            {"update-required", "expected-current"},
-        )
-        validation_script = "\n".join(
-            str(step.get("run", "")) for step in alias_validation["steps"]
+            alias_dispatch["permissions"],
+            {"actions": "write", "contents": "read"},
         )
         control_checkout = next(
             step
-            for step in alias_validation["steps"]
-            if step.get("name")
-            == "Checkout the reviewed release-control implementation"
+            for step in alias_dispatch["steps"]
+            if step.get("name") == "Checkout the reviewed release-control commit"
         )
         self.assertEqual(control_checkout["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(control_checkout["with"]["path"], ".release-control")
-        self.assertIn(
-            ".release-control/scripts/validate_compatibility_alias.py",
-            validation_script,
-        )
-        self.assertNotIn("python3 -I -", validation_script)
-        self.assertNotIn("alias-tag-list-bounded-runner", validation_script)
-        alias_mutation = jobs["advance-compatibility-alias"]
-        mutation_script = "\n".join(
-            str(step.get("run", "")) for step in alias_mutation["steps"]
-        )
-        self.assertNotIn("python", mutation_script)
-        self.assertIn("mutation_repo=$(mktemp -d)", mutation_script)
-        push_step = next(
+        self.assertIs(control_checkout["with"]["persist-credentials"], False)
+        dispatch_step = next(
             step
-            for step in alias_mutation["steps"]
-            if step.get("name") == "Push only the validated compatibility-alias update"
+            for step in alias_dispatch["steps"]
+            if step.get("name")
+            == "Dispatch exact-tag alias verification and advancement"
         )
-        self.assertIn(
-            "${{ needs.validate-compatibility-alias.outputs.expected-current }}",
-            push_step["env"].values(),
-        )
+        self.assertIn("python3 -I", dispatch_step["run"])
+        self.assertIn("clean_python_cwd=$(mktemp -d)", dispatch_step["run"])
+        self.assertIn('--repo-root "$GITHUB_WORKSPACE"', dispatch_step["run"])
+        self.assertNotIn("gh auth setup-git", dispatch_step["run"])
 
     def test_publish_promotes_one_artifact_id_through_testpypi(self):
         import yaml
@@ -935,6 +1043,7 @@ class AutomationContractTests(unittest.TestCase):
             [
                 "testpypi-preflight",
                 "verify-marketplace",
+                "advance-compatibility-alias",
                 "verify-public-surfaces",
             ],
         )
@@ -1491,6 +1600,7 @@ print(json.dumps(payload, separators=(",", ":")))
             ".github/workflows/ci.yml",
             ".github/workflows/create-release-tag.yml",
             ".github/workflows/publish.yml",
+            ".github/workflows/advance-release-alias.yml",
         ):
             with self.subTest(workflow=relative):
                 workflow = yaml.safe_load(
@@ -1523,31 +1633,19 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("git", gitlab)
 
     def test_compatibility_alias_update_is_monotonic_ancestral_and_leased(self):
-        workflow = (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+        script = (REPO_ROOT / "scripts/release_alias.py").read_text(
             encoding="utf-8"
         )
-        validator = (
-            REPO_ROOT / "scripts" / "validate_compatibility_alias.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            ".release-control/scripts/validate_compatibility_alias.py",
-            workflow,
-        )
-        self.assertIn('("merge-base", "--is-ancestor"', validator)
-        self.assertIn("refusing compatibility alias rollback", validator)
-        self.assertIn('--force-with-lease=$alias_ref:$EXPECTED_CURRENT', workflow)
-        self.assertIn('--force-with-lease=$alias_ref:', workflow)
-        self.assertIn("expected-current={expected_current}", validator)
-        self.assertIn("MAX_TAG_LIST_BYTES = 1024 * 1024", validator)
-        self.assertIn("MAX_TAG_RECORDS = 10_000", validator)
-        self.assertNotIn("alias-tag-list-bounded-runner", workflow)
-        self.assertNotIn(
-            '"refs/tags/$COMPATIBILITY_ALIAS.*" > "$same_line_tags"',
-            workflow,
-        )
-        self.assertIn("gh auth setup-git", workflow)
-        self.assertIn("credential.https://github.com.helper", workflow)
-        self.assertNotRegex(workflow, r"git push[^\n]*\s--force(?:\s|$)")
+        ancestry = script.index('"merge-base", "--is-ancestor"')
+        monotonic = script.index("refusing compatibility alias rollback")
+        mutation = script.index('_git(repo, "push", lease, remote, alias_ref)')
+        self.assertLess(ancestry, mutation)
+        self.assertLess(monotonic, mutation)
+        self.assertIn('f"--force-with-lease={alias_ref}:{expected_current}"', script)
+        self.assertIn('f"--force-with-lease={alias_ref}:"', script)
+        self.assertIn('_remote_ref(repo, remote, alias_ref)', script)
+        self.assertIn('_git(repo, "tag", "--force", alias, sha)', script)
+        self.assertNotRegex(script, r'"push"[^\n]*"--force"(?:\s|,)')
 
     def test_action_honors_configured_facet_policy_by_default(self):
         import yaml

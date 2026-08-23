@@ -1705,7 +1705,11 @@ def _surface_inventory(repo: Path) -> str:
         "TestPyPI": ("scripts/verify_testpypi_release.py",),
         "PyPI": ("scripts/verify_testpypi_release.py",),
         "GitHub Release assets": ("scripts/verify_release_surfaces.py",),
-        "compatibility alias": (".github/workflows/publish.yml",),
+        "compatibility alias": (
+            ".github/workflows/publish.yml",
+            ".github/workflows/advance-release-alias.yml",
+            "scripts/release_alias.py",
+        ),
         "Docker": ("Dockerfile",),
         "pre-commit": (".pre-commit-hooks.yaml",),
     }
@@ -1732,7 +1736,6 @@ def _surface_inventory(repo: Path) -> str:
         "pypi-preflight",
         "publish-pypi",
         "verify-pypi",
-        "validate-compatibility-alias",
         "advance-compatibility-alias",
         "verify-public-surfaces",
     )
@@ -1740,6 +1743,28 @@ def _surface_inventory(repo: Path) -> str:
     if absent_jobs:
         raise GateError(
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
+        )
+    alias_workflow = _read_bounded_text(
+        repo / ".github/workflows/advance-release-alias.yml",
+        ".github/workflows/advance-release-alias.yml",
+        max_bytes=MAX_RELEASE_WORKFLOW_BYTES,
+    )
+    required_alias_contracts = (
+        "  advance:",
+        "Bind this run to the exact immutable release tag",
+        "Require the active originating publication and verified PyPI job",
+        "--skip-alias",
+        "Advance the leased monotonic compatibility alias",
+        "gh auth setup-git",
+        "Verify every public surface after alias mutation",
+    )
+    missing_alias_contracts = [
+        value for value in required_alias_contracts if value not in alias_workflow
+    ]
+    if missing_alias_contracts:
+        raise GateError(
+            "alias workflow is missing exact-tag release contracts: "
+            + ", ".join(missing_alias_contracts)
         )
     return "; ".join(SURFACES)
 

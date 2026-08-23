@@ -255,13 +255,22 @@ workflows then perform these gates in order:
    artifact to production PyPI; the OIDC job executes no repository code.
    Verify its remote hashes, metadata, clean installation, and trusted-publisher
    attestations. Do not rebuild in a second event-triggered run.
-8. Verify every public surface, then advance only the Action aliases approved
-   for this compatibility line. Alias ancestry and monotonicity validation runs
-   in a separate read-only job; the write-capable job starts from an empty Git
-   repository and applies only the validated lease. For breaking `0.12.0`,
-   create or advance `v0.12`; leave the existing `v0.11` and `v0` aliases on
-   their prior compatibility lines unless an owner explicitly approves and
-   announces those migrations.
+8. After production PyPI verification, dispatch the dedicated alias workflow
+   from the immutable `vX.Y.Z` tag. That exact-tag run binds itself to the
+   active publication and its successful PyPI-verification job, downloads the
+   immutable Release assets, verifies every public surface except the alias,
+   performs one ancestral, monotonic, force-with-lease alias update, and then
+   verifies all surfaces again. The parent publication waits for that result
+   and performs its own final comparison. A failed-jobs rerun may reuse exact
+   successful publication gates from an earlier attempt of the same active
+   run; it never treats a different run or commit as evidence. This secretless
+   handoff is required:
+   a recovery run executes from newer `main`, whose default Actions token is
+   not allowed to create a ref back to a commit containing a different workflow
+   definition. Do not store a maintainer PAT to bypass that protection. Advance
+   only aliases explicitly approved for the compatibility line; for breaking
+   `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
+   lines unless an owner explicitly approves and announces those migrations.
 
 If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote
@@ -320,7 +329,11 @@ identified source artifacts. It does not create or move the version tag and
 must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
 unreadable GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
-artifact identity remain bound to the immutable tagged source. An ad hoc fresh
+artifact identity remain bound to the immutable tagged source. Once PyPI is
+verified, current `main` dispatches `advance-release-alias.yml` at that tagged
+source and waits; the alias workflow must already exist in the immutable tag,
+must prove the parent run is still active at the exact attempt, and must observe
+its successful PyPI-verification job before any ref update. An ad hoc fresh
 publication dispatch is not a recovery path.
 
 ## Post-release checks

@@ -837,20 +837,36 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "pypi-preflight",
                 "publish-pypi",
                 "verify-pypi",
-                "validate-compatibility-alias",
                 "advance-compatibility-alias",
                 "verify-public-surfaces",
+            )
+        )
+        alias_workflow = "\n".join(
+            (
+                "  advance:",
+                "Bind this run to the exact immutable release tag",
+                "Require the active originating publication and verified PyPI job",
+                "--skip-alias",
+                "Advance the leased monotonic compatibility alias",
+                "gh auth setup-git",
+                "Verify every public surface after alias mutation",
             )
         )
         with mock.patch.object(
             publisher.Path, "exists", return_value=True
         ), mock.patch.object(
-            publisher, "_read_bounded_text", return_value=workflow
+            publisher, "_read_bounded_text", side_effect=[workflow, alias_workflow]
         ) as read:
             publisher._surface_inventory(Path("repo"))
-        read.assert_called_once_with(
+        self.assertEqual(read.call_count, 2)
+        read.assert_any_call(
             Path("repo/.github/workflows/publish.yml"),
             ".github/workflows/publish.yml",
+            max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
+        )
+        read.assert_any_call(
+            Path("repo/.github/workflows/advance-release-alias.yml"),
+            ".github/workflows/advance-release-alias.yml",
             max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
         )
 
@@ -1886,8 +1902,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "pypi-preflight",
             "publish-pypi",
             "verify-pypi",
-            "validate-compatibility-alias",
             "advance-compatibility-alias",
+            "advance-release-alias.yml",
+            "release_alias.py",
             "verify-public-surfaces",
         ):
             self.assertIn(workflow_contract, source)
