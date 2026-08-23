@@ -18,7 +18,8 @@ PROJECT_START = "expected_version=$(python -I - <<'PY' | head -c 129\n"
 PROJECT_END = "\nPY\n)\n"
 ARCHIVE_START = (
     'python -I - "$wheel_path" "$sdist_path" "$pyz_path" '
-    '"$expected_version" "$PWD/LICENSE" "$smoke_root" <<\'PY\'\n'
+    '"$expected_version" "$PWD/LICENSE" "$smoke_root" '
+    '"$PWD/scripts/requirements/action.lock" <<\'PY\'\n'
 )
 ARCHIVE_END = "\nPY\n\nwheel_venv="
 VERSION = "1.2.3"
@@ -120,8 +121,42 @@ def _artifacts(directory: Path) -> tuple[Path, Path, Path, Path, Path]:
         pyz,
         [
             ("LICENSE", LICENSE_BYTES),
-            ("boundver-1.2.3.dist-info/METADATA", metadata),
+            (
+                "boundver-1.2.3.dist-info/METADATA",
+                b"Metadata-Version: 2.4\n"
+                b"Name: boundver\n"
+                b"Version: 1.2.3\n"
+                b"License-File: licenses/LICENSE\n"
+                b"License-File: licenses/PyYAML-LICENSE\n\n",
+            ),
+            ("boundver-1.2.3.dist-info/VENDORED", b"PyYAML==6.0.3\n"),
             ("boundver-1.2.3.dist-info/licenses/LICENSE", LICENSE_BYTES),
+            (
+                "boundver-1.2.3.dist-info/licenses/PyYAML-LICENSE",
+                b"PyYAML test license\n",
+            ),
+        ]
+        + [
+            (f"yaml/{name}", b"")
+            for name in (
+                "__init__.py",
+                "composer.py",
+                "constructor.py",
+                "cyaml.py",
+                "dumper.py",
+                "emitter.py",
+                "error.py",
+                "events.py",
+                "loader.py",
+                "nodes.py",
+                "parser.py",
+                "reader.py",
+                "representer.py",
+                "resolver.py",
+                "scanner.py",
+                "serializer.py",
+                "tokens.py",
+            )
         ],
         prefix=b"#!/usr/bin/env python3\n",
     )
@@ -137,6 +172,8 @@ def _run_archive(
     *,
     cwd: Optional[Path] = None,
 ) -> subprocess.CompletedProcess[str]:
+    action_lock = license_path.parent / "action.lock"
+    action_lock.write_text("PyYAML==6.0.3 \\\n", encoding="utf-8")
     return subprocess.run(
         [
             sys.executable,
@@ -148,6 +185,7 @@ def _run_archive(
             VERSION,
             str(license_path),
             str(scratch),
+            str(action_lock),
         ],
         cwd=license_path.parent if cwd is None else cwd,
         input=ARCHIVE_PROGRAM,

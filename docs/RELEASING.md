@@ -75,7 +75,7 @@ credentials from the protected environments.
 | GitHub Marketplace | The GitHub Release plus `action.yml` | Owner selects **Publish this Action to the GitHub Marketplace** while publishing the prepared draft; listing reports `vX.Y.Z` as Latest. |
 | Stable Action aliases | Mutable compatibility tags such as `vX.Y` | Advanced only after the exact release and Marketplace listing verify; never create a GitHub Release for aliases and never move a broader alias across a breaking Action contract without explicit approval. |
 | Pre-commit | Git tags | Exact `rev: vX.Y.Z` and compatible aliases resolve to the release commit. |
-| Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the license and bundled schema. |
+| Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the boundver license, bundled schema, and lock-pinned pure-Python PyYAML runtime plus license; a dependency-free environment passes YAML config, version-source, and OpenAPI generation. |
 | GHCR container | Release commit and `Dockerfile` | `linux/amd64` and `linux/arm64` share one exact version tag, immutable manifest digest, release SHA label, public pull, and GitHub artifact attestation. Do not publish `latest`. |
 | Homebrew | Immutable standalone archive | `yzm1/homebrew-boundver` installs the exact `.pyz` release asset with its reviewed SHA-256 and passes tap audit/test before merge. |
 | GitLab CI/CD Catalog | `templates/boundver.yml` mirrored to GitLab | Exact Catalog version runs the matching GHCR image; GitLab's release tag is `X.Y.Z`, not GitHub's `vX.Y.Z`. |
@@ -160,7 +160,9 @@ diff; it is never accepted implicitly by an install.
 7. Review `scripts/release-tool-lock.toml`, regenerate the locks, run both
    `verify` and `check`, then inspect every version, filename, and SHA-256 diff.
    Build the wheel, sdist, and versioned standalone archive. Run Twine checks
-   and install each Python distribution in a clean environment.
+   and install each Python distribution in a clean environment. In a separate
+   environment with no installed PyYAML, exercise the archive with a YAML
+   config, YAML version source, and YAML OpenAPI boundary.
 8. Run the public consumer-impact demo, build MkDocs with `--strict`, validate
    the GitLab component source, and render a Homebrew formula from a known
    release digest. Confirm `action.yml`, the Dockerfile, and all three

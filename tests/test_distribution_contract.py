@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import base64
 import email.parser
+import importlib.metadata as importlib_metadata
 import importlib.util
 import io
 import json
@@ -15,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import venv
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
@@ -218,6 +220,39 @@ class StandaloneDistributionTests(unittest.TestCase):
                 self.assertTrue(
                     any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
                 )
+                vendored_name = next(
+                    name for name in names if name.endswith(".dist-info/VENDORED")
+                )
+                self.assertEqual(
+                    archive.read(vendored_name), b"PyYAML==6.0.3\n"
+                )
+                self.assertIn("yaml/__init__.py", names)
+                self.assertIn("yaml/loader.py", names)
+                self.assertFalse(
+                    any(
+                        name.startswith("yaml/_yaml.")
+                        and name.endswith((".pyd", ".so"))
+                        for name in names
+                    )
+                )
+                pyyaml = importlib_metadata.distribution("PyYAML")
+                pyyaml_license = next(
+                    member
+                    for member in pyyaml.files or ()
+                    if str(member)
+                    .replace("\\", "/")
+                    .casefold()
+                    .endswith(".dist-info/licenses/license")
+                )
+                license_name = next(
+                    name
+                    for name in names
+                    if name.endswith(".dist-info/licenses/PyYAML-LICENSE")
+                )
+                self.assertEqual(
+                    archive.read(license_name),
+                    Path(pyyaml.locate_file(pyyaml_license)).read_bytes(),
+                )
 
             result = subprocess.run(
                 [sys.executable, str(output), "--version"],
@@ -227,6 +262,110 @@ class StandaloneDistributionTests(unittest.TestCase):
                 text=True,
             )
             self.assertTrue(result.stdout.strip().endswith(f" {expected_version}"))
+
+    def test_zipapp_supports_yaml_config_version_source_and_openapi(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "boundver.pyz"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_standalone.py"),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            environment = root / "venv"
+            venv.EnvBuilder(with_pip=False).create(environment)
+            runtime = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            no_external_yaml = subprocess.run(
+                [
+                    str(runtime),
+                    "-I",
+                    "-c",
+                    "import importlib.util; assert importlib.util.find_spec('yaml') is None",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(no_external_yaml.returncode, 0, no_external_yaml.stderr)
+
+            repository = root / "repo"
+            service = repository / "service"
+            service.mkdir(parents=True)
+            (repository / "boundary.config.yaml").write_text(
+                "project: standalone-yaml\n"
+                "components:\n"
+                "  api:\n"
+                "    path: service\n"
+                "    version_source:\n"
+                "      file: openapi.yaml\n"
+                "      field: info.version\n"
+                "    boundary:\n"
+                "      provider: openapi-canonical\n"
+                "      paths: [openapi.yaml]\n"
+                "slices: {}\n",
+                encoding="utf-8",
+            )
+            (service / "openapi.yaml").write_text(
+                "openapi: 3.0.0\n"
+                "info:\n"
+                "  title: Standalone smoke\n"
+                "  version: 1.2.3\n"
+                "paths:\n"
+                "  /health:\n"
+                "    get:\n"
+                "      responses:\n"
+                "        '200':\n"
+                "          description: OK\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "smoke@example.com"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Standalone Smoke"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "fixture"], cwd=repository, check=True
+            )
+
+            command = [str(runtime), "-I", str(output)]
+            subprocess.run(
+                command + ["validate-config"], cwd=repository, check=True
+            )
+            subprocess.run(
+                command + ["generate", "--source", "head"],
+                cwd=repository,
+                check=True,
+            )
+            lock = json.loads(
+                (repository / "boundary.lock.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(lock["components"]["api"]["version"], "1.2.3")
+            subprocess.run(
+                ["git", "add", "boundary.lock.json"], cwd=repository, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "lock"], cwd=repository, check=True
+            )
+            subprocess.run(
+                command + ["verify", "--source", "head"],
+                cwd=repository,
+                check=True,
+            )
 
 
 class AutomationContractTests(unittest.TestCase):

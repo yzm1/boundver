@@ -49,8 +49,10 @@ boundver --version
 ```
 
 The tap formula installs the release's self-contained `.pyz` with its reviewed
-SHA-256 digest. Formula updates are generated from the retained release assets;
-the tap does not rebuild the package.
+SHA-256 digest. That archive includes the lock-pinned pure-Python PyYAML runtime,
+so YAML configs, YAML version sources, and YAML/OpenAPI providers work without a
+second package install. Formula updates are generated from the retained release
+assets; the tap does not rebuild the package.
 
 ## GitLab CI/CD Catalog
 
@@ -78,4 +80,7 @@ GitHub Releases also contain `boundver-<version>.pyz` and `SHA256SUMS`:
 python3 boundver-<version>.pyz --version
 ```
 
-The zipapp requires Python 3.9 or newer but no package installation.
+The zipapp requires Python 3.9 or newer but no package installation. It bundles
+the lock-pinned pure-Python PyYAML runtime and its license; platform-specific
+LibYAML extensions are intentionally omitted. JSON and YAML work on every
+supported Python version. TOML configuration requires Python 3.11 or newer.

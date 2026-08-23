@@ -26,8 +26,9 @@ All notable changes to this project are documented here. The format follows
 - Protected multi-platform GHCR publication with a read-only OCI build,
   retained digest handoff, anonymous-pull verification, immutable OCI labels,
   and GitHub artifact attestation.
-- A deterministic Homebrew formula renderer and a typed GitLab CI/CD Catalog
-  component that binds each component release to the matching GHCR version.
+- A deterministic Homebrew formula renderer backed by a self-contained,
+  YAML-capable standalone archive, and a typed GitLab CI/CD Catalog component
+  that binds each component release to the matching GHCR version.
 
 ### Changed
 
