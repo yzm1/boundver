@@ -47,6 +47,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Verification no longer recommends `--update` for unavailable facets that
+  configuration cannot produce, explains when the lock remains untouched, and
+  tells first-time `--source head` users to commit a generated lock or verify
+  the working tree.
 - The release review audit recognizes standard GitHub App bot logins and the
   current authenticated Codex clean-verdict wording without relaxing its
   exact-commit or positive-allowlist requirements.

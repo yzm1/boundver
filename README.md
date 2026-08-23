@@ -193,6 +193,9 @@ facets that are available for that component. A CLI `--facets` value overrides
 every component. Explicitly selecting an unavailable facet—for example
 `compat` on a component with no `version_source`, or `boundary` on a `leaf`
 component—is a usage error (exit `2`), not a successful null comparison.
+Add the missing facet input or select only facets the component supplies;
+`--update` cannot manufacture an unavailable facet and leaves the lock
+unchanged.
 
 `generate --allow-partial` is narrower: it permits an intentional null facet
 to appear as a slice input. Missing declared files, provider failures, version

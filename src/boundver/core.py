@@ -923,7 +923,22 @@ def _cmd_verify(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     try:
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
-    except (FileNotFoundError, LockfileError) as exc:
+    except FileNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        if args.source == "head":
+            print(
+                f"Hint: `--source head` reads committed files. Commit `{args.lock}`, "
+                "or use `--source working-tree` before committing.",
+                file=sys.stderr,
+            )
+        elif args.source == "index":
+            print(
+                f"Hint: `--source index` reads staged files. Stage `{args.lock}`, "
+                "or use `--source working-tree` before staging.",
+                file=sys.stderr,
+            )
+        sys.exit(EXIT_USAGE)
+    except LockfileError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components_filter = _parse_components_arg(args.components)
@@ -1191,6 +1206,11 @@ def _cmd_verify(args, repo_root: Path) -> None:
         unavailable_issues = [
             issue for issue in issues if issue.startswith("UNAVAILABLE FACET ")
         ]
+        unavailable_guidance = (
+            "Unavailable facets cannot be generated from the current configuration. "
+            "Add the missing facet inputs or select only available facets; "
+            "`--update` will not modify the lock while these issues remain."
+        )
         if args.format != "json" and not args.quiet:
             print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):") + "\n")
             for issue in issues:
@@ -1203,7 +1223,12 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 print(_yellow("\nKNOWN BASELINE VIOLATIONS:"))
                 for issue in baseline_info["baselined_issues"]:
                     print(f"  {issue}")
-            if not args.update:
+            if not args.update and unavailable_issues:
+                print(
+                    "\nInspect with `boundver why <component>`.\n"
+                    + unavailable_guidance
+                )
+            elif not args.update:
                 print(
                     "\nInspect with `boundver why <component>`, then run `boundver verify --update` after review."
                 )
@@ -1223,6 +1248,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     components_filter=reported_components_filter,
                     changed_components=changed_components,
                 )
+            elif not args.quiet:
+                print("\nLOCKFILE NOT UPDATED: " + unavailable_guidance)
             sys.exit(EXIT_USAGE)
         if args.update:
             try:
