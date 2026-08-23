@@ -1,9 +1,9 @@
 # CI cookbook
 
 These recipes make the source snapshot, lock schema, and gate policy explicit.
-They describe boundver 0.12's v3/semantic-config-v2 contract. Boundver 0.11
-writes v3/v1 locks and 0.10.x writes v2 locks; both require regeneration and
-must not be mixed with these writers.
+The recipes describe boundver 0.13's v3/semantic-config-v2 contract.
+Boundver 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; both require
+regeneration and must not be mixed with these writers.
 
 ## GitHub Actions: recommended contract gate
 
@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       # Keep the writer and verifier on the repository's lock-contract version.
-      - uses: yzm1/boundver@v0.12.0
+      - uses: yzm1/boundver@v0.13.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -32,7 +32,7 @@ jobs:
 boundver source bundled with that release, including schema and YAML extras, and
 returns `exit-code`, `issues`, and `observations` outputs.
 
-The Action inputs are:
+The v0.13 Action inputs are:
 
 - `config` and `lock`: paths relative to the checkout root.
 - `source`: `head`, `index`, or `working-tree`.
@@ -46,6 +46,15 @@ The Action inputs are:
 - `update`: regenerate after successful computation; normally leave this false
   in a pull-request gate.
 - `python-version`: Action runtime, defaulting to 3.12.
+
+### Verification baselines
+
+The `baseline` Action input and the CLI's create-only `--write-baseline` and
+shrink-only `--update-baseline` flags are available in v0.13. The Action
+applies a supplied baseline read-only and never creates or updates baseline
+debt. See [migration inspection and verification
+ratchets](migration-and-ratcheting.md#establish-a-new-only-verification-gate)
+for the complete workflow and safety constraints.
 
 ## Pick a signal-to-noise policy
 
@@ -73,8 +82,9 @@ drift outside the effective gate is returned as an observation.
 
 An explicitly selected but unavailable facet is a usage error (exit `2`), not a
 clean null comparison. For example, `compat` requires a `version_source`, and a
-`leaf` or `implicit` component has no boundary digest. Give heterogeneous
-components their own policies instead of choosing one loose global policy:
+`leaf` component or a pathless `implicit` component has no boundary digest.
+Give heterogeneous components their own policies instead of choosing one loose
+global policy:
 
 ```json
 {
@@ -113,7 +123,7 @@ analysis or create a compatibility identity for an unversioned component.
   with:
     fetch-depth: 0
 
-- uses: yzm1/boundver@v0.12.0
+- uses: yzm1/boundver@v0.13.0
   with:
     source: head
     changed-from: origin/${{ github.base_ref }}
@@ -150,13 +160,25 @@ steps:
   - uses: actions/setup-python@v6
     with:
       python-version: "3.12"
-  - run: python -m pip install "boundver[schema,yaml]==0.12.0"
-  - run: boundver verify --source head
+  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+  - run: python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
+  - run: python -m boundver verify --source head
 ```
 
 Use this form for a PyPI mirror or centrally managed Python environment. Do not
 let one job write an old v2 or v3/semantic-config-v1 lock while another
 verifies the current v3/semantic-config-v2 contract.
+
+The exact upgraded install and import assertion are mandatory when the
+environment persists across runs: reused developer virtual environments,
+`language: system` pre-commit hooks, and prebuilt container images must not
+trust an ambient `boundver` executable. Put the install/assert pair in the
+environment or image build, retain the assertion at invocation so a stale
+layer fails before it can write or verify a lock, and invoke
+`python -m boundver` with that same interpreter so `PATH` cannot select a
+different executable. A disposable runner should still use the exact pin; the
+tagged composite Action already binds its bundled implementation to the Action
+tag.
 
 ## Match source mode to the lifecycle
 
@@ -288,9 +310,10 @@ boundary-verify:
   image: python:3.12-slim
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-    - python -m pip install "boundver[schema,yaml]==0.12.0"
+    - python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+    - python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
   script:
-    - boundver verify --source head
+    - python -m boundver verify --source head
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 ```
@@ -307,11 +330,18 @@ not conflated:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/yzm1/boundver
-    rev: v0.12.0
+    rev: v0.13.0
     hooks:
       - id: boundver-verify       # pre-commit: source=index, portable exact gate
       - id: boundver-verify-push  # pre-push: source=head, portable exact gate
 ```
+
+The published hooks above run from the exact `rev` in pre-commit's managed
+environment. If a repository instead uses a local `language: system` hook or a
+shared hook environment, bootstrap it with the exact `--upgrade` install and
+version assertion from [Pin a package instead of the
+Action](#pin-a-package-instead-of-the-action), then invoke it through
+`python -m boundver` from that interpreter.
 
 When the staged check finds intentional drift, regenerate from the index and
 stage the result. Because the config is read from the staged snapshot, stage a

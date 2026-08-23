@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/verify-baseline.schema.json",
+  "title": "Boundver verification baseline",
+  "description": "Explicitly reviewed verification debt used by `boundver verify --baseline` to reject new violation identities without silently rewriting the lockfile.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema",
+    "project",
+    "lock_schema",
+    "lock_digest",
+    "config_contract",
+    "source",
+    "components_filter",
+    "facets",
+    "transitive",
+    "policy_digest",
+    "violations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/verify-baseline.schema.json"
+    },
+    "schema": {"const": "boundver-verify-baseline/v1"},
+    "project": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "lock_schema": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "lock_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "config_contract": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "source": {"enum": ["head", "index", "working-tree"]},
+    "components_filter": {
+      "type": "array",
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+    },
+    "facets": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["exact", "behavior", "boundary", "compat"]}
+        }
+      ]
+    },
+    "transitive": {"type": "boolean"},
+    "policy_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "violations": {
+      "type": "array",
+      "maxItems": 10000,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/violation"}
+    }
+  },
+  "$defs": {
+    "violation": {
+      "type": "object",
+      "required": ["id", "kind", "subject", "facet"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"enum": ["component-facet", "slice-facet"]}}, "required": ["kind"]},
+          "then": {"properties": {"facet": {"enum": ["exact", "behavior", "boundary", "compat"]}}}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "affected-consumers"}}, "required": ["kind"]},
+          "then": {"properties": {"facet": {"enum": ["direct", "transitive"]}}}
+        }
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {
+          "enum": ["component-facet", "slice-facet", "affected-consumers"]
+        },
+        "subject": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "facet": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    }
+  }
+}

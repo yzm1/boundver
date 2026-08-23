@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/cli-output.verify.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.verify.schema.json",
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
@@ -22,6 +22,77 @@
     {
       "if": {"properties": {"resolved_issues": {"minItems": 1}}, "required": ["resolved_issues"]},
       "then": {"properties": {"updated": {"const": true}}}
+    },
+    {
+      "if": {"required": ["baseline"]},
+      "then": {"properties": {"updated": {"const": false}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "baseline": {
+            "properties": {"action": {"const": "applied"}},
+            "required": ["action"]
+          }
+        },
+        "required": ["baseline"]
+      },
+      "then": {
+        "properties": {
+          "baseline": {
+            "properties": {
+              "added_ids": {"maxItems": 0},
+              "removed_ids": {"maxItems": 0}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "baseline": {
+            "properties": {"action": {"const": "created"}},
+            "required": ["action"]
+          }
+        },
+        "required": ["baseline"]
+      },
+      "then": {
+        "properties": {
+          "ok": {"const": true},
+          "issues": {"maxItems": 0},
+          "baseline": {
+            "properties": {
+              "removed_ids": {"maxItems": 0},
+              "stale_ids": {"maxItems": 0}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "baseline": {
+            "properties": {"action": {"const": "updated"}},
+            "required": ["action"]
+          }
+        },
+        "required": ["baseline"]
+      },
+      "then": {
+        "properties": {
+          "ok": {"const": true},
+          "issues": {"maxItems": 0},
+          "baseline": {
+            "properties": {
+              "added_ids": {"maxItems": 0},
+              "stale_ids": {"maxItems": 0}
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
@@ -119,6 +190,36 @@
       "type": "array",
       "description": "Components selected by --changed-from as a scheduling hint. Verification still uses the scope in components_filter.",
       "items": { "type": "string" }
+    },
+    "baseline": {
+      "type": "object",
+      "description": "Present only when a verification baseline was applied, created, or explicitly updated.",
+      "required": ["action", "path", "baselined_issues", "stale_ids", "added_ids", "removed_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "action": {"enum": ["applied", "created", "updated"]},
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "baselined_issues": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"type": "string", "maxLength": 4096}
+        },
+        "stale_ids": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "added_ids": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "removed_ids": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
     }
   }
 }

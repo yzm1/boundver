@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCKS = {
     "action": ROOT / "scripts" / "requirements" / "action.lock",
     "ci": ROOT / "scripts" / "requirements" / "ci.lock",
+    "docs": ROOT / "scripts" / "requirements" / "docs.lock",
     "release": ROOT / "scripts" / "requirements" / "release.lock",
 }
 

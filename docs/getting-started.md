@@ -3,7 +3,7 @@
 This guide takes a Git repository from no configuration to a reviewed v3
 lockfile and a useful pull-request gate.
 
-> This guide describes boundver 0.12's v3/semantic-config-v2 contract. Version
+> This guide describes boundver 0.13's v3/semantic-config-v2 contract. Version
 > 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
 > [Upgrade to 0.12](#upgrade-to-012) before combining an existing lock with
 > these instructions.
@@ -25,6 +25,18 @@ boundver --version
 
 The base install can validate JSON configuration without third-party packages.
 The extras add full JSON Schema validation and YAML parsing.
+
+If this is a reused developer environment rather than a disposable virtual
+environment, replace the install above with an exact upgraded pin and assert
+what Python imports before writing a lock:
+
+```bash
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
+```
+
+Run persistent automation through `python -m boundver ...` with that same
+interpreter so an older `boundver` executable on `PATH` cannot be selected.
 
 ## 2. Discover a starting point
 
@@ -60,7 +72,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -102,6 +114,11 @@ vendored-copy, and file version-source paths use `/` separators and are relative
 to the scope documented by the schema. Empty, absolute, traversing, and
 backslash-separated declarations are rejected.
 
+v0.13 treats component `ecosystem`, component `note`, and `boundary.note` as
+presentation-only, so they can record classification, ownership, migration,
+and review rationale without rotating `config_digest`; do not use them to hide
+contract selection or policy.
+
 Path selectors are case-sensitive:
 
 - `*.yaml` matches only component-root YAML files.
@@ -139,9 +156,10 @@ The effective facet gate follows `--facets` (when supplied), then a component's
 `verify_facets`, then `defaults.verify_facets`. With none of those configured,
 boundver gates all facets available for each component. Explicitly selecting a
 facet that cannot exist is a usage error (exit `2`): `compat` needs a
-`version_source`, `behavior` needs behavior inputs, and `implicit`/`leaf`
-components do not provide a boundary digest. Per-component policy is therefore
-the right way to combine heterogeneous component types in one config.
+`version_source`, `behavior` needs behavior inputs, `leaf` never provides a
+boundary digest, and `implicit` provides one only when it declares paths.
+Per-component policy is therefore the right way to combine heterogeneous
+component types in one config.
 
 ## 4. Validate before hashing
 
@@ -151,9 +169,11 @@ boundver validate-config
 
 Fix every error and review every warning. Validation rejects unknown fields even
 without the optional schema engine, checks path safety and component roots, and
-validates providers, versions, consumers, vendored paths, and slices. The
-installed package's bundled schema is authoritative; a checkout cannot replace
-it with a same-named local file.
+validates providers, versions, consumers, vendored paths, and slices. It
+resolves closure slices and rejects a strict slice when any resolved component
+cannot supply its selected facet, before digest generation starts. The installed
+package's bundled schema is authoritative; a checkout cannot replace it with a
+same-named local file.
 
 ## 5. Generate a local baseline
 
@@ -179,7 +199,10 @@ comparison cannot be computed. Inspect the generated lock; it should use
 `--allow-partial` does not suppress those computation errors. It only permits
 an intentionally unavailable component facet to be stored as a null input in a
 slice. A declared path that selects nothing, a provider failure, a broken
-version source, or a missing/divergent vendored copy remains fatal.
+version source, or a missing/divergent vendored copy remains fatal. That command
+uses partial-compatible validation deliberately. The standalone
+`validate-config` command checks the normal strict-generation contract unless
+you explicitly give it the matching `--allow-partial` flag.
 
 ### Generated contracts need their own freshness check
 
@@ -223,7 +246,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.12.0
+      - uses: yzm1/boundver@v0.13.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -323,7 +346,7 @@ v2 lock also does not bind file mode/type or the complete semantic
 configuration. There is no safe metadata-only migration for either source:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml
@@ -332,6 +355,15 @@ git add boundary.lock.json
 boundver verify --source index
 git diff --cached -- boundary.config.json boundary.lock.json
 ```
+
+“No metadata-only migration” means the lock must be recomputed, not that every
+content fingerprint must rotate. When the selected source bytes and effective
+selectors are unchanged, v3/v1 to v3/v2 regeneration and v0.12's provider
+metadata bumps are expected to preserve component facet and slice digest
+values. Review the changed semantic-config/provider metadata, and investigate
+any facet or slice value that does change. A deliberate `json-file-raw` to
+`path-hash` change has the same digest-neutral expectation under identical raw
+paths and options, while provider/config metadata changes.
 
 When upgrading directly from 0.10, review selector changes carefully: the
 corrected `*`/`**` grammar may add or remove matches. Update every writer and
@@ -354,5 +386,5 @@ tests.
 - [Choose a provider](public-vs-custom-providers.md).
 - [Adopt one component at a time](gradual-adoption.md).
 - [Copy a CI recipe](ci-cookbook.md).
-- [Explore example configurations](../examples/README.md).
+- [Explore example configurations](examples.md).
 - [Resolve concurrent lock updates](LOCKFILE_MERGE.md).

@@ -702,6 +702,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "_release_is_on_main": "ancestor",
             "_github_controls": "controls",
             "_source_release_artifacts": "artifacts",
+            "_release_alias_workflow_at_commit": "alias workflow",
         }
         patches = [
             mock.patch.object(publisher, name, return_value=value)
@@ -715,7 +716,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             6
         ] as tag_state, patches[7] as ancestry, patches[8] as controls, patches[
             9
-        ] as artifacts:
+        ] as artifacts, patches[10] as alias_workflow:
             resolved_repo = Path(td).resolve()
             control_sha, checks = publisher._evaluate_resume(
                 Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
@@ -731,6 +732,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         artifacts.assert_called_once_with(
             resolved_repo, RUN_ID, TAG, SHA, ALIAS
+        )
+        alias_workflow.assert_called_once_with(
+            resolved_repo, "origin", SHA, TAG, ALIAS
         )
         for called in (surfaces, identity, clean, hygiene, project):
             called.assert_called_once()
@@ -758,6 +762,81 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         self.assertIn(TAG[1:], detail)
         self.assertIn(release_sha, detail)
+
+    def test_alias_recovery_requires_workflow_in_immutable_release_commit(self):
+        publisher = _load_script()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old_sha = _init_repo(root)
+            workflow = root / ".github" / "workflows" / "advance-release-alias.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: alias\n", encoding="utf-8")
+            subprocess.run(["git", "add", str(workflow)], cwd=root, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "add alias workflow"], cwd=root, check=True
+            )
+            current_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+
+            with mock.patch.object(publisher, "_remote_ref", return_value=None):
+                with self.assertRaisesRegex(
+                    publisher.GateError, "predates the secretless exact-tag"
+                ):
+                    publisher._release_alias_workflow_at_commit(
+                        root, "origin", old_sha, TAG, ALIAS
+                    )
+            with mock.patch.object(
+                publisher, "_remote_ref", return_value=old_sha
+            ):
+                exact_detail = publisher._release_alias_workflow_at_commit(
+                    root, "origin", old_sha, TAG, ALIAS
+                )
+            detail = publisher._release_alias_workflow_at_commit(
+                root, "origin", current_sha, TAG, ALIAS
+            )
+
+            symlink_blob = subprocess.check_output(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=root,
+                input="alias-target\n",
+                text=True,
+            ).strip()
+            subprocess.run(
+                [
+                    "git",
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    f"120000,{symlink_blob},.github/workflows/advance-release-alias.yml",
+                ],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "replace alias workflow with symlink"],
+                cwd=root,
+                check=True,
+            )
+            symlink_sha = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ).strip()
+            with self.assertRaisesRegex(publisher.GateError, "regular"):
+                publisher._release_alias_workflow_at_commit(
+                    root, "origin", symlink_sha, TAG, ALIAS
+                )
+
+        self.assertIn("already resolves", exact_detail)
+        self.assertIn(current_sha, detail)
+        self.assertIn("advance-release-alias.yml", detail)
+
+    def test_no_alias_recovery_does_not_require_child_workflow(self):
+        publisher = _load_script()
+        detail = publisher._release_alias_workflow_at_commit(
+            Path("missing"), "origin", SHA, TAG, "none"
+        )
+
+        self.assertEqual(detail, "no compatibility alias was requested")
 
     def test_release_control_reads_and_distribution_copies_are_bounded(self):
         publisher = _load_script()
@@ -837,14 +916,33 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "pypi-preflight",
                 "publish-pypi",
                 "verify-pypi",
+                "publish-container",
                 "advance-compatibility-alias",
                 "verify-public-surfaces",
+            )
+        )
+        container_workflow = "\n".join(
+            (
+                "environment: container",
+                "environment: container-public",
+                "linux/amd64,linux/arm64",
+                "tonistiigi/binfmt:qemu-v10.2.3@sha256:",
+                "version: v0.36.1",
+                "image=moby/buildkit:v0.32.2@sha256:",
+                "push-to-registry: true",
+                "oras cp --from-oci-layout",
+                '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"',
+                'DOCKER_CONFIG="$anonymous_config" docker pull',
+                'gh attestation verify "oci://$IMAGE@$DIGEST"',
             )
         )
         alias_workflow = "\n".join(
             (
                 "  advance:",
-                "Bind this run to the exact immutable release tag",
+                "Bind mutation authority to the exact release tag",
+                "Checkout the reviewed publication-control commit",
+                "publication_ref:",
+                '--publication-ref "$PUBLICATION_REF"',
                 "Require the active originating publication and verified PyPI job",
                 "--skip-alias",
                 "Advance the leased monotonic compatibility alias",
@@ -855,13 +953,20 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         with mock.patch.object(
             publisher.Path, "exists", return_value=True
         ), mock.patch.object(
-            publisher, "_read_bounded_text", side_effect=[workflow, alias_workflow]
+            publisher,
+            "_read_bounded_text",
+            side_effect=[workflow, container_workflow, alias_workflow],
         ) as read:
             publisher._surface_inventory(Path("repo"))
-        self.assertEqual(read.call_count, 2)
+        self.assertEqual(read.call_count, 3)
         read.assert_any_call(
             Path("repo/.github/workflows/publish.yml"),
             ".github/workflows/publish.yml",
+            max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
+        )
+        read.assert_any_call(
+            Path("repo/.github/workflows/publish-container.yml"),
+            ".github/workflows/publish-container.yml",
             max_bytes=publisher.MAX_RELEASE_WORKFLOW_BYTES,
         )
         read.assert_any_call(
@@ -1123,10 +1228,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         for surface in (
             "readme",
             "documentation",
+            "hosted documentation",
             "changelog",
             "schema",
             "action",
-            "docker",
+            "ghcr",
+            "homebrew",
+            "gitlab",
             "pre-commit",
             "testpypi",
             "pypi",
@@ -1154,6 +1262,31 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "semantic-versioning",
                     ],
                 }
+            if endpoint == "repos/yzm1/boundver/pages":
+                return {
+                    "build_type": "workflow",
+                    "html_url": "https://yzm1.github.io/boundver/",
+                    "https_enforced": True,
+                    "public": True,
+                }
+            if endpoint == "repos/yzm1/homebrew-boundver":
+                return {
+                    "full_name": "yzm1/homebrew-boundver",
+                    "default_branch": "main",
+                    "archived": False,
+                    "visibility": "public",
+                }
+            if "/homebrew-boundver/contents/" in endpoint:
+                return {"type": "file", "sha": "a" * 40, "size": 100}
+            if endpoint.endswith("/homebrew-boundver/environments/formula-update"):
+                return {
+                    "protection_rules": [
+                        {
+                            "type": "required_reviewers",
+                            "reviewers": [{"type": "User", "reviewer": {"id": 1}}],
+                        }
+                    ]
+                }
             if endpoint.endswith("/environments"):
                 return {
                     "environments": [
@@ -1166,7 +1299,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                                 }
                             ],
                         }
-                        for name in ("testpypi", "pypi", "marketplace")
+                        for name in (
+                            "testpypi",
+                            "pypi",
+                            "marketplace",
+                            "container",
+                            "container-public",
+                        )
                     ]
                 }
             if endpoint.endswith("/immutable-releases"):
@@ -1694,6 +1833,31 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "semantic-versioning",
                     ],
                 }
+            if endpoint == "repos/yzm1/boundver/pages":
+                return {
+                    "build_type": "workflow",
+                    "html_url": "https://yzm1.github.io/boundver/",
+                    "https_enforced": True,
+                    "public": True,
+                }
+            if endpoint == "repos/yzm1/homebrew-boundver":
+                return {
+                    "full_name": "yzm1/homebrew-boundver",
+                    "default_branch": "main",
+                    "archived": False,
+                    "visibility": "public",
+                }
+            if "/homebrew-boundver/contents/" in endpoint:
+                return {"type": "file", "sha": "a" * 40, "size": 100}
+            if endpoint.endswith("/homebrew-boundver/environments/formula-update"):
+                return {
+                    "protection_rules": [
+                        {
+                            "type": "required_reviewers",
+                            "reviewers": [{"type": "User"}],
+                        }
+                    ]
+                }
             if endpoint.endswith("/environments"):
                 return {
                     "environments": [
@@ -1706,7 +1870,13 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                                 }
                             ],
                         }
-                        for name in ("testpypi", "pypi", "marketplace")
+                        for name in (
+                            "testpypi",
+                            "pypi",
+                            "marketplace",
+                            "container",
+                            "container-public",
+                        )
                     ]
                 }
             if endpoint.endswith("/immutable-releases"):
@@ -1902,6 +2072,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "pypi-preflight",
             "publish-pypi",
             "verify-pypi",
+            "publish-container",
+            "publish-container.yml",
+            "render_homebrew_formula.py",
+            "templates/boundver.yml",
             "advance-compatibility-alias",
             "advance-release-alias.yml",
             "release_alias.py",

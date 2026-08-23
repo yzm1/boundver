@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
   "title": "boundver config",
   "$defs": {
     "relativePath": {
@@ -58,6 +58,10 @@
         "properties": {
           "path": {"$ref": "#/$defs/relativePath"},
           "ecosystem": {"type": "string"},
+          "note": {
+            "type": "string",
+            "description": "Human-facing component context; does not affect semantic configuration identity."
+          },
           "version_source": {
             "oneOf": [
               {"type": "null"},

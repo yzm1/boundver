@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/boundary.lock.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
   "schema": "boundary-lock/v3",
   "config_contract": "boundver-semantic-config/v2",
   "config_digest": "7205f22fdd3d7827b2581ee705fac85d94ecfc556f09d8c6d0664f1f25c00bc9",

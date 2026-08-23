@@ -342,11 +342,12 @@ if [[ ! -f "$pyz_path" ]]; then
   exit 1
 fi
 
-python -I - "$wheel_path" "$sdist_path" "$pyz_path" "$expected_version" "$PWD/LICENSE" "$smoke_root" <<'PY'
+python -I - "$wheel_path" "$sdist_path" "$pyz_path" "$expected_version" "$PWD/LICENSE" "$smoke_root" "$PWD/scripts/requirements/action.lock" <<'PY'
 from contextlib import contextmanager
 import email.parser
 import gzip
 import os
+import re
 import stat
 import struct
 import sys
@@ -368,6 +369,7 @@ MAX_TAR_EXTENSION_BYTES = 64 * 1024
 MAX_TAR_BYTES = 768 * 1024 * 1024
 MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_LICENSE_BYTES = 4 * 1024 * 1024
+MAX_TOOL_LOCK_BYTES = 4 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -740,6 +742,7 @@ pyz = Path(sys.argv[3])
 expected_version = sys.argv[4]
 license_path = Path(sys.argv[5])
 scratch = Path(sys.argv[6])
+action_lock = Path(sys.argv[7])
 raw_tar = scratch / "packaging-smoke-sdist.tar"
 
 try:
@@ -758,6 +761,16 @@ try:
     license_bytes = read_limited_file(
         license_path, MAX_LICENSE_BYTES, "repository LICENSE"
     )
+    lock_text = read_limited_file(
+        action_lock, MAX_TOOL_LOCK_BYTES, "Action dependency lock"
+    ).decode("utf-8")
+    pyyaml_versions = re.findall(
+        r"(?mi)^PyYAML==([A-Za-z0-9][A-Za-z0-9._+!-]{0,126})\s*\\\s*$",
+        lock_text,
+    )
+    if len(pyyaml_versions) != 1:
+        raise ValueError("Action dependency lock has no unique exact PyYAML pin")
+    pyyaml_version = pyyaml_versions[0]
     preflight_source_total(
         (
             (wheel, "wheel"),
@@ -896,6 +909,64 @@ try:
                 for name in pyz_members
             ):
                 raise ValueError("standalone archive missing distribution license")
+            if metadata.get_all("License-File") != [
+                "licenses/LICENSE",
+                "licenses/PyYAML-LICENSE",
+            ]:
+                raise ValueError("standalone license metadata is incomplete")
+            metadata_prefix = metadata_infos[0].filename.removesuffix("METADATA")
+            vendored_infos = [
+                info
+                for info in pyz_infos
+                if info.filename == metadata_prefix + "VENDORED"
+            ]
+            if len(vendored_infos) != 1 or read_zip_member(
+                archive,
+                vendored_infos[0],
+                MAX_METADATA_BYTES,
+                "standalone vendored dependency record",
+            ) != f"PyYAML=={pyyaml_version}\n".encode("ascii"):
+                raise ValueError("standalone PyYAML version record is not lock-bound")
+            required_pyyaml = {
+                "yaml/__init__.py",
+                "yaml/composer.py",
+                "yaml/constructor.py",
+                "yaml/cyaml.py",
+                "yaml/dumper.py",
+                "yaml/emitter.py",
+                "yaml/error.py",
+                "yaml/events.py",
+                "yaml/loader.py",
+                "yaml/nodes.py",
+                "yaml/parser.py",
+                "yaml/reader.py",
+                "yaml/representer.py",
+                "yaml/resolver.py",
+                "yaml/scanner.py",
+                "yaml/serializer.py",
+                "yaml/tokens.py",
+            }
+            if not required_pyyaml.issubset(pyz_members):
+                raise ValueError("standalone archive is missing pure-Python PyYAML")
+            if any(
+                name.startswith("yaml/_yaml.")
+                and name.endswith((".pyd", ".so"))
+                for name in pyz_members
+            ):
+                raise ValueError("standalone archive contains a platform native module")
+            pyyaml_license_infos = [
+                info
+                for info in pyz_infos
+                if info.filename
+                == metadata_prefix + "licenses/PyYAML-LICENSE"
+            ]
+            if len(pyyaml_license_infos) != 1 or not read_zip_member(
+                archive,
+                pyyaml_license_infos[0],
+                MAX_LICENSE_BYTES,
+                "standalone PyYAML license",
+            ):
+                raise ValueError("standalone archive has an empty PyYAML license")
 except (
     BadZipFile,
     EOFError,
@@ -992,6 +1063,59 @@ run_installed_smoke "$sdist_python"
 "$standalone_python" -I "$pyz_path" --version | grep -F " $expected_version" >/dev/null
 "$standalone_python" -I "$pyz_path" validate-config
 "$standalone_python" -I "$pyz_path" generate --source head --format json >/dev/null
+"$standalone_python" -I "$pyz_path" verify --source head --format json >/dev/null
+
+# The standalone/Homebrew artifact must carry its own YAML runtime. Prove that
+# a clean interpreter with no installed PyYAML can load a YAML config, extract a
+# YAML version source, and canonicalize a YAML OpenAPI boundary.
+if "$standalone_python" -I -c "import yaml" >/dev/null 2>&1; then
+  echo "Standalone smoke environment unexpectedly provides external PyYAML" >&2
+  exit 1
+fi
+yaml_repo="$smoke_root/y"
+mkdir "$yaml_repo"
+git -C "$yaml_repo" init -q
+git -C "$yaml_repo" config user.email smoke@example.com
+git -C "$yaml_repo" config user.name "Standalone YAML Smoke"
+mkdir "$yaml_repo/service"
+printf '%s\n' \
+  'project: standalone-yaml-smoke' \
+  'components:' \
+  '  api:' \
+  '    path: service' \
+  '    version_source:' \
+  '      file: openapi.yaml' \
+  '      field: info.version' \
+  '    boundary:' \
+  '      provider: openapi-canonical' \
+  '      paths: [openapi.yaml]' \
+  'slices: {}' > "$yaml_repo/boundary.config.yaml"
+printf '%s\n' \
+  'openapi: 3.0.0' \
+  'info:' \
+  '  title: Standalone smoke' \
+  '  version: 1.2.3' \
+  'paths:' \
+  '  /health:' \
+  '    get:' \
+  '      responses:' \
+  "        '200':" \
+  '          description: OK' > "$yaml_repo/service/openapi.yaml"
+git -C "$yaml_repo" add boundary.config.yaml service/openapi.yaml
+git -C "$yaml_repo" commit -qm fixture
+cd "$yaml_repo"
+"$standalone_python" -I "$pyz_path" validate-config
+"$standalone_python" -I "$pyz_path" generate --source head --format json >/dev/null
+"$standalone_python" -I - <<'PY'
+import json
+from pathlib import Path
+
+lock = json.loads(Path("boundary.lock.json").read_text(encoding="utf-8"))
+if lock["components"]["api"]["version"] != "1.2.3":
+    raise SystemExit("standalone archive did not extract the YAML version source")
+PY
+git add boundary.lock.json
+git commit -qm lock
 "$standalone_python" -I "$pyz_path" verify --source head --format json >/dev/null
 "$standalone_python" -I - "$pyz_path" "$expected_version" <<'PY'
 import sys

@@ -52,11 +52,13 @@ CHECKSUM_LINE_RE = re.compile(r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+-]*)")
 PHASES = frozenset({"github", "marketplace", "complete"})
 REQUIRED_PROJECT_URLS = {
     "Homepage": "https://github.com/yzm1/boundver",
-    "Documentation": "https://github.com/yzm1/boundver/tree/main/docs",
+    "Documentation": "https://yzm1.github.io/boundver/",
     "Changelog": "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md",
     "Issues": "https://github.com/yzm1/boundver/issues",
     "Repository": "https://github.com/yzm1/boundver",
     "GitHub Action": "https://github.com/marketplace/actions/boundver",
+    "Container": "https://github.com/yzm1/boundver/pkgs/container/boundver",
+    "Homebrew": "https://github.com/yzm1/homebrew-boundver",
 }
 
 

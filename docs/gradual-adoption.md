@@ -47,6 +47,10 @@ identity change below `services/auth` rotates the exact digest. `implicit`
 intentionally produces no separate boundary digest, so do not use it in a
 boundary slice.
 
+The optional boundary and component `note` fields are human-facing annotations
+and do not rotate the semantic configuration digest. The same is true of a
+component's optional `ecosystem` classification.
+
 ## Stage 2: declare the public artifact
 
 Replace `implicit` once you know which files consumers actually observe:
@@ -219,7 +223,7 @@ for the first baseline or after a broad semantic configuration change.
 ## Stage 7: tighten CI policy
 
 Start with consumer-facing policy on components that provide those facets, and
-give implicit, leaf, or unversioned components a meaningful override:
+give pathless implicit, leaf, or unversioned components a meaningful override:
 
 ```json
 {
@@ -287,6 +291,9 @@ declared consumer closure:
 component. Exactly one of `components` or `closure_of` is allowed. The resolved,
 sorted membership is persisted in the lock, so graph changes are reviewable.
 Use a mode every resolved member provides—usually `exact` for a mixed closure.
+Strict configuration validation checks the resolved membership before
+generation, including leaf, pathless implicit, unversioned, and behavior-free
+members.
 The fingerprint can key caches or downstream jobs without rotating for
 unrelated components:
 
@@ -311,7 +318,7 @@ or the semantic configuration, and their path selection followed the old glob
 behavior. Both require regeneration:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.12.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
 boundver validate-config
 # Stage changed config and every changed/newly selected contract input.
 git add boundary.config.json services/auth/openapi/new-route.yaml

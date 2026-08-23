@@ -10,6 +10,7 @@ python -m pip install boundver
 
 | Example | What it demonstrates |
 |---|---|
+| [Consumer impact](consumer-impact/) | Boundary drift routed through a transitive consumer graph |
 | [Behavior tier](behavior/) | Separate runtime-behavior and API-boundary fingerprints |
 | [OpenAPI](openapi/) | A raw OpenAPI artifact as a service boundary |
 | [JSON file](json-file/) | A generic JSON contract |

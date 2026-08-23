@@ -370,6 +370,147 @@ class ConsumerImpactTests(unittest.TestCase):
 
 
 class ComponentFacetPolicyTests(unittest.TestCase):
+    def test_strict_slice_validation_contains_unhashable_values(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _make_components(root, ("svc",))
+            config = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {"provider": []},
+                    }
+                },
+                "slices": {
+                    "public": {"mode": [], "components": ["svc"]}
+                },
+            }
+
+            errors = validate_config(config, root, require_slice_facets=True)
+
+            self.assertTrue(
+                any("unknown mode" in error for error in errors), errors
+            )
+            self.assertTrue(
+                any("provider" in error for error in errors), errors
+            )
+
+    def test_strict_slice_validation_rejects_unavailable_member_facets(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _make_components(root, ("api", "leaf", "implicit"))
+            config = {
+                "project": "p",
+                "components": {
+                    "api": _component("api", consumers=["leaf"]),
+                    "leaf": {
+                        "path": "leaf",
+                        "boundary": {"provider": "leaf"},
+                    },
+                    "implicit": {
+                        "path": "implicit",
+                        "boundary": {"provider": "implicit"},
+                    },
+                },
+                "slices": {
+                    "leaf-boundary": {
+                        "mode": "boundary",
+                        "components": ["leaf"],
+                    },
+                    "implicit-boundary": {
+                        "mode": "boundary",
+                        "components": ["implicit"],
+                    },
+                    "missing-behavior": {
+                        "mode": "behavior",
+                        "components": ["api"],
+                    },
+                    "missing-compat": {
+                        "mode": "compat",
+                        "components": ["api"],
+                    },
+                    "boundary-closure": {
+                        "mode": "boundary",
+                        "closure_of": "api",
+                    },
+                    "exact-closure": {
+                        "mode": "exact",
+                        "closure_of": "api",
+                    },
+                },
+            }
+
+            # The default remains compatible with generate(strict=False).
+            self.assertEqual(validate_config(config, root), [])
+
+            errors = validate_config(
+                config, root, require_slice_facets=True
+            )
+            unavailable = [
+                error for error in errors if "to supply that facet" in error
+            ]
+
+            self.assertEqual(len(unavailable), 5, errors)
+            self.assertTrue(
+                any(
+                    "Slice 'leaf-boundary'" in error
+                    and "provider 'leaf'" in error
+                    for error in unavailable
+                ),
+                unavailable,
+            )
+            self.assertTrue(
+                any(
+                    "Slice 'implicit-boundary'" in error
+                    and "provider 'implicit'" in error
+                    for error in unavailable
+                ),
+                unavailable,
+            )
+            self.assertTrue(
+                any("no non-empty behavior.paths" in error for error in unavailable),
+                unavailable,
+            )
+            self.assertTrue(
+                any("no version_source" in error for error in unavailable),
+                unavailable,
+            )
+            self.assertTrue(
+                any(
+                    "Slice 'boundary-closure'" in error
+                    and "component 'leaf'" in error
+                    for error in unavailable
+                ),
+                unavailable,
+            )
+            self.assertFalse(
+                any("Slice 'exact-closure'" in error for error in errors),
+                errors,
+            )
+
+    def test_component_note_is_validated_as_presentation_text(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _make_components(root, ("svc",))
+            config = {
+                "project": "p",
+                "components": {
+                    "svc": _component(
+                        "svc", note="Owned by the checkout platform team"
+                    )
+                },
+                "slices": {},
+            }
+
+            self.assertEqual(validate_config(config, root), [])
+            config["components"]["svc"]["note"] = ["not", "text"]
+            errors = validate_config(config, root)
+            self.assertTrue(
+                any("field 'note' must be a string" in error for error in errors),
+                errors,
+            )
+
     def test_policy_free_leaf_slice_gates_only_available_facets(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -475,6 +616,17 @@ class ComponentFacetPolicyTests(unittest.TestCase):
             }
 
             self.assertEqual(validate_config(config, root), [])
+            strict_errors = validate_config(
+                config, root, require_slice_facets=True
+            )
+            self.assertTrue(
+                any(
+                    "Slice 'boundary' mode 'boundary'" in error
+                    and "provider 'leaf'" in error
+                    for error in strict_errors
+                ),
+                strict_errors,
+            )
             with self.assertRaisesRegex(ConfigError, "requires boundary digest"):
                 generate_lockfile(config, root, source="working-tree", strict=True)
             partial = generate_lockfile(

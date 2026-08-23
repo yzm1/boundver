@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.migrate-lock.schema.json",
+  "title": "boundver migrate-lock --explain --format json output",
+  "description": "Bounded, provider-aware comparison of v0.10 selector semantics and current segment-aware selectors on one captured source.",
+  "type": "object",
+  "required": ["$schema", "schema", "lock", "source", "summary", "declarations"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "const": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.migrate-lock.schema.json"
+    },
+    "schema": {"const": "boundver-migration-analysis/v1"},
+    "lock": {
+      "type": "object",
+      "required": ["path", "source_schema", "action", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string", "maxLength": 4096},
+        "source_schema": {
+          "oneOf": [{"type": "null"}, {"type": "string", "maxLength": 4096}]
+        },
+        "action": {"enum": ["none", "normalize", "regenerate"]},
+        "reason": {
+          "oneOf": [{"type": "null"}, {"type": "string", "maxLength": 4096}]
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["mode", "tree_oid"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["head", "index", "working-tree"]},
+        "tree_oid": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}
+          ]
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["declaration_count", "compared_declaration_count", "uncompared_declaration_count", "changed_declaration_count", "legacy_only_match_count", "current_only_match_count", "match_evaluations"],
+      "additionalProperties": false,
+      "properties": {
+        "declaration_count": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "compared_declaration_count": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "uncompared_declaration_count": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "changed_declaration_count": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "legacy_only_match_count": {"type": "integer", "minimum": 0},
+        "current_only_match_count": {"type": "integer", "minimum": 0},
+        "match_evaluations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5000000,
+          "description": "Aggregate selector-analysis work units: captured-source index range and selected-path operations, legacy glob candidate tests, literal candidate tests, and current segment-aware glob NFA transitions."
+        }
+      }
+    },
+    "declarations": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/declaration"}
+    }
+  },
+  "$defs": {
+    "declaration": {
+      "type": "object",
+      "required": [
+        "component", "facet", "provider", "selector", "selector_kind",
+        "analysis_status", "detail", "impact",
+        "legacy_match_count", "current_match_count", "legacy_only_count",
+        "current_only_count", "legacy_only_examples", "current_only_examples",
+        "legacy_only_omitted", "current_only_omitted"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "component": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "facet": {"enum": ["boundary", "behavior"]},
+        "provider": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "minLength": 1, "maxLength": 4096}
+          ]
+        },
+        "selector": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "selector_kind": {"enum": ["glob", "literal"]},
+        "analysis_status": {
+          "enum": ["compared", "legacy-rejected", "current-rejected", "not-applicable", "provider-specific"]
+        },
+        "detail": {
+          "oneOf": [{"type": "null"}, {"type": "string", "maxLength": 4096}]
+        },
+        "impact": {"enum": ["unchanged", "narrowed", "broadened", "changed", "not-comparable"]},
+        "legacy_match_count": {
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+        },
+        "current_match_count": {
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+        },
+        "legacy_only_count": {
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+        },
+        "current_only_count": {
+          "oneOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]
+        },
+        "legacy_only_examples": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {"type": "string", "maxLength": 1024}
+        },
+        "current_only_examples": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {"type": "string", "maxLength": 1024}
+        },
+        "legacy_only_omitted": {"type": "integer", "minimum": 0},
+        "current_only_omitted": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"analysis_status": {"const": "compared"}}},
+          "then": {
+            "properties": {
+              "detail": {"type": "null"},
+              "impact": {"enum": ["unchanged", "narrowed", "broadened", "changed"]},
+              "legacy_match_count": {"type": "integer"},
+              "current_match_count": {"type": "integer"},
+              "legacy_only_count": {"type": "integer"},
+              "current_only_count": {"type": "integer"}
+            }
+          },
+          "else": {
+            "properties": {
+              "detail": {"type": "string", "minLength": 1},
+              "impact": {"const": "not-comparable"},
+              "legacy_match_count": {"type": "null"},
+              "current_match_count": {"type": "null"},
+              "legacy_only_count": {"type": "null"},
+              "current_only_count": {"type": "null"},
+              "legacy_only_examples": {"maxItems": 0},
+              "current_only_examples": {"maxItems": 0},
+              "legacy_only_omitted": {"const": 0},
+              "current_only_omitted": {"const": 0}
+            }
+          }
+        }
+      ]
+    }
+  }
+}

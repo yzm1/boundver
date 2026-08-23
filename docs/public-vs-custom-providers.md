@@ -18,8 +18,11 @@ means that value changed. It is not, by itself, a compatibility judgment.
 | `implicit` | Record exact drift while leaving the boundary intentionally partial |
 | `leaf` | Record that the component intentionally publishes no boundary |
 
-The short raw names are preserved for compatibility; the `-raw` aliases make
-their artifact-level behavior explicit.
+Use `path-hash` for a format-neutral raw boundary, including SQL migrations,
+protobuf definitions, or another artifact type without a named provider. It
+does not validate the selected format. The short format-specific raw names are
+preserved for compatibility; the `-raw` aliases make their artifact-level
+behavior explicit.
 
 ## Raw versus canonical
 
@@ -115,6 +118,20 @@ The v0.12 built-ins record these versions:
 The top-level v3 semantic configuration digest also binds provider names,
 options, declarations, and custom-provider registration data. A policy change
 cannot remain invisible just because current output happens to be equal.
+
+That metadata binding is separate from the selected facet bytes. During a
+v3/semantic-config-v1 to v2 regeneration, unchanged source bytes and effective
+selectors are expected to retain component facet and slice digest values even
+though the semantic-config contract/digest and v0.12 provider metadata change.
+Regeneration is still required; this expectation is a review aid, not
+permission to relabel the old lock.
+
+Likewise, `json-file-raw` and `path-hash` use the same format-neutral raw
+selection contract in v0.12. Changing from the former to the latter with
+identical paths, options, and selected bytes is digest-neutral for component
+facets and slices, while provider identity and semantic-config metadata change.
+If a facet or slice digest also changes, investigate the effective inputs
+instead of attributing it to the provider-name transition.
 
 ## When a custom provider is appropriate
 

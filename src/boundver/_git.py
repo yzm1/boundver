@@ -22,6 +22,7 @@ from typing import (
 from ._utils import (
     GuardrailError,
     SOURCE_MODE_SET,
+    _bounded_diagnostic_repr,
     _bounded_sorted_paths,
     _iter_bounded_filesystem_paths,
     _read_bounded_path_bytes,
@@ -44,6 +45,7 @@ MAX_GIT_LIST_OUTPUT_BYTES = 32 * 1024 * 1024
 MAX_GIT_LIST_RECORD_BYTES = MAX_GIT_PATH_BYTES + 512
 MAX_GIT_COMMAND_OUTPUT_BYTES = 1024 * 1024
 MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_GIT_FAILURE_DETAIL_CHARS = 4096
 _GIT_STREAM_CHUNK_BYTES = 64 * 1024
 _GIT_DIAGNOSTIC_TRUNCATION = b"\n...[Git diagnostic truncated by boundver]"
 MAX_FALLBACK_FILES = 50_000
@@ -58,6 +60,134 @@ def _read_bounded_git_diagnostic(stderr_file: BinaryIO) -> bytes:
     if len(diagnostic) <= MAX_GIT_DIAGNOSTIC_BYTES:
         return diagnostic
     return diagnostic[:MAX_GIT_DIAGNOSTIC_BYTES] + _GIT_DIAGNOSTIC_TRUNCATION
+
+
+def _git_failure_detail(exc: BaseException) -> str:
+    """Render one terminal-safe, bounded Git or OS failure diagnostic."""
+    if isinstance(exc, subprocess.CalledProcessError):
+        diagnostic = exc.stderr
+        if isinstance(diagnostic, bytes):
+            diagnostic = diagnostic[: MAX_GIT_FAILURE_DETAIL_CHARS + 1].decode(
+                locale.getpreferredencoding(False), errors="backslashreplace"
+            )
+        elif isinstance(diagnostic, str):
+            diagnostic = diagnostic[: MAX_GIT_FAILURE_DETAIL_CHARS + 1]
+        else:
+            diagnostic = ""
+        diagnostic = diagnostic.strip()
+        returncode = _bounded_diagnostic_repr(exc.returncode, max_chars=64)
+        if diagnostic:
+            rendered = _bounded_diagnostic_repr(
+                diagnostic,
+                max_chars=MAX_GIT_FAILURE_DETAIL_CHARS,
+            )
+            return f"return code {returncode}; stderr={rendered}"
+        return f"return code {returncode}; no stderr diagnostic"
+    if isinstance(exc, OSError):
+        detail = str(exc)[: MAX_GIT_FAILURE_DETAIL_CHARS + 1]
+        return (
+            f"{type(exc).__name__}: "
+            f"{_bounded_diagnostic_repr(detail, max_chars=MAX_GIT_FAILURE_DETAIL_CHARS)}"
+        )
+    return type(exc).__name__
+
+
+def _git_error_stream_is_empty(value: object) -> bool:
+    """Return whether a failed Git command emitted no captured stream data."""
+    return value is None or (
+        isinstance(value, (bytes, str)) and not value.strip()
+    )
+
+
+def _validated_git_object_id(value: str, operation: str) -> str:
+    """Return one bounded Git object ID or fail before it reaches another argv."""
+    oid = value.strip()
+    if len(oid) not in {40, 64} or any(
+        character not in "0123456789abcdefABCDEF" for character in oid
+    ):
+        raise ValueError(
+            f"{operation} returned a malformed object ID: "
+            f"{_bounded_diagnostic_repr(oid, max_chars=256)}"
+        )
+    return oid
+
+
+def _validated_symbolic_head_ref(value: str) -> str:
+    """Return one bounded symbolic HEAD ref before passing it to another argv."""
+    ref = value.rstrip("\n")
+    if (
+        not ref.startswith("refs/heads/")
+        or ref == "refs/heads/"
+        or len(ref) > MAX_GIT_FAILURE_DETAIL_CHARS
+        or ref != ref.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in ref)
+    ):
+        raise ValueError(
+            "git symbolic-ref returned a malformed HEAD ref: "
+            f"{_bounded_diagnostic_repr(ref, max_chars=256)}"
+        )
+    return ref
+
+
+def _head_is_provably_unborn(repo_root: Path) -> bool:
+    """Return true only when symbolic HEAD names a ref that does not exist."""
+    try:
+        symbolic = _git_run(repo_root, ["symbolic-ref", "--quiet", "HEAD"])
+    except subprocess.CalledProcessError as exc:
+        if (
+            exc.returncode == 1
+            and _git_error_stream_is_empty(exc.stdout)
+            and _git_error_stream_is_empty(exc.stderr)
+        ):
+            # Detached HEAD is not unborn; failure to peel it is operational.
+            return False
+        raise ValueError(
+            "git symbolic-ref failed while classifying unresolved HEAD "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "git symbolic-ref failed while classifying unresolved HEAD "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+
+    head_ref = _validated_symbolic_head_ref(symbolic.stdout)
+    try:
+        _git_run(repo_root, ["check-ref-format", head_ref])
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(
+            "git symbolic-ref returned an invalid HEAD branch ref "
+            f"{_bounded_diagnostic_repr(head_ref)} "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "git check-ref-format failed while classifying symbolic HEAD "
+            f"{_bounded_diagnostic_repr(head_ref)} "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    try:
+        _git_run(
+            repo_root,
+            ["show-ref", "--verify", "--quiet", "--", head_ref],
+        )
+    except subprocess.CalledProcessError as exc:
+        if (
+            exc.returncode == 1
+            and _git_error_stream_is_empty(exc.stdout)
+            and _git_error_stream_is_empty(exc.stderr)
+        ):
+            return True
+        raise ValueError(
+            f"git show-ref failed while checking symbolic HEAD {head_ref!r} "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(
+            f"git show-ref failed while checking symbolic HEAD {head_ref!r} "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    return False
 
 
 @dataclass(frozen=True)
@@ -180,7 +310,10 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
 
     def as_text(data: bytes) -> str:
         return (
-            data.decode(encoding)
+            data.decode(
+                encoding,
+                errors="strict" if returncode == 0 else "backslashreplace",
+            )
             .replace("\r\n", "\n")
             .replace("\r", "\n")
         )
@@ -306,11 +439,50 @@ def _iter_bounded_git_paths(
 def _resolve_head_oid(repo_root: Path) -> Optional[str]:
     """Resolve HEAD once, returning ``None`` for an unborn repository."""
     try:
-        result = _git_run(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"])
-    except subprocess.CalledProcessError:
-        return None
-    oid = result.stdout.strip()
-    return oid or None
+        result = _git_run(
+            repo_root,
+            ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        )
+    except subprocess.CalledProcessError as exc:
+        if (
+            exc.returncode == 1
+            and _git_error_stream_is_empty(exc.stdout)
+            and _git_error_stream_is_empty(exc.stderr)
+        ):
+            try:
+                if _head_is_provably_unborn(repo_root):
+                    return None
+            except ValueError as classification_error:
+                raise ValueError(
+                    "Cannot resolve HEAD commit: git rev-parse returned no "
+                    "commit and the unborn-HEAD check failed: "
+                    f"{classification_error}"
+                ) from classification_error
+            try:
+                diagnostic_result = _git_run(
+                    repo_root,
+                    ["rev-parse", "--verify", "HEAD^{commit}"],
+                )
+            except (subprocess.CalledProcessError, OSError) as diagnostic_error:
+                raise ValueError(
+                    "Cannot resolve HEAD commit: HEAD is not unborn and git "
+                    "rev-parse could not peel it to a commit "
+                    f"({_git_failure_detail(diagnostic_error)})"
+                ) from diagnostic_error
+            return _validated_git_object_id(
+                diagnostic_result.stdout,
+                "git rev-parse",
+            )
+        raise ValueError(
+            "Cannot resolve HEAD commit: git rev-parse failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "Cannot resolve HEAD commit: git rev-parse failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    return _validated_git_object_id(result.stdout, "git rev-parse")
 
 
 def _is_git_repository(repo_root: Path) -> bool:
@@ -323,8 +495,17 @@ def _is_git_repository(repo_root: Path) -> bool:
     """
     try:
         result = _git_run(repo_root, ["rev-parse", "--is-inside-work-tree"])
-    except subprocess.CalledProcessError:
-        return False
+    except (subprocess.CalledProcessError, OSError):
+        # Preserve the documented non-Git fallback, but never reinterpret an
+        # operational failure in an established worktree as "not a repo".
+        # Linked worktrees use a .git file; ordinary worktrees use a directory.
+        try:
+            (repo_root / ".git").lstat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
     return result.stdout.strip().lower() == "true"
 
 
@@ -404,11 +585,12 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         # the working tree.
         try:
             result = _git_run(repo_root, ["write-tree"])
-        except subprocess.CalledProcessError as exc:
-            raise ValueError("Cannot capture index as a complete Git tree") from exc
-        treeish = result.stdout.strip()
-        if not treeish:
-            raise ValueError("git write-tree returned an empty object ID")
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise ValueError(
+                "Cannot capture index as a complete Git tree: "
+                f"git write-tree failed ({_git_failure_detail(exc)})"
+            ) from exc
+        treeish = _validated_git_object_id(result.stdout, "git write-tree")
 
     try:
         entries = _collect_ls_tree_entries(
@@ -417,12 +599,31 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
                 ["ls-tree", "-r", "-z", "--full-tree", treeish],
             )
         )
-    except subprocess.CalledProcessError as exc:
-        raise ValueError(f"Cannot enumerate captured {source} tree {treeish}") from exc
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError(
+            f"Cannot enumerate captured {source} tree {treeish}: "
+            f"git ls-tree failed ({_git_failure_detail(exc)})"
+        ) from exc
     try:
         filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
-    except subprocess.CalledProcessError:
-        core_filemode = True
+    except subprocess.CalledProcessError as exc:
+        if (
+            exc.returncode == 1
+            and _git_error_stream_is_empty(exc.stdout)
+            and _git_error_stream_is_empty(exc.stderr)
+        ):
+            # An unset value has Git's documented true default.
+            core_filemode = True
+        else:
+            raise ValueError(
+                "Cannot read Git core.filemode: git config failed "
+                f"({_git_failure_detail(exc)})"
+            ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "Cannot read Git core.filemode: git config failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
     else:
         core_filemode = filemode_result.stdout.strip().lower() != "false"
     return GitSourceSnapshot(

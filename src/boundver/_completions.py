@@ -53,12 +53,19 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "verify": (
         "-h", "--help", "--config", "--lock", "--source", "--components",
         "--changed-from", "--fail-fast", "--facets", "--transitive",
-        "--update", "--format", "--allow-custom-providers",
+        "--update", "--baseline", "--write-baseline", "--update-baseline",
+        "--format", "--allow-custom-providers",
     ),
     "diff": ("-h", "--help", "--format"),
     "slice": ("-h", "--help", "--lock", "--format"),
-    "validate-config": ("-h", "--help", "--config", "--allow-custom-providers"),
-    "check-config": ("-h", "--help", "--config", "--allow-custom-providers"),
+    "validate-config": (
+        "-h", "--help", "--config", "--allow-partial",
+        "--allow-custom-providers",
+    ),
+    "check-config": (
+        "-h", "--help", "--config", "--allow-partial",
+        "--allow-custom-providers",
+    ),
     "init": ("-h", "--help", "--out", "--force", "--discover"),
     "add": ("-h", "--help", "--provider", "--paths", "--config"),
     "remove": ("-h", "--help", "--config"),
@@ -74,8 +81,11 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "-h", "--help", "--config", "--lock", "--source", "--format",
         "--transitive", "--allow-custom-providers",
     ),
-    "discover": ("-h", "--help", "--format"),
-    "migrate-lock": ("-h", "--help", "--lock", "--dry-run"),
+    "discover": ("-h", "--help", "--format", "--diff-config", "--config"),
+    "migrate-lock": (
+        "-h", "--help", "--lock", "--dry-run", "--explain", "--config",
+        "--source", "--format",
+    ),
     "completions": ("-h", "--help", "--shell"),
 }
 
@@ -88,7 +98,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--config": "Config file",
     "--out": "Lockfile output",
     "--source": "Snapshot source",
-    "--allow-partial": "Allow partial boundary or compatibility digests",
+    "--allow-partial": "Allow intentional null slice facet inputs",
     "--dry-run": "Preview without writing",
     "--components": "Comma-separated component names",
     "--format": "Output format",
@@ -99,12 +109,17 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--facets": "Comma-separated gate facets",
     "--transitive": "Include transitive downstream consumers",
     "--update": "Regenerate after reporting drift",
+    "--baseline": "Apply reviewed verification debt",
+    "--write-baseline": "Create a verification baseline",
+    "--update-baseline": "Remove resolved baseline violations",
     "--force": "Overwrite an existing file",
     "--discover": "Auto-discover components",
     "--provider": "Boundary provider",
     "--paths": "Comma-separated boundary paths",
     "--strict": "Exit non-zero on warnings or drift",
     "--base-ref": "Git base ref",
+    "--diff-config": "Compare discovery with configured roots",
+    "--explain": "Explain migration selector changes",
     "--shell": "Target shell",
 }
 
@@ -122,6 +137,9 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--provider": ("provider", ""),
     "--paths": ("paths", ""),
     "--base-ref": ("Git ref", ""),
+    "--baseline": ("file", "_files"),
+    "--write-baseline": ("file", "_files"),
+    "--update-baseline": ("file", "_files"),
     "--shell": ("shell", "(bash zsh fish)"),
 }
 
@@ -131,7 +149,10 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
     "--shell": ("bash", "zsh", "fish"),
 }
 
-_FILE_OPTIONS = ("--config", "--lock", "--out")
+_FILE_OPTIONS = (
+    "--config", "--lock", "--out", "--baseline", "--write-baseline",
+    "--update-baseline",
+)
 
 # zsh can describe positional arguments without custom parsing functions.
 _COMMAND_POSITIONALS: Dict[str, Tuple[Tuple[str, str], ...]] = {

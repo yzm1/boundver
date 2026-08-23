@@ -302,6 +302,68 @@ class TestCLIOutputSchemas(unittest.TestCase):
             ),
         )
 
+    def test_verify_schema_enforces_baseline_action_semantics(self):
+        schema = _load_schema("cli-output.verify.schema.json")
+
+        def baseline(action: str) -> dict:
+            return {
+                "action": action,
+                "path": "debt.json",
+                "baselined_issues": [],
+                "stale_ids": [],
+                "added_ids": [],
+                "removed_ids": [],
+            }
+
+        applied = _verify_result(
+            ok=False,
+            issues=["new violation"],
+            baseline=baseline("applied"),
+        )
+        created = _verify_result(baseline=baseline("created"))
+        updated = _verify_result(baseline=baseline("updated"))
+        updated["baseline"]["removed_ids"] = ["a" * 64]
+        for candidate in (applied, created, updated):
+            _assert_valid(schema, candidate)
+
+        mutations = [
+            (created, lambda value: value.update({"updated": True})),
+            (
+                applied,
+                lambda value: value["baseline"].update({"added_ids": ["a" * 64]}),
+            ),
+            (
+                applied,
+                lambda value: value["baseline"].update({"removed_ids": ["a" * 64]}),
+            ),
+            (
+                created,
+                lambda value: value["baseline"].update({"removed_ids": ["a" * 64]}),
+            ),
+            (
+                created,
+                lambda value: value["baseline"].update({"stale_ids": ["a" * 64]}),
+            ),
+            (created, lambda value: value.update({"ok": False})),
+            (created, lambda value: value.update({"issues": ["not allowed"]})),
+            (
+                updated,
+                lambda value: value["baseline"].update({"added_ids": ["a" * 64]}),
+            ),
+            (
+                updated,
+                lambda value: value["baseline"].update({"stale_ids": ["a" * 64]}),
+            ),
+            (updated, lambda value: value.update({"ok": False})),
+            (updated, lambda value: value.update({"issues": ["not allowed"]})),
+        ]
+        for index, (source, mutate) in enumerate(mutations):
+            with self.subTest(index=index):
+                candidate = copy.deepcopy(source)
+                mutate(candidate)
+                with self.assertRaises(jsonschema.ValidationError):
+                    _assert_valid(schema, candidate)
+
     def test_diff_schema_rejects_unknown_component_keys(self):
         schema = _load_schema("cli-output.diff.schema.json")
         candidate = _empty_diff()
@@ -419,6 +481,10 @@ class TestCLIOutputSchemas(unittest.TestCase):
         base = _empty_diff()
         base["changed_metadata"] = {
             "project": {"old": "old-project", "new": "new-project"},
+            "config_contract": {
+                "old": "boundver-semantic-config/v1",
+                "new": "boundver-semantic-config/v2",
+            },
             "config_digest": {"old": digest_a, "new": digest_b},
         }
         base["components"]["changed"] = [{
@@ -478,6 +544,9 @@ class TestCLIOutputSchemas(unittest.TestCase):
             ),
             lambda value: value["changed_metadata"]["config_digest"].update(
                 {"old": 7}
+            ),
+            lambda value: value["changed_metadata"]["config_contract"].update(
+                {"new": ""}
             ),
             lambda value: value["components"]["changed"][0][
                 "changed_metadata"

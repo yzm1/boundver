@@ -84,7 +84,7 @@ def test_generated_locks_are_canonical_and_complete():
     locker.verify()
 
     _, profiles = locker.load_manifest()
-    assert tuple(profiles) == ("action", "ci", "release")
+    assert tuple(profiles) == ("action", "ci", "docs", "release")
     for profile in profiles.values():
         text = profile.lock.read_text(encoding="utf-8")
         assert text.count("--require-hashes") == 1

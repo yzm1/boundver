@@ -215,7 +215,8 @@ vendored paths, compatibility inputs, validated internal `consumers`, opaque
 `external_consumers`, per-component `verify_facets`, and every explicit or
 `closure_of` slice declaration. Set-like lists are sorted and documented
 default values are materialized. Presentation-only `$schema` values, component
-`ecosystem`, boundary `note`, and object insertion order do not affect it.
+`ecosystem`, component `note`, boundary `note`, and object insertion order do
+not affect it.
 Verification compares this digest before
 component fingerprints, so a contract-affecting config mutation cannot remain
 invisible merely because it happens to select the same current bytes.

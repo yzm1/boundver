@@ -45,6 +45,13 @@ def _run_main(*args: str, repo_root: Path = None) -> tuple[int, str, str]:
 
 
 class MainNoCommandTests(unittest.TestCase):
+    def test_version_uses_the_stable_public_program_name(self):
+        code, out, error = _run_main("--version")
+
+        self.assertEqual(code, 0)
+        self.assertRegex(out, r"^boundver [0-9]+\.[0-9]+\.[0-9]+\n$")
+        self.assertEqual(error, "")
+
     def test_no_command_exits_2(self):
         """main() with no subcommand exits 2 (usage error) and prints help."""
         code, out, _ = _run_main()
@@ -299,8 +306,25 @@ class MainGenerateTests(unittest.TestCase):
             )
             self.assertEqual(code, core.EXIT_USAGE, out + err)
             self.assertIn("UNAVAILABLE FACET svc.boundary", out)
+            self.assertIn("cannot be generated from the current configuration", out)
+            self.assertIn("`--update` will not modify the lock", out)
+            self.assertNotIn("run `boundver verify --update`", out)
             lock_path = root / "boundary.lock.json"
             before_update = lock_path.read_bytes()
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "boundary",
+                "--update",
+                repo_root=root,
+            )
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            self.assertIn("LOCKFILE NOT UPDATED", out)
+            self.assertIn("cannot be generated from the current configuration", out)
+            self.assertIn("`--update` will not modify the lock", out)
+            self.assertEqual(lock_path.read_bytes(), before_update)
             code, out, err = _run_main(
                 "verify",
                 "--source",
@@ -697,6 +721,50 @@ class MainVerifyTests(unittest.TestCase):
             code, out, _ = _run_main("verify", "--source", "working-tree", repo_root=root)
             self.assertEqual(code, 0)
             self.assertIn("up to date", out.lower())
+
+    def test_verify_head_missing_uncommitted_lock_explains_source_choice(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            commit_all(root, "record source")
+
+            code, _out, err = _run_main(
+                "generate", "--source", "head", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+
+            code, _out, err = _run_main(
+                "verify", "--source", "head", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, err)
+            self.assertIn("Lockfile not found in captured head source", err)
+            self.assertIn("`--source head` reads committed files", err)
+            self.assertIn("Commit `boundary.lock.json`", err)
+            self.assertIn("`--source working-tree`", err)
+
+    def test_verify_index_missing_unstaged_lock_explains_source_choice(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            commit_all(root, "record source")
+
+            code, _out, err = _run_main(
+                "generate", "--source", "index", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+
+            code, _out, err = _run_main(
+                "verify", "--source", "index", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, err)
+            self.assertIn("Lockfile not found in captured index source", err)
+            self.assertIn("`--source index` reads staged files", err)
+            self.assertIn("Stage `boundary.lock.json`", err)
+            self.assertIn("`--source working-tree`", err)
 
     def test_verify_out_of_date_exits_1(self):
         with tempfile.TemporaryDirectory() as td:

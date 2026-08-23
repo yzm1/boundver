@@ -2638,11 +2638,25 @@ jobs:
           pypi-attestations verify pypi \
             --repository https://github.com/yzm1/boundver "$sdist_url"
 
+  publish-container:
+    name: Publish and verify the release container
+    needs: verify-pypi
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/publish-container.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      release_sha: ${{ inputs.release_sha }}
+
   advance-compatibility-alias:
     name: Apply the explicit Action alias decision
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: verify-pypi
+    needs: [verify-pypi, publish-container]
     permissions:
       actions: write
       contents: read
@@ -2689,6 +2703,7 @@ jobs:
             --alias "$COMPATIBILITY_ALIAS" \
             --publication-run-id "$GITHUB_RUN_ID" \
             --publication-attempt "$GITHUB_RUN_ATTEMPT" \
+            --publication-ref "$GITHUB_REF_NAME" \
             --publication-sha "$GITHUB_SHA"
 
   verify-public-surfaces:

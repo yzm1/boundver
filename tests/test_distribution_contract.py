@@ -5,14 +5,18 @@ from __future__ import annotations
 import ast
 import base64
 import email.parser
+import importlib.metadata as importlib_metadata
 import importlib.util
 import io
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import venv
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
@@ -216,6 +220,39 @@ class StandaloneDistributionTests(unittest.TestCase):
                 self.assertTrue(
                     any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
                 )
+                vendored_name = next(
+                    name for name in names if name.endswith(".dist-info/VENDORED")
+                )
+                self.assertEqual(
+                    archive.read(vendored_name), b"PyYAML==6.0.3\n"
+                )
+                self.assertIn("yaml/__init__.py", names)
+                self.assertIn("yaml/loader.py", names)
+                self.assertFalse(
+                    any(
+                        name.startswith("yaml/_yaml.")
+                        and name.endswith((".pyd", ".so"))
+                        for name in names
+                    )
+                )
+                pyyaml = importlib_metadata.distribution("PyYAML")
+                pyyaml_license = next(
+                    member
+                    for member in pyyaml.files or ()
+                    if str(member)
+                    .replace("\\", "/")
+                    .casefold()
+                    .endswith(".dist-info/licenses/license")
+                )
+                license_name = next(
+                    name
+                    for name in names
+                    if name.endswith(".dist-info/licenses/PyYAML-LICENSE")
+                )
+                self.assertEqual(
+                    archive.read(license_name),
+                    Path(pyyaml.locate_file(pyyaml_license)).read_bytes(),
+                )
 
             result = subprocess.run(
                 [sys.executable, str(output), "--version"],
@@ -225,6 +262,110 @@ class StandaloneDistributionTests(unittest.TestCase):
                 text=True,
             )
             self.assertTrue(result.stdout.strip().endswith(f" {expected_version}"))
+
+    def test_zipapp_supports_yaml_config_version_source_and_openapi(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output = root / "boundver.pyz"
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_standalone.py"),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            environment = root / "venv"
+            venv.EnvBuilder(with_pip=False).create(environment)
+            runtime = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            no_external_yaml = subprocess.run(
+                [
+                    str(runtime),
+                    "-I",
+                    "-c",
+                    "import importlib.util; assert importlib.util.find_spec('yaml') is None",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(no_external_yaml.returncode, 0, no_external_yaml.stderr)
+
+            repository = root / "repo"
+            service = repository / "service"
+            service.mkdir(parents=True)
+            (repository / "boundary.config.yaml").write_text(
+                "project: standalone-yaml\n"
+                "components:\n"
+                "  api:\n"
+                "    path: service\n"
+                "    version_source:\n"
+                "      file: openapi.yaml\n"
+                "      field: info.version\n"
+                "    boundary:\n"
+                "      provider: openapi-canonical\n"
+                "      paths: [openapi.yaml]\n"
+                "slices: {}\n",
+                encoding="utf-8",
+            )
+            (service / "openapi.yaml").write_text(
+                "openapi: 3.0.0\n"
+                "info:\n"
+                "  title: Standalone smoke\n"
+                "  version: 1.2.3\n"
+                "paths:\n"
+                "  /health:\n"
+                "    get:\n"
+                "      responses:\n"
+                "        '200':\n"
+                "          description: OK\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "smoke@example.com"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Standalone Smoke"],
+                cwd=repository,
+                check=True,
+            )
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "fixture"], cwd=repository, check=True
+            )
+
+            command = [str(runtime), "-I", str(output)]
+            subprocess.run(
+                command + ["validate-config"], cwd=repository, check=True
+            )
+            subprocess.run(
+                command + ["generate", "--source", "head"],
+                cwd=repository,
+                check=True,
+            )
+            lock = json.loads(
+                (repository / "boundary.lock.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(lock["components"]["api"]["version"], "1.2.3")
+            subprocess.run(
+                ["git", "add", "boundary.lock.json"], cwd=repository, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "lock"], cwd=repository, check=True
+            )
+            subprocess.run(
+                command + ["verify", "--source", "head"],
+                cwd=repository,
+                check=True,
+            )
 
 
 class AutomationContractTests(unittest.TestCase):
@@ -319,6 +460,23 @@ class AutomationContractTests(unittest.TestCase):
         ):
             self.assertIn(f"exclude {path}", manifest)
 
+    def test_manifest_includes_field_report_public_schemas(self):
+        manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("recursive-include spec *.json", manifest)
+        for schema_name in (
+            "verify-baseline.schema.json",
+            "cli-output.migrate-lock.schema.json",
+        ):
+            with self.subTest(schema=schema_name):
+                schema_path = REPO_ROOT / "spec" / schema_name
+                self.assertTrue(schema_path.is_file())
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    schema["$id"],
+                    "https://raw.githubusercontent.com/yzm1/boundver/"
+                    f"v0.13.0/spec/{schema_name}",
+                )
+
     def test_packaging_smoke_removes_stale_build_outputs(self):
         script = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
             encoding="utf-8"
@@ -339,7 +497,16 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
         self.assertIn("verify-marketplace", jobs["publish-pypi"]["needs"])
         self.assertIn("publish-pypi", jobs["verify-pypi"]["needs"])
-        self.assertEqual(jobs["advance-compatibility-alias"]["needs"], "verify-pypi")
+        self.assertEqual(jobs["publish-container"]["needs"], "verify-pypi")
+        self.assertEqual(
+            jobs["publish-container"]["uses"],
+            "./.github/workflows/publish-container.yml",
+        )
+        self.assertEqual(jobs["publish-container"]["permissions"]["actions"], "read")
+        self.assertEqual(
+            jobs["advance-compatibility-alias"]["needs"],
+            ["verify-pypi", "publish-container"],
+        )
         alias_job = jobs["advance-compatibility-alias"]
         self.assertEqual(alias_job["permissions"]["actions"], "write")
         self.assertEqual(alias_job["permissions"]["contents"], "read")
@@ -352,6 +519,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn(".release-control/scripts/release_alias.py\" dispatch", alias_step["run"])
         self.assertIn('publication-run-id "$GITHUB_RUN_ID"', alias_step["run"])
         self.assertIn('publication-attempt "$GITHUB_RUN_ATTEMPT"', alias_step["run"])
+        self.assertIn('publication-ref "$GITHUB_REF_NAME"', alias_step["run"])
         self.assertIn('publication-sha "$GITHUB_SHA"', alias_step["run"])
         self.assertIn("compatibility_alias:", workflow)
         self.assertIn("COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}", workflow)
@@ -433,7 +601,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertNotIn("git tag --force v0 ", workflow)
         self.assertEqual(workflow.count("retention-days: 90"), 3)
 
-    def test_alias_workflow_is_exact_tag_bound_and_uses_no_maintainer_secret(self):
+    def test_alias_workflow_uses_exact_tag_mutation_and_no_maintainer_secret(self):
         import yaml
 
         path = REPO_ROOT / ".github/workflows/advance-release-alias.yml"
@@ -446,16 +614,19 @@ class AutomationContractTests(unittest.TestCase):
         advance = workflow["jobs"]["advance"]
         first = advance["steps"][0]
         self.assertEqual(
-            first["name"], "Bind this run to the exact immutable release tag"
+            first["name"], "Bind mutation authority to the exact release tag"
         )
         binding = first["run"]
         for invariant in (
+            '"$PUBLICATION_REF" == "$RELEASE_TAG"',
+            '"$PUBLICATION_REF" == main',
             '"$DISPATCH_REF_TYPE" != tag',
             '"$DISPATCH_REF_NAME" != "$RELEASE_TAG"',
-            '"$DISPATCH_REF" != "refs/tags/$RELEASE_TAG"',
             '"$DISPATCH_SHA" != "$RELEASE_SHA"',
         ):
             self.assertIn(invariant, binding)
+        self.assertNotIn('expected_ref_type=branch', binding)
+        self.assertNotIn('"$DISPATCH_SHA" != "$PUBLICATION_SHA"', binding)
         parent = next(
             step
             for step in advance["steps"]
@@ -470,6 +641,16 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertIn('scripts/release_alias.py" verify', parent["run"])
         self.assertIn('scripts/release_alias.py" advance', mutation["run"])
+        self.assertIn(".release-control/scripts/release_alias.py", parent["run"])
+        control_checkout = next(
+            step
+            for step in advance["steps"]
+            if step.get("name") == "Checkout the reviewed publication-control commit"
+        )
+        self.assertEqual(
+            control_checkout["with"]["ref"], "${{ inputs.publication_sha }}"
+        )
+        self.assertEqual(control_checkout["with"]["path"], ".release-control")
         self.assertNotIn("secrets.", text)
         self.assertNotIn("personal access token", text.lower())
 
@@ -576,8 +757,15 @@ class AutomationContractTests(unittest.TestCase):
                 "publish-testpypi",
                 "prepare-release-draft",
                 "publish-pypi",
+                "publish-container",
             },
         )
+        container_call = elevated.pop("publish-container")
+        self.assertEqual(
+            container_call["uses"], "./.github/workflows/publish-container.yml"
+        )
+        self.assertNotIn("steps", container_call)
+
         for job_name, job in elevated.items():
             steps = job["steps"]
             scripts = "\n".join(str(step.get("run", "")) for step in steps)
@@ -591,6 +779,31 @@ class AutomationContractTests(unittest.TestCase):
             self.assertNotIn("scripts/", scripts, job_name)
             self.assertNotIn("python3 - ", scripts, job_name)
             self.assertNotIn("python3 -c ", scripts, job_name)
+
+        container_jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish-container.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        self.assertEqual(container_jobs["build"]["permissions"], {"contents": "read"})
+        self.assertEqual(container_jobs["publish"]["needs"], "build")
+        publisher_steps = container_jobs["publish"]["steps"]
+        self.assertFalse(
+            any(
+                str(step.get("uses", "")).startswith("actions/checkout@")
+                for step in publisher_steps
+            )
+        )
+        self.assertFalse(
+            any(
+                str(step.get("uses", "")).startswith("docker/build-push-action@")
+                for step in publisher_steps
+            )
+        )
+        publisher_scripts = "\n".join(
+            str(step.get("run", "")) for step in publisher_steps
+        )
+        self.assertIn("oras cp --from-oci-layout", publisher_scripts)
 
         draft_script = next(
             step["run"]
@@ -638,7 +851,10 @@ class AutomationContractTests(unittest.TestCase):
             if step.get("name") == "Advance the leased monotonic compatibility alias"
         )
         self.assertIn("python3 -I", mutation["run"])
-        self.assertIn('"$GITHUB_WORKSPACE/scripts/release_alias.py" advance', mutation["run"])
+        self.assertIn(
+            '"$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" advance',
+            mutation["run"],
+        )
         self.assertIn("gh auth setup-git", mutation["run"])
 
     def test_token_scoped_steps_cannot_import_from_the_candidate_checkout(self):
@@ -1259,6 +1475,8 @@ class AutomationContractTests(unittest.TestCase):
         compile(snapshot_program, "<review-state-program>", "exec")
         self.assertIn("reviewThreads(first:100,after:$endCursor)", snapshot_program)
         self.assertIn("collaborators/{encoded_login}/permission", snapshot_program)
+        self.assertIn('submitted_at = review.get("submitted_at")', snapshot_program)
+        self.assertIn('created_at = comment.get("created_at")', snapshot_program)
         self.assertEqual(
             jobs["revalidate-release-state"]["outputs"]["review-state-digest"],
             "${{ steps.mutable-state.outputs.review-state-digest }}",
@@ -1373,6 +1591,7 @@ elif endpoint.startswith("repos/owner/repository/pulls/17/reviews"):
     payload = [{
         "id": 301,
         "state": "COMMENTED",
+        "submitted_at": os.environ["FAKE_REVIEW_TIME"],
         "commit_id": sha,
         "body": os.environ["FAKE_REVIEW_BODY"],
         "user": actor,
@@ -1394,6 +1613,7 @@ print(json.dumps(payload, separators=(",", ":")))
                     "RUNNER_TEMP": str(root),
                     "FAKE_RELEASE_SHA": release_sha,
                     "FAKE_REVIEW_BODY": "Codex Review: Didn't find any major issues.",
+                    "FAKE_REVIEW_TIME": "2026-08-18T12:00:00Z",
                 }
             )
 
@@ -1435,6 +1655,20 @@ print(json.dumps(payload, separators=(",", ":")))
                 text=True,
             ).stdout.strip()
             self.assertNotEqual(changed, first)
+
+            environment["FAKE_REVIEW_BODY"] = (
+                "Codex Review: Didn't find any major issues."
+            )
+            environment["FAKE_REVIEW_TIME"] = "2026-08-18T12:00:01Z"
+            retimed = subprocess.run(
+                command,
+                cwd=root,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertNotEqual(retimed, first)
 
     def test_action_and_container_install_complete_public_extras(self):
         action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
@@ -1657,6 +1891,90 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
+
+    def test_action_baseline_input_is_read_only_and_opt_in(self):
+        import yaml
+
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertNotIn("write-baseline", action["inputs"])
+        self.assertNotIn("update-baseline", action["inputs"])
+        self.assertEqual(
+            action["inputs"]["baseline"],
+            {
+                "description": "Optional read-only verification baseline path.",
+                "required": False,
+                "default": "",
+            },
+        )
+        verify_step = action["runs"]["steps"][-1]
+        self.assertEqual(
+            verify_step["env"]["BOUNDVER_BASELINE"], "${{ inputs.baseline }}"
+        )
+        script = verify_step["run"]
+        baseline_block = """if [[ -n "$BOUNDVER_BASELINE" ]]; then
+  command+=(--baseline "$BOUNDVER_BASELINE")
+fi"""
+        self.assertEqual(script.count(baseline_block), 1)
+        self.assertNotIn("--write-baseline", script)
+        self.assertNotIn("--update-baseline", script)
+        self.assertIn("result_file=$(mktemp", script)
+
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            git_bash = (
+                Path(git).resolve().parent.parent / "bin" / "bash.exe"
+                if git is not None
+                else None
+            )
+            if git_bash is not None and git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:  # pragma: no cover - every published Action runner has Bash
+            self.skipTest("Bash is required to exercise the composite Action script")
+        assembly = script.split("result_file=$(mktemp", 1)[0]
+        probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
+        base_environment = {
+            **os.environ,
+            "BOUNDVER_CONFIG": "boundary.config.json",
+            "BOUNDVER_LOCK": "boundary.lock.json",
+            "BOUNDVER_SOURCE": "head",
+            "BOUNDVER_FACETS": "",
+            "BOUNDVER_COMPONENTS": "",
+            "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_TRANSITIVE": "false",
+            "BOUNDVER_FAIL_FAST": "false",
+            "BOUNDVER_UPDATE": "false",
+        }
+        expected = [
+            "python",
+            "-I",
+            "-m",
+            "boundver",
+            "verify",
+            "--config",
+            "boundary.config.json",
+            "--lock",
+            "boundary.lock.json",
+            "--source",
+            "head",
+            "--format",
+            "json",
+        ]
+        for baseline, suffix in (
+            ("", []),
+            ("ci/known-debt.json", ["--baseline", "ci/known-debt.json"]),
+        ):
+            with self.subTest(baseline=baseline):
+                environment = {**base_environment, "BOUNDVER_BASELINE": baseline}
+                result = subprocess.run(
+                    [bash, "-c", probe],
+                    cwd=REPO_ROOT,
+                    env=environment,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout.splitlines(), expected + suffix)
 
     def test_pre_commit_and_pre_push_use_matching_snapshots_and_portable_exact_gate(self):
         import yaml
@@ -2018,6 +2336,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             verdict,
             "",
             marker,
+            "    ",
         ]
         if duplicate:
             lines.extend(("", marker))
@@ -2037,18 +2356,24 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         self,
         body: str,
         *,
+        record_id: str = "201",
+        timestamp: str = "2026-08-18T12:01:00Z",
         actor_id: str = "199175422",
         login: str = "chatgpt-codex-connector[bot]",
         actor_type: str = "Bot",
     ) -> str:
         encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
-        return f"{actor_id}|{login}|{actor_type}|{encoded}"
+        return (
+            f"{record_id}|{timestamp}|{actor_id}|{login}|{actor_type}|{encoded}"
+        )
 
     def _review_record(
         self,
         commit: str,
         body: str | None = None,
         *,
+        record_id: str = "101",
+        timestamp: str = "2026-08-18T12:00:00Z",
         state: str = "COMMENTED",
         actor_id: str = "199175422",
         login: str = "chatgpt-codex-connector[bot]",
@@ -2062,7 +2387,25 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             )
         encoded = base64.b64encode(body.encode("utf-8")).decode("ascii")
         return (
-            f"{state}|{actor_id}|{login}|{actor_type}|{commit}|{encoded}"
+            f"{state}|{record_id}|{timestamp}|{actor_id}|{login}|{actor_type}|"
+            f"{commit}|{encoded}"
+        )
+
+    def _suggestions_review(self, commit: str) -> str:
+        return "\n".join(
+            (
+                "",
+                "### 💡 Codex Review",
+                "",
+                "Here are some automated review suggestions for this pull request.",
+                "",
+                f"**Reviewed commit:** `{commit}`",
+                "    ",
+                "",
+                "<details> <summary>ℹ️ About Codex in GitHub</summary>",
+                "review guidance",
+                "</details>",
+            )
         )
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
@@ -2237,6 +2580,7 @@ exit 74
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
         head = "a" * 40
         verdicts = (
+            "Codex Review: Didn't find any major issues. Chef's kiss.",
             "Codex Review: Didn't find any major issues. Delightful!",
             "Codex Review: Didn't find any major issues. Swish!",
             "Codex Review: Didn't find any major issues. Keep it up!",
@@ -2245,6 +2589,7 @@ exit 74
             "Already looking forward to the next diff.",
             "Codex Review: Didn't find any major issues. "
             "More of your lovely PRs please.",
+            "Codex Review: Didn't find any major issues. You're on a roll.",
         )
         for verdict in verdicts:
             with self.subTest(verdict=verdict):
@@ -2266,6 +2611,16 @@ exit 74
             actor_type="User",
         )
         result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=approval,
+            FAKE_DECISION="APPROVED",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self._run_audit(
+            FAKE_AUTHOR_ID="303",
+            FAKE_AUTHOR_LOGIN="dependabot[bot]",
+            FAKE_AUTHOR_TYPE="Bot",
             FAKE_HEAD_SHA=head,
             FAKE_REVIEWS=approval,
             FAKE_DECISION="APPROVED",
@@ -2408,12 +2763,15 @@ exit 74
                 self.assertIn("no current exact-commit review evidence", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
-    def test_codex_evidence_rejects_multiple_current_contradictory_records(self):
+    def test_codex_evidence_uses_latest_current_record_and_rejects_ties(self):
         head = "6" * 40
-        clean = self._review_record(head)
+        clean = self._review_record(
+            head, timestamp="2026-08-18T12:01:00Z"
+        )
         adverse = self._review_record(
             head,
             "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:02:00Z",
         )
         result = self._run_audit(
             FAKE_HEAD_SHA=head,
@@ -2423,14 +2781,54 @@ exit 74
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
 
-        empty = self._review_record(head, "")
+        earlier_adverse = self._review_record(
+            head,
+            "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:00:00Z",
+        )
         result = self._run_audit(
             FAKE_HEAD_SHA=head,
-            FAKE_REVIEWS=f"{clean}\n{empty}",
+            FAKE_REVIEWS=f"{earlier_adverse}\n{clean}",
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
+        clean_comment = self._comment_record(self._codex_comment(head[:10]))
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=earlier_adverse,
+            FAKE_COMMENTS=clean_comment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        tied_adverse = self._review_record(
+            head,
+            "Codex Review: found a release-blocking issue.",
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{tied_adverse}",
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exact_codex_suggestions_count_after_every_thread_is_resolved(self):
+        head = "a" * 40
+        review = self._review_record(
+            head,
+            self._suggestions_review(head[:10]),
+        )
+        result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_REVIEWS=review)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=review,
+            FAKE_UNRESOLVED="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unresolvedThreads=1", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_stale_evidence_cannot_consume_later_current_comment(self):
@@ -2477,6 +2875,17 @@ exit 74
                 result = self._run_audit(FAKE_FAILURE=failure)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("GitHub API failed", result.stderr)
+
+        malformed_review = self._review_record(
+            "6" * 40,
+            timestamp="not-a-timestamp",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA="6" * 40,
+            FAKE_REVIEWS=malformed_review,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed review data", result.stderr)
 
         human = self._review_record(
             "6" * 40, "", state="APPROVED", actor_id="202", login="reviewer",

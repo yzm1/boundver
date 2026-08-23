@@ -165,6 +165,41 @@ def test_standalone_preflight_rejects_symlinks_when_supported(
         standalone._collect_source_tree(source)
 
 
+def test_standalone_vendored_pyyaml_is_lock_bound_and_pure_python(
+    tmp_path: Path,
+) -> None:
+    lock = tmp_path / "action.lock"
+    lock.write_text("PyYAML==6.0.3 \\\n", encoding="utf-8")
+    assert standalone._locked_pyyaml_version(lock) == "6.0.3"
+    lock.write_text(
+        "PyYAML==6.0.3 \\\nPyYAML==6.0.4 \\\n", encoding="utf-8"
+    )
+    with pytest.raises(standalone.StandaloneBuildError, match="exactly one"):
+        standalone._locked_pyyaml_version(lock)
+
+    package = tmp_path / "yaml"
+    package.mkdir()
+    for name in standalone._PYYAML_SOURCE_FILES:
+        (package / name).write_text("# fixture\n", encoding="utf-8")
+    (package / "_yaml.cp39-test.so").write_bytes(b"native")
+    manifest = standalone._collect_pyyaml_tree(package)
+    assert {entry.relative.as_posix() for entry in manifest.entries} == set(
+        standalone._PYYAML_SOURCE_FILES
+    )
+    (package / "unexpected.py").write_text("# unexpected\n", encoding="utf-8")
+    with pytest.raises(standalone.StandaloneBuildError, match="unexpected"):
+        standalone._collect_pyyaml_tree(package)
+
+
+@pytest.mark.parametrize(
+    "member",
+    ("../yaml/a.py", "/yaml/a.py", "C:/yaml/a.py", "yaml//a.py", "yaml/./a.py"),
+)
+def test_standalone_rejects_unsafe_distribution_paths(member: str) -> None:
+    with pytest.raises(standalone.StandaloneBuildError, match="unsafe path"):
+        standalone._distribution_member_name(member)
+
+
 def test_bounded_standalone_archive_remains_executable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -6,6 +6,73 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-23
+
+### Added
+
+- Presentation-only component `note` metadata for migration context, ownership
+  guidance, and rationale without semantic-config digest churn, following the
+  released v0.12 treatment of component `ecosystem` and boundary `note`.
+- Verification baselines with create-only `--write-baseline`, read-only
+  `--baseline`, and shrink-only `--update-baseline` workflows so established
+  drift can be reviewed once while CI rejects new debt. The composite Action
+  exposes only the read-only baseline gate.
+- `discover --diff-config` reports discovered roots missing from configuration
+  and configured roots absent from discovery; `migrate-lock --explain` audits
+  0.10 whole-path glob behavior against current segment-aware selection before
+  regeneration.
+- A strict, hash-locked GitHub Pages documentation site, runnable
+  consumer-impact demo, comparison guide, and distribution guide.
+- Protected multi-platform GHCR publication with a read-only OCI build,
+  retained digest handoff, anonymous-pull verification, immutable OCI labels,
+  and GitHub artifact attestation.
+- A deterministic Homebrew formula renderer backed by a self-contained,
+  YAML-capable standalone archive, and a typed GitLab CI/CD Catalog component
+  that binds each component release to the matching GHCR version.
+
+### Changed
+
+- Strict `validate-config` and generation now reject unavailable slice facets
+  and empty explicit built-in path selections before lock computation, while
+  `--allow-partial` remains the explicit escape hatch for intentional null
+  slice inputs. Source-option help now names `head` as the default snapshot.
+- Migration and CI guidance now distinguishes required lock regeneration from
+  digest-neutral facet/slice results when selected content is unchanged,
+  documents the raw `json-file-raw` to `path-hash` transition, and requires
+  persistent developer, hook, and container environments to upgrade and assert
+  their exact pinned boundver version.
+- Public positioning now describes boundver narrowly as declared contract-drift
+  classification and downstream-impact routing, with explicit relationships to
+  build-graph, schema-compatibility, and release-automation tools.
+
+### Fixed
+
+- Compatibility-alias mutation now always executes from the immutable release
+  tag while recovery loads reviewed publication controls from current `main`,
+  keeping the secretless `GITHUB_TOKEN` workflow-tree authorization exact.
+  Recovery fails before dispatch when a pre-v0.13 immutable tag lacks the child
+  workflow and its approved alias still needs to move.
+- Windows test cleanup retries only transient sharing violations for freshly
+  closed temporary Git repositories, while persistent or unrelated permission
+  errors still fail the supported-platform gate.
+- Verification no longer recommends `--update` for unavailable facets that
+  configuration cannot produce, explains when the lock remains untouched, and
+  tells first-time `--source head` users to commit a generated lock or verify
+  the working tree.
+- The release review audit recognizes standard GitHub App bot logins and the
+  current authenticated Codex clean-verdict wording without relaxing its
+  exact-commit or positive-allowlist requirements.
+- Read-only lock diffs now accept canonical `boundary-lock/v3` semantic-config/v1
+  and v2 inputs and report the contract transition, while incompatible lock
+  schemas or unknown contracts still produce one bounded diagnostic.
+- Verification preflight identifies a semantic-contract/version mismatch,
+  including the running boundver version and regeneration guidance, instead of
+  calling a well-formed historical lock malformed.
+- Index snapshot failures retain bounded, terminal-safe Git or OS detail from
+  `git write-tree`/`ls-tree`, making intermittent capture failures diagnosable.
+- CLI help and `--version` now use the stable `boundver` program name on
+  Python 3.14 instead of exposing the interpreter and script path.
+
 ## [0.12.0] - 2026-08-19
 
 This release advances the semantic configuration digest contract to v2.
@@ -61,9 +128,10 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
 
 ### Fixed
 
-- The release-review audit accepts the trusted Codex bot's observed positive
-  clean-verdict status allowlist while still rejecting arbitrary,
-  contradictory, stale, spoofed, or multiply marked evidence.
+- The release-review audit accepts authenticated exact-commit Codex review
+  evidence once every finding thread is resolved, lets one later exact verdict
+  supersede earlier feedback, and still rejects adverse latest verdicts,
+  equal-time ambiguity, unresolved threads, stale commits, and spoofing.
 - The public `path-hash` v3 provider is registered as a built-in and documented
   as the format-neutral raw provider for arbitrary declared artifacts.
 - Local and protected workflow dispatches bind deduplication to the exact tag,
@@ -100,23 +168,18 @@ Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
   longer mistaken for global verbosity flags.
 - Local release verification prefers Git-for-Windows Bash over the incompatible
   WSL launcher while retaining normal Bash discovery on other platforms.
-- Trusted Codex release-review evidence must contain the authenticated clean
-  verdict for the exact reviewed commit; adverse or mixed bodies cannot satisfy
-  the release gate, and evidence is accepted only from a PR merged into this
-  repository's `main`. The mutation boundary requires identical review-state
-  snapshots before and after the semantic audit and immediately before push.
+- Trusted Codex release-review evidence must bind the exact reviewed commit;
+  standard suggestion reviews count only after all threads are resolved, while
+  a later exact verdict supersedes earlier feedback. Evidence is accepted only
+  from a PR merged into this repository's `main`, and the mutation boundary
+  requires identical timestamped review-state snapshots before and after the
+  semantic audit and immediately before push.
 - Registry OIDC jobs execute no repository code, and repository mutations use
-  isolated reviewed control code; compatibility-alias mutation is additionally
-  bound to the immutable exact release tag. Production PyPI retries reuse the
-  complete exact artifact with duplicate tolerance, followed by byte-for-byte
-  public verification, so a partial upload cannot make a failed-job retry unsafe.
-- Compatibility aliases are advanced by a dedicated workflow dispatched from
-  the immutable release tag after production PyPI verification. It rebinds to
-  the active parent attempt, verifies every public artifact before and after a
-  leased monotonic ref update, and avoids both a maintainer PAT and the default
-  token failure that occurs when a newer recovery workflow points a ref back to
-  a commit containing a different workflow definition.
-
+  isolated reviewed control code; compatibility-alias mutation additionally
+  binds an exact publication-control workflow to an immutable release checkout.
+  Production PyPI retries reuse the complete exact artifact with duplicate
+  tolerance, followed by byte-for-byte public verification, so a partial upload
+  cannot make a failed-job retry unsafe.
 ## [0.11.0] - 2026-08-14
 
 This release changes the meaning of stored fingerprints and requires a fresh
@@ -388,7 +451,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/yzm1/boundver/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/yzm1/boundver/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yzm1/boundver/releases/tag/v0.10.0

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
+  "project": "consumer-impact-demo",
+  "defaults": {
+    "compat_mode": "major"
+  },
+  "components": {
+    "payments-api": {
+      "path": "examples/consumer-impact/services/payments",
+      "version_source": {"file": "version.json", "field": "version"},
+      "boundary": {"provider": "openapi", "paths": ["openapi.yaml"]},
+      "behavior": {"paths": ["openapi.yaml", "defaults.json"]},
+      "verify_facets": ["boundary", "compat"],
+      "consumers": ["payments-sdk"]
+    },
+    "payments-sdk": {
+      "path": "examples/consumer-impact/packages/payments-sdk",
+      "version_source": {"file": "package.json", "field": "version"},
+      "boundary": {"provider": "typescript-exports", "paths": ["src/index.ts"]},
+      "verify_facets": ["exact"],
+      "consumers": ["checkout-web"]
+    },
+    "checkout-web": {
+      "path": "examples/consumer-impact/apps/checkout",
+      "version_source": {"file": "package.json", "field": "version"},
+      "boundary": {"provider": "leaf", "paths": []},
+      "verify_facets": ["exact"],
+      "external_consumers": ["mobile-app"]
+    }
+  },
+  "slices": {
+    "payments-impact": {
+      "description": "Payments API and its downstream component closure",
+      "mode": "exact",
+      "closure_of": "payments-api"
+    }
+  }
+}

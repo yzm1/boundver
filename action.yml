@@ -1,5 +1,5 @@
 name: boundver
-description: Detect API boundary, behavioral contract, and component changes in CI.
+description: Classify contract drift and downstream impact across polyglot repositories.
 author: yzm1
 
 branding:
@@ -15,6 +15,10 @@ inputs:
     description: Path to boundary.lock.json.
     required: false
     default: boundary.lock.json
+  baseline:
+    description: Optional read-only verification baseline path.
+    required: false
+    default: ""
   source:
     description: Snapshot to verify (head, index, or working-tree).
     required: false
@@ -89,6 +93,7 @@ runs:
       env:
         BOUNDVER_CONFIG: ${{ inputs.config }}
         BOUNDVER_LOCK: ${{ inputs.lock }}
+        BOUNDVER_BASELINE: ${{ inputs.baseline }}
         BOUNDVER_SOURCE: ${{ inputs.source }}
         BOUNDVER_FACETS: ${{ inputs.facets }}
         BOUNDVER_COMPONENTS: ${{ inputs.components }}
@@ -131,6 +136,9 @@ runs:
         fi
         if [[ -n "$BOUNDVER_CHANGED_FROM" ]]; then
           command+=(--changed-from "$BOUNDVER_CHANGED_FROM")
+        fi
+        if [[ -n "$BOUNDVER_BASELINE" ]]; then
+          command+=(--baseline "$BOUNDVER_BASELINE")
         fi
         if [[ "$BOUNDVER_TRANSITIVE" == true ]]; then
           command+=(--transitive)

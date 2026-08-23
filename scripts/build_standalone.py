@@ -6,8 +6,7 @@ Usage:
     python scripts/build_standalone.py
     python scripts/build_standalone.py --output dist/boundver.pyz
 
-The resulting .pyz file is self-contained (no external deps beyond Python 3.9+
-stdlib) and can be run directly:
+The resulting .pyz file is self-contained and can be run directly:
 
     python3 boundver.pyz generate
     python3 boundver.pyz verify
@@ -17,14 +16,18 @@ On Unix systems you can also make it executable:
     ./dist/boundver.pyz verify
 
 Requires:
-  - Python 3.9+ for JSON configs
-  - Python 3.11+ for TOML configs in the standalone archive; YAML support is
-    optional
+  - Python 3.9+ for JSON and YAML configs
+  - Python 3.11+ for TOML configs in the standalone archive
+
+The archive vendors the pure-Python runtime from the exact PyYAML wheel pinned
+in the release toolchain. Native LibYAML extensions are deliberately omitted so
+one reproducible archive runs on every supported platform.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata as importlib_metadata
 import os
 import re
 import stat
@@ -32,7 +35,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
 
@@ -46,10 +49,38 @@ MAX_SOURCE_TOTAL_PATH_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
 MAX_SOURCE_TOTAL_BYTES = 128 * 1024 * 1024
 MAX_PROJECT_METADATA_BYTES = 1024 * 1024
+MAX_TOOL_LOCK_BYTES = 4 * 1024 * 1024
 MAX_LICENSE_BYTES = 4 * 1024 * 1024
-MAX_STAGE_TREE_ENTRIES = MAX_SOURCE_MEMBERS + 16
-MAX_STAGE_MEMBERS = MAX_SOURCE_MEMBERS + 16
-MAX_STAGE_TOTAL_BYTES = MAX_SOURCE_TOTAL_BYTES + (2 * MAX_LICENSE_BYTES) + 64 * 1024
+MAX_VENDORED_TREE_ENTRIES = 128
+MAX_VENDORED_MEMBERS = 64
+MAX_VENDORED_TOTAL_BYTES = 8 * 1024 * 1024
+_PYYAML_SOURCE_FILES = (
+    "__init__.py",
+    "composer.py",
+    "constructor.py",
+    "cyaml.py",
+    "dumper.py",
+    "emitter.py",
+    "error.py",
+    "events.py",
+    "loader.py",
+    "nodes.py",
+    "parser.py",
+    "reader.py",
+    "representer.py",
+    "resolver.py",
+    "scanner.py",
+    "serializer.py",
+    "tokens.py",
+)
+MAX_STAGE_TREE_ENTRIES = MAX_SOURCE_MEMBERS + MAX_VENDORED_MEMBERS + 32
+MAX_STAGE_MEMBERS = MAX_SOURCE_MEMBERS + MAX_VENDORED_MEMBERS + 32
+MAX_STAGE_TOTAL_BYTES = (
+    MAX_SOURCE_TOTAL_BYTES
+    + MAX_VENDORED_TOTAL_BYTES
+    + (3 * MAX_LICENSE_BYTES)
+    + 64 * 1024
+)
 _READ_CHUNK_BYTES = 64 * 1024
 
 
@@ -71,6 +102,13 @@ class _TreeManifest:
     root_identity: os.stat_result
     entries: list[_TreeEntry]
     total_file_bytes: int
+
+
+@dataclass(frozen=True)
+class _VendoredPyYAML:
+    manifest: _TreeManifest
+    license_bytes: bytes
+    version: str
 
 
 def _is_windows_reparse_point(identity: os.stat_result) -> bool:
@@ -337,6 +375,182 @@ def _project_version(pyproject_path: Path) -> str:
     return version
 
 
+def _locked_pyyaml_version(lock_path: Path) -> str:
+    """Read the exact PyYAML pin used by the public Action and release build."""
+    text = _read_stable_bytes(
+        lock_path, MAX_TOOL_LOCK_BYTES, "release tool lock"
+    ).decode("utf-8")
+    matches = re.findall(
+        r"(?mi)^PyYAML==(?P<version>[A-Za-z0-9][A-Za-z0-9._+!-]{0,126})"
+        r"\s*\\\s*$",
+        text,
+    )
+    if len(matches) != 1:
+        raise StandaloneBuildError(
+            "release tool lock must contain exactly one exact PyYAML pin"
+        )
+    return matches[0]
+
+
+def _is_native_pyyaml_member(relative: Path) -> bool:
+    return (
+        len(relative.parts) == 1
+        and relative.name.startswith("_yaml.")
+        and relative.suffix.lower() in {".pyd", ".so"}
+    )
+
+
+def _collect_pyyaml_tree(root: Path) -> _TreeManifest:
+    """Select PyYAML's fixed pure-Python surface from a bounded wheel tree."""
+    manifest = _collect_tree(
+        root,
+        source_tree=True,
+        max_entries=MAX_VENDORED_TREE_ENTRIES,
+        max_members=MAX_VENDORED_MEMBERS,
+        max_total_bytes=MAX_VENDORED_TOTAL_BYTES,
+    )
+    expected = set(_PYYAML_SOURCE_FILES)
+    selected: list[_TreeEntry] = []
+    seen: set[str] = set()
+    native_members = 0
+    for entry in manifest.entries:
+        name = entry.relative.as_posix()
+        if entry.is_directory:
+            raise StandaloneBuildError(
+                f"installed PyYAML contains an unexpected directory: {name}"
+            )
+        if name in expected:
+            selected.append(entry)
+            seen.add(name)
+            continue
+        if _is_native_pyyaml_member(entry.relative):
+            native_members += 1
+            if native_members > 1:
+                raise StandaloneBuildError(
+                    "installed PyYAML contains multiple native extensions"
+                )
+            continue
+        raise StandaloneBuildError(
+            f"installed PyYAML contains an unexpected package member: {name}"
+        )
+    missing = sorted(expected - seen)
+    if missing:
+        raise StandaloneBuildError(
+            "installed PyYAML is missing required pure-Python members: "
+            + ", ".join(missing)
+        )
+    selected.sort(key=lambda item: item.relative.as_posix())
+    return _TreeManifest(
+        manifest.root,
+        manifest.root_identity,
+        selected,
+        sum(entry.identity.st_size for entry in selected),
+    )
+
+
+def _distribution_member_name(member: object) -> str:
+    raw = str(member).replace("\\", "/")
+    path = PurePosixPath(raw)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or ".." in path.parts
+        or ":" in path.parts[0]
+        or "\0" in raw
+        or path.as_posix() != raw
+    ):
+        raise StandaloneBuildError(
+            f"installed PyYAML metadata contains an unsafe path: {member}"
+        )
+    return path.as_posix()
+
+
+def _same_unresolved_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
+        os.path.abspath(right)
+    )
+
+
+def _preflight_pyyaml(lock_path: Path) -> _VendoredPyYAML:
+    """Bind vendored PyYAML sources and license to the exact reviewed lock."""
+    expected_version = _locked_pyyaml_version(lock_path)
+    try:
+        distribution = importlib_metadata.distribution("PyYAML")
+    except importlib_metadata.PackageNotFoundError as exc:
+        raise StandaloneBuildError(
+            f"PyYAML {expected_version} must be installed from {lock_path} "
+            "before building the standalone archive"
+        ) from exc
+    if distribution.version != expected_version:
+        raise StandaloneBuildError(
+            f"installed PyYAML {distribution.version} does not match the "
+            f"release tool lock ({expected_version})"
+        )
+    if distribution.metadata.get("Name", "").casefold() != "pyyaml":
+        raise StandaloneBuildError("installed PyYAML distribution name is invalid")
+
+    files = distribution.files
+    if files is None:
+        raise StandaloneBuildError("installed PyYAML has no file inventory")
+    inventory: dict[str, list[object]] = {}
+    for member in files:
+        inventory.setdefault(_distribution_member_name(member), []).append(member)
+
+    required = {f"yaml/{name}" for name in _PYYAML_SOURCE_FILES}
+    for name in sorted(required):
+        if len(inventory.get(name, ())) != 1:
+            raise StandaloneBuildError(
+                f"installed PyYAML metadata must identify exactly one {name}"
+            )
+    init_member = inventory["yaml/__init__.py"][0]
+    package_root = Path(distribution.locate_file(init_member)).parent
+    for name in _PYYAML_SOURCE_FILES:
+        member = inventory[f"yaml/{name}"][0]
+        located = Path(distribution.locate_file(member))
+        if not _same_unresolved_path(located, package_root / name):
+            raise StandaloneBuildError(
+                f"installed PyYAML metadata redirects yaml/{name} outside its package"
+            )
+
+    metadata_names = [
+        name
+        for name in inventory
+        if name.casefold().endswith(".dist-info/metadata")
+    ]
+    if len(metadata_names) != 1:
+        raise StandaloneBuildError(
+            "installed PyYAML metadata must identify exactly one METADATA file"
+        )
+    dist_info_prefix = metadata_names[0].rsplit("/", 1)[0] + "/"
+    license_members = inventory.get(dist_info_prefix + "licenses/LICENSE", ())
+    if len(license_members) != 1:
+        raise StandaloneBuildError(
+            "installed PyYAML metadata must identify exactly one distribution license"
+        )
+    license_bytes = _read_stable_bytes(
+        Path(distribution.locate_file(license_members[0])),
+        MAX_LICENSE_BYTES,
+        "PyYAML license",
+    )
+    if not license_bytes:
+        raise StandaloneBuildError("installed PyYAML license is empty")
+
+    manifest = _collect_pyyaml_tree(package_root)
+    init_text = _read_stable_bytes(
+        package_root / "__init__.py",
+        MAX_SOURCE_FILE_BYTES,
+        "PyYAML package version source",
+    ).decode("utf-8")
+    version_matches = re.findall(
+        r"(?m)^__version__\s*=\s*['\"]([^'\"]+)['\"]\s*$", init_text
+    )
+    if version_matches != [expected_version]:
+        raise StandaloneBuildError(
+            "installed PyYAML package version does not match the release tool lock"
+        )
+    return _VendoredPyYAML(manifest, license_bytes, expected_version)
+
+
 def _apply_metadata(path: Path, identity: os.stat_result) -> None:
     os.chmod(path, stat.S_IMODE(identity.st_mode))
     os.utime(path, ns=(identity.st_atime_ns, identity.st_mtime_ns))
@@ -565,6 +779,9 @@ def build(output: Path) -> None:
         sys.exit(f"ERROR: license not found at {license_path}")
     try:
         source_manifest = _collect_source_tree(src_pkg)
+        vendored_pyyaml = _preflight_pyyaml(
+            repo_root / "scripts" / "requirements" / "action.lock"
+        )
         version = _project_version(repo_root / "pyproject.toml")
         license_bytes = _read_stable_bytes(
             license_path, MAX_LICENSE_BYTES, "license"
@@ -586,10 +803,11 @@ def build(output: Path) -> None:
         # Copy the package tree into the staging dir.
         dest_pkg = stage / "boundver"
         _copy_manifest(source_manifest, dest_pkg)
+        _copy_manifest(vendored_pyyaml.manifest, stage / "yaml")
 
         # Write __main__.py entry point.
-        (stage / "__main__.py").write_text(
-            "from boundver.cli import main\nmain()\n", encoding="utf-8"
+        (stage / "__main__.py").write_bytes(
+            b"from boundver.cli import main\nmain()\n"
         )
 
         # importlib.metadata supports distributions stored on a zip sys.path.
@@ -604,9 +822,17 @@ def build(output: Path) -> None:
             "Name: boundver\n"
             f"Version: {version}\n"
             "License-Expression: MIT\n"
+            "License-File: licenses/LICENSE\n"
+            "License-File: licenses/PyYAML-LICENSE\n"
         )
-        (dist_info / "METADATA").write_text(metadata, encoding="utf-8")
+        (dist_info / "METADATA").write_bytes(metadata.encode("utf-8"))
+        (dist_info / "VENDORED").write_bytes(
+            f"PyYAML=={vendored_pyyaml.version}\n".encode("ascii")
+        )
         (licenses / "LICENSE").write_bytes(license_bytes)
+        (licenses / "PyYAML-LICENSE").write_bytes(
+            vendored_pyyaml.license_bytes
+        )
         (stage / "LICENSE").write_bytes(license_bytes)
         stage_manifest = _collect_stage_tree(stage)
         if source_date_epoch is not None:

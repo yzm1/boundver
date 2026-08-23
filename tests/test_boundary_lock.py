@@ -3110,6 +3110,15 @@ class MigrateLockTests(unittest.TestCase):
             migrate_lockfile(lf)
         self.assertIn("v99", str(cm.exception))
 
+    def test_migrate_unknown_schema_diagnostic_is_bounded_and_type_safe(self):
+        from boundver._lockfile import MigrationError, migrate_lockfile
+
+        for schema in (["not", "hashable"], "x" * 1_000_000):
+            with self.subTest(schema_type=type(schema).__name__):
+                with self.assertRaises(MigrationError) as cm:
+                    migrate_lockfile({"schema": schema})
+                self.assertLess(len(str(cm.exception)), 5_000)
+
     def test_migrate_no_schema_raises(self):
         from boundver._lockfile import MigrationError, migrate_lockfile
         with self.assertRaises(MigrationError) as cm:

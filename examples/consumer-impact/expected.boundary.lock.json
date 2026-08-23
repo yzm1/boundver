@@ -1,0 +1,92 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v3",
+  "config_contract": "boundver-semantic-config/v2",
+  "config_digest": "14d2a38e8ac9228866b422277d5c0726a9267dfde1cb0ce1aacd7c4a38cfbf9b",
+  "project": "consumer-impact-demo",
+  "components": {
+    "payments-api": {
+      "version": "1.2.0",
+      "path": "examples/consumer-impact/services/payments",
+      "boundary_provider": "openapi",
+      "boundary_provider_version": "3",
+      "boundary_status": "ok",
+      "consumers": [
+        "payments-sdk"
+      ],
+      "external_consumers": [],
+      "fingerprints": {
+        "exact": "89c68b7a2c2f14448c7292d62c68a008fdd744235e38cf0ebae7262917ab3084",
+        "behavior": "1ca22ea784be6beb7e9a74b0388d7e1e06bd55ad7f4fc3f4f52f45bdf555f915",
+        "boundary": "9cf4bb1be66836334faf1a7999e8746ebd5c36696e26c16fd466516b4f00879e",
+        "compat": "2fff952cdc34cc964efc7aabc703caad2bde519c2a02e11228bb1a8fcd422fcb"
+      },
+      "semver": {
+        "compat_family": "1",
+        "api_surface": "1.2",
+        "exact_version": "1.2.0"
+      }
+    },
+    "payments-sdk": {
+      "version": "1.2.0",
+      "path": "examples/consumer-impact/packages/payments-sdk",
+      "boundary_provider": "typescript-exports",
+      "boundary_provider_version": "3",
+      "boundary_status": "ok",
+      "consumers": [
+        "checkout-web"
+      ],
+      "external_consumers": [],
+      "fingerprints": {
+        "exact": "8c1a92aa38d303dc0971970ca67e1aad60a056eff371d3875da7d1c2f8769a74",
+        "behavior": null,
+        "boundary": "787423052ed0f52b92bf41680b8cf78ad06a6b5fbbd49b75e361e5cecce0a554",
+        "compat": "76bb52b75c4c2cd8f9db8c93188268b37840b9956410bcfb113499e86ed05cea"
+      },
+      "semver": {
+        "compat_family": "1",
+        "api_surface": "1.2",
+        "exact_version": "1.2.0"
+      }
+    },
+    "checkout-web": {
+      "version": "4.7.0",
+      "path": "examples/consumer-impact/apps/checkout",
+      "boundary_provider": "leaf",
+      "boundary_provider_version": "1",
+      "boundary_status": "ok",
+      "consumers": [],
+      "external_consumers": [
+        "mobile-app"
+      ],
+      "fingerprints": {
+        "exact": "e9a78bb55ae1f9c96254fe4ea78620f67c6715b4571c8a5d45baa140bc563e50",
+        "behavior": null,
+        "boundary": null,
+        "compat": "02cdbe33e0ab32f44b2e907035ed14db3e941e8a2024df6f427c04354c1fe37c"
+      },
+      "semver": {
+        "compat_family": "4",
+        "api_surface": "4.7",
+        "exact_version": "4.7.0"
+      }
+    }
+  },
+  "slices": {
+    "payments-impact": {
+      "description": "Payments API and its downstream component closure",
+      "mode": "exact",
+      "components": [
+        "checkout-web",
+        "payments-api",
+        "payments-sdk"
+      ],
+      "fingerprint": "2188f5dd4588a03378e5de59c3931f213611c52f48aafff0ae16115c5f8c3101",
+      "component_digests": {
+        "checkout-web": "e9a78bb55ae1f9c96254fe4ea78620f67c6715b4571c8a5d45baa140bc563e50",
+        "payments-api": "89c68b7a2c2f14448c7292d62c68a008fdd744235e38cf0ebae7262917ab3084",
+        "payments-sdk": "8c1a92aa38d303dc0971970ca67e1aad60a056eff371d3875da7d1c2f8769a74"
+      }
+    }
+  }
+}

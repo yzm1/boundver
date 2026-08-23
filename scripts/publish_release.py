@@ -53,6 +53,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
 
 
 REPOSITORY = "yzm1/boundver"
+HOMEBREW_REPOSITORY = "yzm1/homebrew-boundver"
 REVIEW_TOKEN_ENV = "BOUNDVER_RELEASE_REVIEW_TOKEN"
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -76,6 +77,7 @@ MAX_GITHUB_API_PAGES = 100
 MAX_GITHUB_API_ITEMS = 10_000
 MAX_RELEASE_METADATA_BYTES = 1024 * 1024
 MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
+ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 MAX_DISTRIBUTION_FILE_BYTES = 128 * 1024 * 1024
 MAX_DISTRIBUTION_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_DISTRIBUTION_DIRECTORY_ENTRIES = 10_000
@@ -89,7 +91,7 @@ DISPATCH_DISCOVERY_ATTEMPTS = 12
 DISPATCH_DISCOVERY_DELAY_SECONDS = 5.0
 SURFACES = (
     "repository hygiene",
-    "README and documentation",
+    "README and hosted documentation",
     "changelog and release notes",
     "schema URLs, configs, and locks",
     "CI and review state",
@@ -99,7 +101,9 @@ SURFACES = (
     "PyPI",
     "GitHub Release assets",
     "compatibility alias",
-    "Docker",
+    "GHCR multi-platform container",
+    "Homebrew tap",
+    "GitLab CI/CD Catalog component",
     "pre-commit",
 )
 
@@ -1141,6 +1145,46 @@ def _project_at_commit(repo: Path, sha: str, tag: str) -> str:
     return f"boundver {project['version']} at {sha}"
 
 
+def _release_alias_workflow_at_commit(
+    repo: Path, remote: str, release_sha: str, tag: str, alias: str
+) -> str:
+    """Require secretless alias recovery support in the immutable release."""
+    if alias == "none":
+        return "no compatibility alias was requested"
+    entry = _git(
+        repo,
+        "ls-tree",
+        "--full-tree",
+        release_sha,
+        "--",
+        ALIAS_WORKFLOW_PATH,
+        max_stdout_bytes=1024,
+    )
+    if not entry:
+        if _remote_ref(repo, remote, f"refs/tags/{alias}") == release_sha:
+            return f"{alias} already resolves to immutable release {release_sha}"
+        raise GateError(
+            f"immutable release {tag} at {release_sha} predates the secretless "
+            "exact-tag alias workflow; automatic alias recovery cannot move "
+            f"{alias} without separate workflow-mutation credentials"
+        )
+    header, separator, path = entry.partition("\t")
+    fields = header.split()
+    if (
+        separator != "\t"
+        or len(fields) != 3
+        or fields[0] not in {"100644", "100755"}
+        or fields[1] != "blob"
+        or SHA_RE.fullmatch(fields[2]) is None
+        or path != ALIAS_WORKFLOW_PATH
+    ):
+        raise GateError(
+            f"immutable release {tag} does not contain a regular "
+            f"{ALIAS_WORKFLOW_PATH} workflow"
+        )
+    return f"{ALIAS_WORKFLOW_PATH} is present at immutable release {release_sha}"
+
+
 def _clean(repo: Path) -> str:
     state = _git(repo, "status", "--porcelain=v1", "--untracked-files=all")
     if state:
@@ -1225,12 +1269,62 @@ def _github_controls(
         collection="environments",
     )
     by_name = {item.get("name"): item for item in values if isinstance(item, dict)}
-    for name in ("testpypi", "pypi", "marketplace"):
+    for name in (
+        "testpypi",
+        "pypi",
+        "marketplace",
+        "container",
+        "container-public",
+    ):
         item = by_name.get(name)
         if not _environment_requires_review(item):
             raise GateError(
                 f"GitHub environment {name!r} must require at least one reviewer"
             )
+    pages = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/pages")
+    if (
+        not isinstance(pages, dict)
+        or pages.get("build_type") != "workflow"
+        or pages.get("html_url") != "https://yzm1.github.io/boundver/"
+        or pages.get("https_enforced") is not True
+        or pages.get("public") is not True
+    ):
+        raise GateError(
+            "GitHub Pages must use the public HTTPS GitHub Actions deployment"
+        )
+    tap = _gh_json(repo, HOMEBREW_REPOSITORY, f"repos/{HOMEBREW_REPOSITORY}")
+    if (
+        not isinstance(tap, dict)
+        or tap.get("full_name") != HOMEBREW_REPOSITORY
+        or tap.get("default_branch") != "main"
+        or tap.get("archived") is not False
+        or tap.get("visibility") != "public"
+    ):
+        raise GateError("the canonical Homebrew tap must be public and active")
+    for path in ("Formula/boundver.rb", ".github/workflows/update-formula.yml"):
+        item = _gh_json(
+            repo,
+            HOMEBREW_REPOSITORY,
+            f"repos/{HOMEBREW_REPOSITORY}/contents/{path}?ref=main",
+        )
+        if (
+            not isinstance(item, dict)
+            or item.get("type") != "file"
+            or not isinstance(item.get("sha"), str)
+            or SHA_RE.fullmatch(item["sha"]) is None
+            or not isinstance(item.get("size"), int)
+            or not 0 < item["size"] <= MAX_RELEASE_WORKFLOW_BYTES
+        ):
+            raise GateError(f"Homebrew tap contract is absent or malformed: {path}")
+    tap_environment = _gh_json(
+        repo,
+        HOMEBREW_REPOSITORY,
+        f"repos/{HOMEBREW_REPOSITORY}/environments/formula-update",
+    )
+    if not _environment_requires_review(tap_environment):
+        raise GateError(
+            "Homebrew formula-update environment must require at least one reviewer"
+        )
     immutable = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/immutable-releases")
     if not isinstance(immutable, dict) or immutable.get("enabled") is not True:
         raise GateError("immutable GitHub Releases are not enabled")
@@ -1269,7 +1363,11 @@ def _github_controls(
     ):
         raise GateError("no successful completed ci.yml push run for exact main SHA")
     active_states = {"requested", "pending", "queued", "in_progress", "waiting"}
-    for workflow in ("create-release-tag.yml", "publish.yml"):
+    for workflow in (
+        "create-release-tag.yml",
+        "publish.yml",
+        "publish-container.yml",
+    ):
         runs_value = _gh_paginated_list(
             repo,
             f"repos/{REPOSITORY}/actions/workflows/{workflow}/runs?per_page=100",
@@ -1298,7 +1396,10 @@ def _github_controls(
                 "an existing public GitHub Release must be stable and immutable "
                 "before recovery"
             )
-    return "repository, exact CI, environments, immutability, and promotion state verified"
+    return (
+        "repository, exact CI, Pages, Homebrew tap, environments, immutability, "
+        "and promotion state verified"
+    )
 
 
 def _resume_release_state(repo: Path, remote: str, tag: str, sha: str) -> str:
@@ -1685,7 +1786,19 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
 def _surface_inventory(repo: Path) -> str:
     required = {
         "repository hygiene": ("scripts/check_repo_hygiene.py", ".gitignore", ".gitattributes"),
-        "README and documentation": ("README.md", "docs/RELEASING.md"),
+        "README and hosted documentation": (
+            "README.md",
+            "mkdocs.yml",
+            "docs/index.md",
+            "docs/demo.md",
+            "docs/comparison.md",
+            "docs/distribution.md",
+            "docs/RELEASING.md",
+            "docs/assets/verify-demo.svg",
+            "docs/assets/social-preview.png",
+            ".github/workflows/docs.yml",
+            "scripts/requirements/docs.lock",
+        ),
         "changelog and release notes": ("CHANGELOG.md", "scripts/release_changelog.py"),
         "schema URLs, configs, and locks": ("boundary.config.schema.json", "spec/boundary.lock.schema.json", "boundary.lock.json"),
         "CI and review state": (".github/workflows/ci.yml", "scripts/audit_release_reviews.sh"),
@@ -1707,10 +1820,23 @@ def _surface_inventory(repo: Path) -> str:
         "GitHub Release assets": ("scripts/verify_release_surfaces.py",),
         "compatibility alias": (
             ".github/workflows/publish.yml",
-            ".github/workflows/advance-release-alias.yml",
+            ALIAS_WORKFLOW_PATH,
             "scripts/release_alias.py",
         ),
-        "Docker": ("Dockerfile",),
+        "GHCR multi-platform container": (
+            "Dockerfile",
+            ".github/workflows/publish-container.yml",
+            ".github/workflows/publish.yml",
+        ),
+        "Homebrew tap": (
+            "scripts/render_homebrew_formula.py",
+            "docs/distribution.md",
+        ),
+        "GitLab CI/CD Catalog component": (
+            ".gitlab-ci.yml",
+            "templates/boundver.yml",
+            "scripts/validate_gitlab_component.py",
+        ),
         "pre-commit": (".pre-commit-hooks.yaml",),
     }
     missing = [
@@ -1736,6 +1862,7 @@ def _surface_inventory(repo: Path) -> str:
         "pypi-preflight",
         "publish-pypi",
         "verify-pypi",
+        "publish-container",
         "advance-compatibility-alias",
         "verify-public-surfaces",
     )
@@ -1744,14 +1871,43 @@ def _surface_inventory(repo: Path) -> str:
         raise GateError(
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
         )
+    container_workflow = _read_bounded_text(
+        repo / ".github/workflows/publish-container.yml",
+        ".github/workflows/publish-container.yml",
+        max_bytes=MAX_RELEASE_WORKFLOW_BYTES,
+    )
+    required_container_contracts = (
+        "environment: container",
+        "environment: container-public",
+        "linux/amd64,linux/arm64",
+        "tonistiigi/binfmt:qemu-v10.2.3@sha256:",
+        "version: v0.36.1",
+        "image=moby/buildkit:v0.32.2@sha256:",
+        "push-to-registry: true",
+        "oras cp --from-oci-layout",
+        '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"',
+        'DOCKER_CONFIG="$anonymous_config" docker pull',
+        'gh attestation verify "oci://$IMAGE@$DIGEST"',
+    )
+    missing_container_contracts = [
+        value for value in required_container_contracts if value not in container_workflow
+    ]
+    if missing_container_contracts:
+        raise GateError(
+            "container workflow is missing release contracts: "
+            + ", ".join(missing_container_contracts)
+        )
     alias_workflow = _read_bounded_text(
-        repo / ".github/workflows/advance-release-alias.yml",
-        ".github/workflows/advance-release-alias.yml",
+        repo / ALIAS_WORKFLOW_PATH,
+        ALIAS_WORKFLOW_PATH,
         max_bytes=MAX_RELEASE_WORKFLOW_BYTES,
     )
     required_alias_contracts = (
         "  advance:",
-        "Bind this run to the exact immutable release tag",
+        "Bind mutation authority to the exact release tag",
+        "Checkout the reviewed publication-control commit",
+        "publication_ref:",
+        '--publication-ref "$PUBLICATION_REF"',
         "Require the active originating publication and verified PyPI job",
         "--skip-alias",
         "Advance the leased monotonic compatibility alias",
@@ -1763,7 +1919,7 @@ def _surface_inventory(repo: Path) -> str:
     ]
     if missing_alias_contracts:
         raise GateError(
-            "alias workflow is missing exact-tag release contracts: "
+            "alias workflow is missing exact-control release contracts: "
             + ", ".join(missing_alias_contracts)
         )
     return "; ".join(SURFACES)
@@ -1834,6 +1990,14 @@ def _evaluate_resume(
             "release commit ancestry",
             lambda: _release_is_on_main(repo, release_sha, control_sha),
         )
+        if alias != "none" and all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "release alias recovery capability",
+                lambda: _release_alias_workflow_at_commit(
+                    repo, remote, release_sha, tag, alias
+                ),
+            )
         if all(item.status == "passed" for item in checks):
             _record(
                 checks,

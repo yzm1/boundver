@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/spec/cli-output.discover.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.discover.schema.json",
   "title": "boundver discover --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver discover --format json`.",
   "type": "object",
@@ -43,6 +43,56 @@
             }
           }
         }
+      }
+    },
+    "config_diff": {
+      "type": "object",
+      "description": "Present only with --diff-config; compares normalized discovered paths with configured component roots.",
+      "required": ["registered_count", "unregistered_count", "not_discovered_count", "registered", "unregistered", "not_discovered"],
+      "additionalProperties": false,
+      "properties": {
+        "registered_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "unregistered_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "not_discovered_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "registered": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "required": ["discovered_name", "path", "configured_names"],
+            "additionalProperties": false,
+            "properties": {
+              "discovered_name": {"type": "string", "minLength": 1, "maxLength": 16384},
+              "path": {"type": "string", "minLength": 1, "maxLength": 16384},
+              "configured_names": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1, "maxLength": 16384}
+              }
+            }
+          }
+        },
+        "unregistered": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"$ref": "#/$defs/namedPath"}
+        },
+        "not_discovered": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {"$ref": "#/$defs/namedPath"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "namedPath": {
+      "type": "object",
+      "required": ["name", "path"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 16384},
+        "path": {"type": "string", "minLength": 1, "maxLength": 16384}
       }
     }
   }

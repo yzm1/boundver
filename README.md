@@ -1,20 +1,27 @@
-# boundver — see contract drift before consumers do
+# boundver
+
+> Know which contracts changed — and which consumers to verify.
 
 [![CI](https://github.com/yzm1/boundver/actions/workflows/ci.yml/badge.svg)](https://github.com/yzm1/boundver/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-4051b5)](https://yzm1.github.io/boundver/)
 [![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-boundver-blue?logo=github)](https://github.com/marketplace/actions/boundver)
 [![Python 3.9+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
-**boundver is Git-aware contract-drift detection for polyglot repositories.**
-It records four fingerprints per component—exact, behavior, boundary, and
-compatibility—so CI can block consumer-facing changes without rejecting every
-internal refactor.
+**boundver classifies declared contract drift and downstream impact across
+polyglot repositories.** It records four identities per component—exact,
+behavior, boundary, and compatibility family—then tells CI what changed and
+which declared consumers may need re-verification.
 
-> Version 0.12 uses `boundary-lock/v3` with
-> `boundver-semantic-config/v2`. Version 0.11 writes v3/v1 locks and 0.10.x
-> writes v2 locks; both require regeneration before using these instructions.
-> See the [migration note](#upgrade-to-012).
+Use it when APIs, schemas, generated contracts, configuration, or package
+surfaces cross language and build-system boundaries. Internal refactors stay
+visible without being confused with public-contract changes.
+
+[![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
+
+The install and Action examples below target the exact v0.13.0 release so local
+writers and CI verifiers use the same contract implementation.
 
 ## Try it in one minute
 
@@ -57,11 +64,22 @@ boundver detects drift in **declared artifacts**. It does not prove semantic or
 backward compatibility, execute consumer tests, or infer every runtime behavior.
 A clean result means the declared inputs and their recorded identities agree.
 
+## Where boundver fits
+
+| Need | Use | Relationship to boundver |
+|---|---|---|
+| Determine affected projects and tasks from a build graph | Nx, Pants, Bazel | These tools discover build impact; boundver classifies declared contract drift across build systems. |
+| Prove schema-specific compatibility | oasdiff, Buf, GraphQL Inspector | Run these semantic checkers alongside boundver for the formats they understand. |
+| Plan package versions and release notes | Changesets, semantic-release | These automate releases; boundver supplies review and CI signals before promotion. |
+| Detect contract-family drift and route downstream verification | boundver | Language-neutral, Git-aware fingerprints plus an explicit consumer graph. |
+
+See the full [comparison and integration guide](https://yzm1.github.io/boundver/comparison/).
+
 ## A practical configuration
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.12.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -103,6 +121,10 @@ A clean result means the declared inputs and their recorded identities agree.
 
 Component paths are repository-relative. Boundary, behavior, and version-source
 files are component-relative. Use POSIX `/` separators.
+
+In v0.13, component `ecosystem`, component `note`, and boundary `note` are
+presentation-only: use them for classification and review rationale, not hidden
+contract selection, and editing them does not rotate `config_digest`.
 
 ### Glob rules
 
@@ -171,6 +193,9 @@ facets that are available for that component. A CLI `--facets` value overrides
 every component. Explicitly selecting an unavailable facet—for example
 `compat` on a component with no `version_source`, or `boundary` on a `leaf`
 component—is a usage error (exit `2`), not a successful null comparison.
+Add the missing facet input or select only facets the component supplies;
+`--update` cannot manufacture an unavailable facet and leaves the lock
+unchanged.
 
 `generate --allow-partial` is narrower: it permits an intentional null facet
 to appear as a slice input. Missing declared files, provider failures, version
@@ -207,7 +232,8 @@ roadmap work.
 
 ## Source modes
 
-Use `head` for committed CI state, `index` for staged pre-commit state, and
+The default source is `head`: committed state, not unstaged local edits. Use
+`head` for committed CI state, `index` for staged pre-commit state, and
 `working-tree` while reviewing local edits. Generate and verify from the same
 source. The normative snapshot and tracked-file rules live in the
 [specification](spec/spec.md#source-modes); practical staging examples live in
@@ -216,7 +242,7 @@ the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 ## GitHub Actions
 
 Pin the Action to the same lock-contract release used by local writers (for
-this release, `yzm1/boundver@v0.12.0`). The
+the latest stable release, `yzm1/boundver@v0.13.0`). The
 [CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
 the canonical workflow recipe and covers outputs, changed-path reporting,
 GitLab, pre-commit, and caching.
@@ -225,7 +251,7 @@ GitLab, pre-commit, and caching.
 
 | Provider | Selection and meaning |
 |---|---|
-| `path-hash` | Raw bytes for arbitrary declared artifacts |
+| `path-hash` | Format-neutral raw bytes from any declared artifact, such as SQL or protobuf files |
 | `openapi` / `openapi-raw` | Raw OpenAPI or Swagger bytes |
 | `openapi-canonical` | Parsed OpenAPI contract with selected documentation noise removed |
 | `json-file` / `json-file-raw` | Raw JSON contract bytes |
@@ -256,14 +282,33 @@ writers and verifiers together and regenerate from the snapshot CI will
 verify. Follow the canonical
 [0.12 upgrade procedure](docs/gradual-adoption.md#upgrading-to-012).
 
+Regeneration is still mandatory even when its content fingerprints are
+digest-neutral. With the same source bytes and effective selectors, a v3/v1 to
+v3/v2 regeneration and v0.12's built-in provider-metadata updates are expected
+to retain component facet and slice digest values; the semantic-config and
+provider metadata still change. Investigate any facet/slice value change rather
+than treating it as metadata churn. The equivalent raw-provider case for
+`json-file-raw` and `path-hash` is documented in the
+[provider guide](docs/public-vs-custom-providers.md#provider-versions-and-v3-locks).
+The v0.13 `diff` command can compare canonical `boundary-lock/v3`
+semantic-config/v1 and v2 locks read-only so this regeneration remains
+reviewable. Full generation recomputes and emits v2 without trusting the old
+lock; verification and generation paths that reuse an existing lock reject v1.
+
 ## Useful commands
+
+v0.13 adds `discover --diff-config`, `migrate-lock --explain`, and the
+verification baseline flags shown below.
 
 ```bash
 boundver discover
+boundver discover --diff-config
 boundver status --format json
 boundver verify --changed-from origin/main --transitive
 boundver verify --components payment-api --update
 boundver diff old.lock.json boundary.lock.json
+boundver migrate-lock --explain --source head --format json
+boundver verify --write-baseline .boundver-verify-baseline.json
 boundver why payment-api --transitive --format json
 boundver slice checkout-contracts --format json
 boundver completions --shell bash
@@ -278,12 +323,38 @@ python -m pip install boundver
 python -m pip install "boundver[schema,yaml]"  # recommended for strict JSON Schema and YAML
 ```
 
-- [Getting started](https://github.com/yzm1/boundver/blob/main/docs/getting-started.md)
-- [Examples](https://github.com/yzm1/boundver/blob/main/examples/README.md)
-- [CI cookbook](https://github.com/yzm1/boundver/blob/main/docs/ci-cookbook.md)
-- [Gradual adoption](https://github.com/yzm1/boundver/blob/main/docs/gradual-adoption.md)
-- [Why boundver?](https://github.com/yzm1/boundver/blob/main/docs/WHY_BOUNDVER.md)
-- [Lockfile merge strategy](https://github.com/yzm1/boundver/blob/main/docs/LOCKFILE_MERGE.md)
+For a reused developer environment, system pre-commit hook, or prebuilt
+container, install the repository's exact pin with `--upgrade` and assert the
+imported version before generating or verifying a lock:
+
+```bash
+python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
+```
+
+In persistent automation, invoke commands as `python -m boundver ...` with that
+same interpreter so an older executable elsewhere on `PATH` cannot take over.
+
+You can also use the release container, Homebrew tap, or GitLab CI/CD component:
+
+```bash
+docker run --rm -v "$PWD:/repo:ro" -w /repo \
+  ghcr.io/yzm1/boundver:<version> verify --source head
+brew install yzm1/boundver/boundver
+```
+
+Exact-version and digest-pinned examples are in the
+[distribution guide](https://yzm1.github.io/boundver/distribution/).
+
+- [Documentation](https://yzm1.github.io/boundver/)
+- [Getting started](https://yzm1.github.io/boundver/getting-started/)
+- [Runnable demo](https://yzm1.github.io/boundver/demo/)
+- [Examples](https://yzm1.github.io/boundver/examples/)
+- [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/)
+- [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)
+- [Migration inspection and verification ratchets](https://yzm1.github.io/boundver/migration-and-ratcheting/)
+- [Why boundver?](https://yzm1.github.io/boundver/WHY_BOUNDVER/)
+- [Lockfile merge strategy](https://yzm1.github.io/boundver/LOCKFILE_MERGE/)
 - [Maintainer release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md)
 - [Changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md)
 - [Support](https://github.com/yzm1/boundver/blob/main/SUPPORT.md), [contributing](https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md), and [security](https://github.com/yzm1/boundver/blob/main/SECURITY.md)

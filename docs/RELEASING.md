@@ -2,7 +2,8 @@
 
 This is the maintainer runbook for promoting one reviewed commit through every
 public boundver surface. A release is complete only when the same version and
-commit are visible on GitHub, GitHub Marketplace, PyPI, TestPyPI, and every
+commit are visible on the documentation site, GitHub, GitHub Marketplace,
+PyPI, TestPyPI, GHCR, the Homebrew tap, the GitLab CI/CD Catalog, and every
 Action alias that was explicitly approved for that compatibility line.
 
 Do not repair a partial release by rebuilding from a different checkout,
@@ -30,9 +31,14 @@ The repository owner must configure these controls before starting a release:
   must not target mutable compatibility aliases such as `vX.Y`, and it must
   not restrict initial tag creation. Immutable-release protection takes over
   once the Release is published.
-- Create protected GitHub environments named `testpypi`, `pypi`, and
-  `marketplace`. Require at least one reviewer for every environment; a wait
-  timer alone is not approval.
+- Set GitHub Pages to **GitHub Actions** and retain the protected
+  `github-pages` deployment environment created by Pages.
+- Create protected GitHub environments named `testpypi`, `pypi`,
+  `marketplace`, `container`, and `container-public`. Require at least one
+  reviewer for every release environment; a wait timer alone is not approval.
+  `container` authorizes the registry write. `container-public` is approved
+  only after the exact GHCR package is publicly readable, which matters on its
+  first publication because a new GHCR package is private by default.
 - Configure separate trusted publishers for the `boundver` project on PyPI and
   TestPyPI. Both publishers must identify repository `yzm1/boundver`, workflow
   `.github/workflows/publish.yml`, and their matching environment name. The two
@@ -44,6 +50,13 @@ The repository owner must configure these controls before starting a release:
 - Keep the repository homepage pointed at the public Marketplace listing and
   keep the repository description/topics current. These are discovery
   metadata, not versioned release content.
+- Maintain the public `yzm1/homebrew-boundver` tap. Formula changes must use
+  the immutable `.pyz` release asset and its SHA-256, pass `brew audit` and
+  `brew test`, and merge through normal review.
+- Mirror the release source into the GitLab Catalog project with top-level
+  `templates/`. GitHub tags retain the `vX.Y.Z` spelling; the GitLab component
+  release uses the Catalog's exact `X.Y.Z` semantic-version tag and must point
+  at the matching GHCR image. Never reuse a GitLab version tag.
 
 Record configuration changes through normal repository/owner review. Never add
 an API token or `.pypirc` to this repository; PyPI uploads use short-lived OIDC
@@ -54,6 +67,7 @@ credentials from the protected environments.
 | Surface | Source of truth | Release requirement |
 |---|---|---|
 | Git source and documentation | Exact commit on `main` | Version, schemas, examples, migration text, and links describe the release—not a future or already-published state. |
+| Hosted documentation | `mkdocs.yml`, `docs/`, and the hash-locked docs profile | Strict build passes and GitHub Pages deploys the exact `main` documentation commit. |
 | Version tag | `vX.Y.Z` | Immutable tag resolves to the tested `main` commit. |
 | TestPyPI | Verified wheel and sdist artifact | File names and SHA-256 digests equal the candidate; the wheel installs directly from TestPyPI. |
 | PyPI | The same verified wheel and sdist artifact | Trusted publication, metadata/README/links correct, direct wheel install succeeds. |
@@ -61,8 +75,10 @@ credentials from the protected environments.
 | GitHub Marketplace | The GitHub Release plus `action.yml` | Owner selects **Publish this Action to the GitHub Marketplace** while publishing the prepared draft; listing reports `vX.Y.Z` as Latest. |
 | Stable Action aliases | Mutable compatibility tags such as `vX.Y` | Advanced only after the exact release and Marketplace listing verify; never create a GitHub Release for aliases and never move a broader alias across a breaking Action contract without explicit approval. |
 | Pre-commit | Git tags | Exact `rev: vX.Y.Z` and compatible aliases resolve to the release commit. |
-| Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the license and bundled schema. |
-| Dockerfile | Release commit | Built and exercised by exact-commit CI from a digest-pinned multi-architecture Python base, an immutable Debian snapshot, and the checked-in Python hash lock. There is currently no promised public container registry; add one only with an explicit supported-image policy. |
+| Standalone archive | Versioned GitHub Release asset | Reports/imports the release version and contains the boundver license, bundled schema, and lock-pinned pure-Python PyYAML runtime plus license; a dependency-free environment passes YAML config, version-source, and OpenAPI generation. |
+| GHCR container | Release commit and `Dockerfile` | `linux/amd64` and `linux/arm64` share one exact version tag, immutable manifest digest, release SHA label, public pull, and GitHub artifact attestation. Do not publish `latest`. |
+| Homebrew | Immutable standalone archive | `yzm1/homebrew-boundver` installs the exact `.pyz` release asset with its reviewed SHA-256 and passes tap audit/test before merge. |
+| GitLab CI/CD Catalog | `templates/boundver.yml` mirrored to GitLab | Exact Catalog version runs the matching GHCR image; GitLab's release tag is `X.Y.Z`, not GitHub's `vX.Y.Z`. |
 
 The source distribution contains user-facing guides, specifications, examples,
 and community files. It deliberately excludes tests, repository automation,
@@ -76,7 +92,7 @@ release wording therefore belongs in the release commit.
 
 Automation dependencies use pip's secure-install model. The reviewed version
 policy is `scripts/release-tool-lock.toml`; its purpose-specific Action, CI,
-and release profiles generate `scripts/requirements/*.lock`. CI and release
+docs, and release profiles generate `scripts/requirements/*.lock`. CI and release
 each reuse the minimal Action base without sharing unrelated tools. Every direct and
 transitive requirement is exact-pinned, and every permitted non-yanked wheel
 has a checked-in SHA-256 digest. Installs force `--require-hashes` and
@@ -144,10 +160,18 @@ diff; it is never accepted implicitly by an install.
 7. Review `scripts/release-tool-lock.toml`, regenerate the locks, run both
    `verify` and `check`, then inspect every version, filename, and SHA-256 diff.
    Build the wheel, sdist, and versioned standalone archive. Run Twine checks
-   and install each Python distribution in a clean environment.
-8. Confirm `action.yml`, the Dockerfile, and all three pre-commit hooks execute the
-   public installed form. Test the supported Python/OS matrix.
-9. Resolve every relevant review thread and blocking review. Merge only after
+   and install each Python distribution in a clean environment. In a separate
+   environment with no installed PyYAML, exercise the archive with a YAML
+   config, YAML version source, and YAML OpenAPI boundary.
+8. Run the public consumer-impact demo, build MkDocs with `--strict`, validate
+   the GitLab component source, and render a Homebrew formula from a known
+   release digest. Confirm `action.yml`, the Dockerfile, and all three
+   pre-commit hooks execute the public installed form. Test the supported
+   Python/OS and container architecture matrices.
+9. Confirm the Homebrew tap and GitLab Catalog project are writable by their
+   reviewed promotion paths, and that all five release environments still
+   require a reviewer.
+10. Resolve every relevant review thread and blocking review. Merge only after
    the exact release-preparation commit passes required CI.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
@@ -155,21 +179,22 @@ threads, changes-requested state, and pending human or team review requests.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.
-Codex evidence is accepted only from one authenticated current-commit bot
-record whose verdict line is exactly
-`Codex Review: Didn't find any major issues.`, optionally followed by the
-positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
-`Keep them coming!`, `Swish!`, `Already looking forward to the next diff.`, or
-`More of your lovely PRs please.` Those are the statuses emitted by the app in
-this repository; arbitrary or adverse suffixes fail closed. A `COMMENTED`
-review binds that clean body to its review commit; an
-issue comment must also contain exactly one `**Reviewed commit:**` marker. The
-audit permits only the bot's recognized informational footer after that
-evidence, pins the bot's numeric account ID, resolves abbreviated commit IDs,
-and snapshots those resolutions to detect collisions or drift before mutation.
-It rejects spoofed identities, ambiguous commit IDs, duplicate evidence,
-mixed clean/adverse bodies, or evidence that does not match the latest PR head
-or merge commit.
+Codex evidence must be an authenticated record for the latest PR head or merge
+commit. A standard Codex suggestions review counts only after every review
+thread is resolved. A later exact-commit record supersedes earlier feedback;
+equal timestamps are ambiguous and fail closed. A clean verdict line must be
+exactly `Codex Review: Didn't find any major issues.`, optionally followed by
+the positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
+`Keep them coming!`, `Swish!`, `Already looking forward to the next diff.`,
+`Chef's kiss.`, `More of your lovely PRs please.`, or `You're on a roll.`
+Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its
+body to the review commit; an issue comment must also contain exactly one
+`**Reviewed commit:**` marker. The audit permits only the bot's recognized
+informational footer, pins the bot's numeric account ID, resolves abbreviated
+commit IDs, and snapshots record IDs, timestamps, bodies, threads, and those
+resolutions to detect collisions or drift before mutation. It rejects spoofed
+identities, ambiguous commit IDs or timestamps, unresolved feedback, or stale
+evidence.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
@@ -255,22 +280,46 @@ workflows then perform these gates in order:
    artifact to production PyPI; the OIDC job executes no repository code.
    Verify its remote hashes, metadata, clean installation, and trusted-publisher
    attestations. Do not rebuild in a second event-triggered run.
-8. After production PyPI verification, dispatch the dedicated alias workflow
-   from the immutable `vX.Y.Z` tag. That exact-tag run binds itself to the
-   active publication and its successful PyPI-verification job, downloads the
-   immutable Release assets, verifies every public surface except the alias,
-   performs one ancestral, monotonic, force-with-lease alias update, and then
-   verifies all surfaces again. The parent publication waits for that result
-   and performs its own final comparison. A failed-jobs rerun may reuse exact
-   successful publication gates from an earlier attempt of the same active
-   run; it never treats a different run or commit as evidence. This secretless
-   handoff is required:
-   a recovery run executes from newer `main`, whose default Actions token is
-   not allowed to create a ref back to a commit containing a different workflow
-   definition. Do not store a maintainer PAT to bypass that protection. Advance
+8. After production PyPI verification, build and publish the exact release
+   container for `linux/amd64` and `linux/arm64` under
+   `ghcr.io/yzm1/boundver:X.Y.Z`. Record the manifest digest and GitHub
+   attestation. For a first package publication, make the package public in
+   GitHub's package settings, then approve `container-public`; the verification
+   job logs out before proving anonymous pull, labels, runtime version, and
+   attestation by digest.
+9. Dispatch the dedicated alias workflow from the immutable `vX.Y.Z` tag for
+   both initial publication and recovery. The child separately checks out the
+   reviewed publication-control commit—the tag itself initially or current
+   `main` during recovery—rebinds itself to the active parent and its successful
+   PyPI-verification job, downloads the immutable Release assets, verifies every
+   public surface except the alias, performs one ancestral, monotonic,
+   force-with-lease alias update, and then verifies all surfaces again. Running
+   the mutation workflow from the target release commit lets the repository
+   `GITHUB_TOKEN` update the alias without separate workflow-write credentials.
+   The parent publication waits for that result and performs its own final
+   comparison. A failed-jobs rerun may reuse exact successful publication gates
+   from an earlier attempt of the same active run; it never treats a different
+   run or commit as evidence. This secretless handoff is required. Immutable
+   tags before v0.13.0 do not contain the child workflow, so recovery that still
+   needs to create or move an alias fails before dispatch. Do not store a
+   maintainer PAT to bypass that protection. Advance
    only aliases explicitly approved for the compatibility line; for breaking
    `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
    lines unless an owner explicitly approves and announces those migrations.
+
+The Homebrew tap and GitLab Catalog are downstream promotion surfaces because
+they consume an immutable public Release or GHCR image. After the protected
+publication workflow succeeds:
+
+1. Render `Formula/boundver.rb` from `boundver-X.Y.Z.pyz` and the matching
+   `SHA256SUMS` entry, run the tap's macOS audit/test workflow, review, and merge
+   the formula update.
+2. Mirror the exact released source into the GitLab component project, create
+   the unprefixed `X.Y.Z` tag, and let `.gitlab-ci.yml` create the Catalog
+   Release only after component validation passes.
+3. Treat the release as incomplete until both public install paths resolve the
+   exact version. If either downstream service is unavailable, record the
+   partial state instead of substituting mutable assets or credentials.
 
 If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote
@@ -330,10 +379,16 @@ must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
 unreadable GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
 artifact identity remain bound to the immutable tagged source. Once PyPI is
-verified, current `main` dispatches `advance-release-alias.yml` at that tagged
-source and waits; the alias workflow must already exist in the immutable tag,
-must prove the parent run is still active at the exact attempt, and must observe
-its successful PyPI-verification job before any ref update. An ad hoc fresh
+verified, current `main` dispatches `advance-release-alias.yml` from the
+immutable release tag and waits. The child loads its publication-control scripts
+from the separately checked-out current `main` commit, must prove the parent run
+is still active at the exact attempt, and must observe its successful
+PyPI-verification job before any ref update. This recovery path can move an
+alias only for v0.13.0 and later immutable tags, which contain the exact-tag
+child workflow. For an older tag, the launcher fails before dispatch unless the
+approved alias already resolves to the release SHA. An original, immutable
+`--alias none` policy also needs no child workflow, but that option cannot be
+substituted for a release that originally approved an alias. An ad hoc fresh
 publication dispatch is not a recovery path.
 
 ## Post-release checks
@@ -357,6 +412,15 @@ Then verify:
   attached to the expected SHA, and contains the expected assets and notes.
 - `https://github.com/marketplace/actions/boundver` marks `vX.Y.Z` as Latest
   and displays the release's current inputs and documentation.
+- `https://yzm1.github.io/boundver/` serves the current strict documentation
+  build, including the runnable demo, comparison, and distribution guide.
+- `docker pull ghcr.io/yzm1/boundver:X.Y.Z` works without authentication;
+  both platform manifests resolve, labels bind the release SHA, and
+  `gh attestation verify` succeeds for the manifest digest.
+- `brew install yzm1/boundver/boundver` installs `X.Y.Z` from the immutable
+  `.pyz` asset and the tap formula's checksum matches `SHA256SUMS`.
+- The GitLab Catalog lists exact component version `X.Y.Z`, and a minimal
+  consumer pipeline resolves it to `ghcr.io/yzm1/boundver:X.Y.Z`.
 - `git ls-remote origin refs/tags/vX.Y.Z refs/tags/vX.Y` resolves the exact tag
   and intended compatibility-line alias to the release commit; broader aliases
   remain on their deliberately supported line.

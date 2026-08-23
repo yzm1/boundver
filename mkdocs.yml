@@ -1,0 +1,89 @@
+site_name: boundver
+site_description: Classify contract drift and downstream impact across polyglot repositories.
+site_url: https://yzm1.github.io/boundver/
+repo_url: https://github.com/yzm1/boundver
+repo_name: yzm1/boundver
+edit_uri: edit/main/docs/
+copyright: Copyright boundver contributors. MIT licensed.
+
+docs_dir: docs
+site_dir: site
+strict: true
+exclude_docs: |
+  PROJECT_REVIEW.md
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Start here:
+      - One-minute demo: demo.md
+      - Getting started: getting-started.md
+      - Gradual adoption: gradual-adoption.md
+      - Examples: examples.md
+  - Understand boundver:
+      - Why boundver?: WHY_BOUNDVER.md
+      - Comparison and integrations: comparison.md
+      - Public and custom providers: public-vs-custom-providers.md
+  - Operate it:
+      - CI cookbook: ci-cookbook.md
+      - Migration and ratcheting: migration-and-ratcheting.md
+      - Distribution: distribution.md
+      - Lockfile merges: LOCKFILE_MERGE.md
+  - Maintainers:
+      - Release process: RELEASING.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yzm1/boundver
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/boundver/
