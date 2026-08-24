@@ -838,6 +838,8 @@ jobs:
               or type(verification.get("run_id")) is not int
               or verification.get("run_id") != source_run_id
               or verification.get("head_sha") != release_sha
+              or type(verification.get("run_attempt")) is not int
+              or verification.get("run_attempt") != artifact_attempt
           ):
               raise SystemExit("source verify-release artifact attempt is invalid")
 

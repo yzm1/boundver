@@ -1764,6 +1764,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ]["jobs"][0]["id"] = True
         cases["malformed verification job"] = (malformed_job, "successful exact")
 
+        boolean_attempt = _resume_api_payloads(run_attempt=1, artifact_attempt=1)
+        boolean_attempt[
+            f"{run_endpoint}/jobs?filter=all&per_page=100"
+        ]["jobs"][0]["run_attempt"] = True
+        cases["boolean verification attempt"] = (
+            boolean_attempt,
+            "successful exact",
+        )
+
         expired = _resume_api_payloads()
         expired[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][
             "expires_at"

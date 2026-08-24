@@ -1339,6 +1339,7 @@ class AutomationContractTests(unittest.TestCase):
             "release_notes_re = re.compile(",
             "retained_attempts = set.union(*artifact_attempts.values())",
             'job.get("run_attempt") == artifact_attempt',
+            'type(verification.get("run_attempt")) is not int',
             "verify-release job for the retained artifact attempt",
         ):
             self.assertIn(check, recovery_lookup)
