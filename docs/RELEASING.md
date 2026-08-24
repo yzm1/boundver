@@ -34,8 +34,10 @@ The repository owner must configure these controls before starting a release:
 - Set GitHub Pages to **GitHub Actions** and retain the protected
   `github-pages` deployment environment created by Pages.
 - Create protected GitHub environments named `testpypi`, `pypi`,
-  `marketplace`, `container`, and `container-public`. Require at least one
-  reviewer for every release environment; a wait timer alone is not approval.
+  `marketplace`, `container`, `container-public`, and `action-alias`. Require at
+  least one reviewer for every release environment; a wait timer alone is not
+  approval. `action-alias` pauses the workflow until the owner has performed
+  the separately confirmed local compatibility-tag handoff.
   `container` authorizes the registry write. `container-public` is approved
   only after the exact GHCR package is publicly readable, which matters on its
   first publication because a new GHCR package is private by default.
@@ -169,7 +171,7 @@ diff; it is never accepted implicitly by an install.
    pre-commit hooks execute the public installed form. Test the supported
    Python/OS and container architecture matrices.
 9. Confirm the Homebrew tap and GitLab Catalog project are writable by their
-   reviewed promotion paths, and that all five release environments still
+   reviewed promotion paths, and that all six release environments still
    require a reviewer.
 10. Resolve every relevant review thread and blocking review. Merge only after
    the exact release-preparation commit passes required CI.
@@ -287,24 +289,50 @@ workflows then perform these gates in order:
    GitHub's package settings, then approve `container-public`; the verification
    job logs out before proving anonymous pull, labels, runtime version, and
    attestation by digest.
-9. Dispatch the dedicated alias workflow from the immutable `vX.Y.Z` tag for
-   both initial publication and recovery. The child separately checks out the
-   reviewed publication-control commit—the tag itself initially or current
-   `main` during recovery—rebinds itself to the active parent and its successful
-   PyPI-verification job, downloads the immutable Release assets, verifies every
-   public surface except the alias, performs one ancestral, monotonic,
-   force-with-lease alias update, and then verifies all surfaces again. Running
-   the mutation workflow from the target release commit lets the repository
-   `GITHUB_TOKEN` update the alias without separate workflow-write credentials.
-   The parent publication waits for that result and performs its own final
-   comparison. A failed-jobs rerun may reuse exact successful publication gates
-   from an earlier attempt of the same active run; it never treats a different
-   run or commit as evidence. This secretless handoff is required. Immutable
-   tags before v0.13.0 do not contain the child workflow, so recovery that still
-   needs to create or move an alias fails before dispatch. Do not store a
-   maintainer PAT to bypass that protection. Advance
-   only aliases explicitly approved for the compatibility line; for breaking
-   `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior compatibility
+9. After PyPI and the public container verify, leave the publication waiting at
+   the protected `action-alias` environment. GitHub's built-in `GITHUB_TOKEN`
+   cannot create or update a ref that makes `.github/workflows/` changes
+   reachable because it has no separate Workflows permission. Do not approve
+   this environment yet. From a clean, current `main` checkout authenticated by
+   `gh` as repository owner `yzm1`, copy the active `publish.yml` run ID from
+   its Actions URL and perform the explicit handoff:
+
+   ```bash
+   release_tag=vX.Y.Z
+   release_sha=$(git rev-list -n 1 "$release_tag")
+   run_id=123456789
+   python3 -I scripts/publish_release.py alias \
+     --tag "$release_tag" --alias vX.Y --run-id "$run_id" \
+     --confirm "$release_tag@$release_sha#$run_id"
+   ```
+
+   The local command requires current reviewed `main`, the immutable exact tag,
+   the active publication attempt, successful release/PyPI/public-container
+   gates, and the waiting alias-decision job. If `main` advanced after dispatch,
+   both credentialed alias-control scripts and their imported platform helper
+   must remain byte-identical to the parent-reviewed versions. The command
+   revalidates the logged release inputs
+   at the mutation boundary, rejects non-ancestral or non-monotonic moves, and
+   pushes the exact object ID with `--force-with-lease`; it does not leave a
+   mutable local tag. The credential stays on the trusted maintainer host and
+   is never exposed to candidate code or stored as a repository secret. A normal
+   `gh auth login` for `yzm1` supplies the required `repo` and `workflow` OAuth
+   scopes. The mutation always uses the canonical HTTPS push URL configured by
+   `gh auth setup-git`, even when the checkout's `origin` uses SSH, so the push
+   cannot bypass the owner identity verified through `gh`. A fine-grained token
+   instead needs access only to `yzm1/boundver` with Actions read, Contents
+   read/write, and Workflows read/write.
+
+   After that command succeeds, approve `action-alias`. The parent dispatches
+   the dedicated read-only workflow from immutable `vX.Y.Z`. Its child loads the
+   reviewed publication controls, proves the parent is still active at the
+   exact attempt, verifies every public surface before and after requiring the
+   alias, and returns to the parent's final independent comparison. For
+   `--alias none`, no local command is needed; approve the environment to record
+   that explicit decision. A failed-jobs rerun may reuse exact successful gates
+   from an earlier attempt of the same active run, never a different run or
+   commit. Advance only aliases approved for the compatibility line; for
+   breaking `0.12.0`, use `v0.12` and leave `v0.11` and `v0` on their prior
    lines unless an owner explicitly approves and announces those migrations.
 
 The Homebrew tap and GitLab Catalog are downstream promotion surfaces because
@@ -378,18 +406,18 @@ identified source artifacts. It does not create or move the version tag and
 must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
 unreadable GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
-artifact identity remain bound to the immutable tagged source. Once PyPI is
-verified, current `main` dispatches `advance-release-alias.yml` from the
-immutable release tag and waits. The child loads its publication-control scripts
-from the separately checked-out current `main` commit, must prove the parent run
-is still active at the exact attempt, and must observe its successful
-PyPI-verification job before any ref update. This recovery path can move an
-alias only for v0.13.0 and later immutable tags, which contain the exact-tag
-child workflow. For an older tag, the launcher fails before dispatch unless the
-approved alias already resolves to the release SHA. An original, immutable
-`--alias none` policy also needs no child workflow, but that option cannot be
-substituted for a release that originally approved an alias. An ad hoc fresh
-publication dispatch is not a recovery path.
+artifact identity remain bound to the immutable tagged source. Once PyPI and
+the public container verify, recovery reaches the same protected
+`action-alias` handoff. Run the `alias` command above with the recovery
+publication's active run ID, then approve the environment. Current `main`
+dispatches `advance-release-alias.yml` from the immutable release tag and waits;
+the child checks its publication-control scripts out from the separately bound
+current-main commit and only verifies the already-advanced ref. This recovery
+path requires v0.13.0 or later immutable tags to contain the exact-tag child
+workflow. For an older tag, recovery fails before dispatch unless the approved
+alias already resolves to the release SHA. An original `--alias none` policy
+needs no local tag handoff, but it cannot be substituted for a release that
+approved an alias. An ad hoc fresh publication dispatch is not a recovery path.
 
 ## Post-release checks
 

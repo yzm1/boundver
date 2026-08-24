@@ -53,14 +53,14 @@ env:
 
 jobs:
   advance:
-    name: Verify public release and advance compatibility alias
+    name: Verify public release and compatibility alias handoff
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       actions: read
-      contents: write
+      contents: read
     steps:
-      - name: Bind mutation authority to the exact release tag
+      - name: Bind verification authority to the exact release tag
         shell: bash
         env:
           DISPATCH_EVENT: ${{ github.event_name }}
@@ -108,7 +108,7 @@ jobs:
                 "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
                 "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" || \
                 "$DISPATCH_SHA" != "$RELEASE_SHA" ]]; then
-            echo "Alias mutation workflow must execute from the exact release tag" >&2
+            echo "Alias verification workflow must execute from the exact release tag" >&2
             exit 1
           fi
 
@@ -190,7 +190,7 @@ jobs:
               shutil.copyfile(assets / name, dist / name)
           PY
 
-      - name: Verify every public surface before alias mutation
+      - name: Verify every public surface before alias handoff confirmation
         shell: bash
         run: |
           set -euo pipefail
@@ -209,21 +209,15 @@ jobs:
             --attempts 18 \
             --delay-seconds 10
 
-      - name: Advance the leased monotonic compatibility alias
+      - name: Require the externally advanced leased compatibility alias
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          cleanup_auth() {
-            git config --global --unset-all \
-              credential.https://github.com.helper >/dev/null 2>&1 || true
-          }
-          trap cleanup_auth EXIT
-          gh auth setup-git
           clean_python_cwd=$(mktemp -d)
           cd "$clean_python_cwd"
-          python3 -I "$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" advance \
+          python3 -I "$GITHUB_WORKSPACE/.release-control/scripts/release_alias.py" require \
             --repo-root "$GITHUB_WORKSPACE" \
             --repository "$GITHUB_REPOSITORY" \
             --tag "$RELEASE_TAG" \
@@ -234,7 +228,7 @@ jobs:
             --publication-ref "$PUBLICATION_REF" \
             --publication-sha "$PUBLICATION_SHA"
 
-      - name: Verify every public surface after alias mutation
+      - name: Verify every public surface after alias handoff confirmation
         shell: bash
         run: |
           set -euo pipefail

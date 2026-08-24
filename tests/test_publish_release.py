@@ -1,8 +1,8 @@
 """Behavioral contracts for the maintainer release entry point.
 
-The local command is deliberately a gate and dispatcher, not a second
-publisher.  Irreversible registry and GitHub mutations belong to the protected
-workflows after this command has proved exactly which commit is being released.
+The local command gates and dispatches publication, then owns only the explicit
+compatibility-alias handoff. Irreversible registry and immutable GitHub writes
+belong to protected workflows.
 """
 
 from __future__ import annotations
@@ -359,10 +359,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             env=safe_environment,
         )
 
-    def test_check_start_and_resume_are_explicit_subcommands(self):
+    def test_check_start_resume_and_alias_are_explicit_subcommands(self):
         top = _run("--help")
         self.assertEqual(top.returncode, 0, top.stderr)
-        self.assertRegex(top.stdout, r"\{check,start,resume\}")
+        self.assertRegex(top.stdout, r"\{check,start,resume,alias\}")
 
         check = _run("check", "--help")
         self.assertEqual(check.returncode, 0, check.stderr)
@@ -394,6 +394,19 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ):
             self.assertIn(option, resume.stdout)
 
+        alias = _run("alias", "--help")
+        self.assertEqual(alias.returncode, 0, alias.stderr)
+        for option in (
+            "--tag",
+            "--confirm",
+            "--alias",
+            "--run-id",
+            "--repo",
+            "--remote",
+            "--format",
+        ):
+            self.assertIn(option, alias.stdout)
+
     def test_start_requires_an_explicit_compatibility_alias_policy(self):
         result = _run(
             "start",
@@ -417,6 +430,216 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("alias", result.stderr.lower())
+
+    def test_alias_requires_exact_line_run_and_confirmation(self):
+        for arguments in (
+            (
+                "alias",
+                "--tag",
+                TAG,
+                "--alias",
+                "none",
+                "--run-id",
+                str(RUN_ID),
+                "--confirm",
+                f"{TAG}@{SHA}#{RUN_ID}",
+            ),
+            (
+                "alias",
+                "--tag",
+                TAG,
+                "--alias",
+                ALIAS,
+                "--run-id",
+                str(RUN_ID),
+                "--confirm",
+                f"{TAG}@{SHA}#{RUN_ID + 1}",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                result = _run(*arguments)
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_active_alias_publication_is_exact_and_waiting(self):
+        publisher = _load_script()
+        payload = {
+            "id": RUN_ID,
+            "run_attempt": RUN_ATTEMPT,
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/publish.yml",
+            "status": "waiting",
+            "conclusion": None,
+            "head_branch": "main",
+            "head_sha": CONTROL_SHA,
+            "repository": {"full_name": "yzm1/boundver"},
+        }
+        with mock.patch.object(
+            publisher, "_gh_json", return_value=payload
+        ), mock.patch.object(publisher, "_require_reviewed_alias_control"):
+            publication = publisher._active_alias_publication(
+                Path("repo"), RUN_ID, TAG, SHA, CONTROL_SHA
+            )
+        self.assertEqual(publication["attempt"], RUN_ATTEMPT)
+        self.assertEqual(publication["ref"], "main")
+        self.assertEqual(publication["sha"], CONTROL_SHA)
+
+        with mock.patch.object(
+            publisher, "_gh_json", return_value=payload
+        ), mock.patch.object(
+            publisher,
+            "_require_reviewed_alias_control",
+            side_effect=publisher.GateError("control file changed"),
+        ):
+            with self.assertRaisesRegex(publisher.GateError, "control file changed"):
+                publisher._active_alias_publication(
+                    Path("repo"), RUN_ID, TAG, SHA, "3" * 40
+                )
+
+    def test_alias_evaluation_allows_only_its_active_publish_run(self):
+        publisher = _load_script()
+        publication = {
+            "run_id": RUN_ID,
+            "attempt": RUN_ATTEMPT,
+            "ref": "main",
+            "sha": CONTROL_SHA,
+            "detail": "active publication",
+        }
+        dependency_names = (
+            "_surface_inventory",
+            "_repo_identity",
+            "_clean",
+            "_repository_hygiene",
+            "_project_at_commit",
+            "_main_identity",
+            "_resume_release_state",
+            "_release_is_on_main",
+            "_github_controls",
+            "_active_alias_publication",
+        )
+        replacements = {name: mock.DEFAULT for name in dependency_names}
+        with tempfile.TemporaryDirectory() as td, mock.patch.object(
+            publisher, "_head", return_value=CONTROL_SHA
+        ), mock.patch.multiple(publisher, **replacements) as dependencies:
+            for name in dependency_names[:-1]:
+                dependencies[name].return_value = name
+            dependencies["_active_alias_publication"].return_value = publication
+            resolved = Path(td).resolve()
+            control_sha, observed, checks = publisher._evaluate_alias(
+                Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
+            )
+
+        self.assertEqual(control_sha, CONTROL_SHA)
+        self.assertEqual(observed, publication)
+        self.assertTrue(all(check.status == "passed" for check in checks))
+        dependencies["_github_controls"].assert_called_once_with(
+            resolved,
+            CONTROL_SHA,
+            TAG,
+            allow_resumable_release=True,
+            expected_active_publication_run_id=RUN_ID,
+        )
+        dependencies["_active_alias_publication"].assert_called_once_with(
+            resolved, RUN_ID, TAG, SHA, CONTROL_SHA
+        )
+
+    def test_alias_control_allows_only_ancestral_byte_identical_scripts(self):
+        publisher = _load_script()
+        ancestor = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(
+            publisher, "_run", return_value=ancestor
+        ), mock.patch.object(
+            publisher, "_git", return_value="a" * 40
+        ) as git:
+            detail = publisher._require_reviewed_alias_control(
+                Path("repo"), SHA, CONTROL_SHA
+            )
+        self.assertIn("match", detail)
+        self.assertEqual(git.call_count, 2 * len(publisher.ALIAS_CONTROL_PATHS))
+
+        blobs = iter(("a" * 40, "b" * 40))
+        with mock.patch.object(
+            publisher, "_run", return_value=ancestor
+        ), mock.patch.object(
+            publisher, "_git", side_effect=lambda *_args, **_kwargs: next(blobs)
+        ), self.assertRaisesRegex(publisher.GateError, "changed after publication"):
+            publisher._require_reviewed_alias_control(Path("repo"), SHA, CONTROL_SHA)
+
+    def test_local_alias_handoff_uses_owner_git_auth_and_hides_review_token(self):
+        publisher = _load_script()
+        publication = {
+            "run_id": RUN_ID,
+            "attempt": RUN_ATTEMPT,
+            "ref": "main",
+            "sha": CONTROL_SHA,
+        }
+        completed = [
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 0, "advanced\n", ""),
+        ]
+        with mock.patch.object(
+            publisher, "_authenticated_alias_actor", return_value="owner"
+        ) as actor, mock.patch.object(
+            publisher, "_run", side_effect=completed
+        ) as run, mock.patch.dict(
+            os.environ, {publisher.REVIEW_TOKEN_ENV: "read-only-secret"}, clear=False
+        ):
+            detail = publisher._advance_alias_locally(
+                Path("repo"), TAG, SHA, ALIAS, publication
+            )
+        self.assertEqual(detail, "advanced")
+        actor.assert_called_once_with(Path("repo"))
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ("gh", "auth", "setup-git", "--hostname", "github.com"),
+        )
+        command = run.call_args_list[1].args[0]
+        self.assertIn("release_alias.py", " ".join(map(str, command)))
+        self.assertIn("advance", command)
+        self.assertEqual(
+            command[command.index("--remote") + 1],
+            "https://github.com/yzm1/boundver.git",
+        )
+        self.assertNotIn("origin", command)
+        self.assertNotIn(
+            publisher.REVIEW_TOKEN_ENV, run.call_args_list[1].kwargs["env"]
+        )
+
+    def test_alias_command_advances_only_after_all_checks_pass(self):
+        publisher = _load_script()
+        publication = {
+            "run_id": RUN_ID,
+            "attempt": RUN_ATTEMPT,
+            "ref": "main",
+            "sha": CONTROL_SHA,
+        }
+        checks = [publisher.Check("gate", "passed", "exact")]
+        with mock.patch.object(
+            publisher,
+            "_evaluate_alias",
+            return_value=(CONTROL_SHA, publication, checks),
+        ), mock.patch.object(publisher, "_main_identity"), mock.patch.object(
+            publisher, "_advance_alias_locally", return_value="advanced"
+        ) as advance, mock.patch("builtins.print") as output:
+            result = publisher.main(
+                [
+                    "alias",
+                    "--tag",
+                    TAG,
+                    "--alias",
+                    ALIAS,
+                    "--run-id",
+                    str(RUN_ID),
+                    "--confirm",
+                    f"{TAG}@{SHA}#{RUN_ID}",
+                    "--format",
+                    "json",
+                ]
+            )
+        self.assertEqual(result, 0)
+        advance.assert_called_once()
+        payload = json.loads(output.call_args.args[0])
+        self.assertEqual(payload["phase"], "alias")
+        self.assertEqual(payload["status"], "advanced")
 
     def test_release_tag_and_alias_numeric_identifiers_are_ascii_only(self):
         invalid_tag = _run("check", "--tag", "v1.2.\u0663")
@@ -795,7 +1018,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
             with mock.patch.object(publisher, "_remote_ref", return_value=None):
                 with self.assertRaisesRegex(
-                    publisher.GateError, "predates the secretless exact-tag"
+                    publisher.GateError, "predates the exact-tag alias verification"
                 ):
                     publisher._release_alias_workflow_at_commit(
                         root, "origin", old_sha, TAG, ALIAS
@@ -934,7 +1157,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "advance-compatibility-alias",
                 "verify-public-surfaces",
             )
-        )
+        ) + "\nenvironment: action-alias\nDispatch exact-tag alias handoff verification"
         container_workflow = "\n".join(
             (
                 "environment: container",
@@ -953,15 +1176,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         alias_workflow = "\n".join(
             (
                 "  advance:",
-                "Bind mutation authority to the exact release tag",
+                "Bind verification authority to the exact release tag",
                 "Checkout the reviewed publication-control commit",
                 "publication_ref:",
                 '--publication-ref "$PUBLICATION_REF"',
                 "Require the active originating publication and verified PyPI job",
                 "--skip-alias",
-                "Advance the leased monotonic compatibility alias",
-                "gh auth setup-git",
-                "Verify every public surface after alias mutation",
+                "Require the externally advanced leased compatibility alias",
+                'scripts/release_alias.py" require',
+                "Verify every public surface after alias handoff confirmation",
             )
         )
         with mock.patch.object(
@@ -1319,6 +1542,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                             "marketplace",
                             "container",
                             "container-public",
+                            "action-alias",
                         )
                     ]
                 }
@@ -1375,6 +1599,43 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ):
             detail = publisher._github_controls(Path("."), SHA, TAG)
         self.assertIn("environments", detail)
+
+        def alias_paginated(_repo, endpoint, *, collection=None):
+            if "actions/workflows/publish.yml/runs" in endpoint:
+                self.assertEqual(collection, "workflow_runs")
+                return [{"id": RUN_ID, "status": "waiting"}]
+            return paginated(_repo, endpoint, collection=collection)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=alias_paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
+        ):
+            detail = publisher._github_controls(
+                Path("."),
+                SHA,
+                TAG,
+                allow_resumable_release=True,
+                expected_active_publication_run_id=RUN_ID,
+            )
+        self.assertIn("environments", detail)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=alias_paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
+        ), self.assertRaisesRegex(publisher.GateError, "only active publish.yml"):
+            publisher._github_controls(
+                Path("."),
+                SHA,
+                TAG,
+                allow_resumable_release=True,
+                expected_active_publication_run_id=RUN_ID + 1,
+            )
 
         with mock.patch.object(
             publisher, "_gh_json", side_effect=response
@@ -1921,6 +2182,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                             "marketplace",
                             "container",
                             "container-public",
+                            "action-alias",
                         )
                     ]
                 }
@@ -2135,9 +2397,11 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         check_command = "scripts/publish_release.py check --tag"
         start_command = "scripts/publish_release.py start --tag"
         resume_command = "scripts/publish_release.py resume"
+        alias_command = "scripts/publish_release.py alias"
         self.assertIn(check_command, runbook)
         self.assertIn(start_command, runbook)
         self.assertIn(resume_command, runbook)
+        self.assertIn(alias_command, runbook)
         self.assertLess(runbook.index(check_command), runbook.index(start_command))
         self.assertIn("--confirm", runbook)
         self.assertIn("--alias", runbook)

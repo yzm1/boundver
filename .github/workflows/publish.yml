@@ -2698,6 +2698,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: [verify-pypi, publish-container]
+    # This approval is the maintainer handoff: advance the alias locally with
+    # scripts/publish_release.py before approving the waiting job. GitHub's
+    # built-in token cannot write a ref that makes workflow changes reachable.
+    environment: action-alias
     permissions:
       actions: write
       contents: read
@@ -2726,7 +2730,7 @@ jobs:
         shell: bash
         run: echo "No compatibility alias was approved for $RELEASE_TAG."
 
-      - name: Dispatch exact-tag alias verification and advancement
+      - name: Dispatch exact-tag alias handoff verification
         if: inputs.compatibility_alias != 'none'
         shell: bash
         env:
