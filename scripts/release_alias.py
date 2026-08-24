@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Dispatch and apply a verified compatibility-alias update.
+"""Dispatch, apply, or verify a compatibility-alias update.
 
-``dispatch`` always starts the narrowly scoped mutation workflow from the
-immutable release tag and waits for it.  During recovery that workflow loads
-the reviewed publication controls from current ``main`` without moving the
-mutation authority away from the tagged release.  ``advance`` revalidates the
-originating publication and immutable release checkout before performing one
-leased, monotonic alias update.
+``advance`` is the sole mutation path.  It runs on the maintainer's trusted
+host, revalidates the active publication, and performs one leased, monotonic
+alias update.  ``dispatch`` then starts a read-only workflow from the immutable
+release tag and waits for independent public-surface verification.  During
+recovery that workflow loads the reviewed publication controls from current
+``main`` without moving verification authority away from the tagged release.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ WORKFLOW_PATH = f".github/workflows/{WORKFLOW_FILE}"
 PUBLICATION_WORKFLOW_PATH = ".github/workflows/publish.yml"
 VERIFY_PYPI_JOB = "Verify PyPI bytes, installation, and provenance"
 VERIFY_RELEASE_JOB = "verify-release"
+VERIFY_CONTAINER_JOB = "Publish and verify the release container / verify-public"
+ALIAS_DECISION_JOB = "Apply the explicit Action alias decision"
 ACTIVE_RUN_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 JOB_LOG_ENV_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z {3}"
@@ -210,22 +212,29 @@ def _run_title(alias: str, tag: str, publication_run_id: int, attempt: int) -> s
     )
 
 
-def _require_release_alias_workflow(repo: Path, tag: str) -> None:
-    """Require the immutable checkout to contain the secretless child workflow."""
+def _release_alias_workflow_available(repo: Path) -> bool:
+    """Return whether the immutable checkout contains a regular child workflow."""
     workflow = repo / WORKFLOW_PATH
     try:
         metadata = workflow.lstat()
-    except FileNotFoundError as error:
-        raise AliasError(
-            f"immutable release {tag} predates the secretless exact-tag alias "
-            "workflow; automatic alias recovery cannot move its compatibility "
-            "alias without separate workflow-mutation credentials"
-        ) from error
+    except FileNotFoundError:
+        return False
     except OSError as error:
         raise AliasError(f"cannot inspect {WORKFLOW_PATH}: {error}") from error
     if not stat.S_ISREG(metadata.st_mode):
         raise AliasError(
-            f"immutable release {tag} has no regular {WORKFLOW_PATH} workflow"
+            f"immutable release has no regular {WORKFLOW_PATH} workflow"
+        )
+    return True
+
+
+def _require_release_alias_workflow(repo: Path, tag: str) -> None:
+    """Require the immutable checkout to contain the read-only child workflow."""
+    if not _release_alias_workflow_available(repo):
+        raise AliasError(
+            f"immutable release {tag} predates the exact-tag alias verification "
+            "workflow; recovery cannot independently verify its compatibility "
+            "alias handoff"
         )
 
 
@@ -338,9 +347,16 @@ def dispatch_alias_workflow(
     alias_ref = f"refs/tags/{alias}"
     if _remote_ref(repo, remote, tag_ref) != sha:
         raise AliasError("exact release tag moved or disappeared before alias dispatch")
-    if _remote_ref(repo, remote, alias_ref) == sha:
-        return f"{alias} already resolves to {sha}"
-    _require_release_alias_workflow(repo, tag)
+    if _remote_ref(repo, remote, alias_ref) != sha:
+        raise AliasError(
+            f"{alias} must already resolve to {sha}; run the local publishing "
+            "script's alias phase before approving the action-alias environment"
+        )
+    if not _release_alias_workflow_available(repo):
+        return (
+            f"{alias} already resolves to {sha}; immutable release {tag} predates "
+            "the independent alias verification workflow"
+        )
 
     title = _run_title(alias, tag, publication_run_id, publication_attempt)
     dispatched = False
@@ -437,7 +453,7 @@ def _validate_publication_payloads(
         run_id != publication_run_id
         or run_attempt != publication_attempt
         or run.get("event") != "workflow_dispatch"
-        or run.get("status") != "in_progress"
+        or run.get("status") not in ACTIVE_RUN_STATES
         or run.get("conclusion") is not None
         or run.get("path") != PUBLICATION_WORKFLOW_PATH
         or run.get("head_sha") != publication_sha
@@ -460,16 +476,24 @@ def _validate_publication_payloads(
     successful_jobs: dict[str, list[dict]] = {
         VERIFY_PYPI_JOB: [],
         VERIFY_RELEASE_JOB: [],
+        VERIFY_CONTAINER_JOB: [],
     }
     successful_attempts: dict[str, set[int]] = {
         VERIFY_PYPI_JOB: set(),
         VERIFY_RELEASE_JOB: set(),
+        VERIFY_CONTAINER_JOB: set(),
     }
+    active_alias_jobs: list[dict] = []
     for job in jobs["jobs"]:
         if not isinstance(job, dict):
             raise AliasError("originating publication job entry is malformed")
         name = job.get("name")
-        if name not in {VERIFY_PYPI_JOB, VERIFY_RELEASE_JOB}:
+        if name not in {
+            VERIFY_PYPI_JOB,
+            VERIFY_RELEASE_JOB,
+            VERIFY_CONTAINER_JOB,
+            ALIAS_DECISION_JOB,
+        }:
             continue
         job_id = _positive_int(
             job.get("id"), "originating PyPI verification job ID"
@@ -486,6 +510,14 @@ def _validate_publication_payloads(
             or job.get("head_sha") != publication_sha
         ):
             raise AliasError("originating release gate job is not bound to this run")
+        if name == ALIAS_DECISION_JOB:
+            if (
+                job_attempt == publication_attempt
+                and job.get("status") in ACTIVE_RUN_STATES
+                and job.get("conclusion") is None
+            ):
+                active_alias_jobs.append({**job, "id": job_id})
+            continue
         # A failed-jobs rerun advances the run attempt without rerunning already
         # successful prerequisites. Historical failures are harmless; require
         # at least one exact success and reject duplicate successes in any one
@@ -501,6 +533,7 @@ def _validate_publication_payloads(
         successful_jobs[name].append({**job, "id": job_id})
     pypi_matches = successful_jobs[VERIFY_PYPI_JOB]
     release_matches = successful_jobs[VERIFY_RELEASE_JOB]
+    container_matches = successful_jobs[VERIFY_CONTAINER_JOB]
     if not pypi_matches:
         raise AliasError(
             "originating publication must contain a successful PyPI verification job"
@@ -508,6 +541,16 @@ def _validate_publication_payloads(
     if not release_matches:
         raise AliasError(
             "originating publication must contain a successful verify-release job"
+        )
+    if not container_matches:
+        raise AliasError(
+            "originating publication must contain a successful public-container "
+            "verification job"
+        )
+    if len(active_alias_jobs) != 1:
+        raise AliasError(
+            "originating publication must contain exactly one active alias-decision "
+            "job in the current attempt"
         )
     latest_release = max(
         release_matches,
@@ -658,11 +701,9 @@ def advance_alias(
     if _remote_ref(repo, remote, tag_ref) != sha:
         raise AliasError("exact release tag moved at the alias mutation boundary")
 
-    # Push a local tag ref from a workflow whose own github.sha is the release
-    # SHA.  This keeps the default token from introducing a different workflow
-    # definition while the lease rejects concurrent alias changes.
-    _git(repo, "tag", "--force", alias, sha)
-    _git(repo, "push", lease, remote, alias_ref)
+    # Push the reviewed object ID directly so this operation leaves no mutable
+    # local tag behind.  The lease rejects a concurrent creation or update.
+    _git(repo, "push", lease, remote, f"{sha}:{alias_ref}")
     if _remote_ref(repo, remote, alias_ref) != sha:
         raise AliasError("remote compatibility alias does not match after push")
     return f"advanced {alias} to {sha}"
@@ -706,9 +747,40 @@ def verify_alias_request(
     return "originating publication and immutable release tag are exact"
 
 
+def require_advanced_alias(
+    *,
+    repo: Path,
+    repository: str,
+    remote: str,
+    tag: str,
+    sha: str,
+    alias: str,
+    publication_run_id: int,
+    publication_attempt: int,
+    publication_ref: str,
+    publication_sha: str,
+) -> str:
+    """Require the locally advanced alias after revalidating its active parent."""
+    verify_alias_request(
+        repo=repo,
+        repository=repository,
+        remote=remote,
+        tag=tag,
+        sha=sha,
+        alias=alias,
+        publication_run_id=publication_run_id,
+        publication_attempt=publication_attempt,
+        publication_ref=publication_ref,
+        publication_sha=publication_sha,
+    )
+    if _remote_ref(repo, remote, f"refs/tags/{alias}") != sha:
+        raise AliasError(f"compatibility alias {alias} does not resolve to {sha}")
+    return f"{alias} resolves exactly to {sha}"
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Dispatch or apply a verified compatibility-alias update."
+        description="Dispatch, apply, or verify a compatibility-alias update."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -734,6 +806,8 @@ def _parser() -> argparse.ArgumentParser:
 
     advance = subparsers.add_parser("advance")
     common(advance)
+    require = subparsers.add_parser("require")
+    common(require)
     return parser
 
 
@@ -766,8 +840,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "verify":
             result = verify_alias_request(**arguments)
-        else:
+        elif args.command == "advance":
             result = advance_alias(**arguments)
+        else:
+            result = require_advanced_alias(**arguments)
     except (AliasError, OSError, ValueError) as error:
         print(f"Compatibility alias error: {error}", file=sys.stderr)
         return 1

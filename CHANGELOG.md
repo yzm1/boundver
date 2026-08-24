@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Action compatibility aliases now use an explicit, environment-gated local
+  maintainer handoff followed by independent exact-tag verification, because
+  GitHub's built-in Actions token cannot update refs that expose workflow-file
+  changes. The handoff remains monotonic, ancestral, and force-with-lease.
 - Exact-artifact release recovery now binds the retained distribution and
   GitHub Release asset pair to its producing verification attempt, tolerating
   GitHub's duplicated successful-job history after a failed-workflow rerun

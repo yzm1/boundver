@@ -4,9 +4,11 @@
 ``check`` is read-only.  ``start`` repeats every check and then performs one
 mutation: it dispatches ``create-release-tag.yml``.  ``resume`` validates and
 reuses the retained artifacts from one failed publication run before its one
-mutation: dispatching ``publish.yml`` in explicit recovery mode.  The protected
-workflows, not this local process, own tag, Release, Marketplace, and
-package-index writes.
+mutation: dispatching ``publish.yml`` in explicit recovery mode.  ``alias`` is
+the separately confirmed maintainer handoff that performs the one leased
+compatibility-tag update after every prerequisite publisher has succeeded.
+Protected workflows own exact tags, Releases, Marketplace, package-index, and
+container writes and independently verify the compatibility alias.
 """
 
 from __future__ import annotations
@@ -78,6 +80,12 @@ MAX_GITHUB_API_ITEMS = 10_000
 MAX_RELEASE_METADATA_BYTES = 1024 * 1024
 MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
 ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
+ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
+ALIAS_CONTROL_PATHS = (
+    "scripts/publish_release.py",
+    "scripts/release_alias.py",
+    "scripts/_release_platform.py",
+)
 MAX_DISTRIBUTION_FILE_BYTES = 128 * 1024 * 1024
 MAX_DISTRIBUTION_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_DISTRIBUTION_DIRECTORY_ENTRIES = 10_000
@@ -1148,7 +1156,7 @@ def _project_at_commit(repo: Path, sha: str, tag: str) -> str:
 def _release_alias_workflow_at_commit(
     repo: Path, remote: str, release_sha: str, tag: str, alias: str
 ) -> str:
-    """Require secretless alias recovery support in the immutable release."""
+    """Require exact-tag alias handoff verification in the immutable release."""
     if alias == "none":
         return "no compatibility alias was requested"
     entry = _git(
@@ -1164,9 +1172,9 @@ def _release_alias_workflow_at_commit(
         if _remote_ref(repo, remote, f"refs/tags/{alias}") == release_sha:
             return f"{alias} already resolves to immutable release {release_sha}"
         raise GateError(
-            f"immutable release {tag} at {release_sha} predates the secretless "
-            "exact-tag alias workflow; automatic alias recovery cannot move "
-            f"{alias} without separate workflow-mutation credentials"
+            f"immutable release {tag} at {release_sha} predates the exact-tag "
+            "alias verification workflow; recovery cannot independently verify "
+            f"the {alias} maintainer handoff"
         )
     header, separator, path = entry.partition("\t")
     fields = header.split()
@@ -1245,7 +1253,12 @@ def _github_controls(
     tag: str,
     *,
     allow_resumable_release: bool = False,
+    expected_active_publication_run_id: int | None = None,
 ) -> str:
+    if expected_active_publication_run_id is not None and not _is_positive_github_id(
+        expected_active_publication_run_id
+    ):
+        raise GateError("expected active publication run ID is malformed")
     metadata = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}")
     if not isinstance(metadata, dict) or metadata.get("full_name") != REPOSITORY:
         raise GateError("authenticated GitHub repository identity disagrees")
@@ -1275,6 +1288,7 @@ def _github_controls(
         "marketplace",
         "container",
         "container-public",
+        "action-alias",
     ):
         item = by_name.get(name)
         if not _environment_requires_review(item):
@@ -1373,10 +1387,21 @@ def _github_controls(
             f"repos/{REPOSITORY}/actions/workflows/{workflow}/runs?per_page=100",
             collection="workflow_runs",
         )
-        if any(
-            isinstance(run, dict) and run.get("status") in active_states
+        active_runs = [
+            run
             for run in runs_value
-        ):
+            if isinstance(run, dict) and run.get("status") in active_states
+        ]
+        if workflow == "publish.yml" and expected_active_publication_run_id is not None:
+            if (
+                len(active_runs) != 1
+                or active_runs[0].get("id") != expected_active_publication_run_id
+            ):
+                raise GateError(
+                    "the expected publication must be the only active publish.yml run"
+                )
+            continue
+        if active_runs:
             raise GateError(f"another release operation is active in {workflow}")
     release_detail = _github_release_for_tag(repo, tag)
     if release_detail is not None:
@@ -1426,6 +1451,151 @@ def _release_is_on_main(repo: Path, release_sha: str, main_sha: str) -> str:
             detail = "release commit is not an ancestor of current main"
         raise GateError(detail or "cannot prove that the release commit is on main")
     return f"release commit {release_sha} is an ancestor of current main {main_sha}"
+
+
+def _active_alias_publication(
+    repo: Path,
+    run_id: int,
+    tag: str,
+    release_sha: str,
+    control_sha: str,
+) -> dict[str, object]:
+    """Read the exact active publication identity used by the alias handoff."""
+    payload = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/actions/runs/{run_id}")
+    if not isinstance(payload, dict):
+        raise GateError("alias publication run is malformed")
+    attempt = payload.get("run_attempt")
+    if not _is_positive_github_id(payload.get("id")) or payload["id"] != run_id:
+        raise GateError("alias publication run ID is malformed or different")
+    if not _is_positive_github_id(attempt):
+        raise GateError("alias publication attempt is malformed")
+    repository = payload.get("repository")
+    publication_ref = payload.get("head_branch")
+    publication_sha = payload.get("head_sha")
+    if (
+        payload.get("event") != "workflow_dispatch"
+        or payload.get("path") != ".github/workflows/publish.yml"
+        or payload.get("status") not in ACTIVE_PUBLICATION_STATES
+        or payload.get("conclusion") is not None
+        or not isinstance(repository, dict)
+        or repository.get("full_name") != REPOSITORY
+        or publication_ref not in {tag, "main"}
+        or not isinstance(publication_sha, str)
+        or SHA_RE.fullmatch(publication_sha) is None
+    ):
+        raise GateError("alias publication is not the active exact publish workflow")
+    _require_reviewed_alias_control(repo, publication_sha, control_sha)
+    if publication_ref == tag:
+        if publication_sha != release_sha:
+            raise GateError("exact-tag publication SHA differs from the release SHA")
+    return {
+        "run_id": run_id,
+        "attempt": attempt,
+        "ref": publication_ref,
+        "sha": publication_sha,
+        "detail": (
+            f"active publish run {run_id} attempt {attempt} is controlled by "
+            f"{publication_ref} at {publication_sha}"
+        ),
+    }
+
+
+def _require_reviewed_alias_control(
+    repo: Path, publication_sha: str, control_sha: str
+) -> str:
+    """Allow later main commits only when the credentialed control code is identical."""
+    ancestry = _run(
+        ("git", "merge-base", "--is-ancestor", publication_sha, control_sha),
+        cwd=repo,
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise GateError("active publication control is not an ancestor of current main")
+    for path in ALIAS_CONTROL_PATHS:
+        publication_blob = _git(
+            repo,
+            "rev-parse",
+            f"{publication_sha}:{path}",
+            max_stdout_bytes=1024,
+        )
+        current_blob = _git(
+            repo,
+            "rev-parse",
+            f"{control_sha}:{path}",
+            max_stdout_bytes=1024,
+        )
+        if (
+            SHA_RE.fullmatch(publication_blob) is None
+            or SHA_RE.fullmatch(current_blob) is None
+        ):
+            raise GateError(f"cannot bind reviewed alias control file {path}")
+        if publication_blob != current_blob:
+            raise GateError(
+                f"alias control file {path} changed after publication dispatch; "
+                "resume publication from reviewed current main"
+            )
+    return "credentialed alias-control scripts match the reviewed publication commit"
+
+
+def _authenticated_alias_actor(repo: Path) -> str:
+    payload = _gh_json(repo, REPOSITORY, "user")
+    owner = REPOSITORY.partition("/")[0]
+    if (
+        not isinstance(payload, dict)
+        or payload.get("login") != owner
+        or payload.get("type") != "User"
+    ):
+        raise GateError(
+            f"compatibility alias mutation must authenticate gh as repository owner {owner}"
+        )
+    return f"gh is authenticated as repository owner {owner}"
+
+
+def _advance_alias_locally(
+    repo: Path,
+    tag: str,
+    release_sha: str,
+    alias: str,
+    publication: dict[str, object],
+) -> str:
+    """Apply the reviewed local handoff without exposing credentials to candidate code."""
+    _authenticated_alias_actor(repo)
+    _run(("gh", "auth", "setup-git", "--hostname", "github.com"), cwd=repo)
+    authenticated_remote = f"https://github.com/{REPOSITORY}.git"
+    environment = os.environ.copy()
+    environment.pop(REVIEW_TOKEN_ENV, None)
+    result = _run(
+        (
+            sys.executable,
+            "-I",
+            str(repo / "scripts" / "release_alias.py"),
+            "advance",
+            "--repo-root",
+            str(repo),
+            "--repository",
+            REPOSITORY,
+            "--remote",
+            authenticated_remote,
+            "--tag",
+            tag,
+            "--sha",
+            release_sha,
+            "--alias",
+            alias,
+            "--publication-run-id",
+            str(publication["run_id"]),
+            "--publication-attempt",
+            str(publication["attempt"]),
+            "--publication-ref",
+            str(publication["ref"]),
+            "--publication-sha",
+            str(publication["sha"]),
+        ),
+        cwd=repo,
+        env=environment,
+        max_stdout_bytes=1024 * 1024,
+    )
+    return result.stdout.strip() or f"advanced {alias} to {release_sha}"
 
 
 def _github_timestamp(value: object, field: str) -> datetime:
@@ -1931,16 +2101,28 @@ def _surface_inventory(repo: Path) -> str:
     )
     required_alias_contracts = (
         "  advance:",
-        "Bind mutation authority to the exact release tag",
+        "Bind verification authority to the exact release tag",
         "Checkout the reviewed publication-control commit",
         "publication_ref:",
         '--publication-ref "$PUBLICATION_REF"',
         "Require the active originating publication and verified PyPI job",
         "--skip-alias",
-        "Advance the leased monotonic compatibility alias",
-        "gh auth setup-git",
-        "Verify every public surface after alias mutation",
+        "Require the externally advanced leased compatibility alias",
+        'scripts/release_alias.py" require',
+        "Verify every public surface after alias handoff confirmation",
     )
+    required_publish_alias_contracts = (
+        "environment: action-alias",
+        "Dispatch exact-tag alias handoff verification",
+    )
+    missing_publish_alias_contracts = [
+        value for value in required_publish_alias_contracts if value not in publish_workflow
+    ]
+    if missing_publish_alias_contracts:
+        raise GateError(
+            "publication workflow is missing alias handoff contracts: "
+            + ", ".join(missing_publish_alias_contracts)
+        )
     missing_alias_contracts = [
         value for value in required_alias_contracts if value not in alias_workflow
     ]
@@ -2044,6 +2226,82 @@ def _evaluate_resume(
     return control_sha, checks
 
 
+def _evaluate_alias(
+    repo: Path,
+    remote: str,
+    tag: str,
+    alias: str,
+    run_id: int,
+    release_sha: str,
+) -> tuple[str | None, dict[str, object] | None, list[Check]]:
+    """Gate the local compatibility-alias handoff against one active publication."""
+    repo = repo.resolve()
+    checks: list[Check] = []
+    control_sha = _head(repo)
+    publication: dict[str, object] | None = None
+    _record(checks, "release surface inventory", lambda: _surface_inventory(repo))
+    _record(checks, "repository identity", lambda: _repo_identity(repo, remote))
+    _record(checks, "clean repository", lambda: _clean(repo))
+    _record(checks, "repository hygiene", lambda: _repository_hygiene(repo))
+    _record(
+        checks,
+        "release project version",
+        lambda: _project_at_commit(repo, release_sha, tag),
+    )
+    local_ready = all(item.status == "passed" for item in checks)
+    if control_sha is None:
+        checks.append(Check("main identity", "failed", "HEAD is not a full commit SHA"))
+    elif local_ready:
+        _record(
+            checks,
+            "main identity",
+            lambda: _main_identity(repo, remote, control_sha),
+        )
+        _record(
+            checks,
+            "existing release tag",
+            lambda: _resume_release_state(repo, remote, tag, release_sha),
+        )
+        _record(
+            checks,
+            "release commit ancestry",
+            lambda: _release_is_on_main(repo, release_sha, control_sha),
+        )
+        if all(item.status == "passed" for item in checks):
+            _record(
+                checks,
+                "GitHub controls",
+                lambda: _github_controls(
+                    repo,
+                    control_sha,
+                    tag,
+                    allow_resumable_release=True,
+                    expected_active_publication_run_id=run_id,
+                ),
+            )
+        if all(item.status == "passed" for item in checks):
+            publication = _record(
+                checks,
+                "active alias publication",
+                lambda: _active_alias_publication(
+                    repo, run_id, tag, release_sha, control_sha
+                ),
+            )
+            if isinstance(publication, dict):
+                checks[-1] = Check(
+                    "active alias publication", "passed", str(publication["detail"])
+                )
+    if alias != tag.rsplit(".", 1)[0]:
+        checks.append(
+            Check(
+                "compatibility alias policy",
+                "failed",
+                f"alias must be the release line {tag.rsplit('.', 1)[0]}",
+            )
+        )
+    return control_sha, publication, checks
+
+
 def _emit(
     args: argparse.Namespace,
     sha: str | None,
@@ -2053,7 +2311,12 @@ def _emit(
     ok = all(item.status == "passed" for item in checks)
     status = "failed"
     if ok:
-        status = "dispatched" if args.command in {"start", "resume"} else "ready"
+        if args.command in {"start", "resume"}:
+            status = "dispatched"
+        elif args.command == "alias":
+            status = "advanced"
+        else:
+            status = "ready"
     payload = {
         "schema_version": 1,
         "phase": args.command,
@@ -2077,7 +2340,10 @@ def _emit(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Check, start, or safely resume a gated boundver release."
+        description=(
+            "Gated boundver release: check, start, safely resume, or advance the "
+            "Action alias."
+        )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("check", "start", "resume"):
@@ -2097,6 +2363,20 @@ def _parser() -> argparse.ArgumentParser:
                 )
                 confirmation_help += " followed by #RUNID"
             child.add_argument("--confirm", required=True, help=confirmation_help)
+    alias = subparsers.add_parser("alias")
+    alias.add_argument("--tag", required=True, help="Exact vMAJOR.MINOR.PATCH tag")
+    alias.add_argument("--repo", type=Path, default=Path("."))
+    alias.add_argument("--remote", default="origin")
+    alias.add_argument("--format", choices=("text", "json"), default="text")
+    alias.add_argument("--alias", required=True, help="Exact vMAJOR.MINOR alias")
+    alias.add_argument(
+        "--run-id", required=True, help="Positive decimal ID of the active publish run"
+    )
+    alias.add_argument(
+        "--confirm",
+        required=True,
+        help="Exact TAG@40-character-SHA#RUNID confirmation",
+    )
     return parser
 
 
@@ -2106,9 +2386,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if TAG_RE.fullmatch(args.tag) is None:
         parser.error("--tag must be an exact vMAJOR.MINOR.PATCH release")
     confirmation_sha: str | None = None
-    if args.command in {"start", "resume"}:
+    if args.command in {"start", "resume", "alias"}:
         expected_alias = args.tag.rsplit(".", 1)[0]
-        if args.alias != "none" and (
+        if args.command == "alias":
+            if ALIAS_RE.fullmatch(args.alias) is None or args.alias != expected_alias:
+                parser.error(f"--alias must be {expected_alias}")
+        elif args.alias != "none" and (
             ALIAS_RE.fullmatch(args.alias) is None or args.alias != expected_alias
         ):
             parser.error(f"--alias must be {expected_alias} or none")
@@ -2153,6 +2436,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             confirmation_sha,
         )
         sha = confirmation_sha
+    elif args.command == "alias":
+        assert confirmation_sha is not None
+        control_sha, publication, checks = _evaluate_alias(
+            args.repo,
+            args.remote,
+            args.tag,
+            args.alias,
+            args.run_id,
+            confirmation_sha,
+        )
+        sha = confirmation_sha
     else:
         sha, checks = _evaluate(args.repo, args.remote, args.tag)
     if args.command == "start" and sha != confirmation_sha:
@@ -2160,6 +2454,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     if any(item.status == "failed" for item in checks):
         return _emit(args, sha, checks, None)
     if args.command == "check":
+        return _emit(args, sha, checks, None)
+
+    if args.command == "alias":
+        if publication is None:
+            return _emit(args, sha, checks, None)
+        assert sha is not None
+        assert control_sha is not None
+        try:
+            # Re-read current main immediately before exposing the maintainer's
+            # credential to the reviewed, bounded alias updater.
+            _main_identity(args.repo.resolve(), args.remote, control_sha)
+            detail = _advance_alias_locally(
+                args.repo.resolve(),
+                args.tag,
+                sha,
+                args.alias,
+                publication,
+            )
+        except GateError as error:
+            checks.append(Check("compatibility alias advance", "failed", str(error)))
+            return _emit(args, sha, checks, None)
+        checks.append(Check("compatibility alias advance", "passed", detail))
         return _emit(args, sha, checks, None)
 
     assert sha is not None
