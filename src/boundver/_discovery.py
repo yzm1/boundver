@@ -1,8 +1,17 @@
-"""Deterministic comparison between discovery results and configured roots."""
+"""Tracked component discovery and deterministic config comparison."""
 
-from typing import Dict
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 
-from ._utils import ConfigError, _normalize_declared_path
+from ._git import _git_run, _iter_bounded_git_paths, _to_posix
+from ._utils import (
+    ConfigError,
+    GuardrailError,
+    _bounded_sorted_paths,
+    _iter_bounded_filesystem_paths,
+    _normalize_declared_path,
+)
 
 
 MAX_DISCOVERY_DIFF_COMPONENTS = 10_000
@@ -76,3 +85,293 @@ def compare_discovery_to_config(discovered: dict, config: dict) -> dict:
         "unregistered": unregistered,
         "not_discovered": not_discovered,
     }
+
+
+def discover_components(
+    repo_root: Path,
+    *,
+    max_discovery_manifests: int = 50_000,
+    max_discovered_components: int = 1_000,
+    max_provider_detection_entries: int = 50_000,
+    max_filesystem_traversal_entries: int = 200_000,
+) -> Dict[str, dict]:
+    """Discover components from tracked manifests, with a bounded non-Git fallback."""
+    manifest_specs = (
+        ("package.json", "version"),
+        ("pyproject.toml", "project.version"),
+        ("Cargo.toml", "package.version"),
+        ("go.mod", None),
+    )
+    _ignored_dirs = {
+        ".git", "node_modules", "__pycache__", ".venv", "venv",
+        "dist", "build", "vendor",
+    }
+    found: Dict[str, dict] = {}
+    seen_directories: Set[str] = set()
+    root_manifest_component: Optional[str] = None
+    tracked_detection = False
+    provider_candidate_paths: List[Path] = []
+
+    def filesystem_manifest_candidates() -> List[Path]:
+        manifest_names = {manifest for manifest, _field in manifest_specs}
+        return _bounded_sorted_paths(
+            (
+                path
+                for path in _iter_bounded_filesystem_paths(
+                    repo_root,
+                    recursive=True,
+                    max_entries=max_filesystem_traversal_entries,
+                    exceeded_message=(
+                        "Component discovery guardrail exceeded: "
+                        "filesystem traversal exceeds "
+                        f"{max_filesystem_traversal_entries} entries"
+                    ),
+                    should_descend=(
+                        lambda directory: directory.name not in _ignored_dirs
+                    ),
+                )
+                if path.name in manifest_names
+            ),
+            max_paths=max_discovery_manifests,
+            exceeded_message=(
+                "Component discovery guardrail exceeded: "
+                f">{max_discovery_manifests} manifests"
+            ),
+        )
+
+    try:
+        listed_paths = [
+            repo_root / path
+            for path in _iter_bounded_git_paths(
+                repo_root,
+                ["ls-files", "--cached", "-z", "--"],
+            )
+        ]
+        # Manifests are discovered from the index name set so an unstaged
+        # deletion does not erase an otherwise configured component. Provider
+        # evidence, however, must be readable from the working tree selected by
+        # the generated declaration; filter that separate view below.
+        candidate_paths = listed_paths
+        provider_candidate_paths = [
+            path
+            for path in listed_paths
+            if path.exists() or path.is_symlink()
+        ]
+        if listed_paths:
+            tracked_detection = True
+        else:
+            try:
+                _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
+            except subprocess.CalledProcessError:
+                candidate_paths = filesystem_manifest_candidates()
+            else:
+                tracked_detection = True
+    except (OSError, subprocess.CalledProcessError):
+        candidate_paths = filesystem_manifest_candidates()
+
+    # A repository-root manifest is common for single-package projects, but a
+    # root component would hash its own lockfile.  Map it to a conventional,
+    # tracked source directory when one is unambiguous instead of silently
+    # dropping the project or generating an invalid empty config.
+    tracked_relative = []
+    for candidate in candidate_paths:
+        try:
+            tracked_relative.append(candidate.relative_to(repo_root).as_posix())
+        except ValueError:
+            continue
+    provider_relative = []
+    for candidate in provider_candidate_paths:
+        try:
+            provider_relative.append(candidate.relative_to(repo_root).as_posix())
+        except ValueError:
+            continue
+    python_package_dirs = sorted({
+        path.rsplit("/", 1)[0]
+        for path in tracked_relative
+        if path.endswith("/__init__.py")
+        and not path.startswith(".")
+        and not (_ignored_dirs & set(path.split("/")))
+    })
+    top_python_packages = [
+        candidate
+        for candidate in python_package_dirs
+        if not any(
+            candidate.startswith(other + "/")
+            for other in python_package_dirs
+            if other != candidate
+        )
+    ]
+    if len(top_python_packages) == 1:
+        root_manifest_component = top_python_packages[0]
+
+    for conventional in ("src", "lib", "app"):
+        if root_manifest_component is not None:
+            break
+        if any(
+            path == conventional or path.startswith(conventional + "/")
+            for path in tracked_relative
+        ):
+            root_manifest_component = conventional
+            break
+
+    for manifest, version_field in manifest_specs:
+        for mf in sorted(p for p in candidate_paths if p.name == manifest):
+            if _ignored_dirs & set(mf.relative_to(repo_root).parts):
+                continue
+            rel_dir = mf.parent.relative_to(repo_root)
+            if str(rel_dir) == ".":
+                if root_manifest_component is None:
+                    continue
+                rel_path = root_manifest_component
+            else:
+                rel_path = _to_posix(str(rel_dir))
+            if rel_path in seen_directories:
+                continue
+            seen_directories.add(rel_path)
+            comp_name = repo_root.name if str(rel_dir) == "." else rel_dir.name
+            base_name = comp_name
+            idx = 2
+            while comp_name in found:
+                comp_name = f"{base_name}-{idx}"
+                idx += 1
+            component_dir = repo_root / rel_path
+            component_prefix = rel_path.rstrip("/") + "/"
+            available_paths = (
+                {
+                    path[len(component_prefix):]
+                    for path in provider_relative
+                    if path.startswith(component_prefix)
+                }
+                if tracked_detection
+                else None
+            )
+            provider, paths = _detect_provider(
+                component_dir,
+                available_paths=available_paths,
+                max_entries=max_provider_detection_entries,
+            )
+            version_source = (
+                {"file": mf.name, "field": version_field}
+                if version_field is not None and str(rel_dir) != "."
+                else None
+            )
+            if len(found) >= max_discovered_components:
+                raise GuardrailError(
+                    "Component discovery guardrail exceeded: "
+                    f">{max_discovered_components} components"
+                )
+            found[comp_name] = {
+                "path": rel_path,
+                "version_source": version_source,
+                "boundary": {"provider": provider, "paths": paths},
+            }
+    return found
+
+
+def _detect_provider(
+    component_dir: Path,
+    *,
+    available_paths: Optional[Set[str]] = None,
+    max_entries: int = 50_000,
+) -> tuple:
+    """Detect the best boundary provider and paths for a component directory.
+
+    Returns (provider_name, paths_list).
+    """
+    if available_paths is not None:
+        # Discovery is index-backed whenever Git supplied the manifest list.
+        # Restrict provider evidence to that same immutable name set so an
+        # untracked, deleted, or concurrently-created working-tree artifact
+        # cannot change the generated declaration.
+        if len(available_paths) > max_entries:
+            raise GuardrailError(
+                "Provider detection guardrail exceeded: "
+                f">{max_entries} available paths"
+            )
+        names = {
+            _to_posix(path)
+            for path in available_paths
+            if isinstance(path, str) and path
+        }
+        for name in (
+            "openapi.yaml",
+            "openapi.yml",
+            "openapi.json",
+            "swagger.yaml",
+            "swagger.json",
+        ):
+            if name in names:
+                return ("openapi", [name])
+        openapi_names = sorted(
+            name
+            for name in names
+            if "/" not in name and name.lower().startswith("openapi")
+        )
+        if openapi_names:
+            return ("openapi", [openapi_names[0]])
+        for name in ("boundary.json", "schema.json", "api.json"):
+            if name in names:
+                return ("json-file", [name])
+        if "__init__.py" in names:
+            return ("python-exports", ["__init__.py"])
+        if "src/index.ts" in names:
+            return ("typescript-exports", ["src/index.ts"])
+        if "index.ts" in names:
+            return ("typescript-exports", ["index.ts"])
+        return ("implicit", [])
+
+    # Non-Git and truly empty unborn repositories retain the documented
+    # bounded filesystem fallback.
+    # OpenAPI specs
+    for name in (
+        "openapi.yaml",
+        "openapi.yml",
+        "openapi.json",
+        "swagger.yaml",
+        "swagger.json",
+    ):
+        candidate = component_dir / name
+        if candidate.exists() or candidate.is_symlink():
+            return ("openapi", [name])
+    # Glob for any openapi-like files
+    directory_entries = _bounded_sorted_paths(
+        (
+            _iter_bounded_filesystem_paths(
+                component_dir,
+                recursive=False,
+                max_entries=max_entries,
+                exceeded_message=(
+                    "Provider detection guardrail exceeded: "
+                    f">{max_entries} directory entries"
+                ),
+            )
+            if component_dir.exists()
+            else ()
+        ),
+        max_paths=max_entries,
+        exceeded_message=(
+            "Provider detection guardrail exceeded: "
+            f">{max_entries} directory entries"
+        ),
+    )
+    for f in directory_entries:
+        if f.is_file() and f.name.lower().startswith("openapi"):
+            return ("openapi", [f.name])
+
+    # JSON schema / config boundary files
+    for name in ("boundary.json", "schema.json", "api.json"):
+        if (component_dir / name).exists():
+            return ("json-file", [name])
+
+    # Python exports
+    if (component_dir / "__init__.py").exists():
+        return ("python-exports", ["__init__.py"])
+
+    # TypeScript exports
+    src_index = component_dir / "src" / "index.ts"
+    if src_index.exists():
+        return ("typescript-exports", ["src/index.ts"])
+    if (component_dir / "index.ts").exists():
+        return ("typescript-exports", ["index.ts"])
+
+    return ("implicit", [])

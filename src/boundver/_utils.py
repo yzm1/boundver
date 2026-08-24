@@ -1,7 +1,6 @@
 """Shared utilities, enums, and exception types for boundver."""
 
 import fnmatch
-import io
 import json
 import math
 import os
@@ -10,6 +9,8 @@ import stat
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
+
+from ._bounded_io import FileSizeLimitError, read_bounded_file
 
 
 # Python 3.11+ limits decimal-to-int conversion to 4,300 digits by default,
@@ -919,72 +920,21 @@ def _read_bounded_path_bytes(
     *,
     max_bytes: int,
 ) -> bytes:
-    """Read one regular file under a hard byte ceiling with race detection.
-
-    This shared primitive backs hashing as well as auxiliary files that affect
-    source selection.  A fixed-size loop plus one sentinel byte prevents a
-    concurrent growth race from turning a trusted pre-read size into an
-    unbounded allocation.
-    """
-    if max_bytes < 0:
-        raise ValueError("File byte limit must be non-negative")
+    """Read one stable regular file under a hard byte ceiling."""
     try:
-        with full_path.open("rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if not stat.S_ISREG(opened.st_mode):
-                raise ValueError(
-                    f"Unsupported working-tree file type at {path_label}"
-                )
-            if opened.st_size > max_bytes:
-                raise GuardrailError(
-                    "Hash guardrail exceeded: file too large "
-                    f"({opened.st_size} bytes) at {path_label}"
-                )
+        return read_bounded_file(
+            full_path,
+            max_bytes,
+            path_label=path_label,
+            operation="hashing",
+        )
+    except FileSizeLimitError as exc:
+        observed = f">{max_bytes}" if exc.grew_during_read else str(exc.size)
+        raise GuardrailError(
+            "Hash guardrail exceeded: file too large "
+            f"({observed} bytes) at {path_label}"
+        ) from exc
 
-            output = io.BytesIO()
-            total = 0
-            read_chunk_bytes = 64 * 1024
-            while True:
-                requested = min(read_chunk_bytes, max_bytes - total + 1)
-                chunk = stream.read(requested)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise GuardrailError(
-                        "Hash guardrail exceeded: file too large "
-                        f"(>{max_bytes} bytes) at {path_label}"
-                    )
-                output.write(chunk)
-
-            finished = os.fstat(stream.fileno())
-            try:
-                current = full_path.lstat()
-            except FileNotFoundError as exc:
-                raise ValueError(
-                    f"File disappeared while hashing: {path_label}"
-                ) from exc
-            identity_changed = (
-                not stat.S_ISREG(current.st_mode)
-                or (opened.st_dev, opened.st_ino)
-                != (current.st_dev, current.st_ino)
-            )
-            content_changed = (
-                opened.st_size != finished.st_size
-                or opened.st_mtime_ns != finished.st_mtime_ns
-                or stat.S_IMODE(opened.st_mode)
-                != stat.S_IMODE(finished.st_mode)
-                or finished.st_size != total
-                or current.st_size != finished.st_size
-                or current.st_mtime_ns != finished.st_mtime_ns
-                or stat.S_IMODE(current.st_mode)
-                != stat.S_IMODE(finished.st_mode)
-            )
-            if identity_changed or content_changed:
-                raise ValueError(f"File changed while hashing: {path_label}")
-            return output.getvalue()
-    except FileNotFoundError as exc:
-        raise ValueError(f"File disappeared while hashing: {path_label}") from exc
 
 def _is_glob(pattern: str) -> bool:
     """Return True if the pattern contains glob metacharacters."""
