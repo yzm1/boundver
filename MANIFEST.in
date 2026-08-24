@@ -7,7 +7,6 @@ include SECURITY.md
 include SUPPORT.md
 include boundary.config.schema.json
 recursive-include docs *.md
-exclude docs/PROJECT_REVIEW.md
 exclude docs/RELEASING.md
 recursive-include examples *.json *.md *.py *.toml *.ts *.yaml
 recursive-include spec *.json *.md

@@ -51,6 +51,7 @@ the consumer suites reachable from that API in the declared graph. See
 - CI integration: copy a recipe from the [CI cookbook](ci-cookbook.md).
 - Containers, Homebrew, or GitLab: see [distribution](distribution.md).
 - Evaluating the model: read [why boundver](WHY_BOUNDVER.md).
+- Sources, exit codes, facet availability: see [reference](reference.md).
 
 !!! important
 

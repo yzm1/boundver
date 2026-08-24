@@ -1767,7 +1767,6 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertIn(ignored, dockerignore)
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
-        self.assertIn("exclude docs/PROJECT_REVIEW.md", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)
         self.assertIn("sdist contains repository-only material", smoke)
         for excluded in ("tests", "scripts", ".github", "Dockerfile", "action.yml"):

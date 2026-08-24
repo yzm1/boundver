@@ -60,7 +60,6 @@ SKIP_PARTS = {
     "dist",
     "__pycache__",
 }
-EXCLUDED_RELEASE_PATHS = frozenset({"docs/PROJECT_REVIEW.md"})
 RELEASE_DOCS = (
     "README.md",
     "docs/index.md",
@@ -566,8 +565,7 @@ def _release_files(repo: Path) -> Iterable[Path]:
                             f"{MAX_RELEASE_TOTAL_PATH_BYTES}-byte aggregate limit"
                         )
                     if (
-                        relative.as_posix() in EXCLUDED_RELEASE_PATHS
-                        or any(
+                        any(
                             part in SKIP_PARTS or part.endswith(".egg-info")
                             for part in relative.parts
                         )

@@ -83,10 +83,9 @@ credentials from the protected environments.
 | GitLab CI/CD Catalog | `templates/boundver.yml` mirrored to GitLab | Exact Catalog version runs the matching GHCR image; GitLab's release tag is `X.Y.Z`, not GitHub's `vX.Y.Z`. |
 
 The source distribution contains user-facing guides, specifications, examples,
-and community files. It deliberately excludes tests, repository automation,
-`docs/PROJECT_REVIEW.md` and this maintainer runbook: both remain available in
-the source repository, but neither is package runtime or end-user reference
-material.
+and community files. It deliberately excludes tests, repository automation, and
+this maintainer runbook, which remains available in the source repository but is
+neither package runtime nor end-user reference material.
 
 PyPI and Marketplace render the README embedded in the distribution or tag.
 They do not update when a later documentation commit lands. All public-facing

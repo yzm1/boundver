@@ -5,7 +5,7 @@ lockfile and a useful pull-request gate.
 
 > This guide describes boundver 0.13's v3/semantic-config-v2 contract. Version
 > 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
-> [Upgrade to 0.12](#upgrade-to-012) before combining an existing lock with
+> [Upgrading](reference.md#upgrading) before combining an existing lock with
 > these instructions.
 
 ## Prerequisites
@@ -215,9 +215,10 @@ python ci/generate_platform_openapi.py --check
 boundver verify --source working-tree
 ```
 
-Do not add an executable generator command to repository config. Command trust,
+Do not add an executable generator command to repository config: command trust,
 tool versions, and source materialization are outside the current derivation
-contract; first-class declarative support remains roadmap work.
+contract. See
+[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator).
 
 ## 6. Commit one source-consistent baseline
 
@@ -284,39 +285,18 @@ recomputes the whole candidate lock first, refuses the update if an unselected
 component is stale, then replaces the selected entry and recomputes all slices.
 This prevents a focused command from silently blessing unrelated drift.
 
-## Source-mode checklist
+## Source modes and exit codes
 
-| Source | Path set and content | Use |
-|---|---|---|
-| `head` | One captured commit tree | CI and committed verification |
-| `index` | One captured index tree | Pre-commit verification |
-| `working-tree` | Disk bytes for a captured tracked path set | Local editing |
+You have now used all three sources: `working-tree` for the local baseline and
+`head` for the committed gate. `index` is the third, for pre-commit checks.
 
-- Generate and verify with the same source.
-- Stage new files before `index`; make them Git-known before `working-tree`.
-- `head` and `index` read the config and verification lock from the same
-  captured source. Stage config/source changes before index generation, then
-  stage the generated lock before index verification.
-- Fetch history before using `--changed-from` or tag-based version sources.
-- Treat `--changed-from` as reporting/scheduling information: boundver still
-  recomputes full lock integrity so unchanged paths cannot hide stale metadata.
+The rule that matters most is that you generate and verify with the *same*
+source, and that `head` and `index` read the config and the lock from the
+captured snapshot too — so a staged workflow must stage the lock before it
+verifies.
 
-## Exit codes
-
-| Code | Meaning |
-|---:|---|
-| `0` | Selected facets match |
-| `1` | Exact or metadata drift |
-| `2` | Usage, configuration, or digest error |
-| `3` | Behavior drift |
-| `4` | Boundary drift |
-| `5` | Compatibility-family drift |
-
-The highest selected severity wins. `--fail-fast` limits the returned report,
-not the safety evaluation. `--format json` exposes issues, observations,
-selected facets, component-selection information, and update status.
-`status --format json` remains available; 0.11 also adds structured output for
-`why --format json` and `slice --format json`.
+For the complete source-mode table, the exit-code table, and an exit-code-aware
+CI script, see [reference](reference.md).
 
 ## Consumer closures and slices
 
@@ -338,41 +318,12 @@ must define exactly one of `components` or `closure_of`. The selected mode must
 be available for every member during strict generation; `exact` is the portable
 choice for heterogeneous closures.
 
-## Upgrade to 0.12
+## Upgrading
 
-Version 0.11's v3 lock carries semantic-config/v1; 0.12 uses v2 so
-presentation-only annotations no longer alter that identity. Version 0.10's
-v2 lock also does not bind file mode/type or the complete semantic
-configuration. There is no safe metadata-only migration for either source:
-
-```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
-boundver validate-config
-# Stage changed config and every changed/newly selected contract input.
-git add boundary.config.json services/payment/openapi/new-route.yaml
-boundver generate --source index
-git add boundary.lock.json
-boundver verify --source index
-git diff --cached -- boundary.config.json boundary.lock.json
-```
-
-“No metadata-only migration” means the lock must be recomputed, not that every
-content fingerprint must rotate. When the selected source bytes and effective
-selectors are unchanged, v3/v1 to v3/v2 regeneration and v0.12's provider
-metadata bumps are expected to preserve component facet and slice digest
-values. Review the changed semantic-config/provider metadata, and investigate
-any facet or slice value that does change. A deliberate `json-file-raw` to
-`path-hash` change has the same digest-neutral expectation under identical raw
-paths and options, while provider/config metadata changes.
-
-When upgrading directly from 0.10, review selector changes carefully: the
-corrected `*`/`**` grammar may add or remove matches. Update every writer and
-verifier together, then commit the regenerated v3/v2 lock. `boundver
-migrate-lock` deliberately rejects v1/v2 hash-bearing locks and v3 locks with
-semantic-config/v1, directing you to regenerate from content.
-The source path is illustrative; stage every changed or newly selected input.
-Omit `boundary.config.json` from `git add` if it did not change. Alternatively,
-commit config/source changes first and only then generate from `head`.
+Locks are regenerated, never relabelled. The upgrade procedure and the
+`migrate-lock` rejection rules are in [reference](reference.md#upgrading);
+version-specific expectations for what the regeneration diff should show are in
+[migration and ratcheting](migration-and-ratcheting.md).
 
 ## Important limitation
 
