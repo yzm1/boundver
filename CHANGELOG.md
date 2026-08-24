@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Exact-artifact release recovery now binds the retained distribution and
+  GitHub Release asset pair to its producing verification attempt, tolerating
+  GitHub's duplicated successful-job history after a failed-workflow rerun
+  while still rejecting ambiguous jobs or artifact pairs.
 - Release-surface verification now expects the published package summary from
   the canonical project metadata, with a CI parity test covering the registry
   name, summary, Python requirement, and project URLs to prevent stale release

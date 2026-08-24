@@ -1525,7 +1525,7 @@ def _source_release_artifacts(
         or len(jobs) > 100
     ):
         raise GateError("cannot completely inspect jobs from the source publication run")
-    verify_jobs = [
+    successful_verify_jobs = [
         job
         for job in jobs
         if isinstance(job, dict)
@@ -1538,20 +1538,6 @@ def _source_release_artifacts(
         and _is_positive_github_id(job.get("run_attempt"))
         and 0 < job["run_attempt"] <= attempt
     ]
-    if len(verify_jobs) != 1:
-        raise GateError(
-            "source run must contain exactly one successful exact verify-release job"
-        )
-    verify_job = verify_jobs[0]
-    artifact_attempt = verify_job.get("run_attempt")
-    if not _is_positive_github_id(artifact_attempt):
-        raise GateError("source verify-release attempt is malformed")
-    source_inputs = _require_source_release_inputs(
-        _gh_job_log(repo, verify_job["id"]),
-        tag,
-        sha,
-        alias,
-    )
 
     artifacts_payload = _gh_json(
         repo,
@@ -1578,14 +1564,19 @@ def _source_release_artifacts(
         raise GateError(
             "source run artifact response is incomplete or exceeds the inspection limit"
         )
-    expected_names = {
-        f"python-dist-{tag}-{run_id}-{artifact_attempt}",
-        f"release-assets-{tag}-{run_id}-{artifact_attempt}",
+    artifact_name_res = {
+        "python-dist": re.compile(
+            rf"python-dist-{re.escape(tag)}-{run_id}-([1-9][0-9]*)"
+        ),
+        "release-assets": re.compile(
+            rf"release-assets-{re.escape(tag)}-{run_id}-([1-9][0-9]*)"
+        ),
     }
     release_notes_re = re.compile(
         rf"release-notes-{re.escape(sha)}-{run_id}-([1-9][0-9]*)"
     )
     actual_names: set[str] = set()
+    artifact_attempts = {label: set() for label in artifact_name_res}
     release_note_count = 0
     now = datetime.now(timezone.utc)
     for artifact in artifacts:
@@ -1615,7 +1606,20 @@ def _source_release_artifacts(
             raise GateError("source artifact identity, digest, or run association is invalid")
         if _github_timestamp(artifact.get("expires_at"), "expires_at") <= now:
             raise GateError("source publication artifact has expired")
-        if name not in expected_names:
+        matched_artifact = False
+        for label, name_re in artifact_name_res.items():
+            match = name_re.fullmatch(name)
+            if match is None:
+                continue
+            artifact_attempt = int(match.group(1))
+            if artifact_attempt > attempt:
+                raise GateError(
+                    "source artifact names do not match the release tag, run, and attempt"
+                )
+            artifact_attempts[label].add(artifact_attempt)
+            matched_artifact = True
+            break
+        if not matched_artifact:
             match = release_notes_re.fullmatch(name)
             if match is None or int(match.group(1)) > attempt:
                 raise GateError(
@@ -1623,8 +1627,31 @@ def _source_release_artifacts(
                 )
             release_note_count += 1
         actual_names.add(name)
-    if not expected_names.issubset(actual_names):
+
+    retained_attempts = set.union(*artifact_attempts.values())
+    if (
+        len(retained_attempts) != 1
+        or any(attempts != retained_attempts for attempts in artifact_attempts.values())
+    ):
         raise GateError("source artifact names do not match the release tag, run, and attempt")
+    artifact_attempt = retained_attempts.pop()
+    verify_jobs = [
+        job
+        for job in successful_verify_jobs
+        if job.get("run_attempt") == artifact_attempt
+    ]
+    if len(verify_jobs) != 1:
+        raise GateError(
+            "source run must contain exactly one successful exact verify-release job "
+            "for the retained artifact attempt"
+        )
+    verify_job = verify_jobs[0]
+    source_inputs = _require_source_release_inputs(
+        _gh_job_log(repo, verify_job["id"]),
+        tag,
+        sha,
+        alias,
+    )
     return (
         f"failed publish run {run_id} attempt {attempt} reuses successful "
         f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts; "

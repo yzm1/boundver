@@ -89,6 +89,7 @@ def _resume_api_payloads(
     run_attempt: int = RUN_ATTEMPT,
     artifact_attempt: int | None = None,
     release_note_attempts: tuple[int, ...] = (),
+    extra_verify_attempts: tuple[int, ...] = (),
 ) -> dict[str, object]:
     if artifact_attempt is None:
         artifact_attempt = run_attempt
@@ -130,6 +131,29 @@ def _resume_api_payloads(
                 "workflow_run": dict(association),
             }
         )
+    jobs = [
+        {
+            "id": 31,
+            "name": "verify-release",
+            "run_id": RUN_ID,
+            "run_attempt": artifact_attempt,
+            "head_sha": SHA,
+            "status": "completed",
+            "conclusion": "success",
+        }
+    ]
+    for job_id, verify_attempt in enumerate(extra_verify_attempts, start=32):
+        jobs.append(
+            {
+                "id": job_id,
+                "name": "verify-release",
+                "run_id": RUN_ID,
+                "run_attempt": verify_attempt,
+                "head_sha": SHA,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        )
     return {
         run_endpoint: {
             "id": RUN_ID,
@@ -143,18 +167,8 @@ def _resume_api_payloads(
             "run_attempt": run_attempt,
         },
         f"{run_endpoint}/jobs?filter=all&per_page=100": {
-            "total_count": 1,
-            "jobs": [
-                {
-                    "id": 31,
-                    "name": "verify-release",
-                    "run_id": RUN_ID,
-                    "run_attempt": artifact_attempt,
-                    "head_sha": SHA,
-                    "status": "completed",
-                    "conclusion": "success",
-                }
-            ],
+            "total_count": len(jobs),
+            "jobs": jobs,
         },
         f"{run_endpoint}/artifacts?per_page=100": {
             "total_count": len(artifacts),
@@ -1478,7 +1492,11 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
     def test_resume_reuses_verified_artifact_attempt_after_failed_job_rerun(self):
         publisher = _load_script()
-        payloads = _resume_api_payloads(run_attempt=2, artifact_attempt=1)
+        payloads = _resume_api_payloads(
+            run_attempt=2,
+            artifact_attempt=1,
+            extra_verify_attempts=(2,),
+        )
 
         def response(_repo, _repository, endpoint):
             return copy.deepcopy(payloads[endpoint])
@@ -1496,6 +1514,24 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         self.assertIn("attempt 2", detail)
         self.assertIn("verify-release attempt 1", detail)
+
+    def test_resume_rejects_duplicate_verification_for_retained_artifact_attempt(self):
+        publisher = _load_script()
+        payloads = _resume_api_payloads(extra_verify_attempts=(RUN_ATTEMPT,))
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ), self.assertRaisesRegex(publisher.GateError, "retained artifact attempt"):
+            publisher._source_release_artifacts(
+                Path("."), RUN_ID, TAG, SHA, ALIAS
+            )
 
     def test_resume_accepts_validated_late_stage_release_note_artifacts(self):
         publisher = _load_script()
@@ -1720,13 +1756,22 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         cases["malformed source run"] = (malformed, "malformed")
 
         future_attempt = _resume_api_payloads(artifact_attempt=RUN_ATTEMPT + 1)
-        cases["future verification attempt"] = (future_attempt, "successful exact")
+        cases["future verification attempt"] = (future_attempt, "names")
 
         malformed_job = _resume_api_payloads()
         malformed_job[
             f"{run_endpoint}/jobs?filter=all&per_page=100"
         ]["jobs"][0]["id"] = True
         cases["malformed verification job"] = (malformed_job, "successful exact")
+
+        boolean_attempt = _resume_api_payloads(run_attempt=1, artifact_attempt=1)
+        boolean_attempt[
+            f"{run_endpoint}/jobs?filter=all&per_page=100"
+        ]["jobs"][0]["run_attempt"] = True
+        cases["boolean verification attempt"] = (
+            boolean_attempt,
+            "successful exact",
+        )
 
         expired = _resume_api_payloads()
         expired[f"{run_endpoint}/artifacts?per_page=100"]["artifacts"][0][

@@ -1337,7 +1337,10 @@ class AutomationContractTests(unittest.TestCase):
             "len(jobs) > 100",
             "not 2 <= artifacts_total <= 100",
             "release_notes_re = re.compile(",
-            "not set(expected_names).issubset(artifact_names)",
+            "retained_attempts = set.union(*artifact_attempts.values())",
+            'job.get("run_attempt") == artifact_attempt',
+            'type(verification.get("run_attempt")) is not int',
+            "verify-release job for the retained artifact attempt",
         ):
             self.assertIn(check, recovery_lookup)
 
