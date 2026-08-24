@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set, Union
 
 from ._config import _json_value_issues, _snapshot_relative_path
 from ._consumer_graph import affected_consumers, resolve_slice_components
+from ._structured_data import strict_json_loads
 
 from ._git import (
     GitSourceSnapshot,
@@ -33,12 +34,16 @@ from ._hashing import (
     sha256_hex,
     source_tree_digest,
 )
+from ._lockfile_validation import (
+    is_sha256_digest as _is_sha256_digest_impl,
+    lockfile_schema_issues as _lockfile_schema_issues_impl,
+    lockfile_structure_issues as _lockfile_structure_issues_impl,
+)
 from ._utils import (
     FACETS,
     FACET_SET,
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
-    _bounded_diagnostic_text,
     _bounded_json_dumps,
     _bounded_json_int,
     _available_component_facets,
@@ -84,33 +89,10 @@ COMPONENT_METADATA_FIELDS = (
 )
 
 
-def _lock_json_object_without_duplicates(pairs: List[tuple]) -> dict:
-    value: dict = {}
-    for key, item in pairs:
-        if key in value:
-            raise LockfileError(
-                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}"
-            )
-        value[key] = item
-    return value
-
-
-def _reject_nonfinite_lock_constant(value: str) -> object:
-    raise LockfileError(
-        "non-finite JSON number "
-        f"{_bounded_diagnostic_repr(value)} is not supported"
-    )
-
-
 def parse_lockfile_text(text: str, path_label: object = "lockfile") -> dict:
     """Parse lock JSON without silently accepting duplicate object keys."""
     try:
-        value = json.loads(
-            text,
-            object_pairs_hook=_lock_json_object_without_duplicates,
-            parse_constant=_reject_nonfinite_lock_constant,
-            parse_int=_bounded_json_int,
-        )
+        value = strict_json_loads(text)
     except (ValueError, RecursionError, OverflowError) as exc:
         raise LockfileError(f"Lockfile is not valid JSON at {path_label}: {exc}") from exc
     if not isinstance(value, dict):
@@ -1012,41 +994,13 @@ def generate_lockfile_for_components(
 
 
 def _lockfile_schema_issues(lockfile: dict) -> List[str]:
-    if not isinstance(lockfile, dict):
-        return ["LOCKFILE malformed: root must be an object"]
-    schema = lockfile.get("schema")
-    if schema is None:
-        return [f"LOCKFILE schema missing (expected {LOCKFILE_SCHEMA})"]
-    if schema != LOCKFILE_SCHEMA:
-        return [
-            "LOCKFILE schema unsupported: "
-            f"{_bounded_diagnostic_text(schema)} (expected {LOCKFILE_SCHEMA})"
-        ]
-    return []
+    """Compatibility wrapper for the lockfile validation subsystem."""
+    return _lockfile_schema_issues_impl(lockfile, LOCKFILE_SCHEMA)
 
 
 def _is_sha256_digest(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def _append_unknown_field_issues(
-    issues: List[str],
-    value: object,
-    allowed: Set[str],
-    context: str,
-) -> None:
-    """Mirror JSON Schema ``additionalProperties: false`` without jsonschema."""
-    if not isinstance(value, dict):
-        return
-    for field in value:
-        if not isinstance(field, str):
-            issues.append(f"LOCKFILE malformed: {context} field names must be strings")
-        elif field not in allowed:
-            issues.append(f"LOCKFILE malformed: unknown field in {context}: {field}")
+    """Compatibility wrapper for canonical digest validation."""
+    return _is_sha256_digest_impl(value)
 
 
 def _lockfile_structure_issues(
@@ -1055,261 +1009,16 @@ def _lockfile_structure_issues(
     allowed_config_contracts: Optional[Set[str]] = None,
     running_version: Optional[str] = None,
 ) -> List[str]:
-    issues: List[str] = []
-    if not isinstance(lockfile, dict):
-        return ["LOCKFILE malformed: root must be an object"]
-    accepted_contracts = (
-        {SEMANTIC_CONFIG_VERSION}
-        if allowed_config_contracts is None
-        else set(allowed_config_contracts)
-    )
-    _append_unknown_field_issues(
-        issues,
+    """Compatibility wrapper for complete structural lock validation."""
+    return _lockfile_structure_issues_impl(
         lockfile,
-        {
-            "$schema",
-            "schema",
-            "config_contract",
-            "config_digest",
-            "project",
-            "components",
-            "slices",
-        },
-        "lockfile",
+        semantic_config_version=SEMANTIC_CONFIG_VERSION,
+        facets=FACETS,
+        component_metadata_fields=COMPONENT_METADATA_FIELDS,
+        expected_schema=LOCKFILE_SCHEMA,
+        allowed_config_contracts=allowed_config_contracts,
+        running_version=running_version,
     )
-    if "$schema" in lockfile and not isinstance(lockfile["$schema"], str):
-        issues.append("LOCKFILE malformed: $schema must be a string")
-    if not isinstance(lockfile.get("project"), str) or not lockfile.get("project"):
-        issues.append("LOCKFILE malformed: project must be a non-empty string")
-    config_contract = lockfile.get("config_contract")
-    if (
-        not isinstance(config_contract, str)
-        or config_contract not in accepted_contracts
-    ):
-        contract_prefix = "boundver-semantic-config/v"
-        read_only_historical = accepted_contracts != {SEMANTIC_CONFIG_VERSION}
-        if read_only_historical:
-            supported = ", ".join(
-                repr(contract) for contract in sorted(accepted_contracts)
-            )
-            if (
-                isinstance(config_contract, str)
-                and config_contract.startswith(contract_prefix)
-                and config_contract[len(contract_prefix) :].isdigit()
-            ):
-                return [
-                    "LOCKFILE semantic configuration contract unsupported for "
-                    "this read-only comparison: "
-                    f"{_bounded_diagnostic_repr(config_contract)}; supported "
-                    f"contracts are {supported}"
-                ]
-            issues.append(
-                "LOCKFILE malformed: config_contract must be one of "
-                f"{supported} for this read-only comparison"
-            )
-        elif (
-            isinstance(config_contract, str)
-            and config_contract.startswith(contract_prefix)
-            and config_contract[len(contract_prefix) :].isdigit()
-        ):
-            release = (
-                f"boundver {running_version}"
-                if isinstance(running_version, str) and running_version
-                else "this boundver release"
-            )
-            schema = lockfile.get("schema", LOCKFILE_SCHEMA)
-            return [
-                "LOCKFILE semantic configuration contract mismatch: "
-                f"{_bounded_diagnostic_repr(schema)} uses "
-                f"{_bounded_diagnostic_repr(config_contract)}, but {release} "
-                f"requires {SEMANTIC_CONFIG_VERSION!r}. Semantic digests cannot "
-                "be relabelled or migrated without repository content. Install "
-                "the repository-pinned boundver version or run `boundver generate` "
-                "with this version after reviewing the migration."
-            ]
-        elif not read_only_historical:
-            issues.append(
-                "LOCKFILE malformed: config_contract must be "
-                f"{SEMANTIC_CONFIG_VERSION!r}"
-            )
-    config_digest = lockfile.get("config_digest")
-    if not _is_sha256_digest(config_digest):
-        issues.append(
-            "LOCKFILE malformed: config_digest must be a lowercase SHA-256 digest"
-        )
-    if not isinstance(lockfile.get("components"), dict):
-        issues.append("LOCKFILE malformed: components must be an object")
-        return issues
-    if not isinstance(lockfile.get("slices"), dict):
-        issues.append("LOCKFILE malformed: slices must be an object")
-    for name, comp in lockfile.get("components", {}).items():
-        if not isinstance(name, str) or not name:
-            issues.append("LOCKFILE malformed: component names must be non-empty strings")
-        if not isinstance(comp, dict):
-            issues.append(f"LOCKFILE malformed: component '{name}' must be an object")
-            continue
-        _append_unknown_field_issues(
-            issues,
-            comp,
-            set(COMPONENT_METADATA_FIELDS) | {"fingerprints"},
-            f"component '{name}'",
-        )
-        for field in ("version", "boundary_provider_version"):
-            value = comp.get(field)
-            if field not in comp or (value is not None and not isinstance(value, str)):
-                issues.append(
-                    f"LOCKFILE malformed: component '{name}' {field} "
-                    "must be a string or null"
-                )
-        for field in ("path", "boundary_provider"):
-            if not isinstance(comp.get(field), str) or not comp.get(field):
-                issues.append(
-                    f"LOCKFILE malformed: component '{name}' {field} "
-                    "must be a non-empty string"
-                )
-        if comp.get("boundary_status") not in {"ok", "partial", "error"}:
-            issues.append(
-                f"LOCKFILE malformed: component '{name}' boundary_status must be "
-                "one of ok, partial, or error"
-            )
-        for consumer_field in ("consumers", "external_consumers"):
-            consumers = comp.get(consumer_field)
-            if (
-                not isinstance(consumers, list)
-                or not all(isinstance(item, str) for item in consumers)
-                or len(consumers) != len(set(consumers))
-            ):
-                issues.append(
-                    f"LOCKFILE malformed: component '{name}' {consumer_field} "
-                    "must be an array of unique strings"
-                )
-        fps = comp.get("fingerprints")
-        if not isinstance(fps, dict):
-            issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints object")
-        else:
-            _append_unknown_field_issues(
-                issues,
-                fps,
-                FACET_SET,
-                f"component '{name}' fingerprints",
-            )
-            for required in FACETS:
-                if required not in fps:
-                    issues.append(f"LOCKFILE malformed: component '{name}' missing fingerprints.{required}")
-                elif fps[required] is not None and not _is_sha256_digest(
-                    fps[required]
-                ):
-                    issues.append(
-                        f"LOCKFILE malformed: component '{name}' fingerprints.{required} "
-                        "must be a lowercase SHA-256 digest or null"
-                    )
-        semver = comp.get("semver")
-        if not isinstance(semver, dict):
-            issues.append(
-                f"LOCKFILE malformed: component '{name}' semver must be an object"
-            )
-        else:
-            _append_unknown_field_issues(
-                issues,
-                semver,
-                {"compat_family", "api_surface", "exact_version"},
-                f"component '{name}' semver",
-            )
-            for field in ("compat_family", "api_surface", "exact_version"):
-                value = semver.get(field)
-                if field not in semver or (
-                    value is not None and not isinstance(value, str)
-                ):
-                    issues.append(
-                        f"LOCKFILE malformed: component '{name}' semver.{field} "
-                        "must be a string or null"
-                    )
-        for field in (
-            "version_errors", "exact_errors", "behavior_errors",
-            "boundary_errors", "warnings", "vendored_copies", "vendored_errors",
-        ):
-            value = comp.get(field)
-            if value is not None and (
-                not isinstance(value, list)
-                or not all(isinstance(item, str) for item in value)
-            ):
-                issues.append(
-                    f"LOCKFILE malformed: component '{name}' {field} must be an array of strings"
-                )
-        boundary_metadata = comp.get("boundary_metadata")
-        if boundary_metadata is not None and not isinstance(boundary_metadata, dict):
-            issues.append(
-                f"LOCKFILE malformed: component '{name}' boundary_metadata "
-                "must be an object or null"
-            )
-        vendored_digests = comp.get("vendored_digests")
-        if vendored_digests is not None and (
-            not isinstance(vendored_digests, dict)
-            or not all(
-                isinstance(key, str) and _is_sha256_digest(value)
-                for key, value in vendored_digests.items()
-            )
-        ):
-            issues.append(
-                f"LOCKFILE malformed: component '{name}' vendored_digests must "
-                "be an object with lowercase SHA-256 digest values"
-            )
-    if isinstance(lockfile.get("slices"), dict):
-        for name, slice_entry in lockfile["slices"].items():
-            if not isinstance(name, str) or not name:
-                issues.append("LOCKFILE malformed: slice names must be non-empty strings")
-            if not isinstance(slice_entry, dict):
-                issues.append(f"LOCKFILE malformed: slice '{name}' must be an object")
-                continue
-            _append_unknown_field_issues(
-                issues,
-                slice_entry,
-                {
-                    "description",
-                    "mode",
-                    "components",
-                    "fingerprint",
-                    "component_digests",
-                },
-                f"slice '{name}'",
-            )
-            fingerprint = slice_entry.get("fingerprint")
-            if not _is_sha256_digest(fingerprint):
-                issues.append(
-                    f"LOCKFILE malformed: slice '{name}' fingerprint must be a "
-                    "lowercase SHA-256 digest"
-                )
-            if not isinstance(slice_entry.get("description"), str):
-                issues.append(
-                    f"LOCKFILE malformed: slice '{name}' description must be a string"
-                )
-            if slice_entry.get("mode") not in FACET_SET:
-                issues.append(
-                    f"LOCKFILE malformed: slice '{name}' mode must be one of "
-                    "exact, behavior, boundary, or compat"
-                )
-            slice_components = slice_entry.get("components")
-            if (
-                not isinstance(slice_components, list)
-                or not all(isinstance(item, str) for item in slice_components)
-            ):
-                issues.append(
-                    f"LOCKFILE malformed: slice '{name}' components must be an array of strings"
-                )
-            component_digests = slice_entry.get("component_digests")
-            if (
-                not isinstance(component_digests, dict)
-                or not all(
-                    isinstance(key, str)
-                    and (value is None or _is_sha256_digest(value))
-                    for key, value in component_digests.items()
-                )
-            ):
-                issues.append(
-                    f"LOCKFILE malformed: slice '{name}' component_digests must "
-                    "be an object with lowercase SHA-256 digest or null values"
-                )
-    return issues
 
 
 def verify_lockfile(

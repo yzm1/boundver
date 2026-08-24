@@ -67,35 +67,14 @@ def _inline_toml_helpers(workflow_path: Path, job_name: str, step_name: str) -> 
 
 
 def _recovered_archive_helpers() -> dict:
-    workflow = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
-    )
-    step = next(
-        item
-        for item in workflow["jobs"]["verify-release"]["steps"]
-        if item.get("name") == "Fail on any recovered artifact archive digest mismatch"
-    )
-    source = step["run"].split("<<'PY'\n", 1)[1].split("\nPY", 1)[0]
-    tree = ast.parse(source)
-    functions = {"exact_file_read", "valid_flat_name", "preflight_zip", "hash_exact"}
-    selected = []
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            selected.append(node)
-        elif isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name)
-            and (
-                target.id.startswith("MAX_ARCHIVE_") or target.id == "READ_CHUNK_BYTES"
-            )
-            for target in node.targets
-        ):
-            selected.append(node)
-        elif isinstance(node, ast.FunctionDef) and node.name in functions:
-            selected.append(node)
-    namespace: dict = {}
-    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
-    exec(compile(module, "<recovered-archive-helpers>", "exec"), namespace)
-    return namespace
+    path = REPO_ROOT / "scripts" / "release_workflow.py"
+    name = "boundver_distribution_release_workflow_test"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.__dict__
 
 
 def _load_testpypi_verifier():
@@ -1329,24 +1308,33 @@ class AutomationContractTests(unittest.TestCase):
                 {"recovered-python-dist", "recovered-release-assets"},
             )
 
+        control_checkout = next(
+            step
+            for step in steps
+            if step["name"] == "Checkout the recovery control commit"
+        )
+        self.assertEqual(control_checkout["with"]["path"], ".release-control")
+        self.assertIs(control_checkout["with"]["persist-credentials"], False)
+        control_rebind = next(
+            step
+            for step in steps
+            if step["name"] == "Rebind recovery to current main after its control audit"
+        )["run"]
+        self.assertIn("git -C .release-control fetch", control_rebind)
+        self.assertIn(
+            'cp "$helper" "$RUNNER_TEMP/release_workflow.py"', control_rebind
+        )
+
         recovery_lookup = next(
             step
             for step in steps
             if step["name"] == "Locate the exact source-run artifacts for recovery"
         )["run"]
         for check in (
-            "MAX_GH_RESPONSE_BYTES = 8 * 1024 * 1024",
-            "MAX_GH_TOTAL_BYTES = 16 * 1024 * 1024",
-            "subprocess.Popen(",
-            "remaining_with_sentinel",
-            "kill_process(process)",
-            "len(jobs) > 100",
-            "not 2 <= artifacts_total <= 100",
-            "release_notes_re = re.compile(",
-            "retained_attempts = set.union(*artifact_attempts.values())",
-            'job.get("run_attempt") == artifact_attempt',
-            'type(verification.get("run_attempt")) is not int',
-            "verify-release job for the retained artifact attempt",
+            '"$RUNNER_TEMP/release_workflow.py"',
+            "recover-artifacts",
+            '--repository "$GITHUB_REPOSITORY"',
+            '--run-id "$RESUME_RUN_ID"',
         ):
             self.assertIn(check, recovery_lookup)
 
@@ -1356,13 +1344,32 @@ class AutomationContractTests(unittest.TestCase):
             if step["name"] == "Bind recovery policy to the source verification log"
         )["run"]
         for check in (
-            "MAX_LOG_BYTES = 32 * 1024 * 1024",
-            "MAX_LOG_LINES = 500_000",
-            "MAX_POLICY_TRIPLES = 10_000",
-            "subprocess.Popen(",
-            "kill_process(process)",
+            '"$RUNNER_TEMP/release_workflow.py"',
+            "verify-input-log",
+            '--job-id "$VERIFICATION_JOB_ID"',
+            '--alias "$COMPATIBILITY_ALIAS"',
         ):
             self.assertIn(check, log_lookup)
+
+        helper = (REPO_ROOT / "scripts/release_workflow.py").read_text(
+            encoding="utf-8"
+        )
+        for check in (
+            "MAX_GITHUB_RESPONSE_BYTES = 8 * 1024 * 1024",
+            "MAX_GITHUB_TOTAL_BYTES = 16 * 1024 * 1024",
+            "MAX_JOB_LOG_BYTES = 32 * 1024 * 1024",
+            "MAX_JOB_LOG_LINES = 500_000",
+            "MAX_POLICY_TRIPLES = 10_000",
+            "subprocess.Popen(",
+            "remaining_with_sentinel",
+            "_kill_process(process)",
+            "len(jobs) > 100",
+            "release_notes_re = re.compile(",
+            "retained_attempts = set.union(*artifact_attempts.values())",
+            'job.get("run_attempt") == artifact_attempt',
+            "retained artifact attempt",
+        ):
+            self.assertIn(check, helper)
 
         archive_gate = next(
             step
@@ -1372,8 +1379,12 @@ class AutomationContractTests(unittest.TestCase):
         )["run"]
         for check in (
             "actions/artifacts/$artifact_id/zip",
-            'actual_digest="sha256:$(sha256sum',
-            '"$actual_digest" != "$expected_digest"',
+            "verify-archive",
+            '--digest "$expected_digest"',
+            '"$RUNNER_TEMP/release_workflow.py"',
+        ):
+            self.assertIn(check, archive_gate)
+        for check in (
             "artifact archive is not a unique flat file set",
             "MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024",
             "MAX_ARCHIVE_MEMBERS = 16",
@@ -1383,7 +1394,7 @@ class AutomationContractTests(unittest.TestCase):
             "download action output disagrees with artifact archive",
             "download action changed artifact bytes",
         ):
-            self.assertIn(check, archive_gate)
+            self.assertIn(check, helper)
 
         payload_gate = next(
             step
@@ -1391,20 +1402,17 @@ class AutomationContractTests(unittest.TestCase):
             if step["name"] == "Validate the exact recovered release payload"
         )["run"]
         for check in (
-            'require_exact("recovered-python-dist", [wheel, sdist])',
-            'require_exact("recovered-release-assets", '
-            '[wheel, sdist, pyz, "SHA256SUMS"])',
-            "SHA256SUMS does not cover the exact release payload",
-            "sha256sum --check --strict SHA256SUMS",
-            "cmp --silent",
+            "validate-payload",
+            '--python-dist "$GITHUB_WORKSPACE/recovered-python-dist"',
+            '--release-assets "$GITHUB_WORKSPACE/recovered-release-assets"',
             "python3 -I -m twine check",
         ):
             self.assertIn(check, payload_gate)
-        self.assertEqual(payload_gate.count("cmp --silent"), 2)
+        self.assertIn("SHA256SUMS does not cover the exact release payload", helper)
 
     def test_recovered_archive_preflight_rejects_count_path_and_size_bombs(self):
         helpers = _recovered_archive_helpers()
-        preflight_zip = helpers["preflight_zip"]
+        preflight_zip = helpers["_preflight_zip"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             too_many = root / "too-many.zip"
@@ -1412,7 +1420,9 @@ class AutomationContractTests(unittest.TestCase):
                 archive.writestr("one", b"1")
                 archive.writestr("two", b"2")
             helpers["MAX_ARCHIVE_MEMBERS"] = 1
-            with self.assertRaisesRegex(SystemExit, "member-count limit"):
+            with self.assertRaisesRegex(
+                helpers["ReleaseWorkflowError"], "member-count limit"
+            ):
                 preflight_zip(too_many)
 
             helpers["MAX_ARCHIVE_MEMBERS"] = 16
@@ -1420,7 +1430,9 @@ class AutomationContractTests(unittest.TestCase):
             long_path = root / "long-path.zip"
             with ZipFile(long_path, "w") as archive:
                 archive.writestr("ninebytes", b"1")
-            with self.assertRaisesRegex(SystemExit, "metadata is unsupported"):
+            with self.assertRaisesRegex(
+                helpers["ReleaseWorkflowError"], "metadata is unsupported"
+            ):
                 preflight_zip(long_path)
 
             helpers["MAX_ARCHIVE_PATH_BYTES"] = 1024
@@ -1428,11 +1440,15 @@ class AutomationContractTests(unittest.TestCase):
             size_bomb = root / "size-bomb.zip"
             with ZipFile(size_bomb, "w") as archive:
                 archive.writestr("payload", b"x" * 9)
-            with self.assertRaisesRegex(SystemExit, "member exceeds the size limit"):
+            with self.assertRaisesRegex(
+                helpers["ReleaseWorkflowError"], "member exceeds the size limit"
+            ):
                 preflight_zip(size_bomb)
 
-        with self.assertRaisesRegex(SystemExit, "exceeds its advertised size"):
-            helpers["hash_exact"](io.BytesIO(b"xy"), 1, "test member")
+        with self.assertRaisesRegex(
+            helpers["ReleaseWorkflowError"], "exceeds its advertised size"
+        ):
+            helpers["_hash_exact"](io.BytesIO(b"xy"), 1, "test member")
 
     def test_release_candidate_is_tested_before_tag_job(self):
         import yaml

@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import boundver._git as git_helpers
 import boundver._hashing as hashing
 import boundver._utils as utils
+import boundver._canonical_providers as canonical_providers
+import boundver._discovery as discovery
 import boundver.providers as providers
 from boundver._config import (
     _detect_provider,
@@ -191,10 +193,10 @@ class FilesystemEnumerationBoundTests(unittest.TestCase):
             git_failure = subprocess.CalledProcessError(1, ["git"])
             with (
                 patch(
-                    "boundver._config._iter_bounded_git_paths",
+                    "boundver._discovery._iter_bounded_git_paths",
                     side_effect=git_failure,
                 ),
-                patch("boundver._config._git_run", side_effect=git_failure),
+                patch.object(discovery, "_git_run", side_effect=git_failure),
                 patch("boundver._config.MAX_FILESYSTEM_TRAVERSAL_ENTRIES", 1),
             ):
                 with self.assertRaisesRegex(
@@ -216,10 +218,10 @@ class FilesystemEnumerationBoundTests(unittest.TestCase):
             git_failure = subprocess.CalledProcessError(1, ["git"])
             with (
                 patch(
-                    "boundver._config._iter_bounded_git_paths",
+                    "boundver._discovery._iter_bounded_git_paths",
                     side_effect=git_failure,
                 ),
-                patch("boundver._config._git_run", side_effect=git_failure),
+                patch.object(discovery, "_git_run", side_effect=git_failure),
                 patch("boundver._config.MAX_DISCOVERED_COMPONENTS", 1),
             ):
                 with self.assertRaisesRegex(GuardrailError, ">1 components"):
@@ -339,7 +341,7 @@ class CanonicalProviderBudgetTests(unittest.TestCase):
 
     def test_canonical_string_is_sized_before_escaping_allocation(self):
         with patch.object(
-            providers._json_mod,
+            canonical_providers._json_mod,
             "dumps",
             side_effect=AssertionError("must not allocate quoted value"),
         ) as dumps:

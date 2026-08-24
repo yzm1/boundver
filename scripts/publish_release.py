@@ -28,7 +28,6 @@ import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import BinaryIO, Sequence
 
@@ -48,6 +47,23 @@ def _load_release_platform():
 
 resolve_bash = _load_release_platform().resolve_bash
 
+
+def _load_release_workflow():
+    """Load the exact adjacent workflow helper under isolated startup."""
+    path = Path(__file__).resolve().with_name("release_workflow.py")
+    name = "_boundver_release_workflow"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release workflow helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+release_workflow = _load_release_workflow()
+ReleaseWorkflowError = release_workflow.ReleaseWorkflowError
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
@@ -63,13 +79,6 @@ TAG_RE = re.compile(
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 ALIAS_RE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 RUN_ID_RE = re.compile(r"[1-9][0-9]{0,19}")
-ARTIFACT_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
-JOB_LOG_ENV_RE = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-    r"(?:\.[0-9]+)?Z {3}"
-    r"(?P<name>RELEASE_TAG|RELEASE_SHA|COMPATIBILITY_ALIAS)(?P<rest>.*)$"
-)
-JOB_LOG_ENV_VALUE_RE = re.compile(r": (?P<value>\S+)")
 MAX_COMMAND_STDOUT_BYTES = 32 * 1024 * 1024
 MAX_COMMAND_STDERR_BYTES = 1024 * 1024
 MAX_GITHUB_API_BYTES = 32 * 1024 * 1024
@@ -1598,56 +1607,22 @@ def _advance_alias_locally(
     return result.stdout.strip() or f"advanced {alias} to {release_sha}"
 
 
-def _github_timestamp(value: object, field: str) -> datetime:
-    if not isinstance(value, str) or not value:
-        raise GateError(f"source artifact has invalid {field}")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise GateError(f"source artifact has invalid {field}") from error
-    if parsed.tzinfo is None:
-        raise GateError(f"source artifact has invalid {field}")
-    return parsed.astimezone(timezone.utc)
-
-
 def _require_source_release_inputs(
     job_log: str,
     tag: str,
     sha: str,
     alias: str,
 ) -> str:
-    expected = {
-        "RELEASE_TAG": tag,
-        "RELEASE_SHA": sha,
-        "COMPATIBILITY_ALIAS": alias,
-    }
-    observed: dict[str, list[str]] = {name: [] for name in expected}
-    for line in job_log.splitlines():
-        match = JOB_LOG_ENV_RE.fullmatch(line)
-        if match is None:
-            continue
-        value_match = JOB_LOG_ENV_VALUE_RE.fullmatch(match.group("rest"))
-        if value_match is None:
-            raise GateError(
-                f"source verify-release job log has malformed {match.group('name')} evidence"
-            )
-        observed[match.group("name")].append(value_match.group("value"))
-
-    counts = {name: len(values) for name, values in observed.items()}
-    if not all(counts.values()) or len(set(counts.values())) != 1:
-        raise GateError(
-            "source verify-release job log does not contain complete release input triples"
+    """Compatibility adapter for the extracted release-log validator."""
+    try:
+        return release_workflow.require_release_input_evidence(
+            job_log,
+            tag=tag,
+            sha=sha,
+            alias=alias,
         )
-    for name, expected_value in expected.items():
-        values = observed[name]
-        if any(value != expected_value for value in values):
-            raise GateError(
-                f"source verify-release job log does not bind {name} to the expected value"
-            )
-    return (
-        f"verify-release job log binds {counts['RELEASE_TAG']} release input "
-        f"triple(s) to {tag}, {sha}, and alias {alias}"
-    )
+    except ReleaseWorkflowError as error:
+        raise GateError(str(error)) from error
 
 
 def _source_release_artifacts(
@@ -1657,176 +1632,43 @@ def _source_release_artifacts(
     sha: str,
     alias: str,
 ) -> str:
+    """Bind a failed publication to its exact retained verified artifacts."""
     run_endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}"
     run = _gh_json(repo, REPOSITORY, run_endpoint)
-    if not isinstance(run, dict):
-        raise GateError("source publication run response is malformed")
-    repository = run.get("repository")
-    attempt = run.get("run_attempt")
-    if (
-        run.get("id") != run_id
-        or not isinstance(repository, dict)
-        or repository.get("full_name") != REPOSITORY
-        or run.get("path") != ".github/workflows/publish.yml"
-        or run.get("event") != "workflow_dispatch"
-        or run.get("status") != "completed"
-        or run.get("conclusion") != "failure"
-        or run.get("head_branch") != tag
-        or run.get("head_sha") != sha
-        or not _is_positive_github_id(attempt)
-    ):
-        raise GateError(
-            "source run must be the completed failed publish.yml workflow_dispatch "
-            "for the exact release tag and SHA"
-        )
-
     jobs_payload = _gh_json(
         repo,
         REPOSITORY,
         f"{run_endpoint}/jobs?filter=all&per_page=100",
     )
-    jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
-    total_jobs = jobs_payload.get("total_count") if isinstance(jobs_payload, dict) else None
-    if (
-        not isinstance(jobs, list)
-        or not isinstance(total_jobs, int)
-        or isinstance(total_jobs, bool)
-        or total_jobs != len(jobs)
-        or len(jobs) > 100
-    ):
-        raise GateError("cannot completely inspect jobs from the source publication run")
-    successful_verify_jobs = [
-        job
-        for job in jobs
-        if isinstance(job, dict)
-        and job.get("name") == "verify-release"
-        and _is_positive_github_id(job.get("id"))
-        and job.get("run_id") == run_id
-        and job.get("head_sha") == sha
-        and job.get("status") == "completed"
-        and job.get("conclusion") == "success"
-        and _is_positive_github_id(job.get("run_attempt"))
-        and 0 < job["run_attempt"] <= attempt
-    ]
-
     artifacts_payload = _gh_json(
         repo,
         REPOSITORY,
         f"{run_endpoint}/artifacts?per_page=100",
     )
-    artifacts = (
-        artifacts_payload.get("artifacts")
-        if isinstance(artifacts_payload, dict)
-        else None
-    )
-    total_artifacts = (
-        artifacts_payload.get("total_count")
-        if isinstance(artifacts_payload, dict)
-        else None
-    )
-    if (
-        not isinstance(total_artifacts, int)
-        or isinstance(total_artifacts, bool)
-        or not isinstance(artifacts, list)
-        or total_artifacts != len(artifacts)
-        or not 2 <= total_artifacts <= 100
-    ):
-        raise GateError(
-            "source run artifact response is incomplete or exceeds the inspection limit"
+    try:
+        selection = release_workflow.select_recovery_artifacts(
+            run,
+            jobs_payload,
+            artifacts_payload,
+            repository=REPOSITORY,
+            run_id=run_id,
+            tag=tag,
+            sha=sha,
         )
-    artifact_name_res = {
-        "python-dist": re.compile(
-            rf"python-dist-{re.escape(tag)}-{run_id}-([1-9][0-9]*)"
-        ),
-        "release-assets": re.compile(
-            rf"release-assets-{re.escape(tag)}-{run_id}-([1-9][0-9]*)"
-        ),
-    }
-    release_notes_re = re.compile(
-        rf"release-notes-{re.escape(sha)}-{run_id}-([1-9][0-9]*)"
-    )
-    actual_names: set[str] = set()
-    artifact_attempts = {label: set() for label in artifact_name_res}
-    release_note_count = 0
-    now = datetime.now(timezone.utc)
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            raise GateError("source artifact response is malformed")
-        artifact_id = artifact.get("id")
-        artifact_size = artifact.get("size_in_bytes")
-        artifact_digest = artifact.get("digest")
-        name = artifact.get("name")
-        association = artifact.get("workflow_run")
-        if (
-            not _is_positive_github_id(artifact_id)
-            or not isinstance(artifact_size, int)
-            or isinstance(artifact_size, bool)
-            or artifact_size <= 0
-            or not isinstance(name, str)
-            or len(name.encode("utf-8")) > 1024
-            or name in actual_names
-            or artifact.get("expired") is not False
-            or not isinstance(artifact_digest, str)
-            or ARTIFACT_DIGEST_RE.fullmatch(artifact_digest) is None
-            or not isinstance(association, dict)
-            or association.get("id") != run_id
-            or association.get("head_branch") != tag
-            or association.get("head_sha") != sha
-        ):
-            raise GateError("source artifact identity, digest, or run association is invalid")
-        if _github_timestamp(artifact.get("expires_at"), "expires_at") <= now:
-            raise GateError("source publication artifact has expired")
-        matched_artifact = False
-        for label, name_re in artifact_name_res.items():
-            match = name_re.fullmatch(name)
-            if match is None:
-                continue
-            artifact_attempt = int(match.group(1))
-            if artifact_attempt > attempt:
-                raise GateError(
-                    "source artifact names do not match the release tag, run, and attempt"
-                )
-            artifact_attempts[label].add(artifact_attempt)
-            matched_artifact = True
-            break
-        if not matched_artifact:
-            match = release_notes_re.fullmatch(name)
-            if match is None or int(match.group(1)) > attempt:
-                raise GateError(
-                    "source artifact names do not match the release tag, run, and attempt"
-                )
-            release_note_count += 1
-        actual_names.add(name)
-
-    retained_attempts = set.union(*artifact_attempts.values())
-    if (
-        len(retained_attempts) != 1
-        or any(attempts != retained_attempts for attempts in artifact_attempts.values())
-    ):
-        raise GateError("source artifact names do not match the release tag, run, and attempt")
-    artifact_attempt = retained_attempts.pop()
-    verify_jobs = [
-        job
-        for job in successful_verify_jobs
-        if job.get("run_attempt") == artifact_attempt
-    ]
-    if len(verify_jobs) != 1:
-        raise GateError(
-            "source run must contain exactly one successful exact verify-release job "
-            "for the retained artifact attempt"
-        )
-    verify_job = verify_jobs[0]
+    except ReleaseWorkflowError as error:
+        raise GateError(str(error)) from error
     source_inputs = _require_source_release_inputs(
-        _gh_job_log(repo, verify_job["id"]),
+        _gh_job_log(repo, selection.verification_job_id),
         tag,
         sha,
         alias,
     )
     return (
-        f"failed publish run {run_id} attempt {attempt} reuses successful "
-        f"verify-release attempt {artifact_attempt} and its two exact unexpired artifacts; "
-        f"validated {release_note_count} retained release-note artifact(s); "
-        f"{source_inputs}"
+        f"failed publish run {run_id} attempt {selection.source_run_attempt} "
+        f"reuses successful verify-release attempt {selection.artifact_attempt} "
+        "and its two exact unexpired artifacts; "
+        f"validated {selection.release_note_artifact_count} retained "
+        f"release-note artifact(s); {source_inputs}"
     )
 
 

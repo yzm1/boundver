@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Cross-cutting source, facet, partial-lock, generated-artifact, exit-code,
+  and upgrade guidance now has one reference page; task-focused guides link to
+  that contract instead of maintaining divergent copies.
+- Reusable release-recovery validation now lives in a directly tested helper
+  instead of large inline workflow programs, while reviewed control code and
+  immutable candidate code remain separate trust boundaries.
+- Config I/O and discovery, lockfile validation, canonical providers, bounded
+  file reads, and CLI parser construction are split into focused modules behind
+  compatibility facades, reducing maintenance hotspots without changing the
+  public API.
+
 ### Fixed
 
 - Action compatibility aliases now use an explicit, environment-gated local

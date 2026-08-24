@@ -1,7 +1,5 @@
 """Config validation and component discovery for boundver."""
 
-import json
-import os
 import subprocess
 from importlib import resources
 from pathlib import Path
@@ -10,9 +8,6 @@ from typing import Any, Dict, List, Optional, Set
 from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
-    _git_cat_blob,
-    _git_run,
-    _iter_bounded_git_paths,
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
@@ -25,19 +20,15 @@ from ._utils import (
     _available_component_facets,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
-    _bounded_json_value_issues,
-    _bounded_json_int,
     _bounded_sorted_paths,
-    _bounded_yaml_int,
     _is_glob,
     _is_within,
     _iter_bounded_filesystem_paths,
     _iter_bounded_json_values,
     _match_path_glob,
     _normalize_declared_path,
-    _toml_has_oversized_numeric_token,
     boundary_provider_name,
-    ConfigError,
+    ConfigError as ConfigError,
     GuardrailError,
 )
 from .providers import (
@@ -49,14 +40,31 @@ from .providers import (
     validate_provider_config,
 )
 from ._consumer_graph import resolve_slice_components
-
-# Ordered preference when auto-discovering config (first match wins)
-_CONFIG_CANDIDATES = [
-    "boundary.config.json",
-    "boundary.config.yaml",
-    "boundary.config.yml",
-    "boundary.config.toml",
-]
+from ._structured_data import strict_json_loads
+from ._config_contract import (
+    BEHAVIOR_FIELDS,
+    BOUNDARY_FIELDS,
+    COMPONENT_FIELDS,
+    DEFAULT_FIELDS,
+    PROVIDER_FIELDS,
+    ROOT_FIELDS,
+    SLICE_FIELDS,
+    VERSION_FILE_FIELDS,
+    VERSION_SOURCE_FIELDS,
+    VERSION_TAG_FIELDS,
+)
+from ._config_io import (
+    find_config_file as _find_config_file_impl,
+    json_value_issues as _json_value_issues_impl,
+    load_config_file as _load_config_file_impl,
+    parse_config_bytes as _parse_config_bytes_impl,
+    parse_config_text as _parse_config_text_impl,
+    snapshot_relative_path as _snapshot_relative_path_impl,
+)
+from ._discovery import (
+    _detect_provider as _detect_provider_impl,
+    discover_components as _discover_components_impl,
+)
 
 MAX_CONFIG_BYTES = 10 * 1024 * 1024
 MAX_COMPONENT_EXPANSION_FILES = 50_000
@@ -67,168 +75,23 @@ MAX_FILESYSTEM_TRAVERSAL_ENTRIES = 200_000
 
 
 def _snapshot_relative_path(repo_root: Path, path: Path) -> str:
-    """Return a safe repository-relative label for immutable source reads."""
-    root = Path(os.path.abspath(repo_root))
-    candidate = path if path.is_absolute() else root / path
-    candidate = Path(os.path.abspath(candidate))
-    try:
-        relative = candidate.relative_to(root)
-    except ValueError as exc:
-        raise ConfigError(
-            f"Source-backed path must stay within the repository: {path}"
-        ) from exc
-    label = relative.as_posix()
-    if not label or label == ".":
-        raise ConfigError(f"Source-backed path must name a file: {path}")
-    return label
-
-
-def _json_object_without_duplicates(pairs: List[tuple]) -> dict:
-    result: dict = {}
-    for key, value in pairs:
-        if key in result:
-            raise ConfigError(
-                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}"
-            )
-        result[key] = value
-    return result
-
-
-def _reject_nonfinite_json_constant(value: str) -> Any:
-    raise ConfigError(
-        "non-finite JSON number "
-        f"{_bounded_diagnostic_repr(value)} is not supported"
-    )
+    """Compatibility wrapper for source-backed path normalization."""
+    return _snapshot_relative_path_impl(repo_root, path)
 
 
 def _json_value_issues(value: Any, *, path: str = "config") -> List[str]:
-    """Return reasons a parsed value is unsafe for deterministic JSON hashing."""
-    return _bounded_json_value_issues(value, path=path)
+    """Compatibility wrapper for deterministic JSON-value validation."""
+    return _json_value_issues_impl(value, path=path)
 
 
 def parse_config_text(text: str, path: Path) -> dict:
-    """Parse config text according to *path* while rejecting lossy values."""
-    suffix = path.suffix.lower()
-    if suffix == ".json":
-        try:
-            result = json.loads(
-                text,
-                object_pairs_hook=_json_object_without_duplicates,
-                parse_constant=_reject_nonfinite_json_constant,
-                parse_int=_bounded_json_int,
-            )
-        except (ValueError, RecursionError, OverflowError) as exc:
-            raise ConfigError(f"JSON parse error in {path}: {exc}") from exc
-    elif suffix in (".yaml", ".yml"):
-        try:
-            import yaml  # type: ignore
-
-            class StrictConfigLoader(yaml.SafeLoader):
-                def compose_node(self, parent: Any, index: Any) -> Any:
-                    if self.check_event(yaml.AliasEvent):
-                        raise ConfigError(
-                            "YAML aliases are not supported in boundver config"
-                        )
-                    return super().compose_node(parent, index)
-
-            def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
-                if not isinstance(node, yaml.MappingNode):
-                    raise ConfigError("expected a YAML mapping")
-                mapping: dict = {}
-                for key_node, value_node in node.value:
-                    key = loader.construct_object(key_node, deep=deep)
-                    if type(key) is not str:
-                        raise ConfigError(
-                            "YAML mapping keys must be strings, got "
-                            f"{_bounded_diagnostic_repr(key)}"
-                        )
-                    if key in mapping:
-                        raise ConfigError(f"duplicate YAML mapping key {key!r}")
-                    mapping[key] = loader.construct_object(value_node, deep=deep)
-                return mapping
-
-            def construct_integer(loader: Any, node: Any) -> int:
-                try:
-                    scalar = loader.construct_scalar(node)
-                    return _bounded_yaml_int(scalar)
-                except (TypeError, ValueError) as exc:
-                    raise ConfigError(f"invalid YAML integer: {exc}") from exc
-
-            StrictConfigLoader.add_constructor(
-                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-                construct_mapping,
-            )
-            StrictConfigLoader.add_constructor(
-                "tag:yaml.org,2002:int",
-                construct_integer,
-            )
-            result = yaml.load(text, Loader=StrictConfigLoader)
-        except ImportError:
-            raise ConfigError(
-                f"Cannot parse {path}: PyYAML is not installed. "
-                "Install it with: pip install PyYAML"
-            )
-        except MemoryError:
-            raise
-        except RecursionError as exc:
-            raise ConfigError(f"YAML config is nested too deeply in {path}") from exc
-        except Exception as exc:
-            raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
-    elif suffix == ".toml":
-        try:
-            import tomllib  # type: ignore  # Python 3.11+
-        except ImportError:
-            try:
-                import tomli as tomllib  # type: ignore
-            except ImportError:
-                raise ConfigError(
-                    f"Cannot parse {path}: neither tomllib (Python 3.11+) nor tomli is available. "
-                    "Install tomli: pip install tomli"
-                )
-        if _toml_has_oversized_numeric_token(text):
-            raise ConfigError(
-                f"TOML config contains a numeric token exceeding the "
-                f"cross-runtime safety limit in {path}"
-            )
-        try:
-            result = tomllib.loads(text)
-        except MemoryError:
-            raise
-        except RecursionError as exc:
-            raise ConfigError(f"TOML config is nested too deeply in {path}") from exc
-        except Exception as exc:
-            raise ConfigError(f"TOML parse error in {path}: {exc}") from exc
-    else:
-        raise ConfigError(
-            f"Unsupported config file extension '{suffix}' for {path}. "
-            "Supported formats: .json, .yaml, .yml, .toml"
-        )
-    if not isinstance(result, dict):
-        raise ConfigError(
-            f"Config file {path} must contain an object/mapping, "
-            f"got {type(result).__name__}"
-        )
-    try:
-        value_issues = _json_value_issues(result)
-    except RecursionError as exc:
-        raise ConfigError(f"Config is nested too deeply in {path}") from exc
-    if value_issues:
-        raise ConfigError(
-            f"Config file {path} contains values that cannot be represented "
-            "as deterministic JSON:\n" + "\n".join(value_issues)
-        )
-    return result
+    """Compatibility wrapper for the config parser subsystem."""
+    return _parse_config_text_impl(text, path)
 
 
 def parse_config_bytes(data: bytes, path: Path) -> dict:
-    """Decode and parse bounded UTF-8 config bytes."""
-    if len(data) > MAX_CONFIG_BYTES:
-        raise ConfigError(f"Config file too large ({len(data)} bytes): {path}")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ConfigError(f"Config file is not valid UTF-8: {path}: {exc}") from exc
-    return parse_config_text(text, path)
+    """Compatibility wrapper honoring the patchable public size limit."""
+    return _parse_config_bytes_impl(data, path, max_bytes=MAX_CONFIG_BYTES)
 
 
 def find_config_file(
@@ -237,33 +100,8 @@ def find_config_file(
     *,
     snapshot: Optional[GitSourceSnapshot] = None,
 ) -> Path:
-    """Return the config file path to use.
-
-    If *hint* is the default ``boundary.config.json`` and that file does not
-    exist, probe for YAML/TOML alternatives in order.  If *hint* is an explicit
-    user-supplied path, return it as-is (the caller handles missing-file errors).
-    """
-    explicit = Path(hint)
-    if explicit.is_absolute():
-        return explicit
-    candidate = repo_root / hint
-    if snapshot is not None:
-        candidate_label = _snapshot_relative_path(repo_root, candidate)
-        if candidate_label in snapshot.entries:
-            return candidate
-    elif candidate.exists():
-        return candidate
-    # Only auto-probe when the hint is the default JSON name
-    if hint == "boundary.config.json":
-        for name in _CONFIG_CANDIDATES[1:]:
-            alt = repo_root / name
-            if snapshot is not None:
-                alt_label = _snapshot_relative_path(repo_root, alt)
-                if alt_label in snapshot.entries:
-                    return alt
-            elif alt.exists():
-                return alt
-    return candidate  # caller will report missing
+    """Compatibility wrapper for source-aware config discovery."""
+    return _find_config_file_impl(repo_root, hint, snapshot=snapshot)
 
 
 def load_config_file(
@@ -272,60 +110,13 @@ def load_config_file(
     repo_root: Optional[Path] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
 ) -> dict:
-    """Parse a boundver config file.  Supports JSON, YAML, and TOML.
-
-    Raises ``ValueError`` with a human-readable message on parse failure.
-    Raises ``FileNotFoundError`` if *path* does not exist.
-    """
-    if snapshot is not None:
-        if repo_root is None:
-            raise ConfigError("repo_root is required for source-backed config reads")
-        label = _snapshot_relative_path(repo_root, path)
-        entry = snapshot.entries.get(label)
-        if entry is None:
-            raise FileNotFoundError(
-                f"Config file not found in captured {snapshot.source} source: {label}"
-            )
-        if entry.object_type != "blob" or entry.mode not in {
-            "100644", "100755",
-        }:
-            raise ConfigError(
-                f"Config path must be a regular file in captured {snapshot.source} "
-                f"source: {label} (mode={entry.mode}, type={entry.object_type})"
-            )
-        try:
-            data = _git_cat_blob(
-                repo_root,
-                entry.oid,
-                max_bytes=MAX_CONFIG_BYTES,
-            )
-        except GuardrailError as exc:
-            raise ConfigError(
-                f"Cannot read config from captured {snapshot.source} source: "
-                f"{label}: file too large or transport limit exceeded"
-            ) from exc
-        except subprocess.CalledProcessError as exc:
-            raise ConfigError(
-                f"Cannot read config from captured {snapshot.source} source: "
-                f"{label}"
-            ) from exc
-        return parse_config_bytes(data, path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    try:
-        data = _read_bounded_path_bytes(
-            path,
-            str(path),
-            max_bytes=MAX_CONFIG_BYTES,
-        )
-    except GuardrailError as exc:
-        raise ConfigError(
-            f"Config file exceeds the {MAX_CONFIG_BYTES}-byte limit at {path}"
-        ) from exc
-    except (OSError, ValueError) as exc:
-        raise ConfigError(f"Cannot read config file {path}: {exc}") from exc
-    return parse_config_bytes(data, path)
+    """Compatibility wrapper honoring the patchable public size limit."""
+    return _load_config_file_impl(
+        path,
+        max_bytes=MAX_CONFIG_BYTES,
+        repo_root=repo_root,
+        snapshot=snapshot,
+    )
 
 
 
@@ -341,8 +132,8 @@ def _load_config_schema(repo_root: Path) -> Optional[dict]:
         bundled = resources.read_text(
             "boundver", "boundary.config.schema.json", encoding="utf-8"
         )
-        return json.loads(bundled)
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return strict_json_loads(bundled)
+    except (FileNotFoundError, OSError, ValueError):
         schema_path = repo_root / "boundary.config.schema.json"
         if schema_path.exists():
             try:
@@ -351,17 +142,12 @@ def _load_config_schema(repo_root: Path) -> Optional[dict]:
                     str(schema_path),
                     max_bytes=MAX_CONFIG_BYTES,
                 )
-                return json.loads(
-                    schema_data.decode("utf-8"),
-                    parse_int=_bounded_json_int,
-                    parse_constant=_reject_nonfinite_json_constant,
-                )
+                return strict_json_loads(schema_data.decode("utf-8"))
             except (
                 GuardrailError,
                 OSError,
                 UnicodeDecodeError,
                 ValueError,
-                json.JSONDecodeError,
             ):
                 pass
         return None
@@ -706,7 +492,7 @@ def validate_config(
     _reject_unknown_fields(
         errors,
         config,
-        {"$schema", "project", "providers", "defaults", "components", "slices"},
+        ROOT_FIELDS,
         "config",
     )
     for required_key in _schema_required_fields(schema):
@@ -727,9 +513,7 @@ def validate_config(
         errors.append("Field 'defaults' must be an object")
         defaults = {}
     else:
-        _reject_unknown_fields(
-            errors, defaults, {"compat_mode", "verify_facets"}, "defaults"
-        )
+        _reject_unknown_fields(errors, defaults, DEFAULT_FIELDS, "defaults")
     compat_mode = defaults.get("compat_mode", "major")
     if not isinstance(compat_mode, str) or compat_mode not in {
         "major", "semver_major", "semver_major_minor"
@@ -793,9 +577,7 @@ def validate_config(
                 if not isinstance(entry, dict):
                     errors.append(f"providers[{i}] must be an object")
                     continue
-                _reject_unknown_fields(
-                    errors, entry, {"module", "class", "name"}, f"providers[{i}]"
-                )
+                _reject_unknown_fields(errors, entry, PROVIDER_FIELDS, f"providers[{i}]")
                 for field_name in ("module", "class"):
                     val = entry.get(field_name)
                     if not isinstance(val, str) or not val.strip():
@@ -848,11 +630,7 @@ def validate_config(
         _reject_unknown_fields(
             errors,
             comp,
-            {
-                "path", "ecosystem", "note", "version_source", "boundary", "behavior",
-                "vendored_copies", "consumers", "external_consumers",
-                "verify_facets",
-            },
+            COMPONENT_FIELDS,
             f"component '{name}'",
         )
         if "ecosystem" in comp and not isinstance(comp["ecosystem"], str):
@@ -938,7 +716,7 @@ def validate_config(
         _reject_unknown_fields(
             errors,
             boundary,
-            {"provider", "paths", "options", "note"},
+            BOUNDARY_FIELDS,
             f"component '{name}' boundary",
         )
         if "provider" not in boundary:
@@ -999,7 +777,7 @@ def validate_config(
                 _reject_unknown_fields(
                     errors,
                     behavior,
-                    {"paths"},
+                    BEHAVIOR_FIELDS,
                     f"component '{name}' behavior",
                 )
                 behavior_paths = behavior.get("paths", [])
@@ -1188,7 +966,7 @@ def validate_config(
                 _reject_unknown_fields(
                     errors,
                     version_source,
-                    {"git_tag_prefix"},
+                    VERSION_TAG_FIELDS,
                     f"component '{name}' version_source",
                 )
                 if not isinstance(version_source["git_tag_prefix"], str) or not version_source["git_tag_prefix"].strip():
@@ -1197,7 +975,7 @@ def validate_config(
                 _reject_unknown_fields(
                     errors,
                     version_source,
-                    {"file", "field"},
+                    VERSION_FILE_FIELDS,
                     f"component '{name}' version_source",
                 )
                 vs_file = version_source["file"]
@@ -1313,7 +1091,7 @@ def validate_config(
                 _reject_unknown_fields(
                     errors,
                     version_source,
-                    {"file", "field", "git_tag_prefix"},
+                    VERSION_SOURCE_FIELDS,
                     f"component '{name}' version_source",
                 )
                 errors.append(
@@ -1379,7 +1157,7 @@ def validate_config(
         _reject_unknown_fields(
             errors,
             sdef,
-            {"description", "mode", "components", "closure_of"},
+            SLICE_FIELDS,
             f"slice '{sname}'",
         )
         mode = sdef.get("mode", "exact")
@@ -1573,175 +1351,14 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
 
 
 def discover_components(repo_root: Path) -> Dict[str, dict]:
-    """Discover components from tracked manifests, with a bounded non-Git fallback."""
-    manifest_specs = (
-        ("package.json", "version"),
-        ("pyproject.toml", "project.version"),
-        ("Cargo.toml", "package.version"),
-        ("go.mod", None),
+    """Compatibility wrapper honoring patchable discovery guardrails."""
+    return _discover_components_impl(
+        repo_root,
+        max_discovery_manifests=MAX_DISCOVERY_MANIFESTS,
+        max_discovered_components=MAX_DISCOVERED_COMPONENTS,
+        max_provider_detection_entries=MAX_PROVIDER_DETECTION_ENTRIES,
+        max_filesystem_traversal_entries=MAX_FILESYSTEM_TRAVERSAL_ENTRIES,
     )
-    _ignored_dirs = {
-        ".git", "node_modules", "__pycache__", ".venv", "venv",
-        "dist", "build", "vendor",
-    }
-    found: Dict[str, dict] = {}
-    seen_directories: Set[str] = set()
-    root_manifest_component: Optional[str] = None
-    tracked_detection = False
-    provider_candidate_paths: List[Path] = []
-
-    def filesystem_manifest_candidates() -> List[Path]:
-        manifest_names = {manifest for manifest, _field in manifest_specs}
-        return _bounded_sorted_paths(
-            (
-                path
-                for path in _iter_bounded_filesystem_paths(
-                    repo_root,
-                    recursive=True,
-                    max_entries=MAX_FILESYSTEM_TRAVERSAL_ENTRIES,
-                    exceeded_message=(
-                        "Component discovery guardrail exceeded: "
-                        "filesystem traversal exceeds "
-                        f"{MAX_FILESYSTEM_TRAVERSAL_ENTRIES} entries"
-                    ),
-                    should_descend=(
-                        lambda directory: directory.name not in _ignored_dirs
-                    ),
-                )
-                if path.name in manifest_names
-            ),
-            max_paths=MAX_DISCOVERY_MANIFESTS,
-            exceeded_message=(
-                "Component discovery guardrail exceeded: "
-                f">{MAX_DISCOVERY_MANIFESTS} manifests"
-            ),
-        )
-
-    try:
-        listed_paths = [
-            repo_root / path
-            for path in _iter_bounded_git_paths(
-                repo_root,
-                ["ls-files", "--cached", "-z", "--"],
-            )
-        ]
-        # Manifests are discovered from the index name set so an unstaged
-        # deletion does not erase an otherwise configured component. Provider
-        # evidence, however, must be readable from the working tree selected by
-        # the generated declaration; filter that separate view below.
-        candidate_paths = listed_paths
-        provider_candidate_paths = [
-            path
-            for path in listed_paths
-            if path.exists() or path.is_symlink()
-        ]
-        if listed_paths:
-            tracked_detection = True
-        else:
-            try:
-                _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
-            except subprocess.CalledProcessError:
-                candidate_paths = filesystem_manifest_candidates()
-            else:
-                tracked_detection = True
-    except (OSError, subprocess.CalledProcessError):
-        candidate_paths = filesystem_manifest_candidates()
-
-    # A repository-root manifest is common for single-package projects, but a
-    # root component would hash its own lockfile.  Map it to a conventional,
-    # tracked source directory when one is unambiguous instead of silently
-    # dropping the project or generating an invalid empty config.
-    tracked_relative = []
-    for candidate in candidate_paths:
-        try:
-            tracked_relative.append(candidate.relative_to(repo_root).as_posix())
-        except ValueError:
-            continue
-    provider_relative = []
-    for candidate in provider_candidate_paths:
-        try:
-            provider_relative.append(candidate.relative_to(repo_root).as_posix())
-        except ValueError:
-            continue
-    python_package_dirs = sorted({
-        path.rsplit("/", 1)[0]
-        for path in tracked_relative
-        if path.endswith("/__init__.py")
-        and not path.startswith(".")
-        and not (_ignored_dirs & set(path.split("/")))
-    })
-    top_python_packages = [
-        candidate
-        for candidate in python_package_dirs
-        if not any(
-            candidate.startswith(other + "/")
-            for other in python_package_dirs
-            if other != candidate
-        )
-    ]
-    if len(top_python_packages) == 1:
-        root_manifest_component = top_python_packages[0]
-
-    for conventional in ("src", "lib", "app"):
-        if root_manifest_component is not None:
-            break
-        if any(
-            path == conventional or path.startswith(conventional + "/")
-            for path in tracked_relative
-        ):
-            root_manifest_component = conventional
-            break
-
-    for manifest, version_field in manifest_specs:
-        for mf in sorted(p for p in candidate_paths if p.name == manifest):
-            if _ignored_dirs & set(mf.relative_to(repo_root).parts):
-                continue
-            rel_dir = mf.parent.relative_to(repo_root)
-            if str(rel_dir) == ".":
-                if root_manifest_component is None:
-                    continue
-                rel_path = root_manifest_component
-            else:
-                rel_path = _to_posix(str(rel_dir))
-            if rel_path in seen_directories:
-                continue
-            seen_directories.add(rel_path)
-            comp_name = repo_root.name if str(rel_dir) == "." else rel_dir.name
-            base_name = comp_name
-            idx = 2
-            while comp_name in found:
-                comp_name = f"{base_name}-{idx}"
-                idx += 1
-            component_dir = repo_root / rel_path
-            component_prefix = rel_path.rstrip("/") + "/"
-            available_paths = (
-                {
-                    path[len(component_prefix):]
-                    for path in provider_relative
-                    if path.startswith(component_prefix)
-                }
-                if tracked_detection
-                else None
-            )
-            provider, paths = _detect_provider(
-                component_dir, available_paths=available_paths
-            )
-            version_source = (
-                {"file": mf.name, "field": version_field}
-                if version_field is not None and str(rel_dir) != "."
-                else None
-            )
-            if len(found) >= MAX_DISCOVERED_COMPONENTS:
-                raise GuardrailError(
-                    "Component discovery guardrail exceeded: "
-                    f">{MAX_DISCOVERED_COMPONENTS} components"
-                )
-            found[comp_name] = {
-                "path": rel_path,
-                "version_source": version_source,
-                "boundary": {"provider": provider, "paths": paths},
-            }
-    return found
 
 
 def _detect_provider(
@@ -1749,104 +1366,9 @@ def _detect_provider(
     *,
     available_paths: Optional[Set[str]] = None,
 ) -> tuple:
-    """Detect the best boundary provider and paths for a component directory.
-
-    Returns (provider_name, paths_list).
-    """
-    if available_paths is not None:
-        # Discovery is index-backed whenever Git supplied the manifest list.
-        # Restrict provider evidence to that same immutable name set so an
-        # untracked, deleted, or concurrently-created working-tree artifact
-        # cannot change the generated declaration.
-        if len(available_paths) > MAX_PROVIDER_DETECTION_ENTRIES:
-            raise GuardrailError(
-                "Provider detection guardrail exceeded: "
-                f">{MAX_PROVIDER_DETECTION_ENTRIES} available paths"
-            )
-        names = {
-            _to_posix(path)
-            for path in available_paths
-            if isinstance(path, str) and path
-        }
-        for name in (
-            "openapi.yaml",
-            "openapi.yml",
-            "openapi.json",
-            "swagger.yaml",
-            "swagger.json",
-        ):
-            if name in names:
-                return ("openapi", [name])
-        openapi_names = sorted(
-            name
-            for name in names
-            if "/" not in name and name.lower().startswith("openapi")
-        )
-        if openapi_names:
-            return ("openapi", [openapi_names[0]])
-        for name in ("boundary.json", "schema.json", "api.json"):
-            if name in names:
-                return ("json-file", [name])
-        if "__init__.py" in names:
-            return ("python-exports", ["__init__.py"])
-        if "src/index.ts" in names:
-            return ("typescript-exports", ["src/index.ts"])
-        if "index.ts" in names:
-            return ("typescript-exports", ["index.ts"])
-        return ("implicit", [])
-
-    # Non-Git and truly empty unborn repositories retain the documented
-    # bounded filesystem fallback.
-    # OpenAPI specs
-    for name in (
-        "openapi.yaml",
-        "openapi.yml",
-        "openapi.json",
-        "swagger.yaml",
-        "swagger.json",
-    ):
-        candidate = component_dir / name
-        if candidate.exists() or candidate.is_symlink():
-            return ("openapi", [name])
-    # Glob for any openapi-like files
-    directory_entries = _bounded_sorted_paths(
-        (
-            _iter_bounded_filesystem_paths(
-                component_dir,
-                recursive=False,
-                max_entries=MAX_PROVIDER_DETECTION_ENTRIES,
-                exceeded_message=(
-                    "Provider detection guardrail exceeded: "
-                    f">{MAX_PROVIDER_DETECTION_ENTRIES} directory entries"
-                ),
-            )
-            if component_dir.exists()
-            else ()
-        ),
-        max_paths=MAX_PROVIDER_DETECTION_ENTRIES,
-        exceeded_message=(
-            "Provider detection guardrail exceeded: "
-            f">{MAX_PROVIDER_DETECTION_ENTRIES} directory entries"
-        ),
+    """Compatibility wrapper honoring the patchable provider-entry limit."""
+    return _detect_provider_impl(
+        component_dir,
+        available_paths=available_paths,
+        max_entries=MAX_PROVIDER_DETECTION_ENTRIES,
     )
-    for f in directory_entries:
-        if f.is_file() and f.name.lower().startswith("openapi"):
-            return ("openapi", [f.name])
-
-    # JSON schema / config boundary files
-    for name in ("boundary.json", "schema.json", "api.json"):
-        if (component_dir / name).exists():
-            return ("json-file", [name])
-
-    # Python exports
-    if (component_dir / "__init__.py").exists():
-        return ("python-exports", ["__init__.py"])
-
-    # TypeScript exports
-    src_index = component_dir / "src" / "index.ts"
-    if src_index.exists():
-        return ("typescript-exports", ["src/index.ts"])
-    if (component_dir / "index.ts").exists():
-        return ("typescript-exports", ["index.ts"])
-
-    return ("implicit", [])

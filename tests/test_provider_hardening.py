@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import boundver.providers as providers
+import boundver._canonical_providers as canonical_providers
 from boundver._hashing import _ModeAwareBytes
 from boundver._utils import ProviderError
 from boundver.providers import (
@@ -459,9 +460,9 @@ class TestResolvedBoundaryContract(unittest.TestCase):
         with (
             patch.object(providers, "MAX_PROVIDER_METADATA_BYTES", 64),
             patch.object(
-                providers,
+                canonical_providers,
                 "_bounded_int_to_decimal",
-                wraps=providers._bounded_int_to_decimal,
+                wraps=canonical_providers._bounded_int_to_decimal,
             ) as render_integer,
         ):
             error = self._error_for(
@@ -502,7 +503,7 @@ class TestJsonCanonicalHardening(unittest.TestCase):
     def test_rejects_duplicate_keys(self):
         result = self._resolve(b'{"role":"user","role":"admin"}')
         self.assertEqual(result.status, "error")
-        self.assertIn("duplicate object key", result.errors[0])
+        self.assertIn("duplicate JSON object key", result.errors[0])
 
     def test_rejects_nan_and_infinity(self):
         for token in (b"NaN", b"Infinity", b"-Infinity"):
@@ -591,7 +592,7 @@ class TestOpenApiCanonicalHardening(unittest.TestCase):
             "openapi.json",
         )
         self.assertEqual(json_result.status, "error")
-        self.assertIn("duplicate object key", json_result.errors[0])
+        self.assertIn("duplicate JSON object key", json_result.errors[0])
 
         yaml_result = self._resolve(
             b"openapi: 3.1.0\npaths: {}\npaths:\n  /admin: {}\n"

@@ -117,6 +117,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ github.sha }}
+          path: .release-control
 
       - name: Require successful CI for the exact recovery control commit
         if: inputs.resume_run_id != ''
@@ -142,7 +143,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          bash scripts/audit_release_reviews.sh "$CONTROL_SHA" "$RELEASE_TAG"
+          bash .release-control/scripts/audit_release_reviews.sh \
+            "$CONTROL_SHA" "$RELEASE_TAG"
 
       - name: Rebind recovery to current main after its control audit
         if: inputs.resume_run_id != ''
@@ -151,12 +153,18 @@ jobs:
           CONTROL_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main
-          current_main=$(git rev-parse FETCH_HEAD)
+          git -C .release-control fetch --no-tags origin main
+          current_main=$(git -C .release-control rev-parse FETCH_HEAD)
           if [[ "$current_main" != "$CONTROL_SHA" ]]; then
             echo "Main advanced during recovery control validation: $CONTROL_SHA != $current_main" >&2
             exit 1
           fi
+          helper=.release-control/scripts/release_workflow.py
+          if [[ ! -f "$helper" || -L "$helper" ]]; then
+            echo "Reviewed recovery helper is unavailable" >&2
+            exit 1
+          fi
+          cp "$helper" "$RUNNER_TEMP/release_workflow.py"
 
       - name: Checkout the released commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -522,388 +530,16 @@ jobs:
         run: |
           set -euo pipefail
           clean_python_cwd=$(mktemp -d)
-          (cd "$clean_python_cwd" && python3 -I - \
-            "$RESUME_RUN_ID" \
-            "$RELEASE_TAG" \
-            "$RELEASE_SHA" \
-            "$GITHUB_OUTPUT" <<'PY'
-          import datetime
-          import json
-          import os
-          import pathlib
-          import re
-          import shutil
-          import subprocess
-          import sys
-          import threading
-
-          (
-              source_run_text,
-              release_tag,
-              release_sha,
-              output_path,
-          ) = sys.argv[1:]
-          if re.fullmatch(r"[1-9][0-9]{0,19}", source_run_text) is None:
-              raise SystemExit("source publication run ID is not numeric")
-          source_run_id = int(source_run_text)
-          if source_run_id > (1 << 64) - 1:
-              raise SystemExit("source publication run ID exceeds the supported range")
-
-          # recovery-bounded-runner:start
-          MAX_GH_RESPONSE_BYTES = 8 * 1024 * 1024
-          MAX_GH_TOTAL_BYTES = 16 * 1024 * 1024
-          MAX_GH_STDERR_BYTES = 64 * 1024
-          READ_CHUNK_BYTES = 64 * 1024
-          consumed_gh_bytes = 0
-
-          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          gh = pathlib.Path(shutil.which("gh") or "").resolve()
-          if not gh.is_file() or gh == workspace or workspace in gh.parents:
-              raise SystemExit("trusted GitHub CLI is unavailable")
-
-          def kill_process(process):
-              try:
-                  process.kill()
-              except OSError:
-                  pass
-
-          def read_bounded_pipe(
-              process, pipe, label, limit, buffer, overflows, errors
-          ):
-              try:
-                  while True:
-                      remaining_with_sentinel = max(1, limit - len(buffer) + 1)
-                      reader = getattr(pipe, "read1", pipe.read)
-                      chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
-                      if not chunk:
-                          return
-                      if len(buffer) + len(chunk) > limit:
-                          overflows.append(label)
-                          kill_process(process)
-                          return
-                      buffer.extend(chunk)
-              except (OSError, ValueError) as error:
-                  errors.append((label, str(error)))
-                  kill_process(process)
-              finally:
-                  try:
-                      pipe.close()
-                  except OSError:
-                      pass
-
-          def gh_json(endpoint, *, max_bytes=MAX_GH_RESPONSE_BYTES):
-              global consumed_gh_bytes
-              remaining = MAX_GH_TOTAL_BYTES - consumed_gh_bytes
-              stdout_limit = min(max_bytes, remaining)
-              if stdout_limit < 0:
-                  raise SystemExit("recovery API responses exceed the aggregate limit")
-              try:
-                  process = subprocess.Popen(
-                      [str(gh), "api", endpoint],
-                      stdin=subprocess.DEVNULL,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE,
-                  )
-              except OSError as error:
-                  raise SystemExit("recovery API command could not start") from error
-              if process.stdout is None or process.stderr is None:
-                  kill_process(process)
-                  raise SystemExit("recovery API command pipes are unavailable")
-              stdout = bytearray()
-              stderr = bytearray()
-              overflows = []
-              errors = []
-              readers = [
-                  threading.Thread(
-                      target=read_bounded_pipe,
-                      args=(process, process.stdout, "stdout", stdout_limit,
-                            stdout, overflows, errors),
-                      daemon=True,
-                  ),
-                  threading.Thread(
-                      target=read_bounded_pipe,
-                      args=(process, process.stderr, "stderr", MAX_GH_STDERR_BYTES,
-                            stderr, overflows, errors),
-                      daemon=True,
-                  ),
-              ]
-              for reader in readers:
-                  reader.start()
-              try:
-                  returncode = process.wait(timeout=90)
-              except subprocess.TimeoutExpired as error:
-                  kill_process(process)
-                  try:
-                      process.wait(timeout=5)
-                  except subprocess.TimeoutExpired:
-                      pass
-                  raise SystemExit("recovery API command timed out") from error
-              finally:
-                  for reader in readers:
-                      reader.join(timeout=5)
-              if any(reader.is_alive() for reader in readers):
-                  kill_process(process)
-                  raise SystemExit("recovery API command pipes did not close")
-              if errors:
-                  raise SystemExit("recovery API response read failed")
-              if overflows:
-                  raise SystemExit("recovery API response exceeds the byte limit")
-              if returncode != 0:
-                  detail = stderr.decode("utf-8", "backslashreplace").strip()
-                  raise SystemExit(f"recovery API request failed: {detail}")
-              consumed_gh_bytes += len(stdout)
-
-              def unique_object(pairs):
-                  result = {}
-                  for key, value in pairs:
-                      if key in result:
-                          raise ValueError("duplicate JSON object key")
-                      result[key] = value
-                  return result
-
-              def reject_constant(_value):
-                  raise ValueError("non-finite JSON constant")
-
-              def parse_integer(value):
-                  if len(value.lstrip("-")) > 20:
-                      raise ValueError("oversized JSON integer")
-                  return int(value)
-
-              try:
-                  return json.loads(
-                      stdout.decode("utf-8", "strict"),
-                      object_pairs_hook=unique_object,
-                      parse_int=parse_integer,
-                      parse_constant=reject_constant,
-                  )
-              except (UnicodeDecodeError, ValueError) as error:
-                  raise SystemExit("recovery API returned malformed JSON") from error
-          # recovery-bounded-runner:end
-
-          run_endpoint = f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{source_run_id}"
-          run = gh_json(run_endpoint, max_bytes=1024 * 1024)
-          if (
-              not isinstance(run, dict)
-              or type(run.get("id")) is not int
-              or run["id"] != source_run_id
-          ):
-              raise SystemExit("source publication run identity disagrees")
-          attempt = run.get("run_attempt")
-          if type(attempt) is not int or not 1 <= attempt <= (1 << 64) - 1:
-              raise SystemExit("source publication run attempt is invalid")
-          expected_run = {
-              "event": "workflow_dispatch",
-              "status": "completed",
-              "conclusion": "failure",
-              "path": ".github/workflows/publish.yml",
-              "head_branch": release_tag,
-              "head_sha": release_sha,
-          }
-          disagreements = [
-              key for key, value in expected_run.items() if run.get(key) != value
-          ]
-          if disagreements:
-              raise SystemExit(
-                  "source publication run disagrees: " + ", ".join(disagreements)
-              )
-
-          jobs_payload = gh_json(
-              f"{run_endpoint}/jobs?filter=all&per_page=100"
+          recovery_args=(
+            recover-artifacts
+            --repository "$GITHUB_REPOSITORY"
+            --run-id "$RESUME_RUN_ID"
+            --tag "$RELEASE_TAG"
+            --sha "$RELEASE_SHA"
+            --output "$GITHUB_OUTPUT"
           )
-          jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
-          jobs_total = (
-              jobs_payload.get("total_count")
-              if isinstance(jobs_payload, dict)
-              else None
-          )
-          if (
-              not isinstance(jobs, list)
-              or type(jobs_total) is not int
-              or jobs_total < 0
-              or jobs_total != len(jobs)
-              or len(jobs) > 100
-              or any(not isinstance(job, dict) for job in jobs)
-          ):
-              raise SystemExit("source publication jobs response is incomplete")
-          successful_verification_jobs = [
-              job
-              for job in jobs
-              if job.get("name") == "verify-release"
-              and job.get("status") == "completed"
-              and job.get("conclusion") == "success"
-          ]
-
-          artifacts_payload = gh_json(
-              f"{run_endpoint}/artifacts?per_page=100"
-          )
-          artifacts = (
-              artifacts_payload.get("artifacts")
-              if isinstance(artifacts_payload, dict)
-              else None
-          )
-          artifacts_total = (
-              artifacts_payload.get("total_count")
-              if isinstance(artifacts_payload, dict)
-              else None
-          )
-          if (
-              not isinstance(artifacts, list)
-              or type(artifacts_total) is not int
-              or artifacts_total != len(artifacts)
-              or not 2 <= artifacts_total <= 100
-          ):
-              raise SystemExit(
-                  "source artifact response is incomplete or exceeds the inspection limit"
-              )
-          artifact_name_res = {
-              "python-dist": re.compile(
-                  rf"python-dist-{re.escape(release_tag)}-"
-                  rf"{source_run_id}-([1-9][0-9]*)"
-              ),
-              "release-assets": re.compile(
-                  rf"release-assets-{re.escape(release_tag)}-"
-                  rf"{source_run_id}-([1-9][0-9]*)"
-              ),
-          }
-          release_notes_re = re.compile(
-              rf"release-notes-{re.escape(release_sha)}-"
-              rf"{source_run_id}-([1-9][0-9]*)"
-          )
-          artifact_names = [
-              artifact.get("name")
-              for artifact in artifacts
-              if isinstance(artifact, dict)
-          ]
-          if (
-              any(not isinstance(artifact, dict) for artifact in artifacts)
-              or any(
-                  not isinstance(name, str)
-                  or len(name.encode("utf-8")) > 1024
-                  for name in artifact_names
-              )
-              or len(artifact_names) != len(set(artifact_names))
-          ):
-              raise SystemExit("source artifact names do not match tag, run, and attempt")
-
-          artifact_attempts = {label: set() for label in artifact_name_res}
-          for name in artifact_names:
-              matched_artifact = False
-              for label, name_re in artifact_name_res.items():
-                  match = name_re.fullmatch(name)
-                  if match is None:
-                      continue
-                  candidate_attempt = int(match.group(1))
-                  if candidate_attempt > attempt:
-                      raise SystemExit(
-                          "source artifact names do not match tag, run, and attempt"
-                      )
-                  artifact_attempts[label].add(candidate_attempt)
-                  matched_artifact = True
-                  break
-              if not matched_artifact:
-                  match = release_notes_re.fullmatch(name)
-                  if match is not None and int(match.group(1)) <= attempt:
-                      continue
-                  raise SystemExit(
-                      "source artifact names do not match tag, run, and attempt"
-                  )
-
-          retained_attempts = set.union(*artifact_attempts.values())
-          if (
-              len(retained_attempts) != 1
-              or any(
-                  attempts != retained_attempts
-                  for attempts in artifact_attempts.values()
-              )
-          ):
-              raise SystemExit(
-                  "source artifact names do not match tag, run, and attempt"
-              )
-          artifact_attempt = retained_attempts.pop()
-          verification_jobs = [
-              job
-              for job in successful_verification_jobs
-              if job.get("run_attempt") == artifact_attempt
-          ]
-          if len(verification_jobs) != 1:
-              raise SystemExit(
-                  "source publication must have exactly one successful exact "
-                  "verify-release job for the retained artifact attempt"
-              )
-          verification = verification_jobs[0]
-          if (
-              type(verification.get("id")) is not int
-              or verification["id"] < 1
-              or verification["id"] > (1 << 64) - 1
-              or type(verification.get("run_id")) is not int
-              or verification.get("run_id") != source_run_id
-              or verification.get("head_sha") != release_sha
-              or type(verification.get("run_attempt")) is not int
-              or verification.get("run_attempt") != artifact_attempt
-          ):
-              raise SystemExit("source verify-release artifact attempt is invalid")
-
-          suffix = f"{release_tag}-{source_run_id}-{artifact_attempt}"
-          expected_names = {
-              f"python-dist-{suffix}": "python-dist",
-              f"release-assets-{suffix}": "release-assets",
-          }
-
-          now = datetime.datetime.now(datetime.timezone.utc)
-          selected = {}
-          for artifact in artifacts:
-              name = artifact.get("name")
-              artifact_id = artifact.get("id")
-              digest = artifact.get("digest")
-              expires_at = artifact.get("expires_at")
-              workflow_run = artifact.get("workflow_run")
-              if (
-                  type(artifact_id) is not int
-                  or artifact_id < 1
-                  or artifact_id > (1 << 64) - 1
-                  or artifact.get("expired") is not False
-                  or type(artifact.get("size_in_bytes")) is not int
-                  or artifact["size_in_bytes"] < 1
-                  or artifact["size_in_bytes"] > 256 * 1024 * 1024
-                  or not isinstance(digest, str)
-                  or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
-                  or not isinstance(expires_at, str)
-                  or not isinstance(workflow_run, dict)
-                  or type(workflow_run.get("id")) is not int
-                  or workflow_run.get("id") != source_run_id
-                  or workflow_run.get("head_branch") != release_tag
-                  or workflow_run.get("head_sha") != release_sha
-              ):
-                  raise SystemExit("source artifact metadata is invalid")
-              try:
-                  expiry = datetime.datetime.fromisoformat(
-                      expires_at.replace("Z", "+00:00")
-                  )
-              except ValueError as error:
-                  raise SystemExit(
-                      "source artifact expiry is invalid"
-                  ) from error
-              if expiry <= now:
-                  raise SystemExit("source artifact has expired")
-              if name in expected_names:
-                  selected[expected_names[name]] = (artifact_id, digest)
-
-          lines = [
-              f"source-run-id={source_run_id}",
-              f"verification-job-id={verification['id']}",
-          ]
-          for label in ("python-dist", "release-assets"):
-              artifact_id, digest = selected[label]
-              lines.extend(
-                  [
-                      f"{label}-artifact-id={artifact_id}",
-                      f"{label}-artifact-digest={digest}",
-                  ]
-              )
-          with pathlib.Path(output_path).open("a", encoding="utf-8") as output:
-              output.write("\n".join(lines) + "\n")
-          PY
-          )
+          (cd "$clean_python_cwd" && python3 -I \
+            "$RUNNER_TEMP/release_workflow.py" "${recovery_args[@]}")
 
       - name: Bind recovery policy to the source verification log
         if: inputs.resume_run_id != ''
@@ -913,179 +549,17 @@ jobs:
           VERIFICATION_JOB_ID: ${{ steps.recover-artifacts.outputs.verification-job-id }}
         run: |
           set -euo pipefail
-          if [[ ! "$VERIFICATION_JOB_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "Source verification job ID must be a positive integer" >&2
-            exit 1
-          fi
-
           clean_python_cwd=$(mktemp -d)
-          (cd "$clean_python_cwd" && python3 -I - \
-            "$VERIFICATION_JOB_ID" \
-            "$RELEASE_TAG" \
-            "$RELEASE_SHA" \
-            "$COMPATIBILITY_ALIAS" <<'PY'
-          import io
-          import os
-          import pathlib
-          import re
-          import shutil
-          import subprocess
-          import sys
-          import threading
-
-          job_id, release_tag, release_sha, compatibility_alias = sys.argv[1:]
-          if re.fullmatch(r"[1-9][0-9]{0,19}", job_id) is None:
-              raise SystemExit("source verification job ID is malformed")
-          if int(job_id) > (1 << 64) - 1:
-              raise SystemExit("source verification job ID exceeds the supported range")
-
-          MAX_HELP_BYTES = 1024 * 1024
-          MAX_LOG_BYTES = 32 * 1024 * 1024
-          MAX_STDERR_BYTES = 64 * 1024
-          MAX_LOG_LINES = 500_000
-          MAX_POLICY_TRIPLES = 10_000
-          READ_CHUNK_BYTES = 64 * 1024
-
-          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          gh = pathlib.Path(shutil.which("gh") or "").resolve()
-          if not gh.is_file() or gh == workspace or workspace in gh.parents:
-              raise SystemExit("trusted GitHub CLI is unavailable")
-
-          def kill_process(process):
-              try:
-                  process.kill()
-              except OSError:
-                  pass
-
-          def read_pipe(process, pipe, label, limit, buffer, overflows, errors):
-              try:
-                  while True:
-                      remaining_with_sentinel = max(1, limit - len(buffer) + 1)
-                      reader = getattr(pipe, "read1", pipe.read)
-                      chunk = reader(min(READ_CHUNK_BYTES, remaining_with_sentinel))
-                      if not chunk:
-                          return
-                      if len(buffer) + len(chunk) > limit:
-                          overflows.append(label)
-                          kill_process(process)
-                          return
-                      buffer.extend(chunk)
-              except (OSError, ValueError) as error:
-                  errors.append((label, str(error)))
-                  kill_process(process)
-              finally:
-                  try:
-                      pipe.close()
-                  except OSError:
-                      pass
-
-          def run_bounded(command, stdout_limit):
-              try:
-                  process = subprocess.Popen(
-                      [str(item) for item in command],
-                      stdin=subprocess.DEVNULL,
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE,
-                  )
-              except OSError as error:
-                  raise SystemExit("cannot execute trusted GitHub CLI") from error
-              if process.stdout is None or process.stderr is None:
-                  kill_process(process)
-                  raise SystemExit("GitHub CLI command pipes are unavailable")
-              stdout = bytearray()
-              stderr = bytearray()
-              overflows = []
-              errors = []
-              readers = [
-                  threading.Thread(
-                      target=read_pipe,
-                      args=(process, process.stdout, "stdout", stdout_limit,
-                            stdout, overflows, errors),
-                      daemon=True,
-                  ),
-                  threading.Thread(
-                      target=read_pipe,
-                      args=(process, process.stderr, "stderr", MAX_STDERR_BYTES,
-                            stderr, overflows, errors),
-                      daemon=True,
-                  ),
-              ]
-              for reader in readers:
-                  reader.start()
-              try:
-                  returncode = process.wait(timeout=90)
-              except subprocess.TimeoutExpired as error:
-                  kill_process(process)
-                  try:
-                      process.wait(timeout=5)
-                  except subprocess.TimeoutExpired:
-                      pass
-                  raise SystemExit("GitHub CLI command timed out") from error
-              finally:
-                  for reader in readers:
-                      reader.join(timeout=5)
-              if any(reader.is_alive() for reader in readers):
-                  kill_process(process)
-                  raise SystemExit("GitHub CLI command pipes did not close")
-              if errors:
-                  raise SystemExit("GitHub CLI response read failed")
-              if overflows:
-                  raise SystemExit("GitHub CLI response exceeds the byte limit")
-              if returncode != 0:
-                  detail = stderr.decode("utf-8", "backslashreplace").strip()
-                  raise SystemExit(f"GitHub CLI request failed: {detail}")
-              return bytes(stdout)
-
-          help_output = run_bounded([gh, "api", "--help"], MAX_HELP_BYTES)
-          command = [gh, "api"]
-          if b"--allow-escape-sequences" in help_output:
-              command.append("--allow-escape-sequences")
-          command.append(
-              f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/jobs/{job_id}/logs"
+          evidence_args=(
+            verify-input-log
+            --repository "$GITHUB_REPOSITORY"
+            --job-id "$VERIFICATION_JOB_ID"
+            --tag "$RELEASE_TAG"
+            --sha "$RELEASE_SHA"
+            --alias "$COMPATIBILITY_ALIAS"
           )
-          log_bytes = run_bounded(command, MAX_LOG_BYTES)
-          if not log_bytes:
-              raise SystemExit("source verification job log is empty")
-          try:
-              log_text = log_bytes.decode("utf-8", "strict")
-          except UnicodeDecodeError as error:
-              raise SystemExit("source verification job log is not UTF-8") from error
-
-          line_pattern = re.compile(
-              r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z   "
-              r"(RELEASE_TAG|RELEASE_SHA|COMPATIBILITY_ALIAS): (.*)$"
-          )
-          observed = []
-          for line_number, line in enumerate(io.StringIO(log_text), start=1):
-              if line_number > MAX_LOG_LINES:
-                  raise SystemExit("source verification job log has too many lines")
-              line = line.rstrip("\r\n")
-              match = line_pattern.fullmatch(line)
-              if match is not None:
-                  observed.append(match.groups())
-                  if len(observed) > MAX_POLICY_TRIPLES * 3:
-                      raise SystemExit("source verification job log has too many triples")
-
-          expected = [
-              ("RELEASE_TAG", release_tag),
-              ("RELEASE_SHA", release_sha),
-              ("COMPATIBILITY_ALIAS", compatibility_alias),
-          ]
-          if not observed:
-              raise SystemExit(
-                  "source verification log has no release-policy environment triple"
-              )
-          if len(observed) % len(expected) != 0:
-              raise SystemExit(
-                  "source verification log has an incomplete or spoofed release-policy triple"
-              )
-          for offset in range(0, len(observed), len(expected)):
-              if observed[offset : offset + len(expected)] != expected:
-                  raise SystemExit(
-                      "source verification log does not bind the exact release-policy triple"
-                  )
-          PY
-          )
+          (cd "$clean_python_cwd" && python3 -I \
+            "$RUNNER_TEMP/release_workflow.py" "${evidence_args[@]}")
 
       - name: Select the immutable artifact source
         id: select-artifacts
@@ -1103,51 +577,23 @@ jobs:
           RECOVERED_RELEASE_DIGEST: ${{ steps.recover-artifacts.outputs.release-assets-artifact-digest }}
         run: |
           set -euo pipefail
-          python3 -I - "$GITHUB_OUTPUT" <<'PY'
-          import os
-          import pathlib
-          import re
-          import sys
-
-          if os.environ["RESUME_RUN_ID"]:
-              values = {
-                  "source-run-id": os.environ["RECOVERED_RUN_ID"],
-                  "python-dist-artifact-id": os.environ["RECOVERED_PYTHON_ID"],
-                  "python-dist-artifact-digest": os.environ["RECOVERED_PYTHON_DIGEST"],
-                  "release-assets-artifact-id": os.environ["RECOVERED_RELEASE_ID"],
-                  "release-assets-artifact-digest": os.environ["RECOVERED_RELEASE_DIGEST"],
-              }
-              if values["source-run-id"] != os.environ["RESUME_RUN_ID"]:
-                  raise SystemExit("selected recovery run ID disagrees")
-          else:
-              values = {
-                  "source-run-id": os.environ["CURRENT_RUN_ID"],
-                  "python-dist-artifact-id": os.environ["FRESH_PYTHON_ID"],
-                  "python-dist-artifact-digest": os.environ["FRESH_PYTHON_DIGEST"],
-                  "release-assets-artifact-id": os.environ["FRESH_RELEASE_ID"],
-                  "release-assets-artifact-digest": os.environ["FRESH_RELEASE_DIGEST"],
-              }
-          for key in (
-              "source-run-id",
-              "python-dist-artifact-id",
-              "release-assets-artifact-id",
-          ):
-              if re.fullmatch(r"[1-9][0-9]*", values[key]) is None:
-                  raise SystemExit(f"selected {key} is invalid")
-          for key in (
-              "python-dist-artifact-digest",
-              "release-assets-artifact-digest",
-          ):
-              digest = values[key]
-              if re.fullmatch(r"[0-9a-f]{64}", digest):
-                  digest = f"sha256:{digest}"
-              if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
-                  raise SystemExit(f"selected {key} is invalid")
-              values[key] = digest
-          with pathlib.Path(sys.argv[1]).open("a", encoding="utf-8") as output:
-              for key, value in values.items():
-                  output.write(f"{key}={value}\n")
-          PY
+          workflow_script="$GITHUB_WORKSPACE/scripts/release_workflow.py"
+          if [[ -n "$RESUME_RUN_ID" ]]; then
+            workflow_script="$RUNNER_TEMP/release_workflow.py"
+          fi
+          python3 -I "$workflow_script" select-artifacts \
+            --resume-run-id "$RESUME_RUN_ID" \
+            --current-run-id "$CURRENT_RUN_ID" \
+            --fresh-python-id "$FRESH_PYTHON_ID" \
+            --fresh-python-digest "$FRESH_PYTHON_DIGEST" \
+            --fresh-release-id "$FRESH_RELEASE_ID" \
+            --fresh-release-digest "$FRESH_RELEASE_DIGEST" \
+            --recovered-run-id "$RECOVERED_RUN_ID" \
+            --recovered-python-id "$RECOVERED_PYTHON_ID" \
+            --recovered-python-digest "$RECOVERED_PYTHON_DIGEST" \
+            --recovered-release-id "$RECOVERED_RELEASE_ID" \
+            --recovered-release-digest "$RECOVERED_RELEASE_DIGEST" \
+            --output "$GITHUB_OUTPUT"
 
       - name: Download recovered Python distributions
         if: inputs.resume_run_id != ''
@@ -1203,204 +649,14 @@ jobs:
               echo "Recovered artifact archive is unsafe or oversized" >&2
               exit 1
             fi
-            actual_digest="sha256:$(sha256sum "$output_path" | awk '{print $1}')"
-            if [[ "$actual_digest" != "$expected_digest" ]]; then
-              echo "Recovered artifact archive digest mismatch for $artifact_id" >&2
-              exit 1
-            fi
-            (cd "$clean_python_cwd" && python3 -I - \
-              "$output_path" "$extracted_path" <<'PY'
-          import hashlib
-          import pathlib
-          import stat
-          import struct
-          import sys
-          import zipfile
-
-          MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
-          MAX_ARCHIVE_MEMBERS = 16
-          MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024
-          MAX_ARCHIVE_PATH_BYTES = 1024
-          MAX_ARCHIVE_MEMBER_BYTES = 128 * 1024 * 1024
-          MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024
-          READ_CHUNK_BYTES = 64 * 1024
-
-          archive_path, extracted_path = map(pathlib.Path, sys.argv[1:])
-
-          def exact_file_read(stream, size, label):
-              chunks = []
-              total = 0
-              while total < size:
-                  requested = min(READ_CHUNK_BYTES, size - total)
-                  chunk = stream.read(requested)
-                  if not chunk:
-                      raise SystemExit(f"{label} is truncated")
-                  if len(chunk) > requested:
-                      raise SystemExit(f"{label} exceeded a bounded read")
-                  chunks.append(chunk)
-                  total += len(chunk)
-              return b"".join(chunks)
-
-          def valid_flat_name(name):
-              try:
-                  encoded = name.encode("utf-8")
-              except UnicodeEncodeError:
-                  return False
-              return (
-                  bool(name)
-                  and len(encoded) <= MAX_ARCHIVE_PATH_BYTES
-                  and pathlib.PurePosixPath(name).name == name
-                  and "/" not in name
-                  and "\\" not in name
-                  and name not in {".", ".."}
-              )
-
-          def preflight_zip(path):
-              source_size = path.stat().st_size
-              if not 0 < source_size <= MAX_ARCHIVE_BYTES:
-                  raise SystemExit("artifact archive exceeds the compressed-byte limit")
-              tail_size = min(source_size, 65_557)
-              with path.open("rb") as stream:
-                  stream.seek(source_size - tail_size)
-                  tail = exact_file_read(stream, tail_size, "ZIP footer")
-                  eocd_index = tail.rfind(b"PK\x05\x06")
-                  if eocd_index < 0 or len(tail) - eocd_index < 22:
-                      raise SystemExit("artifact archive has no valid ZIP footer")
-                  try:
-                      eocd = struct.unpack_from("<4s4H2LH", tail, eocd_index)
-                  except struct.error as error:
-                      raise SystemExit("artifact archive has a malformed ZIP footer") from error
-                  disk_number, central_disk = eocd[1], eocd[2]
-                  disk_entries, total_entries = eocd[3], eocd[4]
-                  central_size, central_offset = eocd[5], eocd[6]
-                  comment_size = eocd[7]
-                  if eocd_index + 22 + comment_size != len(tail):
-                      raise SystemExit("artifact archive has a malformed ZIP footer")
-                  if (
-                      disk_number != 0
-                      or central_disk != 0
-                      or disk_entries != total_entries
-                      or total_entries == 0xFFFF
-                      or central_size == 0xFFFFFFFF
-                      or central_offset == 0xFFFFFFFF
-                      or central_size > MAX_ARCHIVE_METADATA_BYTES
-                  ):
-                      raise SystemExit("artifact archive uses unsupported ZIP metadata")
-                  if not 1 <= total_entries <= MAX_ARCHIVE_MEMBERS:
-                      raise SystemExit("artifact archive exceeds the member-count limit")
-                  eocd_offset = source_size - tail_size + eocd_index
-                  central_end = central_offset + central_size
-                  if central_end > eocd_offset:
-                      raise SystemExit("artifact archive central directory is malformed")
-                  stream.seek(central_offset)
-                  aggregate = 0
-                  names = set()
-                  for _ in range(total_entries):
-                      header = exact_file_read(stream, 46, "ZIP central directory")
-                      try:
-                          fields = struct.unpack("<4s6H3I5H2I", header)
-                      except struct.error as error:
-                          raise SystemExit("artifact archive central directory is malformed") from error
-                      if fields[0] != b"PK\x01\x02":
-                          raise SystemExit("artifact archive central directory is malformed")
-                      flags = fields[3]
-                      compressed_size = fields[8]
-                      uncompressed_size = fields[9]
-                      filename_size, extra_size, item_comment_size = fields[10:13]
-                      local_offset = fields[16]
-                      if (
-                          flags & 1
-                          or compressed_size == 0xFFFFFFFF
-                          or compressed_size > MAX_ARCHIVE_BYTES
-                          or uncompressed_size == 0xFFFFFFFF
-                          or local_offset == 0xFFFFFFFF
-                          or local_offset >= central_offset
-                          or filename_size > MAX_ARCHIVE_PATH_BYTES
-                      ):
-                          raise SystemExit("artifact archive member metadata is unsupported")
-                      name_bytes = exact_file_read(stream, filename_size, "ZIP member name")
-                      encoding = "utf-8" if flags & 0x800 else "cp437"
-                      try:
-                          name = name_bytes.decode(encoding)
-                      except UnicodeDecodeError as error:
-                          raise SystemExit("artifact archive contains an invalid member name") from error
-                      if not valid_flat_name(name) or name in names:
-                          raise SystemExit("artifact archive is not a unique flat file set")
-                      names.add(name)
-                      if uncompressed_size > MAX_ARCHIVE_MEMBER_BYTES:
-                          raise SystemExit("artifact archive member exceeds the size limit")
-                      aggregate += uncompressed_size
-                      if aggregate > MAX_ARCHIVE_TOTAL_BYTES:
-                          raise SystemExit("artifact archive exceeds the aggregate size limit")
-                      stream.seek(extra_size + item_comment_size, 1)
-                      if stream.tell() > central_end:
-                          raise SystemExit("artifact archive central directory is malformed")
-                  if stream.tell() != central_end:
-                      raise SystemExit("artifact archive central directory is malformed")
-              return total_entries
-
-          def hash_exact(stream, size, label):
-              digest = hashlib.sha256()
-              total = 0
-              while total < size:
-                  requested = min(READ_CHUNK_BYTES, size - total)
-                  chunk = stream.read(requested)
-                  if not chunk:
-                      raise SystemExit(f"{label} is truncated")
-                  if len(chunk) > requested:
-                      raise SystemExit(f"{label} exceeded a bounded read")
-                  digest.update(chunk)
-                  total += len(chunk)
-              if stream.read(1):
-                  raise SystemExit(f"{label} exceeds its advertised size")
-              return digest.digest()
-
-          expected_count = preflight_zip(archive_path)
-          with zipfile.ZipFile(archive_path) as archive:
-              entries = archive.infolist()
-              if len(entries) != expected_count:
-                  raise SystemExit("artifact archive member count changed after preflight")
-              names = [entry.filename for entry in entries]
-              if (
-                  any(entry.is_dir() for entry in entries)
-                  or len(names) != len(set(names))
-                  or any(not valid_flat_name(name) for name in names)
-                  or any(entry.file_size > MAX_ARCHIVE_MEMBER_BYTES for entry in entries)
-                  or sum(entry.file_size for entry in entries) > MAX_ARCHIVE_TOTAL_BYTES
-                  or any(
-                      ((entry.external_attr >> 16) & 0o170000)
-                      not in {0, stat.S_IFREG}
-                      for entry in entries
-                  )
-              ):
-                  raise SystemExit("artifact archive is not a unique flat file set")
-              extracted = []
-              for path in extracted_path.iterdir():
-                  if len(extracted) >= MAX_ARCHIVE_MEMBERS:
-                      raise SystemExit("download action output has too many entries")
-                  extracted.append(path)
-              if {path.name for path in extracted} != set(names) or len(extracted) != len(names):
-                  raise SystemExit("download action output disagrees with artifact archive")
-              for entry in entries:
-                  path = extracted_path / entry.filename
-                  if not path.is_file() or path.is_symlink():
-                      raise SystemExit("downloaded artifact entry is not a regular file")
-                  if path.stat().st_size != entry.file_size:
-                      raise SystemExit("downloaded artifact entry size disagrees")
-                  with archive.open(entry) as archived_stream:
-                      archived_hash = hash_exact(
-                          archived_stream, entry.file_size, "archived artifact member"
-                      )
-                  with path.open("rb") as extracted_stream:
-                      extracted_hash = hash_exact(
-                          extracted_stream, entry.file_size, "downloaded artifact member"
-                      )
-                  if archived_hash != extracted_hash:
-                      raise SystemExit(
-                          f"download action changed artifact bytes: {entry.filename}"
-                      )
-          PY
+            archive_args=(
+              verify-archive
+              --archive "$output_path"
+              --extracted "$extracted_path"
+              --digest "$expected_digest"
             )
+            (cd "$clean_python_cwd" && python3 -I \
+              "$RUNNER_TEMP/release_workflow.py" "${archive_args[@]}")
           }
           verify_archive \
             "$PYTHON_ARTIFACT_ID" "$PYTHON_ARTIFACT_DIGEST" \
@@ -1414,69 +670,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=${RELEASE_TAG#v}
-          wheel="boundver-$version-py3-none-any.whl"
-          sdist="boundver-$version.tar.gz"
-          pyz="boundver-$version.pyz"
-          python3 -I - "$wheel" "$sdist" "$pyz" <<'PY'
-          import pathlib
-          import re
-          import sys
-
-          wheel, sdist, pyz = sys.argv[1:]
-          MAX_CHECKSUM_BYTES = 4096
-
-          def require_exact(root_name, expected):
-              root = pathlib.Path(root_name)
-              entries = []
-              for entry in root.iterdir():
-                  entries.append(entry)
-                  if len(entries) > len(expected):
-                      raise SystemExit(f"{root_name} has too many entries")
-              if {entry.name for entry in entries} != set(expected):
-                  raise SystemExit(
-                      f"{root_name} is not the expected flat payload: "
-                      + ", ".join(sorted(entry.name for entry in entries))
-                  )
-              if any(not entry.is_file() or entry.is_symlink() for entry in entries):
-                  raise SystemExit(f"{root_name} contains a non-regular file")
-
-          require_exact("recovered-python-dist", [wheel, sdist])
-          require_exact("recovered-release-assets", [wheel, sdist, pyz, "SHA256SUMS"])
-          checksum_path = pathlib.Path("recovered-release-assets/SHA256SUMS")
-          if checksum_path.stat().st_size > MAX_CHECKSUM_BYTES:
-              raise SystemExit("SHA256SUMS exceeds the byte limit")
-          with checksum_path.open("rb") as checksum_stream:
-              checksum_bytes = checksum_stream.read(MAX_CHECKSUM_BYTES + 1)
-          if len(checksum_bytes) > MAX_CHECKSUM_BYTES:
-              raise SystemExit("SHA256SUMS exceeds the byte limit")
-          try:
-              checksum_lines = checksum_bytes.decode("utf-8", "strict").splitlines()
-          except UnicodeDecodeError as error:
-              raise SystemExit("SHA256SUMS is not UTF-8") from error
-          checksum_names = []
-          for line in checksum_lines:
-              match = re.fullmatch(r"[0-9a-f]{64}  ([^/]+)", line)
-              if match is None:
-                  raise SystemExit("SHA256SUMS contains a malformed entry")
-              checksum_names.append(match.group(1))
-          if len(checksum_names) != 3 or set(checksum_names) != {wheel, sdist, pyz}:
-              raise SystemExit("SHA256SUMS does not cover the exact release payload")
-          PY
-          (
-            cd recovered-release-assets
-            sha256sum --check --strict SHA256SUMS
-          )
-          cmp --silent \
-            "recovered-python-dist/$wheel" \
-            "recovered-release-assets/$wheel"
-          cmp --silent \
-            "recovered-python-dist/$sdist" \
-            "recovered-release-assets/$sdist"
+          python3 -I "$RUNNER_TEMP/release_workflow.py" validate-payload \
+            --python-dist "$GITHUB_WORKSPACE/recovered-python-dist" \
+            --release-assets "$GITHUB_WORKSPACE/recovered-release-assets" \
+            --tag "$RELEASE_TAG"
           python3 -I scripts/install_locked_tools.py release
+          version=${RELEASE_TAG#v}
           python3 -I -m twine check \
-            "recovered-python-dist/$wheel" \
-            "recovered-python-dist/$sdist"
+            "recovered-python-dist/boundver-$version-py3-none-any.whl" \
+            "recovered-python-dist/boundver-$version.tar.gz"
 
   testpypi-preflight:
     name: Reject conflicting TestPyPI release state

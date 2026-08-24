@@ -379,7 +379,7 @@ class DiscoveryStreamingTests(unittest.TestCase):
             root = Path(td)
             _init_repo(root)
             with patch(
-                "boundver._config._iter_bounded_git_paths",
+                "boundver._discovery._iter_bounded_git_paths",
                 side_effect=GuardrailError("bounded listing exceeded"),
             ):
                 with self.assertRaisesRegex(GuardrailError, "bounded listing"):
