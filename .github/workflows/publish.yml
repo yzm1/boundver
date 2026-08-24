@@ -725,32 +725,13 @@ jobs:
               or any(not isinstance(job, dict) for job in jobs)
           ):
               raise SystemExit("source publication jobs response is incomplete")
-          verification_jobs = [
+          successful_verification_jobs = [
               job
               for job in jobs
               if job.get("name") == "verify-release"
               and job.get("status") == "completed"
               and job.get("conclusion") == "success"
           ]
-          if len(verification_jobs) != 1:
-              raise SystemExit(
-                  "source publication must have exactly one successful exact verify-release job"
-              )
-          verification = verification_jobs[0]
-          artifact_attempt = verification.get("run_attempt")
-          if (
-              type(verification.get("id")) is not int
-              or verification["id"] < 1
-              or verification["id"] > (1 << 64) - 1
-              or type(verification.get("run_id")) is not int
-              or verification.get("run_id") != source_run_id
-              or verification.get("head_sha") != release_sha
-              or type(artifact_attempt) is not int
-              or artifact_attempt < 1
-              or artifact_attempt > (1 << 64) - 1
-              or artifact_attempt > attempt
-          ):
-              raise SystemExit("source verify-release artifact attempt is invalid")
 
           artifacts_payload = gh_json(
               f"{run_endpoint}/artifacts?per_page=100"
@@ -774,10 +755,15 @@ jobs:
               raise SystemExit(
                   "source artifact response is incomplete or exceeds the inspection limit"
               )
-          suffix = f"{release_tag}-{source_run_id}-{artifact_attempt}"
-          expected_names = {
-              f"python-dist-{suffix}": "python-dist",
-              f"release-assets-{suffix}": "release-assets",
+          artifact_name_res = {
+              "python-dist": re.compile(
+                  rf"python-dist-{re.escape(release_tag)}-"
+                  rf"{source_run_id}-([1-9][0-9]*)"
+              ),
+              "release-assets": re.compile(
+                  rf"release-assets-{re.escape(release_tag)}-"
+                  rf"{source_run_id}-([1-9][0-9]*)"
+              ),
           }
           release_notes_re = re.compile(
               rf"release-notes-{re.escape(release_sha)}-"
@@ -796,17 +782,70 @@ jobs:
                   for name in artifact_names
               )
               or len(artifact_names) != len(set(artifact_names))
-              or not set(expected_names).issubset(artifact_names)
           ):
               raise SystemExit("source artifact names do not match tag, run, and attempt")
+
+          artifact_attempts = {label: set() for label in artifact_name_res}
           for name in artifact_names:
-              if name in expected_names:
-                  continue
-              match = release_notes_re.fullmatch(name)
-              if match is None or int(match.group(1)) > attempt:
+              matched_artifact = False
+              for label, name_re in artifact_name_res.items():
+                  match = name_re.fullmatch(name)
+                  if match is None:
+                      continue
+                  candidate_attempt = int(match.group(1))
+                  if candidate_attempt > attempt:
+                      raise SystemExit(
+                          "source artifact names do not match tag, run, and attempt"
+                      )
+                  artifact_attempts[label].add(candidate_attempt)
+                  matched_artifact = True
+                  break
+              if not matched_artifact:
+                  match = release_notes_re.fullmatch(name)
+                  if match is not None and int(match.group(1)) <= attempt:
+                      continue
                   raise SystemExit(
                       "source artifact names do not match tag, run, and attempt"
                   )
+
+          retained_attempts = set.union(*artifact_attempts.values())
+          if (
+              len(retained_attempts) != 1
+              or any(
+                  attempts != retained_attempts
+                  for attempts in artifact_attempts.values()
+              )
+          ):
+              raise SystemExit(
+                  "source artifact names do not match tag, run, and attempt"
+              )
+          artifact_attempt = retained_attempts.pop()
+          verification_jobs = [
+              job
+              for job in successful_verification_jobs
+              if job.get("run_attempt") == artifact_attempt
+          ]
+          if len(verification_jobs) != 1:
+              raise SystemExit(
+                  "source publication must have exactly one successful exact "
+                  "verify-release job for the retained artifact attempt"
+              )
+          verification = verification_jobs[0]
+          if (
+              type(verification.get("id")) is not int
+              or verification["id"] < 1
+              or verification["id"] > (1 << 64) - 1
+              or type(verification.get("run_id")) is not int
+              or verification.get("run_id") != source_run_id
+              or verification.get("head_sha") != release_sha
+          ):
+              raise SystemExit("source verify-release artifact attempt is invalid")
+
+          suffix = f"{release_tag}-{source_run_id}-{artifact_attempt}"
+          expected_names = {
+              f"python-dist-{suffix}": "python-dist",
+              f"release-assets-{suffix}": "release-assets",
+          }
 
           now = datetime.datetime.now(datetime.timezone.utc)
           selected = {}
