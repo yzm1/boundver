@@ -204,8 +204,8 @@ commit. A standard Codex suggestions review counts only after every review
 thread is resolved. A later exact-commit record supersedes earlier feedback;
 equal timestamps are ambiguous and fail closed. A clean verdict line must be
 exactly `Codex Review: Didn't find any major issues.`, optionally followed by
-the positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
-`Keep them coming!`, `Nice work!`, `Swish!`,
+the positive allowlist `Another round soon, please!`, `Breezy!`, `Delightful!`,
+`Hooray!`, `Keep it up!`, `Keep them coming!`, `Nice work!`, `Swish!`,
 `Already looking forward to the next diff.`, `Chef's kiss.`,
 `More of your lovely PRs please.`, or `You're on a roll.`
 Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its

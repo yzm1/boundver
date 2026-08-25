@@ -55,7 +55,8 @@ All notable changes to this project are documented here. The format follows
 - The credentialed Action-alias handoff byte-binds its imported
   `release_workflow.py` helper to the reviewed publication commit.
 - The release review audit recognizes the trusted Codex app's observed
-  `Nice work!` clean-verdict suffix through the existing positive allowlist.
+  `Nice work!` and `Another round soon, please!` clean-verdict suffixes through
+  the existing positive allowlist.
 - Composite Action payload outputs now have conservative UTF-16-aware bounds,
   explicitly report truncation or unavailable results, retain complete or
   diagnostic JSON at `result-file`, and never expose a partial

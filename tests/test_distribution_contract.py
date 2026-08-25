@@ -2707,6 +2707,8 @@ exit 74
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
         head = "a" * 40
         verdicts = (
+            "Codex Review: Didn't find any major issues. "
+            "Another round soon, please!",
             "Codex Review: Didn't find any major issues. Chef's kiss.",
             "Codex Review: Didn't find any major issues. Delightful!",
             "Codex Review: Didn't find any major issues. Nice work!",
