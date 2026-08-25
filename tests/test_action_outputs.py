@@ -144,6 +144,75 @@ class ActionOutputTests(unittest.TestCase):
             self.assertEqual(Path(values["result-file"]), result.resolve())
             self.assertTrue(result.is_file())
 
+    def test_missing_result_is_explicitly_incomplete_and_valid_json(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "missing-result.json"
+            output = root / "github-output"
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+            fallback = json.loads(result.read_text(encoding="utf-8"))
+
+            self.assertEqual(truncated, exporter.SIZED_OUTPUTS)
+            self.assertEqual(values["issues"], exporter.UNAVAILABLE_MARKER)
+            self.assertEqual(values["observations"], exporter.UNAVAILABLE_MARKER)
+            self.assertEqual(values["consumer-impact"], "[]")
+            self.assertEqual(
+                tuple(json.loads(values["truncated-outputs"])), exporter.SIZED_OUTPUTS
+            )
+            self.assertFalse(fallback["ok"])
+            self.assertEqual(
+                fallback["action_transport"],
+                {"complete": False, "reason": "unreadable"},
+            )
+
+    def test_malformed_result_is_explicitly_incomplete_and_valid_json(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.write_text("not-json", encoding="utf-8")
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+            fallback = json.loads(result.read_text(encoding="utf-8"))
+
+            self.assertEqual(truncated, exporter.SIZED_OUTPUTS)
+            self.assertEqual(values["issues"], exporter.UNAVAILABLE_MARKER)
+            self.assertEqual(values["consumer-impact"], "[]")
+            self.assertEqual(
+                tuple(json.loads(values["truncated-outputs"])), exporter.SIZED_OUTPUTS
+            )
+            self.assertEqual(
+                fallback["action_transport"],
+                {"complete": False, "reason": "invalid-json"},
+            )
+
+    def test_empty_result_is_explicitly_incomplete_and_valid_json(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.touch()
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+            fallback = json.loads(result.read_text(encoding="utf-8"))
+
+            self.assertEqual(truncated, exporter.SIZED_OUTPUTS)
+            self.assertEqual(values["consumer-impact"], "[]")
+            self.assertEqual(
+                tuple(json.loads(values["truncated-outputs"])), exporter.SIZED_OUTPUTS
+            )
+            self.assertEqual(
+                fallback["action_transport"],
+                {"complete": False, "reason": "empty"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

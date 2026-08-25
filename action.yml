@@ -66,10 +66,10 @@ outputs:
     description: Bounded compact JSON array of typed downstream consumer-impact rows.
     value: ${{ steps.verify.outputs.consumer-impact }}
   truncated-outputs:
-    description: Compact JSON array naming outputs that exceeded the safe runner budget.
+    description: Compact JSON array naming outputs that were bounded or unavailable.
     value: ${{ steps.verify.outputs.truncated-outputs }}
   result-file:
-    description: Runner-local path to the complete verify JSON for inspection or artifact upload.
+    description: Runner-local verify JSON, or a valid diagnostic JSON when verification emitted no usable result.
     value: ${{ steps.verify.outputs.result-file }}
 
 runs:

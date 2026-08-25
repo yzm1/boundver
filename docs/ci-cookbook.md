@@ -34,10 +34,14 @@ returns `exit-code`, `issues`, `observations`, and compact JSON
 `consumer-impact` outputs. Each potentially repository-sized payload is capped
 at 64 KiB measured as UTF-16 so the Action stays well below GitHub's
 [1 MB per-job output limit](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs).
-`truncated-outputs` is a compact JSON array naming any bounded values, and
-`result-file` points to the complete runner-local verify JSON for inspection or
-artifact upload. Treat a truncated `consumer-impact` as a fail-closed routing
-condition; its bounded value is `[]`, never an incomplete downstream closure.
+`truncated-outputs` is a compact JSON array naming any bounded or unavailable
+values. `result-file` points to the complete runner-local verify JSON for
+inspection or artifact upload. If verification fails before emitting usable
+JSON, all three repository-sized outputs are named in `truncated-outputs` and
+`result-file` contains a valid diagnostic JSON with `ok: false` and an
+`action_transport.reason`. Treat an incomplete `consumer-impact` as a
+fail-closed routing condition; its bounded value is `[]`, never an incomplete
+downstream closure.
 
 The Action inputs are:
 

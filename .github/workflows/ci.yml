@@ -157,6 +157,41 @@ jobs:
           assert json.loads(result.read_text(encoding="utf-8"))["ok"] is True
           PY
 
+      - name: Exercise pre-JSON Action failure
+        id: boundver-pre-json-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          python-version: ${{ matrix.python-version }}
+          config: does-not-exist.json
+
+      - name: Check incomplete Action outputs
+        shell: bash
+        env:
+          BOUNDVER_ISSUES: ${{ steps.boundver-pre-json-failure.outputs.issues }}
+          BOUNDVER_CONSUMER_IMPACT: ${{ steps.boundver-pre-json-failure.outputs.consumer-impact }}
+          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver-pre-json-failure.outputs.truncated-outputs }}
+          BOUNDVER_RESULT_FILE: ${{ steps.boundver-pre-json-failure.outputs.result-file }}
+        run: |
+          python -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected = ["issues", "observations", "consumer-impact"]
+          assert "result unavailable" in os.environ["BOUNDVER_ISSUES"]
+          assert json.loads(os.environ["BOUNDVER_CONSUMER_IMPACT"]) == []
+          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == expected
+          payload = json.loads(
+              Path(os.environ["BOUNDVER_RESULT_FILE"]).read_text(encoding="utf-8")
+          )
+          assert payload["ok"] is False
+          assert payload["action_transport"] == {
+              "complete": False,
+              "reason": "empty",
+          }
+          PY
+
       - name: Exercise hostile input as data
         continue-on-error: true
         uses: ./
