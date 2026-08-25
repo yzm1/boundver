@@ -93,6 +93,7 @@ ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "w
 ALIAS_CONTROL_PATHS = (
     "scripts/publish_release.py",
     "scripts/release_alias.py",
+    "scripts/release_workflow.py",
     "scripts/_release_platform.py",
 )
 MAX_DISTRIBUTION_FILE_BYTES = 128 * 1024 * 1024

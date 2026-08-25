@@ -205,8 +205,9 @@ thread is resolved. A later exact-commit record supersedes earlier feedback;
 equal timestamps are ambiguous and fail closed. A clean verdict line must be
 exactly `Codex Review: Didn't find any major issues.`, optionally followed by
 the positive allowlist `Breezy!`, `Delightful!`, `Hooray!`, `Keep it up!`,
-`Keep them coming!`, `Swish!`, `Already looking forward to the next diff.`,
-`Chef's kiss.`, `More of your lovely PRs please.`, or `You're on a roll.`
+`Keep them coming!`, `Nice work!`, `Swish!`,
+`Already looking forward to the next diff.`, `Chef's kiss.`,
+`More of your lovely PRs please.`, or `You're on a roll.`
 Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its
 body to the review commit; an issue comment must also contain exactly one
 `**Reviewed commit:**` marker. The audit permits only the bot's recognized
@@ -331,8 +332,8 @@ workflows then perform these gates in order:
    The local command requires current reviewed `main`, the immutable exact tag,
    the active publication attempt, successful release/PyPI/public-container
    gates, and the waiting alias-decision job. If `main` advanced after dispatch,
-   both credentialed alias-control scripts and their imported platform helper
-   must remain byte-identical to the parent-reviewed versions. The command
+   all credentialed alias-control scripts and their imported helpers must
+   remain byte-identical to the parent-reviewed versions. The command
    revalidates the logged release inputs
    at the mutation boundary, rejects non-ancestral or non-monotonic moves, and
    pushes the exact object ID with `--force-with-lease`; it does not leave a

@@ -193,7 +193,7 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 # Keep this a positive allowlist of statuses actually emitted by the trusted
 # app.  A free-form suffix would let contradictory review state share the
 # authenticated clean-verdict line and still satisfy the release gate.
-readonly codex_clean_bang_status_regex='(Breezy|Delightful|Hooray|Keep it up|Keep them coming|Swish)!'
+readonly codex_clean_bang_status_regex='(Breezy|Delightful|Hooray|Keep it up|Keep them coming|Nice work|Swish)!'
 readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Chef's kiss|More of your lovely PRs please|You're on a roll)\."
 readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'

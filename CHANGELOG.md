@@ -49,6 +49,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Exit-code-aware CI guidance now preserves every non-zero verification result
+  after handling infrastructure exit `2`, so drift exits `3` through `5` cannot
+  be accidentally converted to success.
+- The credentialed Action-alias handoff byte-binds its imported
+  `release_workflow.py` helper to the reviewed publication commit.
+- The release review audit recognizes the trusted Codex app's observed
+  `Nice work!` clean-verdict suffix through the existing positive allowlist.
 - Successful textual Git output now uses the filesystem codec with
   `surrogateescape` instead of the preferred process locale, preserving
   non-ASCII refs and otherwise undecodable bytes without weakening strict

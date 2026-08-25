@@ -266,12 +266,13 @@ boundver could not perform a reliable check, not that something drifted. Fail
 the build on `2` — never treat it as an acceptable result:
 
 ```bash
-boundver verify --source head --facets behavior,boundary,compat
-code=$?
+code=0
+boundver verify --source head --facets behavior,boundary,compat || code=$?
 if [ "$code" -eq 2 ]; then
   echo "boundver could not perform a reliable check" >&2
   exit 2
 fi
+exit "$code"
 ```
 
 ## GitLab CI
