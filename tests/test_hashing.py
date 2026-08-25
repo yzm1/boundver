@@ -672,6 +672,24 @@ class AdditionalGitHelperTests(unittest.TestCase):
             result = git_latest_tag(root, "svc-v")
             self.assertEqual(result, "1.2.3")
 
+    def test_git_latest_tag_supports_non_ascii_prefix(self):
+        """Reachable non-ASCII refs survive Git's filesystem text transport."""
+        from boundver.core import git_latest_tag
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "f.txt").write_text("x")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+            subprocess.run(
+                ["git", "tag", "rélease-v1.2.3"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            result = git_latest_tag(root, "rélease-v")
+            self.assertEqual(result, "1.2.3")
+
     def test_git_latest_tag_no_matching_tags_returns_none(self):
         """git_latest_tag returns None when no tags match the prefix."""
         from boundver.core import git_latest_tag

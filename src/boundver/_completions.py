@@ -74,14 +74,16 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--strict", "--allow-custom-providers",
     ),
     "explain": (
-        "-h", "--help", "--config", "--base-ref", "--source",
+        "-h", "--help", "--config", "--lock", "--base-ref", "--source",
         "--allow-custom-providers",
     ),
     "why": (
-        "-h", "--help", "--config", "--lock", "--source", "--format",
+        "-h", "--help", "--config", "--lock", "--base-ref", "--source", "--format",
         "--transitive", "--allow-custom-providers",
     ),
-    "discover": ("-h", "--help", "--format", "--diff-config", "--config"),
+    "discover": (
+        "-h", "--help", "--format", "--diff-config", "--config", "--exclude",
+    ),
     "migrate-lock": (
         "-h", "--help", "--lock", "--dry-run", "--explain", "--config",
         "--source", "--format",
@@ -119,6 +121,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--strict": "Exit non-zero on warnings or drift",
     "--base-ref": "Git base ref",
     "--diff-config": "Compare discovery with configured roots",
+    "--exclude": "Exclude a discovery path prefix",
     "--explain": "Explain migration selector changes",
     "--shell": "Target shell",
 }
@@ -137,6 +140,7 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--provider": ("provider", ""),
     "--paths": ("paths", ""),
     "--base-ref": ("Git ref", ""),
+    "--exclude": ("path", "_files -/"),
     "--baseline": ("file", "_files"),
     "--write-baseline": ("file", "_files"),
     "--update-baseline": ("file", "_files"),

@@ -93,6 +93,7 @@ ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "w
 ALIAS_CONTROL_PATHS = (
     "scripts/publish_release.py",
     "scripts/release_alias.py",
+    "scripts/release_workflow.py",
     "scripts/_release_platform.py",
 )
 MAX_DISTRIBUTION_FILE_BYTES = 128 * 1024 * 1024
@@ -1853,7 +1854,11 @@ def _surface_inventory(repo: Path) -> str:
             "scripts/requirements/ci.lock",
             "scripts/requirements/release.lock",
         ),
-        "GitHub Action and Marketplace": ("action.yml", ".github/workflows/publish.yml"),
+        "GitHub Action and Marketplace": (
+            "action.yml",
+            "scripts/export_action_outputs.py",
+            ".github/workflows/publish.yml",
+        ),
         "TestPyPI": ("scripts/verify_testpypi_release.py",),
         "PyPI": ("scripts/verify_testpypi_release.py",),
         "GitHub Release assets": ("scripts/verify_release_surfaces.py",),

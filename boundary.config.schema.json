@@ -1,12 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/boundary.config.schema.json",
   "title": "boundver config",
   "$defs": {
     "relativePath": {
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
+    },
+    "consumerGraphIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
     }
   },
   "type": "object",
@@ -51,7 +56,8 @@
     "components": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"type": "string", "minLength": 1},
+      "maxProperties": 10000,
+      "propertyNames": {"$ref": "#/$defs/consumerGraphIdentifier"},
       "additionalProperties": {
         "type": "object",
         "required": ["path", "boundary"],
@@ -122,13 +128,15 @@
           "consumers": {
             "type": "array",
             "description": "Configured component names directly downstream of this component.",
-            "items": {"type": "string", "minLength": 1},
+            "maxItems": 10000,
+            "items": {"$ref": "#/$defs/consumerGraphIdentifier"},
             "uniqueItems": true
           },
           "external_consumers": {
             "type": "array",
             "description": "Opaque terminal labels for downstream systems not configured as components.",
-            "items": {"type": "string", "minLength": 1},
+            "maxItems": 10000,
+            "items": {"$ref": "#/$defs/consumerGraphIdentifier"},
             "uniqueItems": true
           },
           "verify_facets": {
@@ -152,12 +160,12 @@
           "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
           "components": {
             "type": "array",
-            "items": {"type": "string"},
+            "maxItems": 10000,
+            "items": {"$ref": "#/$defs/consumerGraphIdentifier"},
             "uniqueItems": true
           },
           "closure_of": {
-            "type": "string",
-            "minLength": 1,
+            "$ref": "#/$defs/consumerGraphIdentifier",
             "description": "Include this component and its transitive downstream consumers."
           }
         },

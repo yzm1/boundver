@@ -88,8 +88,15 @@ component roots without modifying the config:
 
 ```bash
 boundver discover --diff-config
+boundver discover --diff-config --exclude legacy/vendor
 boundver discover --diff-config --config boundary.config.yaml --format json
 ```
+
+`--exclude` is repeatable and removes an exact repository-relative prefix plus
+everything below it. Git repositories already use tracked manifests only; the
+option is for tracked trees that are deliberately outside the maintained
+component corpus. The exclusion option is available in v0.14 and later; the
+comparison itself remains available from v0.13.
 
 The comparison separates:
 

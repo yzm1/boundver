@@ -1,5 +1,8 @@
 """Field-name contracts shared by schema-independent config validation."""
 
+MAX_CONSUMER_GRAPH_ITEMS = 10_000
+MAX_CONSUMER_IDENTIFIER_CHARS = 16_384
+
 ROOT_FIELDS = frozenset(
     {"$schema", "project", "providers", "defaults", "components", "slices"}
 )

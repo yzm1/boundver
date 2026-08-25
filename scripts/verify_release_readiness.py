@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 release toolin
     import tomli as tomllib
 
 
-def _load_release_note_extractor():
+def _load_release_changelog_module():
     path = Path(__file__).resolve().with_name("release_changelog.py")
     spec = importlib.util.spec_from_file_location(
         "_boundver_release_changelog", path
@@ -36,15 +36,19 @@ def _load_release_note_extractor():
         raise RuntimeError(f"cannot load release changelog helper: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.extract_release_notes
+    return module
 
 
-extract_release_notes = _load_release_note_extractor()
+_release_changelog = _load_release_changelog_module()
+extract_release_notes = _release_changelog.extract_release_notes
+parse_upgrade_contract = _release_changelog.parse_upgrade_contract
+version_at_least = _release_changelog.version_at_least
 
 
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
+CANONICAL_LOCK_SCHEMA_REF = "v0.13.0"
 RAW_SCHEMA_RE = re.compile(
     r"https://raw\.githubusercontent\.com/yzm1/boundver/"
     r"(?P<ref>[^/\s\"'<>]+)/(?P<path>[^\s\"'<>]*schema\.json)"
@@ -687,8 +691,9 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                     f"pyproject.toml project.urls.{label} must be {expected!r}"
                 )
 
+    release_notes = ""
     try:
-        extract_release_notes(
+        release_notes = extract_release_notes(
             reads.read_text(repo / "CHANGELOG.md"), tag, mode="pre-tag"
         )
     except (OSError, UnicodeError, ReleaseReadError, ValueError) as exc:
@@ -743,9 +748,15 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
             errors.append(f"{relative}: cannot read release surface: {exc}")
             continue
         for match in RAW_SCHEMA_RE.finditer(text):
-            if match.group("ref") != tag:
+            expected_ref = (
+                CANONICAL_LOCK_SCHEMA_REF
+                if match.group("path") == "spec/boundary.lock.schema.json"
+                else tag
+            )
+            if match.group("ref") != expected_ref:
                 errors.append(
-                    f"{relative}: schema URL uses {match.group('ref')!r}, expected {tag!r}"
+                    f"{relative}: schema URL uses {match.group('ref')!r}, "
+                    f"expected {expected_ref!r}"
                 )
 
     expected_config_schema = (
@@ -753,7 +764,8 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         "boundary.config.schema.json"
     )
     expected_lock_schema = (
-        f"https://raw.githubusercontent.com/yzm1/boundver/{tag}/"
+        "https://raw.githubusercontent.com/yzm1/boundver/"
+        f"{CANONICAL_LOCK_SCHEMA_REF}/"
         "spec/boundary.lock.schema.json"
     )
     config_schema_path = repo / "boundary.config.schema.json"
@@ -802,6 +814,30 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                     )
                 else:
                     expected_lock_fields[field] = expected
+
+    if release_notes:
+        try:
+            upgrade_contract = parse_upgrade_contract(
+                release_notes,
+                required=version_at_least(version.split("."), (0, 14, 0)),
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            expected_contract_values = {
+                "semantic_config": expected_lock_fields.get("config_contract"),
+                "lock_schema": expected_lock_fields.get("schema"),
+            }
+            for field, expected in expected_contract_values.items():
+                if (
+                    upgrade_contract
+                    and expected is not None
+                    and upgrade_contract.get(field) != expected
+                ):
+                    errors.append(
+                        "release upgrade contract "
+                        f"{field.replace('_', ' ')} must be {expected!r}"
+                    )
 
     cli_schema_paths = [
         path

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boundver"
-version = "0.13.0"
+version = "0.14.0"
 description = "Classify contract drift and downstream impact across polyglot repositories"
 readme = "README.md"
 requires-python = ">=3.9"

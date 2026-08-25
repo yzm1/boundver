@@ -38,6 +38,7 @@ from .providers import (
     get_provider,
     load_custom_providers,
     validate_provider_config,
+    validate_provider_environment,
 )
 from ._consumer_graph import resolve_slice_components
 from ._structured_data import strict_json_loads
@@ -46,6 +47,8 @@ from ._config_contract import (
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     DEFAULT_FIELDS,
+    MAX_CONSUMER_GRAPH_ITEMS,
+    MAX_CONSUMER_IDENTIFIER_CHARS,
     PROVIDER_FIELDS,
     ROOT_FIELDS,
     SLICE_FIELDS,
@@ -543,6 +546,11 @@ def validate_config(
         components = {}
     elif not components:
         errors.append("Field 'components' must define at least one component")
+    elif len(components) > MAX_CONSUMER_GRAPH_ITEMS:
+        errors.append(
+            "Field 'components' exceeds the "
+            f"{MAX_CONSUMER_GRAPH_ITEMS}-component consumer-graph limit"
+        )
     if not isinstance(slices, dict):
         errors.append("Field 'slices' must be an object")
         slices = {}
@@ -620,9 +628,17 @@ def validate_config(
                 # Without an explicit name, the provider instance determines
                 # its registered custom.* identifier after trusted loading.
 
+    all_external_consumers: Set[str] = set()
     for name, comp in components.items():
         if not isinstance(name, str) or not name.strip():
             errors.append("Component names must be non-empty strings")
+            continue
+        if len(name) > MAX_CONSUMER_IDENTIFIER_CHARS:
+            errors.append(
+                "Component name exceeds the "
+                f"{MAX_CONSUMER_IDENTIFIER_CHARS}-character consumer-graph "
+                f"limit: {_bounded_diagnostic_repr(name)}"
+            )
             continue
         if not isinstance(comp, dict):
             errors.append(f"Component '{name}' must be an object")
@@ -840,9 +856,21 @@ def validate_config(
             if not _is_str_list(consumers):
                 errors.append(f"Component '{name}' field 'consumers' must be an array of strings")
             else:
+                if len(consumers) > MAX_CONSUMER_GRAPH_ITEMS:
+                    errors.append(
+                        f"Component '{name}' field 'consumers' exceeds the "
+                        f"{MAX_CONSUMER_GRAPH_ITEMS}-entry consumer-graph limit"
+                    )
                 if len(consumers) != len(set(consumers)):
                     errors.append(f"Component '{name}' field 'consumers' contains duplicates")
                 for consumer in consumers:
+                    if len(consumer) > MAX_CONSUMER_IDENTIFIER_CHARS:
+                        errors.append(
+                            f"Component '{name}' consumer identifier exceeds the "
+                            f"{MAX_CONSUMER_IDENTIFIER_CHARS}-character limit: "
+                            f"{_bounded_diagnostic_repr(consumer)}"
+                        )
+                        continue
                     if not consumer.strip() or consumer != consumer.strip():
                         errors.append(
                             f"Component '{name}' consumer identifiers must be non-empty "
@@ -863,11 +891,23 @@ def validate_config(
                     "array of strings"
                 )
             else:
+                if len(external_consumers) > MAX_CONSUMER_GRAPH_ITEMS:
+                    errors.append(
+                        f"Component '{name}' field 'external_consumers' exceeds "
+                        f"the {MAX_CONSUMER_GRAPH_ITEMS}-entry consumer-graph limit"
+                    )
                 if len(external_consumers) != len(set(external_consumers)):
                     errors.append(
                         f"Component '{name}' field 'external_consumers' contains duplicates"
                     )
                 for consumer in external_consumers:
+                    if len(consumer) > MAX_CONSUMER_IDENTIFIER_CHARS:
+                        errors.append(
+                            f"Component '{name}' external consumer identifier "
+                            f"exceeds the {MAX_CONSUMER_IDENTIFIER_CHARS}-character "
+                            f"limit: {_bounded_diagnostic_repr(consumer)}"
+                        )
+                        continue
                     if not consumer.strip() or consumer != consumer.strip():
                         errors.append(
                             f"Component '{name}' external consumer identifiers must "
@@ -879,6 +919,8 @@ def validate_config(
                             f"Component '{name}' external consumer '{consumer}' is a "
                             "configured component; declare it in 'consumers' instead"
                         )
+                    else:
+                        all_external_consumers.add(consumer)
         component_verify_facets = comp.get("verify_facets")
         if component_verify_facets is not None:
             if (
@@ -1098,6 +1140,14 @@ def validate_config(
                     f"Component '{name}' version_source must have either 'file' or 'git_tag_prefix'"
                 )
 
+    if len(all_external_consumers) > MAX_CONSUMER_GRAPH_ITEMS:
+        errors.append(
+            "Config declares more than "
+            f"{MAX_CONSUMER_GRAPH_ITEMS} distinct external consumer labels; "
+            "the repository-wide consumer graph must fit the machine-output "
+            "contract"
+        )
+
     # The facet model requires exact ⊇ behavior ⊇ boundary. Validate the
     # selected tracked file sets against the same source view used by hashing;
     # the behavior envelope independently makes boundary changes observable.
@@ -1280,6 +1330,8 @@ def validate_config(
                 "explicit boundary provider"
             )
             continue
+        for provider_error in validate_provider_environment(provider, boundary):
+            errors.append(f"Component '{name}': {provider_error}")
         if source == "working-tree":
             for provider_error in validate_provider_config(
                 provider, boundary, component_path, repo_root
@@ -1350,10 +1402,15 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
     return warnings
 
 
-def discover_components(repo_root: Path) -> Dict[str, dict]:
+def discover_components(
+    repo_root: Path,
+    *,
+    excluded_paths: Optional[List[str]] = None,
+) -> Dict[str, dict]:
     """Compatibility wrapper honoring patchable discovery guardrails."""
     return _discover_components_impl(
         repo_root,
+        excluded_paths=excluded_paths,
         max_discovery_manifests=MAX_DISCOVERY_MANIFESTS,
         max_discovered_components=MAX_DISCOVERED_COMPONENTS,
         max_provider_detection_entries=MAX_PROVIDER_DETECTION_ENTRIES,

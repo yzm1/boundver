@@ -62,6 +62,15 @@ outputs:
   observations:
     description: Newline-separated drift outside the selected gate.
     value: ${{ steps.verify.outputs.observations }}
+  consumer-impact:
+    description: Bounded compact JSON array of typed downstream consumer-impact rows.
+    value: ${{ steps.verify.outputs.consumer-impact }}
+  truncated-outputs:
+    description: Compact JSON array naming outputs that were bounded or unavailable.
+    value: ${{ steps.verify.outputs.truncated-outputs }}
+  result-file:
+    description: Runner-local verify JSON, or a valid diagnostic JSON when verification emitted no usable result.
+    value: ${{ steps.verify.outputs.result-file }}
 
 runs:
   using: composite
@@ -91,6 +100,7 @@ runs:
       id: verify
       shell: bash
       env:
+        BOUNDVER_ACTION_PATH: ${{ github.action_path }}
         BOUNDVER_CONFIG: ${{ inputs.config }}
         BOUNDVER_LOCK: ${{ inputs.lock }}
         BOUNDVER_BASELINE: ${{ inputs.baseline }}
@@ -150,35 +160,17 @@ runs:
           command+=(--update)
         fi
 
-        result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX.json")
-        trap 'rm -f "$result_file"' EXIT
+        # BSD mktemp requires the X run at the end of the template. Keeping the
+        # portable form also permits repeated Action invocations in one job.
+        result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX")
         set +e
         "${command[@]}" >"$result_file"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-
-        for field in issues observations; do
-          delimiter="BOUNDVER_${field}_${RANDOM}_${RANDOM}"
-          {
-            echo "$field<<$delimiter"
-            python -I - "$result_file" "$field" <<'PY'
-        import json
-        import pathlib
-        import sys
-
-        path = pathlib.Path(sys.argv[1])
-        field = sys.argv[2]
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        for item in payload.get(field, []):
-            print(item)
-        PY
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-        done
+        python -I "${BOUNDVER_ACTION_PATH}/scripts/export_action_outputs.py" \
+          --result "$result_file" \
+          --github-output "$GITHUB_OUTPUT"
 
         if [[ -s "$result_file" ]]; then
           python -I -m json.tool "$result_file"

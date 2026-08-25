@@ -34,6 +34,13 @@ def _changelog(unreleased: str = "") -> str:
 
 {unreleased}## [1.2.3] - 2026-08-18
 
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
 ### Fixed
 
 - Exact release notes.
@@ -56,7 +63,7 @@ def _write_minimal_project(repo: Path, changelog: str) -> None:
     )
     lock_schema_url = (
         "https://raw.githubusercontent.com/yzm1/boundver/"
-        f"{TAG}/spec/boundary.lock.schema.json"
+        "v0.13.0/spec/boundary.lock.schema.json"
     )
     (repo / "pyproject.toml").write_text(
         """[project]
@@ -166,8 +173,57 @@ def test_post_release_mode_retains_historical_note_extraction() -> None:
     changelog = _changelog("### Added\n\n- Work after the release.\n\n")
 
     assert release_changelog.extract_release_notes(changelog, TAG) == (
+        "### Upgrade contract\n\n"
+        "- Semantic config: `boundver-semantic-config/v2`\n"
+        "- Lock schema: `boundary-lock/v3`\n"
+        "- Fingerprint compatibility: `digest-neutral`\n"
+        "- Lock regeneration: `not-required`\n\n"
         "### Fixed\n\n- Exact release notes.\n"
     )
+
+
+def test_release_version_threshold_does_not_parse_untrusted_large_integers() -> None:
+    assert release_changelog.version_at_least(("0", "14", "0"), (0, 14, 0))
+    assert not release_changelog.version_at_least(("0", "13", "999"), (0, 14, 0))
+    assert release_changelog.version_at_least(
+        ("9" * 10_000, "0", "0"),
+        (0, 14, 0),
+    )
+
+
+def test_upgrade_contract_is_required_and_matches_public_lock_contracts(
+    tmp_path: Path,
+) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+
+    assert release_readiness.readiness_errors(tmp_path, TAG) == []
+
+    missing = _changelog().replace(
+        "### Upgrade contract\n\n"
+        "- Semantic config: `boundver-semantic-config/v2`\n"
+        "- Lock schema: `boundary-lock/v3`\n"
+        "- Fingerprint compatibility: `digest-neutral`\n"
+        "- Lock regeneration: `not-required`\n\n",
+        "",
+    )
+    with pytest.raises(ValueError, match="Upgrade contract"):
+        release_changelog.extract_release_notes(missing, TAG)
+
+    mismatched = _changelog().replace(
+        "- Semantic config: `boundver-semantic-config/v2`",
+        "- Semantic config: `boundver-semantic-config/v9`",
+    )
+    (tmp_path / "CHANGELOG.md").write_text(mismatched, encoding="utf-8")
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    assert any("semantic config must be" in error for error in errors), errors
+
+    misplaced = _changelog().replace(
+        "### Upgrade contract",
+        "Introductory release prose.\n\n### Upgrade contract",
+        1,
+    )
+    with pytest.raises(ValueError, match="must start"):
+        release_changelog.extract_release_notes(misplaced, TAG)
 
 
 def test_readiness_uses_pre_tag_changelog_mode(tmp_path: Path) -> None:

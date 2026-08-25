@@ -31,8 +31,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
-python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
+python -c "import boundver; assert boundver.__version__ == '0.14.0', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -49,6 +49,14 @@ boundver init --discover
 
 Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. It
 uses Git-tracked paths rather than crawling ignored dependency or build trees.
+Use repeatable repository-relative `--exclude PATH` prefixes when tracked
+legacy, fixture, or vendored manifests are intentionally outside the component
+corpus:
+
+```bash
+boundver discover --exclude legacy --exclude test/fixtures
+```
+
 It proposes a component root and boundary provider; it cannot decide which
 artifacts truly form your contract, so review every result.
 
@@ -72,7 +80,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -247,7 +255,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.13.0
+      - uses: yzm1/boundver@v0.14.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json

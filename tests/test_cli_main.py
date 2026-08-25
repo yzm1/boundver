@@ -6,6 +6,7 @@ so no real git repo or subprocess is needed for most cases.
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import os
 import subprocess
@@ -151,6 +152,55 @@ class MainGenerateTests(unittest.TestCase):
             code, out, err = _run_main("generate", "--source", "working-tree", repo_root=root)
             self.assertEqual(code, 0, err)
             self.assertTrue((root / "boundary.lock.json").exists())
+
+    def test_openapi_json_directory_does_not_require_yaml_extra(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            contracts = root / "svc" / "contracts"
+            contracts.mkdir(parents=True)
+            (contracts / "openapi.json").write_text(
+                '{"openapi":"3.1.0","paths":{}}\n'
+            )
+            config = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {
+                            "provider": "openapi-canonical",
+                            "paths": ["contracts"],
+                        },
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(
+                json.dumps(config) + "\n"
+            )
+            commit_all(root, "add JSON OpenAPI directory")
+            real_import = importlib.import_module
+
+            def missing_yaml(name: str, package: str = None):
+                if name == "yaml":
+                    raise ModuleNotFoundError("No module named 'yaml'")
+                return real_import(name, package)
+
+            with patch(
+                "boundver.providers.importlib.import_module",
+                side_effect=missing_yaml,
+            ):
+                validated = _run_main("validate-config", repo_root=root)
+                generated = _run_main(
+                    "generate", "--source", "working-tree", repo_root=root
+                )
+                verified = _run_main(
+                    "verify", "--source", "working-tree", repo_root=root
+                )
+
+            self.assertEqual(validated[0], 0, validated[2])
+            self.assertEqual(generated[0], 0, generated[2])
+            self.assertEqual(verified[0], 0, verified[2])
 
     def test_generate_dry_run_skips_write(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1759,6 +1809,48 @@ class MainStatusTests(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(out)
             self.assertIn("lockfile", payload)
+
+    def test_status_invalid_config_shape_returns_controlled_json(self):
+        invalid_configs = (
+            {"project": "p", "components": [], "slices": {}},
+            {"project": "p", "components": {}, "slices": []},
+        )
+        for invalid_config in invalid_configs:
+            with (
+                self.subTest(invalid_config=invalid_config),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                root = Path(td)
+                init_git_repo(root)
+                self._setup(root)
+                generated = _run_main(
+                    "generate", "--source", "working-tree", repo_root=root
+                )
+                self.assertEqual(generated[0], 0, generated[2])
+                (root / "boundary.config.json").write_text(
+                    json.dumps(invalid_config) + "\n"
+                )
+
+                code, out, err = _run_main(
+                    "status",
+                    "--source",
+                    "working-tree",
+                    "--format",
+                    "json",
+                    repo_root=root,
+                )
+
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("Traceback", err)
+                payload = json.loads(out)
+                self.assertIsNone(payload["facet_policy"])
+                self.assertTrue(
+                    any(
+                        issue.startswith("Config invalid:")
+                        for issue in payload["issues"]
+                    ),
+                    payload,
+                )
 
     def test_status_with_drift_shows_issues(self):
         with tempfile.TemporaryDirectory() as td:

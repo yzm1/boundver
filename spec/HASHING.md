@@ -42,6 +42,15 @@ types are UTF-8 (the canonical Git values are ASCII). On POSIX, undecodable Git
 filename bytes round-trip through Python's `surrogateescape` mapping. Explicit
 lengths and an entry count make the encoding unambiguous.
 
+Bounded textual Git commands, including repository-root, symbolic-ref, and tag
+lookupsâ€”decode with Python's filesystem encoding and `surrogateescape`, never
+the user's preferred process locale. This makes their byte transport
+round-trippable while retaining readable Unicode on normal filesystems. Raw
+filename protocols remain byte-oriented and NUL-delimited. Object IDs, modes,
+object types, and status fields are still validated against their strict ASCII
+grammars after decoding; surrogate preservation cannot make malformed machine
+fields valid.
+
 ## Domains, labels, modes, and types
 
 | Purpose | Domain | Label | Mode/type |

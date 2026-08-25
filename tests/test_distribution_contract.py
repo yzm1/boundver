@@ -146,10 +146,19 @@ class _FakeHTTPResponse:
 
 
 def _release_changelog(version: str, notes: str = "- Shipped safely.\n") -> str:
+    upgrade_contract = ""
+    if tuple(int(part) for part in version.split(".")) >= (0, 14, 0):
+        upgrade_contract = (
+            "### Upgrade contract\n\n"
+            "- Semantic config: `boundver-semantic-config/v2`\n"
+            "- Lock schema: `boundary-lock/v3`\n"
+            "- Fingerprint compatibility: `digest-neutral`\n"
+            "- Lock regeneration: `not-required`\n\n"
+        )
     return (
         "# Changelog\n\n"
         "## [Unreleased]\n\nNo changes yet.\n\n"
-        f"## [{version}] - 2026-08-12\n\n{notes}\n"
+        f"## [{version}] - 2026-08-12\n\n{upgrade_contract}{notes}\n"
         "## [0.10.0] - 2026-08-11\n\n- Previous release.\n\n"
         f"[Unreleased]: https://github.com/yzm1/boundver/compare/v{version}...HEAD\n"
         f"[{version}]: https://github.com/yzm1/boundver/compare/v0.10.0...v{version}\n"
@@ -453,7 +462,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.13.0/spec/{schema_name}",
+                    f"v0.14.0/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
@@ -690,7 +699,14 @@ class AutomationContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("find_release_id()", workflow)
+        self.assertIn("wait_for_created_release_id()", workflow)
         self.assertIn("RELEASE_DRAFT_API_PROGRAM:", workflow)
+        self.assertIn('mode not in {"find", "wait", "capture"}', workflow)
+        self.assertIn("MAX_VISIBILITY_ATTEMPTS = 6", workflow)
+        self.assertIn("VISIBILITY_RETRY_SECONDS = 2", workflow)
+        self.assertIn("time.sleep(VISIBILITY_RETRY_SECONDS)", workflow)
+        self.assertIn("remained absent from ", workflow)
+        self.assertIn("the authenticated release list after ", workflow)
         self.assertIn("for page_number in range(1, MAX_PAGES + 1):", workflow)
         self.assertIn("MAX_PAGE_BYTES = 8 * 1024 * 1024", workflow)
         self.assertIn("MAX_DETAIL_BYTES = 32 * 1024 * 1024", workflow)
@@ -719,6 +735,63 @@ class AutomationContractTests(unittest.TestCase):
             workflow.index('gh release upload "$RELEASE_TAG"'),
         )
         self.assertNotIn('gh release view "$RELEASE_TAG"', workflow)
+
+    def test_release_draft_visibility_wait_recovers_after_initial_list_miss(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        step = next(
+            item
+            for item in workflow["jobs"]["prepare-release-draft"]["steps"]
+            if item.get("name") == "Create or reconcile the exact release draft"
+        )
+        program = step["env"]["RELEASE_DRAFT_API_PROGRAM"]
+        responses = [
+            b"[]",
+            json.dumps([{"id": 42, "tag_name": CURRENT_TAG}]).encode("utf-8"),
+        ]
+
+        class FakeProcess:
+            def __init__(self, payload):
+                self.stdout = io.BytesIO(payload)
+                self.stderr = io.BytesIO()
+                self.killed = False
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        processes = [FakeProcess(payload) for payload in responses]
+        output = io.StringIO()
+        diagnostic = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = {
+                "GITHUB_WORKSPACE": str(REPO_ROOT),
+                "RUNNER_TEMP": temporary,
+            }
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    ["release-draft-api", "wait", "yzm1/boundver", CURRENT_TAG],
+                ),
+                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("subprocess.Popen", side_effect=processes) as popen,
+                mock.patch("time.sleep") as sleep,
+                mock.patch.object(sys, "stdout", output),
+                mock.patch.object(sys, "stderr", diagnostic),
+            ):
+                exec(compile(program, "<release-draft-api>", "exec"), {})
+
+        self.assertEqual(output.getvalue(), "42\n")
+        self.assertIn("not visible yet", diagnostic.getvalue())
+        self.assertEqual(popen.call_count, 2)
+        sleep.assert_called_once_with(2)
 
     def test_elevated_registry_and_release_jobs_isolate_code_execution(self):
         import yaml
@@ -1913,10 +1986,30 @@ print(json.dumps(payload, separators=(",", ":")))
         action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
         self.assertEqual(action["inputs"]["facets"]["default"], "")
         self.assertEqual(action["inputs"]["transitive"]["default"], "false")
+        self.assertEqual(
+            action["outputs"]["consumer-impact"]["value"],
+            "${{ steps.verify.outputs.consumer-impact }}",
+        )
+        self.assertEqual(
+            action["outputs"]["truncated-outputs"]["value"],
+            "${{ steps.verify.outputs.truncated-outputs }}",
+        )
+        self.assertEqual(
+            action["outputs"]["result-file"]["value"],
+            "${{ steps.verify.outputs.result-file }}",
+        )
         script = action["runs"]["steps"][-1]["run"]
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
+        self.assertIn("scripts/export_action_outputs.py", script)
+        self.assertIn('--result "$result_file"', script)
+        self.assertIn('--github-output "$GITHUB_OUTPUT"', script)
+        self.assertIn(
+            'mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX"', script
+        )
+        self.assertNotIn("boundver-result.XXXXXX.json", script)
+        self.assertNotIn('echo "consumer-impact=', script)
 
     def test_action_baseline_input_is_read_only_and_opt_in(self):
         import yaml
@@ -2280,7 +2373,15 @@ class ReleaseChangelogTests(unittest.TestCase):
             _release_changelog(CURRENT_VERSION), CURRENT_TAG
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(notes, "- Shipped safely.\n")
+        self.assertEqual(
+            notes,
+            "### Upgrade contract\n\n"
+            "- Semantic config: `boundver-semantic-config/v2`\n"
+            "- Lock schema: `boundary-lock/v3`\n"
+            "- Fingerprint compatibility: `digest-neutral`\n"
+            "- Lock regeneration: `not-required`\n\n"
+            "- Shipped safely.\n",
+        )
 
     def test_unreleased_only_version_intent_cannot_be_tagged(self):
         changelog = (
@@ -2606,8 +2707,11 @@ exit 74
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
         head = "a" * 40
         verdicts = (
+            "Codex Review: Didn't find any major issues. "
+            "Another round soon, please!",
             "Codex Review: Didn't find any major issues. Chef's kiss.",
             "Codex Review: Didn't find any major issues. Delightful!",
+            "Codex Review: Didn't find any major issues. Nice work!",
             "Codex Review: Didn't find any major issues. Swish!",
             "Codex Review: Didn't find any major issues. Keep it up!",
             "Codex Review: Didn't find any major issues. Keep them coming!",

@@ -69,6 +69,14 @@ def _verify_result(**overrides) -> dict:
         },
         "components_filter": [],
         "changed_components": [],
+        "inputs": {
+            "source": "head",
+            "tree": "a" * 40,
+            "commit": "a" * 40,
+            "config": "HEAD@" + "a" * 40 + ":boundary.config.json",
+            "lock": "HEAD@" + "a" * 40 + ":boundary.lock.json",
+        },
+        "consumer_impact": [],
     }
     result.update(overrides)
     return result
@@ -268,7 +276,7 @@ class TestCLIOutputSchemas(unittest.TestCase):
         try:
             from boundver.core import discover_components
             disc = discover_components(root)
-            output = {"count": len(disc), "components": disc}
+            output = {"count": len(disc), "components": disc, "excluded": []}
             _assert_valid(schema, output)
         finally:
             import shutil; shutil.rmtree(root, ignore_errors=True)

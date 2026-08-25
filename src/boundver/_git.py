@@ -1,9 +1,9 @@
 """Git helper primitives for boundver."""
 
-import locale
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -53,6 +53,28 @@ MAX_FALLBACK_TRAVERSAL_ENTRIES = 200_000
 MAX_GITIGNORE_BYTES = 1024 * 1024
 
 
+def _git_text_encoding() -> str:
+    """Return the encoding Python uses to transport filesystem arguments."""
+    return sys.getfilesystemencoding() or "utf-8"
+
+
+def _decode_git_text(data: bytes, *, successful: bool) -> str:
+    """Decode bounded Git text without losing bytes from successful output.
+
+    Git ref names and repository paths use the platform filesystem transport,
+    not the user's preferred text locale.  ``surrogateescape`` therefore
+    preserves any byte the filesystem codec cannot represent while ordinary
+    Unicode output remains readable.  Failed-command diagnostics deliberately
+    render undecodable bytes as escapes so they remain terminal-safe.
+    """
+    errors = "surrogateescape" if successful else "backslashreplace"
+    return (
+        data.decode(_git_text_encoding(), errors=errors)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
+
+
 def _read_bounded_git_diagnostic(stderr_file: BinaryIO) -> bytes:
     """Return capped subprocess diagnostics with an explicit truncation mark."""
     stderr_file.seek(0)
@@ -67,8 +89,9 @@ def _git_failure_detail(exc: BaseException) -> str:
     if isinstance(exc, subprocess.CalledProcessError):
         diagnostic = exc.stderr
         if isinstance(diagnostic, bytes):
-            diagnostic = diagnostic[: MAX_GIT_FAILURE_DETAIL_CHARS + 1].decode(
-                locale.getpreferredencoding(False), errors="backslashreplace"
+            diagnostic = _decode_git_text(
+                diagnostic[: MAX_GIT_FAILURE_DETAIL_CHARS + 1],
+                successful=False,
             )
         elif isinstance(diagnostic, str):
             diagnostic = diagnostic[: MAX_GIT_FAILURE_DETAIL_CHARS + 1]
@@ -217,11 +240,8 @@ class GitSourceSnapshot:
 
 
 def git_root() -> Path:
-    """Find the repository root."""
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True, check=True,
-    )
+    """Find the repository root through the bounded, lossless text transport."""
+    result = _git_run(Path.cwd(), ["rev-parse", "--show-toplevel"])
     return Path(result.stdout.strip())
 
 
@@ -306,17 +326,8 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
             f"Git command {name} exceeds the {limit}-byte limit"
         )
 
-    encoding = locale.getpreferredencoding(False)
-
     def as_text(data: bytes) -> str:
-        return (
-            data.decode(
-                encoding,
-                errors="strict" if returncode == 0 else "backslashreplace",
-            )
-            .replace("\r\n", "\n")
-            .replace("\r", "\n")
-        )
+        return _decode_git_text(data, successful=returncode == 0)
 
     stdout = as_text(captured["stdout"])
     stderr = as_text(captured["stderr"])

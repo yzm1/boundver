@@ -1,13 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.why.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/cli-output.why.schema.json",
   "title": "boundver why --format json output",
   "type": "object",
   "required": [
-    "component", "path", "source", "version", "drifted", "changes",
+    "component", "path", "source", "lock_provenance", "version", "drifted", "observed_drift", "changes",
+    "gated_facets", "gated_changes", "non_gating_changes",
     "metadata_changes", "digest_errors", "summary", "changed_files",
-    "changed_files_status", "changed_files_error",
+    "changed_files_status", "changed_files_error", "diagnostic_base", "diagnostic_base_origin",
     "boundary_paths", "provider_detail", "affected_consumers",
+    "affected_components", "affected_external_consumers",
     "transitive_consumers"
   ],
   "additionalProperties": false,
@@ -39,8 +41,10 @@
     "component": {"type": "string"},
     "path": {"type": "string"},
     "source": {"type": "string", "enum": ["head", "index", "working-tree"]},
+    "lock_provenance": {"type": ["string", "null"], "maxLength": 32768},
     "version": {"type": ["string", "null"]},
     "drifted": {"type": "boolean"},
+    "observed_drift": {"type": "boolean"},
     "changes": {
       "type": "object",
       "propertyNames": {"enum": ["exact", "behavior", "boundary", "compat"]},
@@ -53,6 +57,21 @@
           "current": {"type": ["string", "null"]}
         }
       }
+    },
+    "gated_facets": {
+      "type": "array",
+      "items": {"enum": ["exact", "behavior", "boundary", "compat"]},
+      "uniqueItems": true
+    },
+    "gated_changes": {
+      "type": "array",
+      "items": {"enum": ["exact", "behavior", "boundary", "compat"]},
+      "uniqueItems": true
+    },
+    "non_gating_changes": {
+      "type": "array",
+      "items": {"enum": ["exact", "behavior", "boundary", "compat"]},
+      "uniqueItems": true
     },
     "metadata_changes": {
       "type": "object",
@@ -89,11 +108,25 @@
       "type": ["string", "null"],
       "description": "Diagnostic failure detail when changed_files_status is error; otherwise null."
     },
+    "diagnostic_base": {"type": ["string", "null"], "maxLength": 16384},
+    "diagnostic_base_origin": {"type": ["string", "null"], "maxLength": 32768},
     "boundary_paths": {"type": "array", "items": {"type": "string"}},
     "provider_detail": {"type": "string"},
     "affected_consumers": {
       "type": "array",
       "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "affected_components": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"type": "string", "maxLength": 16384},
+      "uniqueItems": true
+    },
+    "affected_external_consumers": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"type": "string", "maxLength": 16384},
       "uniqueItems": true
     },
     "transitive_consumers": {"type": "boolean"}

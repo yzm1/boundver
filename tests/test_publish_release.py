@@ -544,6 +544,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
     def test_alias_control_allows_only_ancestral_byte_identical_scripts(self):
         publisher = _load_script()
+        self.assertEqual(
+            publisher.ALIAS_CONTROL_PATHS,
+            (
+                "scripts/publish_release.py",
+                "scripts/release_alias.py",
+                "scripts/release_workflow.py",
+                "scripts/_release_platform.py",
+            ),
+        )
         ancestor = subprocess.CompletedProcess([], 0, "", "")
         with mock.patch.object(
             publisher, "_run", return_value=ancestor
