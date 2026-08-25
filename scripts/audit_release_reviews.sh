@@ -193,9 +193,10 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 # Keep this a positive allowlist of statuses actually emitted by the trusted
 # app.  A free-form suffix would let contradictory review state share the
 # authenticated clean-verdict line and still satisfy the release gate.
-readonly codex_clean_bang_status_regex='(Another round soon, please|Breezy|Delightful|Hooray|Keep it up|Keep them coming|Nice work|Swish)!'
+readonly codex_clean_bang_status_regex="(Another round soon, please|Breezy|Can't wait for the next one|Delightful|Hooray|Keep it up|Keep them coming|Nice work|Swish)!"
 readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Bravo|Chef's kiss|More of your lovely PRs please|You're on a roll)\."
-readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}))?$"
+readonly codex_clean_question_status_regex='(What shall we delve into next)\?'
+readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}|${codex_clean_question_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
 readonly github_timestamp_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 

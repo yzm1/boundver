@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 
 - Corrected the recorded 0.12.0 release date to match its immutable tagged
   commit and public release.
+- Accepted the remaining clean status flourishes already observed from the
+  trusted Codex review app while retaining a positive verdict allowlist.
 
 ## [0.14.0] - 2026-08-25
 
