@@ -10,6 +10,8 @@ from boundver._config_contract import (
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     DEFAULT_FIELDS,
+    MAX_CONSUMER_GRAPH_ITEMS,
+    MAX_CONSUMER_IDENTIFIER_CHARS,
     PROVIDER_FIELDS,
     ROOT_FIELDS,
     SLICE_FIELDS,
@@ -30,6 +32,20 @@ class ConfigContractParityTests(unittest.TestCase):
         )
         properties = schema["properties"]
         component = properties["components"]["additionalProperties"]
+
+        self.assertEqual(
+            schema["$defs"]["consumerGraphIdentifier"]["maxLength"],
+            MAX_CONSUMER_IDENTIFIER_CHARS,
+        )
+        self.assertEqual(
+            properties["components"]["maxProperties"],
+            MAX_CONSUMER_GRAPH_ITEMS,
+        )
+        for field in ("consumers", "external_consumers"):
+            self.assertEqual(
+                component["properties"][field]["maxItems"],
+                MAX_CONSUMER_GRAPH_ITEMS,
+            )
 
         self.assertEqual(set(properties), set(ROOT_FIELDS))
         self.assertEqual(

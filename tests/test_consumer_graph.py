@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import boundver
+import boundver._config as config_module
 import boundver.core as core
 from boundver._config import validate_config
 from boundver._consumer_graph import affected_consumers, consumer_closure
@@ -56,6 +57,77 @@ def _run_main(root: Path, *arguments: str) -> tuple[int, str, str]:
 
 
 class ConsumerGraphTests(unittest.TestCase):
+    def test_machine_output_bounds_are_enforced_at_config_ingress(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _make_components(root, ("a", "b", "c"))
+            too_many_components = {
+                "project": "p",
+                "components": {
+                    name: _component(name) for name in ("a", "b", "c")
+                },
+                "slices": {},
+            }
+            with patch.object(config_module, "MAX_CONSUMER_GRAPH_ITEMS", 2):
+                errors = validate_config(too_many_components, root)
+            self.assertTrue(
+                any("2-component consumer-graph limit" in error for error in errors),
+                errors,
+            )
+
+            long_component_name = {
+                "project": "p",
+                "components": {"long": _component("a")},
+                "slices": {},
+            }
+            with patch.object(
+                config_module,
+                "MAX_CONSUMER_IDENTIFIER_CHARS",
+                3,
+            ):
+                errors = validate_config(long_component_name, root)
+            self.assertTrue(
+                any("Component name exceeds" in error for error in errors),
+                errors,
+            )
+
+            bounded_graph = {
+                "project": "p",
+                "components": {
+                    "a": _component(
+                        "a",
+                        consumers=["b", "unknown-1", "unknown-2"],
+                        external_consumers=["one", "toolong"],
+                    ),
+                    "b": _component(
+                        "b",
+                        external_consumers=["two", "four"],
+                    ),
+                },
+                "slices": {},
+            }
+            with (
+                patch.object(config_module, "MAX_CONSUMER_GRAPH_ITEMS", 2),
+                patch.object(config_module, "MAX_CONSUMER_IDENTIFIER_CHARS", 4),
+            ):
+                errors = validate_config(bounded_graph, root)
+
+            self.assertTrue(
+                any("2-entry consumer-graph limit" in error for error in errors),
+                errors,
+            )
+            self.assertTrue(
+                any("4-character limit" in error for error in errors),
+                errors,
+            )
+            self.assertTrue(
+                any(
+                    "more than 2 distinct external consumer labels" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
     def test_unknown_consumer_is_a_validation_error(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

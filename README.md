@@ -155,6 +155,9 @@ shrink impact. `external_consumers` contains unique opaque terminal labels for
 systems outside this config. Boundary and compatibility drift reports direct
 impact by default; add `--transitive` to `verify` or `why` to walk internal
 edges and include external terminals found along that downstream closure.
+The machine-output bounds are documented in the
+[reference](docs/reference.md#consumer-graph-limits); validation rejects an
+oversized graph rather than emitting a partial impact closure.
 
 A slice may use an explicit `components` array or
 `"closure_of": "payment-api"`. The latter resolves to the seed plus all configured components

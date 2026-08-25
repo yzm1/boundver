@@ -83,6 +83,9 @@ All notable changes to this project are documented here. The format follows
 - `status` validates config structure before constructing facet-policy output,
   keeping malformed component or slice shapes on the controlled diagnostic
   path instead of raising a traceback.
+- Consumer-graph validation now enforces the published machine-output bounds
+  for component count, repository-wide external terminals, and identifier
+  length, so direct or transitive impact remains complete and schema-valid.
 - Semantic-contract mismatches now identify whether the lock is newer or older
   than the running installation and give direction-specific upgrade guidance.
 - `boundary-lock/v3` uses its immutable v0.13.0 canonical schema URL across

@@ -109,6 +109,14 @@ component selection, update status, exact input provenance, and typed
 `drifted`; an exact-only observation does not recommend regeneration when
 `exact` is not gated.
 
+### Consumer graph limits
+
+Machine-readable impact remains complete and schema-valid: a config may contain
+at most 10,000 configured components and 10,000 distinct external-consumer
+labels repository-wide, and each component name or external label may contain
+at most 16,384 characters. `validate-config` rejects larger graphs before
+generation or verification; boundver never emits a partial transitive closure.
+
 ## What each facet needs
 
 A facet is *available* for a component only when its declaration can produce a
