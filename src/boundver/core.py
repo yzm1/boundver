@@ -1831,7 +1831,6 @@ def _cmd_status(args, repo_root: Path) -> None:
             status_payload["issues"].append(f"Config unavailable: {exc}")
             config = None
         if config is not None and not structure_issues:
-            status_payload["facet_policy"] = _facet_policy_payload(config, None)
             allow_custom = _resolve_allow_custom(args, config)
             config_errors = validate_config(
                 config,
@@ -1843,6 +1842,10 @@ def _cmd_status(args, repo_root: Path) -> None:
             if config_errors:
                 issues = [f"Config invalid: {error}" for error in config_errors]
             else:
+                # Policy construction assumes the validated component/slice
+                # shapes.  Keep malformed configs on the controlled diagnostic
+                # path instead of letting presentation metadata traceback.
+                status_payload["facet_policy"] = _facet_policy_payload(config, None)
                 observations: List[str] = []
                 try:
                     issues = verify_lockfile(

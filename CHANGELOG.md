@@ -76,8 +76,13 @@ All notable changes to this project are documented here. The format follows
 - Facet guidance now states that `leaf` suppresses only the boundary identity;
   versioned or behavior-declared leaves can still gate `compat` or `behavior`.
 - `validate-config` now preflights optional built-in provider dependencies and
-  names `boundver[yaml]` when `openapi-canonical` YAML declarations cannot load
-  PyYAML; raw OpenAPI providers remain dependency-free.
+  names `boundver[yaml]` when explicit `openapi-canonical` YAML selectors cannot
+  load PyYAML; ambiguous selectors defer the check until their files resolve,
+  so JSON-only directories remain dependency-free. Raw OpenAPI providers remain
+  dependency-free.
+- `status` validates config structure before constructing facet-policy output,
+  keeping malformed component or slice shapes on the controlled diagnostic
+  path instead of raising a traceback.
 - Semantic-contract mismatches now identify whether the lock is newer or older
   than the running installation and give direction-specific upgrade guidance.
 - `boundary-lock/v3` uses its immutable v0.13.0 canonical schema URL across

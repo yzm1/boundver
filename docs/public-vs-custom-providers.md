@@ -58,10 +58,13 @@ whether a schema evolution is backward compatible, resolve remote dependencies,
 or replace an OpenAPI linter and consumer tests.
 
 `openapi` and `openapi-raw` hash bytes and do not require PyYAML.
-`openapi-canonical` requires the `yaml` extra whenever any configured path is
-not a `.json` path. `validate-config` preflights that interpreter dependency
-and reports `boundver[yaml]` before fingerprinting begins, so a provider cannot
-work only because an unrelated CI step happened to install PyYAML.
+`openapi-canonical` requires the `yaml` extra when a selected document needs
+YAML parsing. `validate-config` preflights selectors that explicitly end in
+`.yaml` or `.yml` and reports `boundver[yaml]` before fingerprinting begins.
+Directories, extensionless paths, and broad globs are ambiguous until their
+tracked files are resolved, so dependency errors for those selectors are
+reported during generation or verification. A selector resolving only to JSON
+remains dependency-free.
 
 ## One selector grammar
 

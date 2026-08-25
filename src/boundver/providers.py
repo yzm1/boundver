@@ -1220,10 +1220,13 @@ class OpenApiCanonicalProvider:
         paths = boundary_cfg.get("paths", [])
         if not isinstance(paths, list):
             return []
-        # The parser treats every selected non-JSON path as YAML.  A declaration
-        # made entirely of .json paths therefore remains dependency-free.
+        # Preflight only selectors whose suffix makes YAML unambiguous.  A
+        # directory, extensionless path, or broad glob may resolve entirely to
+        # JSON files; those ambiguous declarations are checked during provider
+        # resolution, after their selected files are known.
         needs_yaml = any(
-            isinstance(path, str) and not path.lower().endswith(".json")
+            isinstance(path, str)
+            and path.lower().endswith((".yaml", ".yml"))
             for path in paths
         )
         if not needs_yaml:

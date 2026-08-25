@@ -344,6 +344,12 @@ def test_validate_config_preflights_only_providers_that_need_yaml(
         '{"openapi":"3.1.0","paths":{}}\n',
         encoding="utf-8",
     )
+    contracts = component / "contracts"
+    contracts.mkdir()
+    (contracts / "openapi.json").write_text(
+        '{"openapi":"3.1.0","paths":{}}\n',
+        encoding="utf-8",
+    )
     canonical = {
         "project": "dependencies",
         "components": {
@@ -373,10 +379,21 @@ def test_validate_config_preflights_only_providers_that_need_yaml(
             "openapi.json"
         ]
         canonical_json_errors = validate_config(canonical_json, tmp_path)
+        canonical_json_directory = json.loads(json.dumps(canonical))
+        canonical_json_directory["components"]["svc"]["boundary"]["paths"] = [
+            "contracts"
+        ]
+        canonical_json_directory_errors = validate_config(
+            canonical_json_directory,
+            tmp_path,
+        )
 
     assert any("install `boundver[yaml]`" in error for error in canonical_errors)
     assert not any("boundver[yaml]" in error for error in raw_errors)
     assert not any("boundver[yaml]" in error for error in canonical_json_errors)
+    assert not any(
+        "boundver[yaml]" in error for error in canonical_json_directory_errors
+    )
 
 
 def test_contract_mismatch_names_upgrade_direction() -> None:
