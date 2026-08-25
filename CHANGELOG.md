@@ -59,7 +59,8 @@ All notable changes to this project are documented here. The format follows
 - Composite Action payload outputs now have conservative UTF-16-aware bounds,
   explicitly report truncation or unavailable results, retain complete or
   diagnostic JSON at `result-file`, and never expose a partial
-  `consumer-impact` closure for CI routing.
+  `consumer-impact` closure for CI routing. Portable temporary-result allocation
+  supports repeated Action invocations in one Linux, macOS, or Windows job.
 - Successful textual Git output now uses the filesystem codec with
   `surrogateescape` instead of the preferred process locale, preserving
   non-ASCII refs and otherwise undecodable bytes without weakening strict

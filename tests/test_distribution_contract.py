@@ -2005,6 +2005,10 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("scripts/export_action_outputs.py", script)
         self.assertIn('--result "$result_file"', script)
         self.assertIn('--github-output "$GITHUB_OUTPUT"', script)
+        self.assertIn(
+            'mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX"', script
+        )
+        self.assertNotIn("boundver-result.XXXXXX.json", script)
         self.assertNotIn('echo "consumer-impact=', script)
 
     def test_action_baseline_input_is_read_only_and_opt_in(self):

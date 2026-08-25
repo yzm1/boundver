@@ -160,7 +160,9 @@ runs:
           command+=(--update)
         fi
 
-        result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX.json")
+        # BSD mktemp requires the X run at the end of the template. Keeping the
+        # portable form also permits repeated Action invocations in one job.
+        result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX")
         set +e
         "${command[@]}" >"$result_file"
         code=$?
