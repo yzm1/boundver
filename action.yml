@@ -63,8 +63,14 @@ outputs:
     description: Newline-separated drift outside the selected gate.
     value: ${{ steps.verify.outputs.observations }}
   consumer-impact:
-    description: Compact JSON array of typed downstream consumer-impact rows.
+    description: Bounded compact JSON array of typed downstream consumer-impact rows.
     value: ${{ steps.verify.outputs.consumer-impact }}
+  truncated-outputs:
+    description: Compact JSON array naming outputs that exceeded the safe runner budget.
+    value: ${{ steps.verify.outputs.truncated-outputs }}
+  result-file:
+    description: Runner-local path to the complete verify JSON for inspection or artifact upload.
+    value: ${{ steps.verify.outputs.result-file }}
 
 runs:
   using: composite
@@ -94,6 +100,7 @@ runs:
       id: verify
       shell: bash
       env:
+        BOUNDVER_ACTION_PATH: ${{ github.action_path }}
         BOUNDVER_CONFIG: ${{ inputs.config }}
         BOUNDVER_LOCK: ${{ inputs.lock }}
         BOUNDVER_BASELINE: ${{ inputs.baseline }}
@@ -154,48 +161,14 @@ runs:
         fi
 
         result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX.json")
-        trap 'rm -f "$result_file"' EXIT
         set +e
         "${command[@]}" >"$result_file"
         code=$?
         set -e
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-
-        for field in issues observations; do
-          delimiter="BOUNDVER_${field}_${RANDOM}_${RANDOM}"
-          {
-            echo "$field<<$delimiter"
-            python -I - "$result_file" "$field" <<'PY'
-        import json
-        import pathlib
-        import sys
-
-        path = pathlib.Path(sys.argv[1])
-        field = sys.argv[2]
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        for item in payload.get(field, []):
-            print(item)
-        PY
-            echo "$delimiter"
-          } >> "$GITHUB_OUTPUT"
-        done
-
-        consumer_impact=$(python -I - "$result_file" <<'PY'
-        import json
-        import pathlib
-        import sys
-
-        try:
-            payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        print(json.dumps(payload.get("consumer_impact", []), separators=(",", ":")))
-        PY
-        )
-        echo "consumer-impact=$consumer_impact" >> "$GITHUB_OUTPUT"
+        python -I "${BOUNDVER_ACTION_PATH}/scripts/export_action_outputs.py" \
+          --result "$result_file" \
+          --github-output "$GITHUB_OUTPUT"
 
         if [[ -s "$result_file" ]]; then
           python -I -m json.tool "$result_file"

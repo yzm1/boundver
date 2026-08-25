@@ -56,6 +56,9 @@ All notable changes to this project are documented here. The format follows
   `release_workflow.py` helper to the reviewed publication commit.
 - The release review audit recognizes the trusted Codex app's observed
   `Nice work!` clean-verdict suffix through the existing positive allowlist.
+- Composite Action payload outputs now have conservative UTF-16-aware bounds,
+  explicitly report truncation, retain the complete JSON at `result-file`, and
+  never expose a partial `consumer-impact` closure for CI routing.
 - Successful textual Git output now uses the filesystem codec with
   `surrogateescape` instead of the preferred process locale, preserving
   non-ASCII refs and otherwise undecodable bytes without weakening strict

@@ -1990,15 +1990,22 @@ print(json.dumps(payload, separators=(",", ":")))
             action["outputs"]["consumer-impact"]["value"],
             "${{ steps.verify.outputs.consumer-impact }}",
         )
+        self.assertEqual(
+            action["outputs"]["truncated-outputs"]["value"],
+            "${{ steps.verify.outputs.truncated-outputs }}",
+        )
+        self.assertEqual(
+            action["outputs"]["result-file"]["value"],
+            "${{ steps.verify.outputs.result-file }}",
+        )
         script = action["runs"]["steps"][-1]["run"]
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
-        self.assertIn('payload.get("consumer_impact", [])', script)
-        self.assertIn(
-            'echo "consumer-impact=$consumer_impact" >> "$GITHUB_OUTPUT"',
-            script,
-        )
+        self.assertIn("scripts/export_action_outputs.py", script)
+        self.assertIn('--result "$result_file"', script)
+        self.assertIn('--github-output "$GITHUB_OUTPUT"', script)
+        self.assertNotIn('echo "consumer-impact=', script)
 
     def test_action_baseline_input_is_read_only_and_opt_in(self):
         import yaml

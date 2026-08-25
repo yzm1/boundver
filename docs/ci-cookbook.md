@@ -31,7 +31,13 @@ jobs:
 `head` is the committed pull-request tree. The tagged Action installs the
 boundver source bundled with that release, including schema and YAML extras, and
 returns `exit-code`, `issues`, `observations`, and compact JSON
-`consumer-impact` outputs.
+`consumer-impact` outputs. Each potentially repository-sized payload is capped
+at 64 KiB measured as UTF-16 so the Action stays well below GitHub's
+[1 MB per-job output limit](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs).
+`truncated-outputs` is a compact JSON array naming any bounded values, and
+`result-file` points to the complete runner-local verify JSON for inspection or
+artifact upload. Treat a truncated `consumer-impact` as a fail-closed routing
+condition; its bounded value is `[]`, never an incomplete downstream closure.
 
 The Action inputs are:
 
@@ -391,7 +397,9 @@ exit "${rc:-0}"
 
 The composite Action exposes the same array as the compact JSON output
 `consumer-impact`; use `continue-on-error` when a later step or job must route
-work from an intentionally failing drift gate.
+work from an intentionally failing drift gate. Before routing, require that
+`fromJSON(steps.<id>.outputs.truncated-outputs)` does not contain
+`consumer-impact`; otherwise inspect or upload `steps.<id>.outputs.result-file`.
 
 Traversal is deterministic and cycle-safe and includes external terminals
 attached to any reached component. It follows only declared graph edges; it

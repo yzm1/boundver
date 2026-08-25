@@ -1854,7 +1854,11 @@ def _surface_inventory(repo: Path) -> str:
             "scripts/requirements/ci.lock",
             "scripts/requirements/release.lock",
         ),
-        "GitHub Action and Marketplace": ("action.yml", ".github/workflows/publish.yml"),
+        "GitHub Action and Marketplace": (
+            "action.yml",
+            "scripts/export_action_outputs.py",
+            ".github/workflows/publish.yml",
+        ),
         "TestPyPI": ("scripts/verify_testpypi_release.py",),
         "PyPI": ("scripts/verify_testpypi_release.py",),
         "GitHub Release assets": ("scripts/verify_release_surfaces.py",),
