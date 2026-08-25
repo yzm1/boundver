@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the recorded 0.12.0 release date to match its immutable tagged
+  commit and public release.
+
 ## [0.14.0] - 2026-08-25
 
 ### Upgrade contract
@@ -170,7 +175,7 @@ All notable changes to this project are documented here. The format follows
 - CLI help and `--version` now use the stable `boundver` program name on
   Python 3.14 instead of exposing the interpreter and script path.
 
-## [0.12.0] - 2026-08-19
+## [0.12.0] - 2026-08-23
 
 This release advances the semantic configuration digest contract to v2.
 Regenerate lockfiles after upgrading; v1 semantic digests cannot be relabelled.
