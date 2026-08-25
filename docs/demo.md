@@ -20,8 +20,23 @@ AFFECTED CONSUMERS (TRANSITIVE) payments-api: checkout-web, mobile-app, payments
 ```
 
 The process exits successfully only when boundver itself returns boundary-drift
-exit code `4` and reports the expected consumer closure. The complete temporary
-path is printed so the isolated execution location is visible in the log.
+exit code `4`, reports the expected human-readable closure, and returns this
+stable `consumer_impact` routing data from `--format json`:
+
+```json
+[
+  {
+    "component": "payments-api",
+    "facets": ["boundary"],
+    "components": ["checkout-web", "payments-sdk"],
+    "external_consumers": ["mobile-app"],
+    "transitive": true
+  }
+]
+```
+
+The complete temporary path is printed so the isolated execution location is
+visible in the log.
 
 ## What happened
 

@@ -17,8 +17,91 @@ _TAG_RE = re.compile(
 )
 _HEADING_RE = re.compile(r"(?m)^## \[([^\]]+)\](.*)$")
 _MODES = ("post-release", "pre-tag")
+_UPGRADE_CONTRACT_REQUIRED_FROM = (0, 14, 0)
+_UPGRADE_CONTRACT_FIELD_LINE_RE = re.compile(
+    r"^- (?:Semantic config|Lock schema|Fingerprint compatibility|"
+    r"Lock regeneration): `[^`\r\n]+`\s*$"
+)
 MAX_CHANGELOG_BYTES = 8 * 1024 * 1024
 _READ_CHUNK_BYTES = 64 * 1024
+
+
+def version_at_least(parts: Sequence[str], minimum: Sequence[int]) -> bool:
+    """Compare decimal version fields without converting untrusted integers."""
+    if len(parts) != len(minimum):
+        raise ValueError("version field count does not match the comparison target")
+    for raw_part, minimum_part in zip(parts, minimum):
+        if not isinstance(raw_part, str) or not raw_part.isdigit():
+            raise ValueError("version fields must contain only decimal digits")
+        normalized = raw_part.lstrip("0") or "0"
+        expected = str(minimum_part)
+        if len(normalized) != len(expected):
+            return len(normalized) > len(expected)
+        if normalized != expected:
+            return normalized > expected
+    return True
+
+
+def parse_upgrade_contract(notes: str, *, required: bool = True) -> dict[str, str]:
+    """Parse the machine-checkable upgrade contract from release notes."""
+    headings = list(re.finditer(r"(?m)^### Upgrade contract\s*$", notes))
+    if not headings:
+        if required:
+            raise ValueError(
+                "release notes must include exactly one '### Upgrade contract' "
+                "section"
+            )
+        return {}
+    if len(headings) != 1:
+        raise ValueError(
+            "release notes must include exactly one '### Upgrade contract' section"
+        )
+    if notes[: headings[0].start()].strip():
+        raise ValueError(
+            "release notes must start with the '### Upgrade contract' section"
+        )
+    start = headings[0].end()
+    following = re.search(r"(?m)^#{2,3} ", notes[start:])
+    end = start + following.start() if following else len(notes)
+    section = notes[start:end]
+    fields = {
+        "semantic_config": r"(?m)^- Semantic config: `([^`]+)`\s*$",
+        "lock_schema": r"(?m)^- Lock schema: `([^`]+)`\s*$",
+        "fingerprints": (
+            r"(?m)^- Fingerprint compatibility: "
+            r"`(digest-neutral|digest-changing)`\s*$"
+        ),
+        "regeneration": (
+            r"(?m)^- Lock regeneration: "
+            r"`(not-required|required|conditional)`\s*$"
+        ),
+    }
+    result: dict[str, str] = {}
+    for field, pattern in fields.items():
+        matches = re.findall(pattern, section)
+        if len(matches) != 1:
+            label = field.replace("_", " ")
+            raise ValueError(
+                f"release upgrade contract must define {label} exactly once"
+            )
+        result[field] = matches[0]
+    if (
+        result["fingerprints"] == "digest-neutral"
+        and result["regeneration"] != "not-required"
+    ):
+        raise ValueError(
+            "digest-neutral release notes must declare lock regeneration "
+            "`not-required`"
+        )
+    if (
+        result["fingerprints"] == "digest-changing"
+        and result["regeneration"] == "not-required"
+    ):
+        raise ValueError(
+            "digest-changing release notes cannot declare lock regeneration "
+            "`not-required`"
+        )
+    return result
 
 
 def _is_windows_reparse_point(identity: os.stat_result) -> bool:
@@ -151,9 +234,44 @@ def extract_release_notes(
         (item for item in headings if item.start() > release.start()), None
     )
     end = next_heading.start() if next_heading is not None else len(changelog)
-    notes = changelog[release.end():end].strip()
+    notes = (
+        changelog[release.end():end]
+        .strip()
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+    )
     if not notes or notes == "No changes yet.":
         raise ValueError(f"CHANGELOG.md release section for {version} is empty")
+    upgrade_contract = parse_upgrade_contract(
+        notes,
+        required=version_at_least(
+            tag_match.groups(),
+            _UPGRADE_CONTRACT_REQUIRED_FROM,
+        ),
+    )
+    if upgrade_contract:
+        heading = re.search(r"(?m)^### Upgrade contract\s*$", notes)
+        assert heading is not None
+        following = re.search(r"(?m)^#{2,3} ", notes[heading.end():])
+        contract_end = (
+            heading.end() + following.start()
+            if following is not None
+            else len(notes)
+        )
+        contract_lines = notes[:contract_end].splitlines()
+        contract_remainder = "\n".join(
+            line
+            for line in contract_lines
+            if line.strip() != "### Upgrade contract"
+            and _UPGRADE_CONTRACT_FIELD_LINE_RE.fullmatch(line) is None
+        )
+        substantive_notes = (
+            contract_remainder + "\n" + notes[contract_end:]
+        ).strip()
+        if not substantive_notes or substantive_notes == "No changes yet.":
+            raise ValueError(
+                f"CHANGELOG.md release section for {version} is empty"
+            )
 
     release_index = releases.index(release)
     if release_index + 1 >= len(releases):

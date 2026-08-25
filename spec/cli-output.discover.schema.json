@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.discover.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/cli-output.discover.schema.json",
   "title": "boundver discover --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver discover --format json`.",
   "type": "object",
-  "required": ["count", "components"],
+  "required": ["count", "components", "excluded"],
   "additionalProperties": false,
   "properties": {
     "count": {
@@ -44,6 +44,13 @@
           }
         }
       }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Effective normalized path prefixes excluded from discovery.",
+      "maxItems": 1000,
+      "items": {"type": "string", "minLength": 1, "maxLength": 16384},
+      "uniqueItems": true
     },
     "config_diff": {
       "type": "object",

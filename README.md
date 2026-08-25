@@ -20,7 +20,7 @@ visible without being confused with public-contract changes.
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
-The install and Action examples below target the exact v0.13.0 release so local
+The install and Action examples below target the exact v0.14.0 release so local
 writers and CI verifiers use the same contract implementation.
 
 ## Try it in one minute
@@ -57,8 +57,11 @@ The initial scaffold uses an implicit boundary and no version source, so only
 A useful policy for a component that provides both signals is
 `boundary,compat`: internal and behavior-only drift stays visible as
 observations, while public-contract and compatibility drift fails the gate.
-Use `exact` for an implicit, leaf, or unversioned component, or as the portable
-CLI-wide gate over all tracked component bytes and file identities.
+Use `exact` for a pathless implicit component, a leaf without another declared
+signal, or an unversioned component, and as the portable CLI-wide gate over all
+tracked component bytes and file identities. `leaf` suppresses only the
+`boundary` fingerprint: a leaf can still provide `behavior` from
+`behavior.paths` and `compat` from a `version_source`.
 
 boundver detects drift in **declared artifacts**. It does not prove semantic or
 backward compatibility, execute consumer tests, or infer every runtime behavior.
@@ -79,7 +82,7 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -243,7 +246,7 @@ the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 ## GitHub Actions
 
 Pin the Action to the same lock-contract release used by local writers (for
-the latest stable release, `yzm1/boundver@v0.13.0`). The
+the latest stable release, `yzm1/boundver@v0.14.0`). The
 [CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
 the canonical workflow recipe and covers outputs, changed-path reporting,
 GitLab, pre-commit, and caching.
@@ -298,12 +301,12 @@ lock; verification and generation paths that reuse an existing lock reject v1.
 
 ## Useful commands
 
-v0.13 adds `discover --diff-config`, `migrate-lock --explain`, and the
-verification baseline flags shown below.
+The inspection commands include discovery/config comparison, migration
+analysis, verification baselines, and repeatable discovery exclusions.
 
 ```bash
 boundver discover
-boundver discover --diff-config
+boundver discover --diff-config --exclude legacy/vendor
 boundver status --format json
 boundver verify --changed-from origin/main --transitive
 boundver verify --components payment-api --update
@@ -329,8 +332,8 @@ container, install the repository's exact pin with `--upgrade` and assert the
 imported version before generating or verifying a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
-python -c "import boundver; assert boundver.__version__ == '0.13.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
+python -c "import boundver; assert boundver.__version__ == '0.14.0', boundver.__version__"
 ```
 
 In persistent automation, invoke commands as `python -m boundver ...` with that

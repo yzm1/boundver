@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.verify.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/cli-output.verify.schema.json",
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
-  "required": ["ok", "updated", "issues", "resolved_issues", "observations", "facets", "facet_policy", "components_filter", "changed_components"],
+  "required": ["ok", "updated", "issues", "resolved_issues", "observations", "facets", "facet_policy", "components_filter", "changed_components", "inputs", "consumer_impact"],
   "additionalProperties": false,
   "allOf": [
     {
@@ -190,6 +190,41 @@
       "type": "array",
       "description": "Components selected by --changed-from as a scheduling hint. Verification still uses the scope in components_filter.",
       "items": { "type": "string" }
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Exact source-backed locations used for config and lock reads.",
+      "required": ["source", "tree", "commit", "config", "lock"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"type": "string", "enum": ["head", "index", "working-tree"]},
+        "tree": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "config": {"type": "string", "minLength": 1, "maxLength": 32768},
+        "lock": {"type": "string", "minLength": 1, "maxLength": 32768}
+      }
+    },
+    "consumer_impact": {
+      "type": "array",
+      "description": "Typed downstream closure for gated boundary or compatibility drift.",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "required": ["component", "facets", "components", "external_consumers", "transitive"],
+        "additionalProperties": false,
+        "properties": {
+          "component": {"type": "string", "minLength": 1, "maxLength": 16384},
+          "facets": {
+            "type": "array",
+            "items": {"enum": ["boundary", "compat"]},
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "components": {"type": "array", "maxItems": 10000, "items": {"type": "string", "maxLength": 16384}, "uniqueItems": true},
+          "external_consumers": {"type": "array", "maxItems": 10000, "items": {"type": "string", "maxLength": 16384}, "uniqueItems": true},
+          "transitive": {"type": "boolean"}
+        }
+      }
     },
     "baseline": {
       "type": "object",

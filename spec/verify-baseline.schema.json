@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/verify-baseline.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/verify-baseline.schema.json",
   "title": "Boundver verification baseline",
   "description": "Explicitly reviewed verification debt used by `boundver verify --baseline` to reject new violation identities without silently rewriting the lockfile.",
   "type": "object",
@@ -21,7 +21,7 @@
   "additionalProperties": false,
   "properties": {
     "$schema": {
-      "const": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/verify-baseline.schema.json"
+      "const": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/verify-baseline.schema.json"
     },
     "schema": {"const": "boundver-verify-baseline/v1"},
     "project": {"type": "string", "minLength": 1, "maxLength": 4096},

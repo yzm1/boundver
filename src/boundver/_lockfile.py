@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
 from ._config import _json_value_issues, _snapshot_relative_path
-from ._consumer_graph import affected_consumers, resolve_slice_components
+from ._consumer_graph import (
+    affected_consumer_groups,
+    affected_consumers,
+    resolve_slice_components,
+)
 from ._structured_data import strict_json_loads
 
 from ._git import (
@@ -67,6 +71,11 @@ from .providers import (
 from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
 
 LOCKFILE_SCHEMA = "boundary-lock/v3"
+# v0.13.0 is the immutable canonical publication of the v3 schema.  Keep this
+# URL stable across digest-neutral package upgrades; changing the persisted
+# annotation would otherwise dirty every regenerated lock despite identical
+# schema, configuration, and component content.  A structural schema change
+# must advance LOCKFILE_SCHEMA and select a new canonical publication.
 LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json"
 SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v2"
 # Historical semantic contracts that retain the current boundary-lock/v3
@@ -1033,6 +1042,7 @@ def verify_lockfile(
     observations: Optional[List[str]] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
     transitive_consumers: bool = False,
+    consumer_impact: Optional[List[dict]] = None,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches.
 
@@ -1197,6 +1207,34 @@ def verify_lockfile(
                 if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
+                        groups = affected_consumer_groups(
+                            all_components,
+                            name,
+                            transitive=transitive_consumers,
+                        )
+                        if consumer_impact is not None:
+                            existing = (
+                                consumer_impact[-1]
+                                if consumer_impact
+                                and isinstance(consumer_impact[-1], dict)
+                                and consumer_impact[-1].get("component") == name
+                                else None
+                            )
+                            if existing is None:
+                                consumer_impact.append(
+                                    {
+                                        "component": name,
+                                        "facets": [facet],
+                                        "components": groups["components"],
+                                        "external_consumers": groups[
+                                            "external_consumers"
+                                        ],
+                                        "transitive": transitive_consumers,
+                                    }
+                                )
+                            elif facet not in existing["facets"]:
+                                existing["facets"].append(facet)
+                                existing["facets"].sort()
                         consumers = affected_consumers(
                             all_components,
                             name,

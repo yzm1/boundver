@@ -25,6 +25,8 @@ Four rules follow from that model:
 3. **`head` and `index` bind the config and the lock too**, not just component
    content. Both are read from the same captured snapshot. This is stricter
    than 0.10, which could combine staged artifacts with unstaged config.
+   `verify --format json` records the exact locations and captured object IDs
+   under `inputs`; text output names the selected config and lock explicitly.
 4. **Fetch history** before using `--changed-from` or a `git_tag_prefix`
    version source. Shallow clones break both.
 
@@ -41,6 +43,24 @@ boundver verify --source index
 `--changed-from` is reporting and scheduling information, not a shortcut.
 Boundver still recomputes full lock integrity, so unchanged paths cannot hide
 stale metadata in a component you did not touch.
+
+### Diagnostic bases
+
+Fingerprint drift accumulates from the source represented by the lock, not
+necessarily from the previous commit. For `source=head`, `why` and `explain`
+therefore inspect bounded lock history and default their changed-file comparison
+to the commit that introduced the component's current lock entry. This remains
+correct when a later partial update changes another component in the same lock.
+They print the inferred base and its origin. If bounded history cannot establish
+that entry-specific point, they report and use a broader root/lock-history
+fallback instead of silently claiming that the previous commit is authoritative.
+The inference avoids adding a commit SHA that would make identical locks differ
+between `head`, `index`, and `working-tree` generation.
+
+Use `--base-ref REF` to override the inference. `index` and `working-tree`
+default to `HEAD`, because their staged or on-disk source does not yet have a
+commit identity. Inference is diagnostic evidence, not lock integrity: verify
+still recomputes every selected fingerprint from the requested source.
 
 ## Exit codes
 
@@ -83,8 +103,11 @@ esac
 ```
 
 `--format json` exposes issues, non-gating observations, selected facets,
-component selection, and update status. `status`, `why`, `diff`, `slice`, and
-`discover` also have `--format json`.
+component selection, update status, exact input provenance, and typed
+`consumer_impact`. `status`, `why`, `diff`, `slice`, and `discover` also have
+`--format json`. `why` distinguishes `observed_drift` from policy-gated
+`drifted`; an exact-only observation does not recommend regeneration when
+`exact` is not gated.
 
 ## What each facet needs
 
@@ -102,8 +125,10 @@ inventing an identity.
 
 Two consequences are worth internalizing before you write a policy:
 
-- **A `leaf` component never supplies `boundary` or `compat`.** That is the
-  point of declaring it a leaf: it consumes a contract without publishing one.
+- **A `leaf` component never supplies `boundary`.** That is the point of
+  declaring it a leaf: it consumes a contract without publishing one. It still
+  supplies `exact`, and it can supply `behavior` when `behavior.paths` is
+  non-empty and `compat` when `version_source` is declared.
 - **A slice inherits this constraint from its members.** A slice in
   `mode: boundary` needs a boundary digest from *every* member. This bites
   most often with `closure_of`, where you do not choose the membership: the
@@ -112,6 +137,12 @@ Two consequences are worth internalizing before you write a policy:
 
 `validate-config` applies these rules by default, so an unsatisfiable policy is
 reported before `generate` runs.
+
+The current compatibility identity must come from a declared version file or
+a reachable `git_tag_prefix`. Inheriting a sibling component's identity or
+declaring a validated constant is tracked in
+[GitHub issue #40](https://github.com/yzm1/boundver/issues/40); neither spelling
+is accepted by the v2 semantic-config contract.
 
 ### `--allow-partial`
 
@@ -144,16 +175,20 @@ then generate and stage the lock.
 There is deliberately no executable `derived_from` field. A checked-out config
 is not authorization to execute repository commands, and a sound design also
 has to bind tool identity and source materialization. Declarative
-derived-artifact support is tracked as future work.
+derived-artifact support is tracked in
+[GitHub issue #39](https://github.com/yzm1/boundver/issues/39).
 
 ## Upgrading
 
-Boundver pins its schema URLs to the release tag, so an upgrade touches the
-config, the lock, and any pinned CI reference together. The procedure is the
-same for every version:
+Boundver pins configuration and CLI-output schemas to the release tag. A
+persisted lock points to the immutable canonical publication of its structural
+lock schema (`boundary-lock/v3` currently uses the v0.13.0 schema URL), so a
+digest-neutral package upgrade does not dirty the lock merely to rotate a
+schema annotation. A structural lock change must advance the lock schema and
+select a new canonical publication. The upgrade procedure is:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.13.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
 boundver validate-config
 # Stage changed config and every changed or newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml

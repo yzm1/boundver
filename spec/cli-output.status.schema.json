@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/cli-output.status.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/spec/cli-output.status.schema.json",
   "title": "boundver status --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver status --format json`.",
   "type": "object",
-  "required": ["lockfile", "issues", "warnings"],
+  "required": ["lockfile", "issues", "warnings", "observations", "facet_policy"],
   "additionalProperties": false,
   "properties": {
     "lockfile": {
@@ -20,6 +20,47 @@
       "type": "array",
       "description": "Non-drift warnings and recorded computation errors.",
       "items": { "type": "string" }
+    },
+    "observations": {
+      "type": "array",
+      "description": "Detected drift outside the effective facet policy.",
+      "items": {"type": "string"}
+    },
+    "facet_policy": {
+      "description": "Effective configured facet policy, or null when config is unavailable.",
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["explicit", "defaults", "components", "slices"],
+          "additionalProperties": false,
+          "properties": {
+            "explicit": {"type": "null"},
+            "defaults": {
+              "oneOf": [
+                {"type": "null"},
+                {"type": "array", "items": {"enum": ["exact", "behavior", "boundary", "compat"]}, "uniqueItems": true}
+              ]
+            },
+            "components": {
+              "type": "object",
+              "additionalProperties": {"type": "array", "items": {"enum": ["exact", "behavior", "boundary", "compat"]}, "uniqueItems": true}
+            },
+            "slices": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["mode", "gated"],
+                "additionalProperties": false,
+                "properties": {
+                  "mode": {"enum": ["exact", "behavior", "boundary", "compat"]},
+                  "gated": {"type": "boolean"}
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

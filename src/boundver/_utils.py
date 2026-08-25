@@ -1127,6 +1127,47 @@ def _available_component_facets(component: Mapping[str, object]) -> Set[str]:
     return available
 
 
+def _effective_component_facets(
+    config: Mapping[str, object],
+    component_name: str,
+    explicit_facets: Optional[Iterable[str]] = None,
+) -> Set[str]:
+    """Return the facets that gate one component under the effective policy.
+
+    This is shared by verification and diagnostic commands so ``why`` and
+    ``status`` cannot classify a configured non-gating observation as a gate
+    failure.  An explicit CLI-wide policy wins, followed by a component
+    override, configured defaults, and finally all facets the declaration can
+    intentionally produce.
+    """
+    if explicit_facets is not None:
+        return {facet for facet in explicit_facets if isinstance(facet, str)}
+
+    components = config.get("components", {})
+    component = (
+        components.get(component_name, {})
+        if isinstance(components, Mapping)
+        else {}
+    )
+    if not isinstance(component, Mapping):
+        return set()
+    component_facets = component.get("verify_facets")
+    if isinstance(component_facets, list) and all(
+        isinstance(facet, str) for facet in component_facets
+    ):
+        return set(component_facets)
+
+    defaults = config.get("defaults", {})
+    if isinstance(defaults, Mapping) and "verify_facets" in defaults:
+        default_facets = defaults.get("verify_facets")
+        if isinstance(default_facets, list) and all(
+            isinstance(facet, str) for facet in default_facets
+        ):
+            return set(default_facets)
+        return set()
+    return _available_component_facets(component)
+
+
 def boundary_provider_name(boundary: Mapping[str, object]) -> str:
     """Return boundary provider name from a component's boundary config."""
     provider = boundary.get("provider")

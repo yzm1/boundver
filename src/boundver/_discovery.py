@@ -9,6 +9,7 @@ from ._utils import (
     ConfigError,
     GuardrailError,
     _bounded_sorted_paths,
+    _is_glob,
     _iter_bounded_filesystem_paths,
     _normalize_declared_path,
 )
@@ -16,6 +17,43 @@ from ._utils import (
 
 MAX_DISCOVERY_DIFF_COMPONENTS = 10_000
 MAX_DISCOVERY_DIFF_TEXT = 16_384
+MAX_DISCOVERY_EXCLUSIONS = 1_000
+MAX_DISCOVERY_EXCLUSION_BYTES = 1024 * 1024
+
+
+def normalize_discovery_exclusions(excluded_paths: Optional[List[str]]) -> List[str]:
+    """Validate, normalize, deduplicate, and bound discovery path prefixes."""
+    raw_paths = excluded_paths or []
+    if len(raw_paths) > MAX_DISCOVERY_EXCLUSIONS:
+        raise ConfigError(
+            "Discovery exclusions exceed the "
+            f"{MAX_DISCOVERY_EXCLUSIONS}-path limit"
+        )
+    normalized_exclusions: List[str] = []
+    total_bytes = 0
+    for raw_path in raw_paths:
+        try:
+            normalized = _normalize_declared_path(raw_path)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"Invalid discovery exclusion {raw_path!r}: {exc}"
+            ) from exc
+        if normalized in {"", "."}:
+            raise ConfigError("Discovery exclusion cannot select the repository root")
+        normalized = normalized.rstrip("/")
+        if _is_glob(normalized):
+            raise ConfigError(
+                "Discovery exclusions are literal path prefixes; glob syntax is "
+                f"not supported: {raw_path!r}"
+            )
+        total_bytes += len(normalized.encode("utf-8", errors="replace"))
+        if total_bytes > MAX_DISCOVERY_EXCLUSION_BYTES:
+            raise ConfigError(
+                "Discovery exclusions exceed the "
+                f"{MAX_DISCOVERY_EXCLUSION_BYTES}-byte aggregate limit"
+            )
+        normalized_exclusions.append(normalized)
+    return sorted(set(normalized_exclusions))
 
 
 def compare_discovery_to_config(discovered: dict, config: dict) -> dict:
@@ -90,6 +128,7 @@ def compare_discovery_to_config(discovered: dict, config: dict) -> dict:
 def discover_components(
     repo_root: Path,
     *,
+    excluded_paths: Optional[List[str]] = None,
     max_discovery_manifests: int = 50_000,
     max_discovered_components: int = 1_000,
     max_provider_detection_entries: int = 50_000,
@@ -106,6 +145,17 @@ def discover_components(
         ".git", "node_modules", "__pycache__", ".venv", "venv",
         "dist", "build", "vendor",
     }
+    normalized_exclusions = normalize_discovery_exclusions(excluded_paths)
+
+    def is_excluded(path: Path) -> bool:
+        try:
+            relative = path.relative_to(repo_root).as_posix().strip("/")
+        except ValueError:
+            return True
+        return any(
+            relative == excluded or relative.startswith(excluded + "/")
+            for excluded in normalized_exclusions
+        )
     found: Dict[str, dict] = {}
     seen_directories: Set[str] = set()
     root_manifest_component: Optional[str] = None
@@ -127,10 +177,13 @@ def discover_components(
                         f"{max_filesystem_traversal_entries} entries"
                     ),
                     should_descend=(
-                        lambda directory: directory.name not in _ignored_dirs
+                        lambda directory: (
+                            directory.name not in _ignored_dirs
+                            and not is_excluded(directory)
+                        )
                     ),
                 )
-                if path.name in manifest_names
+                if path.name in manifest_names and not is_excluded(path)
             ),
             max_paths=max_discovery_manifests,
             exceeded_message=(
@@ -147,6 +200,7 @@ def discover_components(
                 ["ls-files", "--cached", "-z", "--"],
             )
         ]
+        listed_paths = [path for path in listed_paths if not is_excluded(path)]
         # Manifests are discovered from the index name set so an unstaged
         # deletion does not erase an otherwise configured component. Provider
         # evidence, however, must be readable from the working tree selected by

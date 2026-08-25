@@ -62,6 +62,9 @@ outputs:
   observations:
     description: Newline-separated drift outside the selected gate.
     value: ${{ steps.verify.outputs.observations }}
+  consumer-impact:
+    description: Compact JSON array of typed downstream consumer-impact rows.
+    value: ${{ steps.verify.outputs.consumer-impact }}
 
 runs:
   using: composite
@@ -179,6 +182,20 @@ runs:
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
         done
+
+        consumer_impact=$(python -I - "$result_file" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        try:
+            payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        print(json.dumps(payload.get("consumer_impact", []), separators=(",", ":")))
+        PY
+        )
+        echo "consumer-impact=$consumer_impact" >> "$GITHUB_OUTPUT"
 
         if [[ -s "$result_file" ]]; then
           python -I -m json.tool "$result_file"

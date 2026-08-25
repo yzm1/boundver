@@ -61,21 +61,38 @@ def affected_consumers(
     its external terminals.  Transitive mode walks internal edges and also
     collects external terminals declared by every reached component.
     """
+    groups = affected_consumer_groups(
+        components,
+        component_name,
+        transitive=transitive,
+    )
+    return sorted(
+        set(groups["components"]) | set(groups["external_consumers"])
+    )
+
+
+def affected_consumer_groups(
+    components: Mapping[str, Any],
+    component_name: str,
+    *,
+    transitive: bool = False,
+) -> Dict[str, List[str]]:
+    """Return typed downstream impact for stable machine consumption."""
     if transitive:
         internal_consumers = consumer_closure(components, [component_name])
         external_scope = [component_name, *internal_consumers]
     else:
         internal_consumers = []
         external_scope = [component_name]
-    component = components.get(component_name, {})
-    if not transitive and isinstance(component, dict):
-        raw_consumers = component.get("consumers", [])
-        if isinstance(raw_consumers, list):
-            internal_consumers = [
-                consumer
-                for consumer in raw_consumers
-                if isinstance(consumer, str) and consumer in components
-            ]
+        component = components.get(component_name, {})
+        if isinstance(component, dict):
+            raw_consumers = component.get("consumers", [])
+            if isinstance(raw_consumers, list):
+                internal_consumers = [
+                    consumer
+                    for consumer in raw_consumers
+                    if isinstance(consumer, str) and consumer in components
+                ]
 
     external_consumers = set()
     for source_name in external_scope:
@@ -88,7 +105,10 @@ def affected_consumers(
         external_consumers.update(
             terminal for terminal in raw_external if isinstance(terminal, str)
         )
-    return sorted(set(internal_consumers) | external_consumers)
+    return {
+        "components": sorted(set(internal_consumers)),
+        "external_consumers": sorted(external_consumers),
+    }
 
 
 def resolve_slice_components(

@@ -809,6 +809,62 @@ def validate_provider_config(
     return list(errors)
 
 
+def validate_provider_environment(
+    provider: BoundaryProvider,
+    boundary_cfg: dict,
+) -> List[str]:
+    """Invoke an optional dependency preflight without resolving content.
+
+    The hook is deliberately separate from ``validate_config``: source-backed
+    config validation must not consult working-tree paths, while interpreter
+    dependencies are independent of the selected Git snapshot.
+    """
+    try:
+        validator = getattr(provider, "validate_environment", None)
+    except Exception as exc:
+        return [
+            "Provider environment validation hook could not be read: "
+            f"{_bounded_exception(exc)}"
+        ]
+    if not callable(validator):
+        return []
+    try:
+        provider_name = getattr(provider, "name", provider.__class__.__name__)
+    except Exception:
+        provider_name = provider.__class__.__name__
+    try:
+        errors = validator(boundary_cfg)
+    except Exception as exc:
+        return [
+            f"Provider '{provider_name}' environment validation failed: "
+            f"{_bounded_exception(exc)}"
+        ]
+    if errors is None:
+        return []
+    if not isinstance(errors, list):
+        return [
+            f"Provider '{provider_name}' validate_environment() must return "
+            "a list of errors"
+        ]
+    if len(errors) > MAX_PROVIDER_ERRORS:
+        return [
+            f"Provider '{provider_name}' validate_environment() returned more "
+            f"than {MAX_PROVIDER_ERRORS} errors"
+        ]
+    for error in errors:
+        if type(error) is not str or not error.strip():
+            return [
+                f"Provider '{provider_name}' validate_environment() must return "
+                "only non-empty error strings"
+            ]
+        if len(error.encode("utf-8", errors="replace")) > MAX_PROVIDER_ERROR_BYTES:
+            return [
+                f"Provider '{provider_name}' validate_environment() returned an "
+                f"error longer than {MAX_PROVIDER_ERROR_BYTES} bytes"
+            ]
+    return list(errors)
+
+
 def explain_provider_diff(
     provider: BoundaryProvider,
     old_metadata: Optional[dict],
@@ -1159,6 +1215,34 @@ class OpenApiCanonicalProvider:
     # v4 adds bounded parsing/canonicalization and rejects non-JSON integer
     # spellings, Unicode patch digits, and over-limit aggregate output.
     version = "4"
+
+    def validate_environment(self, boundary_cfg: dict) -> List[str]:
+        paths = boundary_cfg.get("paths", [])
+        if not isinstance(paths, list):
+            return []
+        # The parser treats every selected non-JSON path as YAML.  A declaration
+        # made entirely of .json paths therefore remains dependency-free.
+        needs_yaml = any(
+            isinstance(path, str) and not path.lower().endswith(".json")
+            for path in paths
+        )
+        if not needs_yaml:
+            return []
+        try:
+            importlib.import_module("yaml")
+        except (ImportError, ModuleNotFoundError) as exc:
+            return [
+                "provider 'openapi-canonical' needs PyYAML for configured YAML "
+                "paths; install `boundver[yaml]` "
+                f"({_bounded_exception(exc)})"
+            ]
+        except Exception as exc:
+            return [
+                "provider 'openapi-canonical' could not import PyYAML for "
+                f"configured YAML paths: {_bounded_exception(exc)}; reinstall "
+                "`boundver[yaml]`"
+            ]
+        return []
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])

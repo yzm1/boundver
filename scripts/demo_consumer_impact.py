@@ -19,6 +19,15 @@ EXPECTED_CONSUMERS = (
     "AFFECTED CONSUMERS (TRANSITIVE) payments-api: "
     "checkout-web, mobile-app, payments-sdk"
 )
+EXPECTED_CONSUMER_IMPACT = [
+    {
+        "component": "payments-api",
+        "facets": ["boundary"],
+        "components": ["checkout-web", "payments-sdk"],
+        "external_consumers": ["mobile-app"],
+        "transitive": True,
+    }
+]
 
 
 def _run(
@@ -146,11 +155,47 @@ def main() -> int:
                 )
             if EXPECTED_CONSUMERS not in combined:
                 raise RuntimeError("expected transitive consumer closure was not reported")
+
+            structured = _run(
+                [
+                    *boundver,
+                    "verify",
+                    "--source",
+                    "working-tree",
+                    "--lock",
+                    "boundary.lock.json",
+                    "--transitive",
+                    "--format",
+                    "json",
+                ],
+                cwd=demo,
+                env=env,
+                capture=True,
+            )
+            if structured.returncode != 4:
+                raise RuntimeError(
+                    "expected structured boundary-drift exit code 4, got "
+                    f"{structured.returncode}"
+                )
+            try:
+                structured_payload = json.loads(structured.stdout)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("structured verification was not valid JSON") from exc
+            impact = structured_payload.get("consumer_impact")
+            if impact != EXPECTED_CONSUMER_IMPACT:
+                raise RuntimeError(
+                    f"unexpected structured consumer impact: {impact!r}"
+                )
+            print("\nStructured consumer_impact:")
+            print(json.dumps(impact, indent=2))
     except (OSError, RuntimeError, ValueError) as error:
         print(f"demo failed: {error}", file=sys.stderr)
         return 1
 
-    print("\nDemo passed: boundary drift and the complete consumer closure were reported.")
+    print(
+        "\nDemo passed: boundary drift and the complete human and structured "
+        "consumer closure were reported."
+    )
     return 0
 
 

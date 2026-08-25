@@ -92,8 +92,16 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ver.add_argument("--config", default="boundary.config.json")
-    ver.add_argument("--lock", default="boundary.lock.json")
+    ver.add_argument(
+        "--config",
+        default="boundary.config.json",
+        help="Config path inside the selected source snapshot",
+    )
+    ver.add_argument(
+        "--lock",
+        default="boundary.lock.json",
+        help="Lock path inside the selected source snapshot",
+    )
     ver.add_argument(
         "--source",
         choices=SOURCE_MODES,
@@ -290,7 +298,17 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     ex.add_argument("component", help="Component name from config")
     ex.add_argument("--config", default="boundary.config.json")
     ex.add_argument(
-        "--base-ref", default="HEAD", help="Git ref to diff against (default: HEAD)"
+        "--lock",
+        default="boundary.lock.json",
+        help="Lockfile path used to infer the default diagnostic base",
+    )
+    ex.add_argument(
+        "--base-ref",
+        default=None,
+        help=(
+            "Git ref to diff against (default: commit that introduced the "
+            "component's current lock entry for source=head; HEAD otherwise)"
+        ),
     )
     ex.add_argument(
         "--source",
@@ -321,6 +339,14 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     why.add_argument("component", help="Component name from config")
     why.add_argument("--config", default="boundary.config.json")
     why.add_argument("--lock", default="boundary.lock.json")
+    why.add_argument(
+        "--base-ref",
+        default=None,
+        help=(
+            "Git ref for changed-file diagnostics (default: commit that introduced "
+            "the component's current lock entry for source=head; HEAD otherwise)"
+        ),
+    )
     why.add_argument(
         "--source",
         choices=SOURCE_MODES,
@@ -354,6 +380,16 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         "--config",
         default="boundary.config.json",
         help="Config file used by --diff-config",
+    )
+    disc.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Exclude a repository-relative path and everything below it; "
+            "repeat for multiple paths"
+        ),
     )
 
     # migrate-lock

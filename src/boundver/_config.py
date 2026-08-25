@@ -38,6 +38,7 @@ from .providers import (
     get_provider,
     load_custom_providers,
     validate_provider_config,
+    validate_provider_environment,
 )
 from ._consumer_graph import resolve_slice_components
 from ._structured_data import strict_json_loads
@@ -1280,6 +1281,8 @@ def validate_config(
                 "explicit boundary provider"
             )
             continue
+        for provider_error in validate_provider_environment(provider, boundary):
+            errors.append(f"Component '{name}': {provider_error}")
         if source == "working-tree":
             for provider_error in validate_provider_config(
                 provider, boundary, component_path, repo_root
@@ -1350,10 +1353,15 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
     return warnings
 
 
-def discover_components(repo_root: Path) -> Dict[str, dict]:
+def discover_components(
+    repo_root: Path,
+    *,
+    excluded_paths: Optional[List[str]] = None,
+) -> Dict[str, dict]:
     """Compatibility wrapper honoring patchable discovery guardrails."""
     return _discover_components_impl(
         repo_root,
+        excluded_paths=excluded_paths,
         max_discovery_manifests=MAX_DISCOVERY_MANIFESTS,
         max_discovered_components=MAX_DISCOVERED_COMPONENTS,
         max_provider_detection_entries=MAX_PROVIDER_DETECTION_ENTRIES,

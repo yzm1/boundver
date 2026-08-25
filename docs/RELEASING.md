@@ -144,16 +144,35 @@ diff; it is never accepted implicitly by an install.
    `pyproject.toml`.
 2. Move completed notes from `## [Unreleased]` into exactly one
    `## [X.Y.Z] - YYYY-MM-DD` section. Leave a new, empty Unreleased section and
-   update comparison links.
+   update comparison links. Releases from 0.14 onward must start that section
+   with one machine-checked `### Upgrade contract` block:
+
+   ```markdown
+   ### Upgrade contract
+
+   - Semantic config: `boundver-semantic-config/v2`
+   - Lock schema: `boundary-lock/v3`
+   - Fingerprint compatibility: `digest-neutral`
+   - Lock regeneration: `not-required`
+   ```
+
+   Use `digest-changing` with `required` or `conditional` when appropriate.
+   The readiness gate compares the declared semantic config and lock schema
+   with the candidate specifications and rejects contradictory regeneration
+   guidance.
 3. Remove temporary “unreleased” or “use after publication” wording from
    README and guides. Check every install command, Action reference, lock
    schema, upgrade instruction, and version-specific link.
-4. Pin machine-readable schema URLs and `$id` values to the exact release tag.
-   Living documentation may link to `main`; generated configs and locks must
-   not silently adopt a future branch schema.
-   Between releases, a schema document changed on `main` uses a `main` `$id`,
-   while generators continue to reference the last released schema until the
-   next release-preparation commit pins both to its new exact tag.
+4. Pin configuration and CLI-output schema URLs and `$id` values to the exact
+   release tag. Keep the persisted lock's `$schema` and the lock schema `$id`
+   on the immutable canonical release for that structural schema; v3 is frozen
+   at v0.13.0. Advance that canonical reference only together with a new lock
+   schema identity. Living documentation may link to `main`; generated configs
+   must not silently adopt a future branch schema.
+   Between releases, a changed configuration or CLI-output schema uses a
+   `main` `$id`, while generators continue to reference the last released
+   schema until release preparation pins the changed document to its new exact
+   tag. The canonical lock-schema publication is the intentional exception.
 5. Regenerate the repository and all example locks from the final hash/provider
    contract. Validate every config, schema, lock, and machine-readable example.
 6. Run `python3 scripts/check_repo_hygiene.py`; remove generated caches and
@@ -268,7 +287,11 @@ workflows then perform these gates in order:
    assets. A read-only job generates and retains the notes first; the mutation
    job checks out no candidate tree and treats the retained notes and assets as
    data. Draft first so immutable-release protection does not freeze an
-   incomplete asset set.
+   incomplete asset set. `gh release create` exposes a URL but no numeric ID,
+   while GitHub's exact-tag endpoint excludes drafts, so the workflow performs
+   a six-attempt, two-second authenticated-list visibility retry after creation
+   and then binds every later operation to the unique numeric ID. A terminal
+   visibility failure reports the canonical release URL for safe recovery.
 6. Open the prepared GitHub draft. Select **Publish this Action to the GitHub
    Marketplace**, confirm its categories and version, then publish with 2FA.
    This owner-only step makes the release immutable, so verify the complete
@@ -378,7 +401,10 @@ unsafe public GitHub Release; and permits either an existing draft or an
 already-public stable, immutable Release for the workflow to reconcile. Release
 discovery uses the authenticated paginated release list and binds subsequent
 reads to the unique numeric release ID because GitHub's release-by-tag endpoint
-does not expose drafts. A public Release must already be complete: recovery
+does not expose drafts. Initial draft creation applies the same bounded
+visibility retry described above; a failed-job rerun first searches for the
+existing draft and therefore does not create a second one. A public Release
+must already be complete: recovery
 will not add missing assets to it or edit it. The workflow compares its title,
 tag, notes, exact asset set, and every downloaded asset byte with the retained
 candidate before continuing. LF, CRLF, and CR are treated only as equivalent

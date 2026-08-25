@@ -6,8 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-25
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+### Added
+
+- `verify --format json` reports the exact config and lock snapshot provenance
+  used by the operation instead of leaving CI to infer those inputs.
+- `verify --format json` provides typed `consumer_impact` rows for direct or
+  transitive fan-out, separating configured components from external consumer
+  terminals; the composite Action publishes the same data as an output.
+- `discover` accepts repeatable `--exclude PATH` prefixes while retaining its
+  Git-tracked default and bounded non-Git fallback.
+- Release notes from 0.14 onward carry a machine-checked upgrade contract
+  naming the semantic-config contract, lock schema, fingerprint compatibility,
+  and lock-regeneration requirement.
+
 ### Changed
 
+- `why` and `explain` infer their default changed-file base from the commit that
+  introduced the component's current lock entry instead of assuming the
+  previous commit or the latest unrelated partial lock update.
+- `why` and `status` now honor effective per-component facet policy in their
+  drift classification; non-gating observations remain visible without a
+  regeneration recommendation or non-zero diagnostic result.
 - Cross-cutting source, facet, partial-lock, generated-artifact, exit-code,
   and upgrade guidance now has one reference page; task-focused guides link to
   that contract instead of maintaining divergent copies.
@@ -21,6 +49,26 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Successful textual Git output now uses the filesystem codec with
+  `surrogateescape` instead of the preferred process locale, preserving
+  non-ASCII refs and otherwise undecodable bytes without weakening strict
+  ASCII validation of object IDs and status fields.
+- GitHub Release draft creation now retries bounded authenticated-list
+  visibility before failing, then binds reconciliation to the returned numeric
+  release ID; terminal failures include the canonical release URL for safe
+  recovery.
+- Release-note extraction normalizes CRLF/CR transport before writing artifacts
+  and rejects an upgrade contract followed only by the `No changes yet.`
+  placeholder.
+- Facet guidance now states that `leaf` suppresses only the boundary identity;
+  versioned or behavior-declared leaves can still gate `compat` or `behavior`.
+- `validate-config` now preflights optional built-in provider dependencies and
+  names `boundver[yaml]` when `openapi-canonical` YAML declarations cannot load
+  PyYAML; raw OpenAPI providers remain dependency-free.
+- Semantic-contract mismatches now identify whether the lock is newer or older
+  than the running installation and give direction-specific upgrade guidance.
+- `boundary-lock/v3` uses its immutable v0.13.0 canonical schema URL across
+  future digest-neutral releases, avoiding annotation-only lock churn.
 - Action compatibility aliases now use an explicit, environment-gated local
   maintainer handoff followed by independent exact-tag verification, because
   GitHub's built-in Actions token cannot update refs that expose workflow-file
@@ -479,7 +527,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/yzm1/boundver/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/yzm1/boundver/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/yzm1/boundver/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/yzm1/boundver/compare/v0.10.0...v0.11.0

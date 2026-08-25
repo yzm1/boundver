@@ -117,14 +117,51 @@ def lockfile_structure_issues(
                 else "this boundver release"
             )
             schema = lockfile.get("schema", expected_schema)
+            locked_contract_digits = config_contract[len(contract_prefix) :]
+            expected_contract_digits = (
+                semantic_config_version[len(contract_prefix) :]
+                if semantic_config_version.startswith(contract_prefix)
+                and semantic_config_version[len(contract_prefix) :].isdigit()
+                else None
+            )
+            contract_order = 0
+            if expected_contract_digits is not None:
+                normalized_locked = locked_contract_digits.lstrip("0") or "0"
+                normalized_expected = expected_contract_digits.lstrip("0") or "0"
+                if len(normalized_locked) != len(normalized_expected):
+                    contract_order = (
+                        1
+                        if len(normalized_locked) > len(normalized_expected)
+                        else -1
+                    )
+                elif normalized_locked != normalized_expected:
+                    contract_order = 1 if normalized_locked > normalized_expected else -1
+            if expected_contract_digits is not None and contract_order > 0:
+                direction = (
+                    "This lock uses a newer semantic contract than the running "
+                    f"{release}; upgrade the installation to the repository-pinned "
+                    "exact boundver version. Do not overwrite the newer lock with "
+                    "this older writer."
+                )
+            elif expected_contract_digits is not None and contract_order < 0:
+                direction = (
+                    "This lock uses an older semantic contract than the running "
+                    f"{release}; install the repository-pinned boundver version, "
+                    "upgrade writers and verifiers together, then regenerate with "
+                    "`boundver generate` against the reviewed repository snapshot."
+                )
+            else:
+                direction = (
+                    "Install the repository's exact boundver pin before deciding "
+                    "whether regeneration is required."
+                )
             return [
                 "LOCKFILE semantic configuration contract mismatch: "
                 f"{_bounded_diagnostic_repr(schema)} uses "
                 f"{_bounded_diagnostic_repr(config_contract)}, but {release} "
                 f"requires {semantic_config_version!r}. Semantic digests cannot "
-                "be relabelled or migrated without repository content. Install "
-                "the repository-pinned boundver version or run `boundver generate` "
-                "with this version after reviewing the migration."
+                "be relabelled or migrated without repository content. "
+                f"{direction}"
             ]
         elif not read_only_historical:
             issues.append(

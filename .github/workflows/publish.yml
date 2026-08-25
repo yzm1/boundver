@@ -989,6 +989,7 @@ jobs:
             import subprocess
             import sys
             import threading
+            import time
 
             MAX_PAGE_BYTES = 8 * 1024 * 1024
             MAX_DETAIL_BYTES = 32 * 1024 * 1024
@@ -997,11 +998,13 @@ jobs:
             MAX_PAGES = 100
             MAX_ITEMS = 10_000
             MAX_TAG_BYTES = 1024
+            MAX_VISIBILITY_ATTEMPTS = 6
+            VISIBILITY_RETRY_SECONDS = 2
             READ_CHUNK_BYTES = 64 * 1024
             MAX_UINT64 = (1 << 64) - 1
 
             mode, repository, *arguments = sys.argv[1:]
-            if mode not in {"find", "capture"}:
+            if mode not in {"find", "wait", "capture"}:
                 raise SystemExit("release API lookup mode is invalid")
             if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
                 raise SystemExit("release API repository is malformed")
@@ -1129,19 +1132,19 @@ jobs:
                     raise SystemExit("release API returned malformed JSON") from error
                 return bytes(stdout), payload
 
-            if mode == "find":
-                if len(arguments) != 1:
-                    raise SystemExit("release-list lookup is incomplete")
-                release_tag = arguments[0]
+            def validate_release_tag(value):
                 if (
                     re.fullmatch(
                         r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
-                        release_tag,
+                        value,
                     )
                     is None
-                    or len(release_tag.encode("utf-8")) > MAX_TAG_BYTES
+                    or len(value.encode("utf-8")) > MAX_TAG_BYTES
                 ):
                     raise SystemExit("release-list tag is malformed")
+                return value
+
+            def find_release_id(release_tag):
                 endpoint = f"repos/{repository}/releases?per_page=100"
                 matches = []
                 seen_items = 0
@@ -1178,10 +1181,42 @@ jobs:
                         raise SystemExit("multiple GitHub Releases use the version tag")
                     if len(page) < 100:
                         if matches:
-                            print(matches[0])
-                        break
+                            return matches[0]
+                        return None
                 else:
                     raise SystemExit("GitHub Release list exceeds the page limit")
+
+            if mode in {"find", "wait"}:
+                if len(arguments) != 1:
+                    raise SystemExit("release-list lookup is incomplete")
+                release_tag = validate_release_tag(arguments[0])
+                if mode == "find":
+                    release_id = find_release_id(release_tag)
+                else:
+                    release_id = None
+                    for attempt in range(1, MAX_VISIBILITY_ATTEMPTS + 1):
+                        release_id = find_release_id(release_tag)
+                        if release_id is not None:
+                            break
+                        if attempt < MAX_VISIBILITY_ATTEMPTS:
+                            print(
+                                "Created GitHub Release is not visible yet; "
+                                f"retrying ({attempt}/{MAX_VISIBILITY_ATTEMPTS})",
+                                file=sys.stderr,
+                            )
+                            time.sleep(VISIBILITY_RETRY_SECONDS)
+                    if release_id is None:
+                        release_url = (
+                            f"https://github.com/{repository}/releases/tag/"
+                            f"{release_tag}"
+                        )
+                        raise SystemExit(
+                            "GitHub Release was created but remained absent from "
+                            f"the authenticated release list after "
+                            f"{MAX_VISIBILITY_ATTEMPTS} attempts: {release_url}"
+                        )
+                if release_id is not None:
+                    print(release_id)
             else:
                 if len(arguments) != 2:
                     raise SystemExit("release-detail capture is incomplete")
@@ -1234,6 +1269,10 @@ jobs:
             python_clean -c "$RELEASE_DRAFT_API_PROGRAM" \
               find "$GITHUB_REPOSITORY" "$RELEASE_TAG"
           }
+          wait_for_created_release_id() {
+            python_clean -c "$RELEASE_DRAFT_API_PROGRAM" \
+              wait "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          }
           capture_release_json() {
             python_clean -c "$RELEASE_DRAFT_API_PROGRAM" \
               capture "$GITHUB_REPOSITORY" "$1" "$release_json_file"
@@ -1248,12 +1287,10 @@ jobs:
               --verify-tag \
               --title "boundver ${RELEASE_TAG#v}" \
               --notes-file "$notes_file"
-            if ! release_id=$(find_release_id); then
-              echo "GitHub Release was created but the release list cannot be read" >&2
-              exit 1
-            fi
-            if [[ -z "$release_id" ]]; then
-              echo "GitHub Release was created but is absent from the release list" >&2
+            # gh prints the release URL but does not expose its numeric ID, and
+            # GitHub's exact-tag endpoint excludes drafts. Wait for bounded
+            # authenticated-list visibility, then bind all work to the ID.
+            if ! release_id=$(wait_for_created_release_id); then
               exit 1
             fi
           fi

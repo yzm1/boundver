@@ -66,6 +66,37 @@ class GitRunBoundTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
+    def test_success_uses_filesystem_codec_and_losslessly_preserves_bytes(self):
+        process = _FakeProcess(
+            io.BytesIO("réf".encode("utf-8") + b"-\xff\n"),
+            io.BytesIO(),
+        )
+        with (
+            patch("boundver._git.subprocess.Popen", return_value=process),
+            patch("boundver._git.sys.getfilesystemencoding", return_value="ascii"),
+        ):
+            result = git_helpers._git_run(Path("repo"), ["symbolic-ref", "HEAD"])
+
+        self.assertEqual(
+            result.stdout.encode("ascii", "surrogateescape"),
+            "réf".encode("utf-8") + b"-\xff\n",
+        )
+
+    def test_success_does_not_consult_hostile_preferred_locale(self):
+        process = _FakeProcess(
+            io.BytesIO("réf\n".encode("utf-8")),
+            io.BytesIO(),
+        )
+        with (
+            patch("boundver._git.subprocess.Popen", return_value=process),
+            patch("boundver._git.sys.getfilesystemencoding", return_value="utf-8"),
+            patch("locale.getpreferredencoding", return_value="ascii") as preferred,
+        ):
+            result = git_helpers._git_run(Path("repo"), ["symbolic-ref", "HEAD"])
+
+        self.assertEqual(result.stdout, "réf\n")
+        preferred.assert_not_called()
+
     def test_nonzero_exit_preserves_text_called_process_error(self):
         process = _FakeProcess(
             io.BytesIO(b"partial\r\n"),
@@ -91,10 +122,7 @@ class GitRunBoundTests(unittest.TestCase):
         )
         with (
             patch("boundver._git.subprocess.Popen", return_value=process),
-            patch(
-                "boundver._git.locale.getpreferredencoding",
-                return_value="utf-8",
-            ),
+            patch("boundver._git.sys.getfilesystemencoding", return_value="utf-8"),
         ):
             with self.assertRaises(subprocess.CalledProcessError) as raised:
                 git_helpers._git_run(Path("repo"), ["write-tree"])
@@ -182,15 +210,13 @@ class GitRunBoundTests(unittest.TestCase):
             "return code 9; no stderr diagnostic",
         )
 
-    def test_git_failure_detail_preserves_invalid_locale_bytes_safely(self):
+    def test_git_failure_detail_preserves_invalid_filesystem_bytes_safely(self):
         failure = subprocess.CalledProcessError(
             3,
             ["git", "write-tree"],
             stderr=b"fatal: bad byte \xff\n",
         )
-        with patch(
-            "boundver._git.locale.getpreferredencoding", return_value="utf-8"
-        ):
+        with patch("boundver._git.sys.getfilesystemencoding", return_value="utf-8"):
             detail = git_helpers._git_failure_detail(failure)
 
         self.assertIn("fatal", detail)
