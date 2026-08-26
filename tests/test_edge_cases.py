@@ -133,6 +133,34 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo/x/y/bar"))
         self.assertFalse(rules.is_ignored("baz/foo/bar"))
 
+    def test_gitignore_embedded_doublestar_stays_within_segment(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("a**/b\n", encoding="utf-8")
+            for relative in ("ax/b", "a/x/b"):
+                candidate = root / relative
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_text("contract\n", encoding="utf-8")
+
+            git_results = {
+                relative: subprocess.run(
+                    ["git", "check-ignore", "-v", "--no-index", "--", relative],
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                for relative in ("ax/b", "a/x/b")
+            }
+
+        self.assertEqual(git_results["ax/b"].returncode, 0)
+        self.assertEqual(git_results["a/x/b"].returncode, 1)
+        rules = _GitignoreRules()
+        rules.add("a**/b")
+        self.assertTrue(rules.is_ignored("ax/b"))
+        self.assertFalse(rules.is_ignored("a/x/b"))
+
     def test_gitignore_trailing_doublestar_requires_a_descendant(self):
         rules = _GitignoreRules()
         rules.add("src/**")
