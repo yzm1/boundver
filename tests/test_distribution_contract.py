@@ -2710,6 +2710,7 @@ exit 74
             "Codex Review: Didn't find any major issues. "
             "Another round soon, please!",
             "Codex Review: Didn't find any major issues. Bravo.",
+            "Codex Review: Didn't find any major issues. Can't wait for the next one!",
             "Codex Review: Didn't find any major issues. Chef's kiss.",
             "Codex Review: Didn't find any major issues. Delightful!",
             "Codex Review: Didn't find any major issues. Nice work!",
@@ -2721,6 +2722,7 @@ exit 74
             "Codex Review: Didn't find any major issues. "
             "More of your lovely PRs please.",
             "Codex Review: Didn't find any major issues. You're on a roll.",
+            "Codex Review: Didn't find any major issues. What shall we delve into next?",
         )
         for verdict in verdicts:
             with self.subTest(verdict=verdict):

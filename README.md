@@ -18,6 +18,13 @@ Use it when APIs, schemas, generated contracts, configuration, or package
 surfaces cross language and build-system boundaries. Internal refactors stay
 visible without being confused with public-contract changes.
 
+Compilers, schema checkers, affected-build graphs, tests, and release tools each
+answer one part of that workflow. Boundver supplies the portable, Git-backed
+evidence between them: which declared contract family drifted and which direct
+or transitive consumers should be re-verified. It complements those tools
+rather than replacing them; see the [comparison and integration
+guide](https://yzm1.github.io/boundver/comparison/).
+
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
 The install and Action examples below target the exact v0.14.0 release so local
