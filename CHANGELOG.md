@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the generic shield/check branding with a Boundver-specific boundary
+  change mark and added a transparent project-avatar asset.
+
 ### Fixed
 
 - Corrected the recorded 0.12.0 release date to match its immutable tagged
