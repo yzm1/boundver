@@ -59,6 +59,7 @@ REQUIRED_PROJECT_URLS = {
     "GitHub Action": "https://github.com/marketplace/actions/boundver",
     "Container": "https://github.com/yzm1/boundver/pkgs/container/boundver",
     "Homebrew": "https://github.com/yzm1/homebrew-boundver",
+    "GitLab CI/CD Catalog": "https://gitlab.com/boundver-project/boundver",
 }
 
 
