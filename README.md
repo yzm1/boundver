@@ -34,7 +34,7 @@ guide](https://yzm1.github.io/boundver/comparison/).
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
-The install and Action examples below target the exact v0.14.0 release so local
+The install and Action examples below target the exact v0.14.1 release so local
 writers and CI verifiers use the same contract implementation.
 
 ## Try it in one minute
@@ -96,7 +96,7 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.1/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -265,7 +265,7 @@ the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 ## GitHub Actions
 
 Pin the Action to the same lock-contract release used by local writers (for
-the latest stable release, `yzm1/boundver@v0.14.0`). The
+the latest stable release, `yzm1/boundver@v0.14.1`). The
 [CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
 the canonical workflow recipe and covers outputs, changed-path reporting,
 GitLab, pre-commit, and caching.
@@ -351,8 +351,8 @@ container, install the repository's exact pin with `--upgrade` and assert the
 imported version before generating or verifying a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
-python -c "import boundver; assert boundver.__version__ == '0.14.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
+python -c "import boundver; assert boundver.__version__ == '0.14.1', boundver.__version__"
 ```
 
 In persistent automation, invoke commands as `python -m boundver ...` with that

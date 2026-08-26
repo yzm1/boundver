@@ -31,8 +31,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
-python -c "import boundver; assert boundver.__version__ == '0.14.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
+python -c "import boundver; assert boundver.__version__ == '0.14.1', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -80,7 +80,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.1/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -258,7 +258,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.14.0
+      - uses: yzm1/boundver@v0.14.1
         with:
           config: boundary.config.json
           lock: boundary.lock.json

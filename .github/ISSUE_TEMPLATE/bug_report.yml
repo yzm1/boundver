@@ -13,7 +13,7 @@ body:
     attributes:
       label: boundver version
       description: Paste the output of `boundver --version`.
-      placeholder: boundver 0.14.0
+      placeholder: boundver 0.14.1
     validations:
       required: true
   - type: input

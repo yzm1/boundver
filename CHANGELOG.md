@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-08-26
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
 ### Changed
 
 - Replaced the generic shield/check branding with a Boundver-specific boundary
@@ -34,7 +43,7 @@ All notable changes to this project are documented here. The format follows
   trusted Codex review app while retaining a positive verdict allowlist.
 - Corrected the GitLab CI/CD Catalog component address to its public
   `boundver-project/boundver` namespace.
-- Trust the exact GitLab checkout directory before invoking Git so the Catalog
+- Trusted the exact GitLab checkout directory before invoking Git so the Catalog
   container works with GitLab Runner's mounted repository ownership.
 
 ## [0.14.0] - 2026-08-25
@@ -579,7 +588,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/yzm1/boundver/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/yzm1/boundver/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/yzm1/boundver/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/yzm1/boundver/compare/v0.11.0...v0.12.0
