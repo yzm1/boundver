@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
 - Disabled implicit network retrieval during optional JSON Schema validation
   and raised the `schema` extra's minimum to `jsonschema>=4.18` for the explicit
   offline registry API.
+- Made `verify --changed-from` render its resolved `changed_components`
+  scheduling hint in ordinary text output, including an explicit zero result,
+  while continuing to validate full lock integrity.
 - Corrected the recorded 0.12.0 release date to match its immutable tagged
   commit and public release.
 - Accepted the remaining clean status flourishes already observed from the

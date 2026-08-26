@@ -43,6 +43,9 @@ boundver verify --source index
 `--changed-from` is reporting and scheduling information, not a shortcut.
 Boundver still recomputes full lock integrity, so unchanged paths cannot hide
 stale metadata in a component you did not touch.
+Ordinary text output always names the resolved changed-component paths and
+prints an explicit zero result; structured output carries the same selection in
+`changed_components`.
 
 ### Diagnostic bases
 
