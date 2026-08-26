@@ -16,6 +16,7 @@ REQUIRED_SNIPPETS = (
     "  component: [version]",
     'name: ghcr.io/yzm1/boundver:$[[ component.version ]]',
     'entrypoint: [""]',
+    'git config --global --add safe.directory "$CI_PROJECT_DIR"',
     "set -- boundver verify",
     '--format json',
     '"$@"',

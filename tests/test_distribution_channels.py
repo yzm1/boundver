@@ -54,6 +54,9 @@ def test_gitlab_component_is_version_bound_and_validated():
     component = (ROOT / "templates" / "boundver.yml").read_text(encoding="utf-8")
     assert "component: [version]" in component
     assert "ghcr.io/yzm1/boundver:$[[ component.version ]]" in component
+    safe_directory = 'git config --global --add safe.directory "$CI_PROJECT_DIR"'
+    assert safe_directory in component
+    assert component.index(safe_directory) < component.index("set -- boundver verify")
     assert re.search(r"(?m)^\s+type: boolean$", component)
 
 

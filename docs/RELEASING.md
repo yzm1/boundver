@@ -479,7 +479,7 @@ Then verify:
 - `brew install yzm1/boundver/boundver` installs `X.Y.Z` from the immutable
   `.pyz` asset and the tap formula's checksum matches `SHA256SUMS`.
 - The GitLab Catalog lists exact component version `X.Y.Z`, and a minimal
-  consumer pipeline resolves it to `ghcr.io/yzm1/boundver:X.Y.Z`.
+  consumer pipeline runs successfully with `ghcr.io/yzm1/boundver:X.Y.Z`.
 - `git ls-remote origin refs/tags/vX.Y.Z refs/tags/vX.Y` resolves the exact tag
   and intended compatibility-line alias to the release commit; broader aliases
   remain on their deliberately supported line.

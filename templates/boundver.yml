@@ -53,6 +53,8 @@ spec:
   script:
     - |
       set -eu
+      : "${CI_PROJECT_DIR:?CI_PROJECT_DIR is required}"
+      git config --global --add safe.directory "$CI_PROJECT_DIR"
       set -- boundver verify \
         --config "$BOUNDVER_CONFIG" \
         --lock "$BOUNDVER_LOCK" \

@@ -20,6 +20,8 @@ All notable changes to this project are documented here. The format follows
   trusted Codex review app while retaining a positive verdict allowlist.
 - Corrected the GitLab CI/CD Catalog component address to its public
   `boundver-project/boundver` namespace.
+- Trust the exact GitLab checkout directory before invoking Git so the Catalog
+  container works with GitLab Runner's mounted repository ownership.
 
 ## [0.14.0] - 2026-08-25
 
