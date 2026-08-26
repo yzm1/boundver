@@ -1077,29 +1077,57 @@ def _compile_glob_class(
 ) -> Tuple[bool, Tuple[Tuple[int, int], ...]]:
     """Compile a normalized shell class to bounded code-point intervals."""
     chunks = _normalize_glob_class_chunks(content, spend_step)
-    negated = bool(chunks and chunks[0].startswith("!"))
-    intervals: List[Tuple[int, int]] = []
-
+    # Keep normalized range separators distinct from literal hyphens retained
+    # inside chunks.  Removing a leading negation marker can move a separator
+    # to the start of the class (for example ``[a-!!-a]`` normalizes to
+    # ``[^-a]``); a leading or trailing separator is a literal hyphen rather
+    # than a range operator.
+    units: List[Tuple[bool, str]] = []
     for chunk_index, chunk in enumerate(chunks):
-        for character_index, character in enumerate(chunk):
+        for character in chunk:
             spend_step()
-            if negated and chunk_index == 0 and character_index == 0:
-                continue
-            # Range endpoints are covered by the interval emitted below.  All
-            # other characters, including retained hyphens and backslashes,
-            # are literal class members.
-            is_left_endpoint = (
-                chunk_index < len(chunks) - 1
-                and character_index == len(chunk) - 1
-            )
-            is_right_endpoint = chunk_index > 0 and character_index == 0
-            if not is_left_endpoint and not is_right_endpoint:
-                value = ord(character)
-                intervals.append((value, value))
-
+            units.append((False, character))
         if chunk_index < len(chunks) - 1:
             spend_step()
-            intervals.append((ord(chunk[-1]), ord(chunks[chunk_index + 1][0])))
+            units.append((True, "-"))
+
+    negated = bool(units and not units[0][0] and units[0][1] == "!")
+    unit_start = 1 if negated else 0
+    range_separators: Set[int] = set()
+    for unit_index in range(unit_start, len(units)):
+        spend_step()
+        is_separator, _character = units[unit_index]
+        if (
+            is_separator
+            and unit_index > unit_start
+            and unit_index + 1 < len(units)
+            and not units[unit_index - 1][0]
+            and not units[unit_index + 1][0]
+        ):
+            range_separators.add(unit_index)
+
+    intervals: List[Tuple[int, int]] = []
+    for unit_index in range(unit_start, len(units)):
+        spend_step()
+        is_separator, character = units[unit_index]
+        if is_separator:
+            if unit_index in range_separators:
+                intervals.append(
+                    (
+                        ord(units[unit_index - 1][1]),
+                        ord(units[unit_index + 1][1]),
+                    )
+                )
+            else:
+                intervals.append((ord("-"), ord("-")))
+            continue
+        if (
+            unit_index - 1 in range_separators
+            or unit_index + 1 in range_separators
+        ):
+            continue
+        value = ord(character)
+        intervals.append((value, value))
 
     return negated, tuple(intervals)
 
