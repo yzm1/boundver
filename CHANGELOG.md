@@ -12,6 +12,8 @@ All notable changes to this project are documented here. The format follows
   commit and public release.
 - Accepted the remaining clean status flourishes already observed from the
   trusted Codex review app while retaining a positive verdict allowlist.
+- Corrected the GitLab CI/CD Catalog component address to its public
+  `boundver-project/boundver` namespace.
 
 ## [0.14.0] - 2026-08-25
 
