@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from boundver._config import validate_config
+from boundver._config import _schema_engine_errors, validate_config
 from boundver._git import changed_components_since_ref
 from boundver._lockfile import generate_lockfile
 from boundver.providers import PathHashProvider, ProviderContext, compute_boundary
@@ -102,7 +102,6 @@ class SchemaIndependentConfigValidationTests(unittest.TestCase):
                             any("non-string mapping key" in error for error in errors),
                             errors,
                         )
-
                 with self.subTest(kind="slice", name=invalid_name):
                     config = self._valid_config(root)
                     config["slices"] = {
@@ -119,6 +118,22 @@ class SchemaIndependentConfigValidationTests(unittest.TestCase):
                             any("non-string mapping key" in error for error in errors),
                             errors,
                         )
+
+
+class SchemaReferenceSafetyTests(unittest.TestCase):
+    def test_schema_validation_never_retrieves_remote_references(self):
+        try:
+            import jsonschema  # noqa: F401
+            import referencing  # noqa: F401
+        except ImportError:
+            self.skipTest("jsonschema/referencing is unavailable")
+
+        schema = {"$ref": "https://example.invalid/untrusted-schema.json"}
+        with patch("urllib.request.urlopen") as urlopen:
+            errors = _schema_engine_errors({}, schema)
+
+        urlopen.assert_not_called()
+        self.assertTrue(any("Unresolvable" in error for error in errors), errors)
 
 
 class SourceAwareValidationTests(unittest.TestCase):

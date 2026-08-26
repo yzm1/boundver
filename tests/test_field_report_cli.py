@@ -487,7 +487,38 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             )
             jsonschema.validate(payload, schema)
 
-    def test_explain_working_tree_uses_filesystem_for_unborn_empty_index(self):
+    def test_analysis_preserves_legacy_invalid_range_normalization(self):
+        for pattern in ("[a--!]*", "[a-!!-a]*"):
+            with self.subTest(pattern=pattern):
+                config = {
+                    "project": "p",
+                    "components": {
+                        "svc": {
+                            "path": "svc",
+                            "boundary": {
+                                "provider": "openapi",
+                                "paths": [pattern],
+                            },
+                        }
+                    },
+                    "slices": {},
+                }
+                with patch(
+                    "boundver._migration_analysis._component_files",
+                    return_value=["b", "nested/b"],
+                ):
+                    payload = self._analyze(config, Path("unused"))
+
+                declaration = payload["declarations"][0]
+                self.assertEqual(declaration["analysis_status"], "compared")
+                self.assertEqual(declaration["impact"], "narrowed")
+                self.assertEqual(declaration["legacy_match_count"], 2)
+                self.assertEqual(declaration["current_match_count"], 1)
+                self.assertEqual(
+                    declaration["legacy_only_examples"], ["nested/b"]
+                )
+
+    def test_explain_working_tree_uses_untracked_files_for_unborn_empty_index(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)
@@ -887,6 +918,34 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 core.GuardrailError,
                 "100-step aggregate matching-work limit",
+            ):
+                self._analyze(config, Path("unused"))
+
+    def test_analysis_charges_legacy_segment_regex_work_to_global_budget(self):
+        pattern = "*a*a*a*a*ab"
+        config = {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {
+                        "provider": "openapi",
+                        "paths": [pattern],
+                    },
+                }
+            },
+            "slices": {},
+        }
+        with patch(
+            "boundver._migration_analysis._component_files",
+            return_value=["a" * 4000],
+        ), patch(
+            "boundver._migration_analysis.MAX_SELECTOR_MATCH_EVALUATIONS",
+            1000,
+        ):
+            with self.assertRaisesRegex(
+                core.GuardrailError,
+                "1000-step aggregate matching-work limit",
             ):
                 self._analyze(config, Path("unused"))
 

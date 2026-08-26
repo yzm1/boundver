@@ -18,6 +18,7 @@ from boundver._git import (
     git_latest_tag,
     changed_components_since_ref,
 )
+from boundver._utils import GuardrailError
 from tests._repo_fixtures import init_git_repo as _init_git_repo
 
 
@@ -82,6 +83,15 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo.pyc"))
         self.assertFalse(rules.is_ignored("foo.py"))
 
+    def test_gitignore_leading_slash_anchors_slashless_pattern(self):
+        rules = _GitignoreRules()
+        rules.add("/foo")
+
+        self.assertTrue(rules.is_ignored("foo"))
+        self.assertTrue(rules.is_ignored("foo/contract.json"))
+        self.assertFalse(rules.is_ignored("nested/foo"))
+        self.assertFalse(rules.is_ignored("nested/foo/contract.json"))
+
     def test_gitignore_rules_directory_pattern(self):
         """Patterns with / match from root."""
         rules = _GitignoreRules()
@@ -123,6 +133,50 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo/x/y/bar"))
         self.assertFalse(rules.is_ignored("baz/foo/bar"))
 
+    def test_unborn_listing_uses_installed_gitignore_semantics(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("a**/b\n", encoding="utf-8")
+            for relative in ("ax/b", "a/x/b"):
+                candidate = root / relative
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                candidate.write_text("contract\n", encoding="utf-8")
+
+            git_results = {
+                relative: subprocess.run(
+                    ["git", "check-ignore", "-v", "--no-index", "--", relative],
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                for relative in ("ax/b", "a/x/b")
+            }
+            files = set(_list_files_for_source(root, ".", "working-tree"))
+
+        self.assertEqual(git_results["ax/b"].returncode, 0)
+        for relative, result in git_results.items():
+            with self.subTest(relative=relative):
+                self.assertEqual(relative not in files, result.returncode == 0)
+
+    def test_gitignore_trailing_doublestar_requires_a_descendant(self):
+        rules = _GitignoreRules()
+        rules.add("src/**")
+
+        self.assertFalse(rules.is_ignored("src"))
+        self.assertTrue(rules.is_ignored("src/module.py"))
+        self.assertTrue(rules.is_ignored("src/package/module.py"))
+
+    def test_gitignore_many_middle_doublestars_have_bounded_work(self):
+        rules = _GitignoreRules()
+        pattern = "a" + "/**/a" * 11 + "/z"
+        candidate = "/".join(["a"] * 33) + "/y"
+        rules.add(pattern)
+
+        self.assertFalse(rules.is_ignored(candidate))
+        self.assertLess(rules._match_steps, 10_000)
+
 
 class ListFilesForSourceTests(unittest.TestCase):
     """Tests for _list_files_for_source filesystem fallback."""
@@ -142,6 +196,61 @@ class ListFilesForSourceTests(unittest.TestCase):
             self.assertIn("svc/main.py", result)
             self.assertNotIn("svc/debug.log", result)
             self.assertNotIn("svc/build/out.js", result)
+
+    def test_unborn_repository_fallback_bounds_adversarial_gitignore(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pattern = "a" + "/**/a" * 11 + "/z"
+            (root / ".gitignore").write_text(pattern + "\n", encoding="utf-8")
+            directory = root
+            for _ in range(33):
+                directory /= "a"
+                directory.mkdir()
+            candidate = directory / "y"
+            candidate.write_text("contract\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "a", "working-tree")
+
+            self.assertIn(candidate.relative_to(root).as_posix(), files)
+
+    def test_unborn_fallback_trailing_doublestar_keeps_same_named_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("src/**\n", encoding="utf-8")
+            (root / "src").write_text("contract\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "src", "working-tree")
+
+            self.assertIn("src", files)
+
+    def test_unborn_fallback_preserves_root_anchored_ignore_rule(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("/foo\n", encoding="utf-8")
+            nested = root / "nested" / "foo"
+            nested.mkdir(parents=True)
+            contract = nested / "contract.json"
+            contract.write_text("{}\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "nested", "working-tree")
+
+            self.assertIn("nested/foo/contract.json", files)
+
+    def test_gitignore_rule_count_fails_closed(self):
+        rules = _GitignoreRules()
+        with patch("boundver._git.MAX_GITIGNORE_RULES", 1):
+            rules.add("first")
+            with self.assertRaisesRegex(GuardrailError, "more than 1 rules"):
+                rules.add("second")
+
+    def test_gitignore_aggregate_match_budget_fails_closed(self):
+        rules = _GitignoreRules()
+        rules.add("*.log")
+        with patch("boundver._git.MAX_GITIGNORE_MATCH_STEPS", 3):
+            with self.assertRaisesRegex(GuardrailError, "aggregate matcher steps"):
+                rules.is_ignored("nested/debug.log")
 
     def test_filesystem_fallback_single_file(self):
         """Falls back to single file when path is a file."""

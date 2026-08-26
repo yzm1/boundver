@@ -194,7 +194,7 @@ class GitSourceContractTests(unittest.TestCase):
                 [],
             )
 
-    def test_unborn_working_tree_uses_filesystem_for_initial_setup(self):
+    def test_unborn_working_tree_uses_untracked_files_for_initial_setup(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)

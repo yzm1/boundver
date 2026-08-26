@@ -1,6 +1,5 @@
 """Shared utilities, enums, and exception types for boundver."""
 
-import fnmatch
 import json
 import math
 import os
@@ -45,6 +44,8 @@ MAX_DECLARED_PATH_BYTES = 16 * 1024
 MAX_GLOB_PATH_BYTES = 64 * 1024
 MAX_GLOB_SEGMENTS = 1024
 MAX_GLOB_MATCH_STEPS = 100_000
+MAX_GLOB_PATTERN_SEGMENT_BYTES = 4 * 1024
+MAX_GLOB_METACHARACTERS_PER_SEGMENT = 256
 
 # Canonical public vocabularies. Keep ordering where it affects human output
 # or severity-independent iteration, and use the frozen sets for membership.
@@ -941,6 +942,33 @@ def _is_glob(pattern: str) -> bool:
     return any(c in pattern for c in ("*", "?", "["))
 
 
+def _validate_glob_pattern_complexity(pattern: str) -> None:
+    """Reject wildcard segments that exceed the public matching contract.
+
+    Whole declared paths have their own byte and segment limits.  These
+    per-segment limits keep a single wildcard expression bounded as well,
+    including when a caller reaches the matcher without config validation.
+    """
+    for segment in pattern.split("/"):
+        if not _is_glob(segment):
+            continue
+        try:
+            segment_bytes = len(segment.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError("glob segments must contain valid Unicode") from exc
+        if segment_bytes > MAX_GLOB_PATTERN_SEGMENT_BYTES:
+            raise ValueError(
+                "glob segments must not exceed "
+                f"{MAX_GLOB_PATTERN_SEGMENT_BYTES} UTF-8 bytes"
+            )
+        metacharacters = sum(character in "*?[" for character in segment)
+        if metacharacters > MAX_GLOB_METACHARACTERS_PER_SEGMENT:
+            raise ValueError(
+                "glob segments must not contain more than "
+                f"{MAX_GLOB_METACHARACTERS_PER_SEGMENT} wildcard metacharacters"
+            )
+
+
 def _normalize_declared_path(path: str) -> str:
     """Return a canonical component/repository-relative declared path.
 
@@ -979,7 +1007,303 @@ def _normalize_declared_path(path: str) -> str:
         raise ValueError(
             "must not contain '..' path segments; the path escapes its declared root"
         )
+    _validate_glob_pattern_complexity(normalized)
     return normalized
+
+
+_GLOB_LITERAL = 0
+_GLOB_ANY = 1
+_GLOB_STAR = 2
+_GLOB_CLASS = 3
+
+
+def _normalize_glob_class_chunks(
+    content: str,
+    spend_step: Callable[[], None],
+) -> Tuple[str, ...]:
+    """Normalize one character class using stable ``fnmatch`` semantics.
+
+    CPython 3.10+ removes reversed ranges before compiling a shell class.  That
+    normalization has observable edge cases: for example, ``[a--c]`` becomes
+    ``[c]`` and ``[a--!]`` becomes a single-character wildcard.  Reproduce the
+    normalization directly so supported runtimes agree without invoking the
+    regex engine.  Hyphens retained inside a chunk are literals; hyphens
+    between chunks are ranges.
+    """
+    chunks: List[str] = []
+    chunk_start = 0
+    search_index = 2 if content.startswith("!") else 1
+    content_length = len(content)
+
+    # A leading hyphen (or one immediately after ``!``) is literal.  After a
+    # range separator, skip its two endpoints before looking for another range
+    # separator.  This is the bounded equivalent of fnmatch's class splitting.
+    while search_index < content_length:
+        spend_step()
+        if content[search_index] != "-":
+            search_index += 1
+            continue
+        chunks.append(content[chunk_start:search_index])
+        chunk_start = search_index + 1
+        search_index += 3
+
+    if not chunks:
+        return (content,)
+
+    tail = content[chunk_start:]
+    if tail:
+        chunks.append(tail)
+    else:
+        # A final hyphen is literal rather than a range separator.
+        chunks[-1] += "-"
+
+    # Remove reversed ranges from right to left exactly as fnmatch does.  An
+    # invalid range can collapse the complete class to an empty or negated
+    # empty class, represented here without a regex.
+    for chunk_index in range(len(chunks) - 1, 0, -1):
+        spend_step()
+        previous = chunks[chunk_index - 1]
+        current = chunks[chunk_index]
+        if previous[-1] > current[0]:
+            chunks[chunk_index - 1] = previous[:-1] + current[1:]
+            del chunks[chunk_index]
+
+    return tuple(chunks)
+
+
+def _compile_glob_class(
+    content: str,
+    spend_step: Callable[[], None],
+) -> Tuple[bool, Tuple[Tuple[int, int], ...]]:
+    """Compile a normalized shell class to bounded code-point intervals."""
+    chunks = _normalize_glob_class_chunks(content, spend_step)
+    # Keep normalized range separators distinct from literal hyphens retained
+    # inside chunks.  Removing a leading negation marker can move a separator
+    # to the start of the class (for example ``[a-!!-a]`` normalizes to
+    # ``[^-a]``); a leading or trailing separator is a literal hyphen rather
+    # than a range operator.
+    units: List[Tuple[bool, str]] = []
+    for chunk_index, chunk in enumerate(chunks):
+        for character in chunk:
+            spend_step()
+            units.append((False, character))
+        if chunk_index < len(chunks) - 1:
+            spend_step()
+            units.append((True, "-"))
+
+    negated = bool(units and not units[0][0] and units[0][1] == "!")
+    unit_start = 1 if negated else 0
+    range_separators: Set[int] = set()
+    for unit_index in range(unit_start, len(units)):
+        spend_step()
+        is_separator, _character = units[unit_index]
+        if (
+            is_separator
+            and unit_index > unit_start
+            and unit_index + 1 < len(units)
+            and not units[unit_index - 1][0]
+            and not units[unit_index + 1][0]
+        ):
+            range_separators.add(unit_index)
+
+    intervals: List[Tuple[int, int]] = []
+    for unit_index in range(unit_start, len(units)):
+        spend_step()
+        is_separator, character = units[unit_index]
+        if is_separator:
+            if unit_index in range_separators:
+                intervals.append(
+                    (
+                        ord(units[unit_index - 1][1]),
+                        ord(units[unit_index + 1][1]),
+                    )
+                )
+            else:
+                intervals.append((ord("-"), ord("-")))
+            continue
+        if (
+            unit_index - 1 in range_separators
+            or unit_index + 1 in range_separators
+        ):
+            continue
+        value = ord(character)
+        intervals.append((value, value))
+
+    return negated, tuple(intervals)
+
+
+def _compile_text_glob(
+    pattern: str,
+    spend_step: Callable[[], None],
+) -> Tuple[tuple, ...]:
+    """Compile one shell-style text glob without constructing a regex."""
+    tokens: List[tuple] = []
+    index = 0
+    pattern_length = len(pattern)
+    while index < pattern_length:
+        spend_step()
+        character = pattern[index]
+        if character == "*":
+            if not tokens or tokens[-1][0] != _GLOB_STAR:
+                tokens.append((_GLOB_STAR, None))
+            index += 1
+            continue
+        if character == "?":
+            tokens.append((_GLOB_ANY, None))
+            index += 1
+            continue
+        if character != "[":
+            tokens.append((_GLOB_LITERAL, character))
+            index += 1
+            continue
+
+        # Match fnmatch's documented class grammar: ! negates a class, ] is
+        # literal in the first class position, and an unclosed [ is literal.
+        closing = index + 1
+        if closing < pattern_length and pattern[closing] == "!":
+            closing += 1
+        if closing < pattern_length and pattern[closing] == "]":
+            closing += 1
+        while closing < pattern_length and pattern[closing] != "]":
+            spend_step()
+            closing += 1
+        if closing >= pattern_length:
+            tokens.append((_GLOB_LITERAL, "["))
+            index += 1
+            continue
+
+        content = pattern[index + 1 : closing]
+        tokens.append((_GLOB_CLASS, _compile_glob_class(content, spend_step)))
+        index = closing + 1
+    return tuple(tokens)
+
+
+def _glob_token_matches(
+    token: tuple,
+    character: str,
+    spend_step: Callable[[], None],
+) -> bool:
+    kind, value = token
+    if kind == _GLOB_LITERAL:
+        return character == value
+    if kind == _GLOB_ANY:
+        return True
+    if kind != _GLOB_CLASS:  # pragma: no cover - internal compiler invariant
+        return False
+    negated, intervals = value
+    codepoint = ord(character)
+    matched = False
+    for lower, upper in intervals:
+        spend_step()
+        if lower <= codepoint <= upper:
+            matched = True
+            break
+    return not matched if negated else matched
+
+
+def _bounded_text_equal(
+    candidate: str,
+    pattern: str,
+    spend_step: Callable[[], None],
+) -> bool:
+    if len(candidate) != len(pattern):
+        spend_step()
+        return False
+    for candidate_character, pattern_character in zip(candidate, pattern):
+        spend_step()
+        if candidate_character != pattern_character:
+            return False
+    return True
+
+
+def _match_compiled_text_glob(
+    candidate: str,
+    tokens: Tuple[tuple, ...],
+    spend_step: Callable[[], None],
+) -> bool:
+    """Run a bounded NFA over one already-compiled text glob."""
+    token_count = len(tokens)
+
+    def epsilon_closure(states: Set[int]) -> Set[int]:
+        closed = set(states)
+        pending = list(states)
+        while pending:
+            token_index = pending.pop()
+            spend_step()
+            if (
+                token_index < token_count
+                and tokens[token_index][0] == _GLOB_STAR
+                and token_index + 1 not in closed
+            ):
+                closed.add(token_index + 1)
+                pending.append(token_index + 1)
+        return closed
+
+    states = epsilon_closure({0})
+    for character in candidate:
+        next_states: Set[int] = set()
+        for token_index in states:
+            spend_step()
+            if token_index >= token_count:
+                continue
+            token = tokens[token_index]
+            if token[0] == _GLOB_STAR:
+                next_states.add(token_index)
+            elif _glob_token_matches(token, character, spend_step):
+                next_states.add(token_index + 1)
+        states = epsilon_closure(next_states)
+        if not states:
+            return False
+    states = epsilon_closure(states)
+    return token_count in states
+
+
+def _match_text_glob(
+    candidate: str,
+    pattern: str,
+    *,
+    _step_consumer: Optional[Callable[[int], None]] = None,
+) -> bool:
+    """Match a bounded shell-style glob against text, including ``/``."""
+    if not isinstance(candidate, str) or not isinstance(pattern, str):
+        return False
+    try:
+        candidate_bytes = len(candidate.encode("utf-8", errors="surrogateescape"))
+        pattern_bytes = len(pattern.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+    if candidate_bytes > MAX_GLOB_PATH_BYTES:
+        raise GuardrailError(
+            "Glob match guardrail exceeded: candidate path exceeds "
+            f"{MAX_GLOB_PATH_BYTES} UTF-8 bytes"
+        )
+    if pattern_bytes > MAX_DECLARED_PATH_BYTES:
+        raise GuardrailError(
+            "Glob match guardrail exceeded: pattern exceeds "
+            f"{MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
+        )
+    try:
+        _validate_glob_pattern_complexity(pattern)
+    except ValueError as exc:
+        raise GuardrailError(f"Glob match guardrail exceeded: {exc}") from exc
+
+    steps = 0
+
+    def spend_step() -> None:
+        nonlocal steps
+        steps += 1
+        if steps > MAX_GLOB_MATCH_STEPS:
+            raise GuardrailError(
+                "Glob match guardrail exceeded: more than "
+                f"{MAX_GLOB_MATCH_STEPS} matcher steps"
+            )
+        if _step_consumer is not None:
+            _step_consumer(1)
+
+    if not _is_glob(pattern):
+        return _bounded_text_equal(candidate, pattern, spend_step)
+    tokens = _compile_text_glob(pattern, spend_step)
+    return _match_compiled_text_glob(candidate, tokens, spend_step)
 
 
 def _match_path_glob(
@@ -987,13 +1311,14 @@ def _match_path_glob(
     pattern: str,
     *,
     _step_consumer: Optional[Callable[[int], None]] = None,
+    _allow_descendants: bool = False,
 ) -> bool:
     """Match a POSIX path with deterministic, segment-aware glob semantics.
 
-    Ordinary wildcard segments use :func:`fnmatch.fnmatchcase`, so ``*``,
-    ``?``, and character classes never cross ``/``.  A segment that is exactly
-    ``**`` consumes zero or more complete path segments.  Matching is always
-    case-sensitive and, like ``fnmatch``, includes leading-dot names.
+    Ordinary wildcard segments use a bounded NFA, so ``*``, ``?``, and
+    character classes never cross ``/``.  A segment that is exactly ``**``
+    consumes zero or more complete path segments.  Matching is always
+    case-sensitive and includes leading-dot names.
 
     Internal bounded-analysis callers may supply ``_step_consumer`` to charge
     every NFA state/epsilon transition to an aggregate work budget.  The
@@ -1032,15 +1357,18 @@ def _match_path_glob(
             "Glob match guardrail exceeded: pattern exceeds "
             f"{MAX_GLOB_SEGMENTS} segments"
         )
+    try:
+        _validate_glob_pattern_complexity(pattern)
+    except ValueError as exc:
+        raise GuardrailError(f"Glob match guardrail exceeded: {exc}") from exc
 
     # Consecutive recursive wildcards are equivalent to one and needlessly
     # multiply the state space.
-    collapsed = []
+    collapsed: List[str] = []
     for token in pattern_parts:
         if token != "**" or not collapsed or collapsed[-1] != "**":
             collapsed.append(token)
     pattern_parts = tuple(collapsed)
-    pattern_count = len(pattern_parts)
     steps = 0
 
     def spend_step() -> None:
@@ -1054,6 +1382,17 @@ def _match_path_glob(
         if _step_consumer is not None:
             _step_consumer(1)
 
+    compiled_parts = []
+    for token in pattern_parts:
+        if token == "**":
+            compiled_parts.append(("recursive", None))
+        elif _is_glob(token):
+            compiled_parts.append(("glob", _compile_text_glob(token, spend_step)))
+        else:
+            compiled_parts.append(("literal", token))
+    compiled_parts = tuple(compiled_parts)
+    pattern_count = len(compiled_parts)
+
     def epsilon_closure(states: Set[int]) -> Set[int]:
         closed = set(states)
         pending = list(states)
@@ -1062,7 +1401,7 @@ def _match_path_glob(
             spend_step()
             if (
                 index < pattern_count
-                and pattern_parts[index] == "**"
+                and compiled_parts[index][0] == "recursive"
                 and index + 1 not in closed
             ):
                 closed.add(index + 1)
@@ -1076,12 +1415,20 @@ def _match_path_glob(
             spend_step()
             if index >= pattern_count:
                 continue
-            token = pattern_parts[index]
-            if token == "**":
+            kind, value = compiled_parts[index]
+            if kind == "recursive":
                 next_states.add(index)
-            elif fnmatch.fnmatchcase(segment, token):
+            elif kind == "literal" and _bounded_text_equal(
+                segment, value, spend_step
+            ):
+                next_states.add(index + 1)
+            elif kind == "glob" and _match_compiled_text_glob(
+                segment, value, spend_step
+            ):
                 next_states.add(index + 1)
         states = epsilon_closure(next_states)
+        if _allow_descendants and pattern_count in states:
+            return True
         if not states:
             return False
     states = epsilon_closure(states)

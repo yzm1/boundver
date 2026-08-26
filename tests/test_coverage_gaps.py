@@ -14,12 +14,12 @@ from tests._repo_fixtures import commit_all, init_git_repo
 
 
 # ---------------------------------------------------------------------------
-# _gitignore_pattern_to_regex — all ** positions
+# Bounded gitignore matcher — all ** positions
 # ---------------------------------------------------------------------------
 
 
-class TestGitignoreDoubleStarRegex(unittest.TestCase):
-    """Verify ** wildcard converts to correct regex for all positions."""
+class TestGitignoreDoubleStarMatcher(unittest.TestCase):
+    """Verify bounded ** matching at every pattern position."""
 
     def _match(self, pattern, path):
         rules = _GitignoreRules()

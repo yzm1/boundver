@@ -80,7 +80,9 @@ path matcher:
 | `api/**/*.yaml` | Direct and nested files below `api` |
 
 Within a segment, `*`, `?`, and `[abc]` follow shell-style matching. A complete
-`**` segment matches zero or more directories. Use `/`, not `\`. Empty,
+`**` segment matches zero or more directories. Wildcard-bearing segments are
+limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters, and matching fails
+closed on work-budget exhaustion. Use `/`, not `\`. Empty,
 absolute, traversing, and redundant paths are rejected. Every declared literal
 or pattern must match at least one file in the selected Git source snapshot.
 

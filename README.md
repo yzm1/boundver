@@ -157,7 +157,9 @@ explain output use the same case-sensitive grammar:
 
 Within one segment, `*`, `?`, and character classes such as `[ab]` use
 case-sensitive character matching; wildcards may match a leading `.`. A complete
-`**` segment matches zero or more directories. Every
+`**` segment matches zero or more directories. A wildcard-bearing segment is
+limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters; matching is
+budgeted and fails closed if the work limit is exceeded. Every
 declared literal or pattern must select at least one file; otherwise strict
 generation fails instead of hashing an empty contract.
 

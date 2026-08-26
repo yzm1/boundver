@@ -45,6 +45,8 @@ from boundver._utils import (
     ConfigError,
     GuardrailError,
     ProviderError,
+    MAX_GLOB_MATCH_STEPS,
+    MAX_GLOB_METACHARACTERS_PER_SEGMENT,
     MAX_GLOB_SEGMENTS,
     MAX_YAML_INTEGER_CHARACTERS,
     _bounded_int_to_decimal,
@@ -52,6 +54,8 @@ from boundver._utils import (
     _bounded_json_int,
     _bounded_yaml_int,
     _match_path_glob,
+    _match_text_glob,
+    _normalize_declared_path,
 )
 from tests import conftest as test_conftest
 from tests._repo_fixtures import commit_all as _commit_all
@@ -338,6 +342,22 @@ class IntegerRuntimeLimitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JSON decimal syntax"):
             _load_yaml_with_bounded_integers(tagged)
 
+    def test_malformed_yaml_diagnostic_does_not_echo_source_content(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is unavailable")
+
+        secret = "SECRET_TOKEN_abc123"
+        malformed = f"openapi: 3.1.0\npaths:\n  {secret}: [unclosed\n"
+        with self.assertRaises(ProviderError) as raised:
+            _parse_yaml_strict(malformed, "api.yaml")
+
+        diagnostic = str(raised.exception)
+        self.assertNotIn(secret, diagnostic)
+        self.assertIn("ParserError", diagnostic)
+        self.assertIn("line 3, column 24", diagnostic)
+
 
 class GlobComplexityTests(unittest.TestCase):
     def test_deep_double_star_match_is_iterative(self):
@@ -348,6 +368,49 @@ class GlobComplexityTests(unittest.TestCase):
         path = "/".join(["directory"] * (MAX_GLOB_SEGMENTS + 1))
         with self.assertRaisesRegex(GuardrailError, "segment"):
             _match_path_glob(path, "**")
+
+    def test_segment_matcher_accounts_for_former_backtracking_shape(self):
+        consumed = 0
+
+        def spend(amount: int) -> None:
+            nonlocal consumed
+            consumed += amount
+
+        self.assertFalse(
+            _match_text_glob(
+                "a" * 4000,
+                "*a*a*a*a*ab",
+                _step_consumer=spend,
+            )
+        )
+        self.assertGreater(consumed, 4000)
+        self.assertLess(consumed, MAX_GLOB_MATCH_STEPS)
+
+    def test_text_matcher_preserves_shell_character_class_semantics(self):
+        cases = (
+            ("a", "[a-c]", True),
+            ("z", "[!a-c]", True),
+            ("b", "[c-a]", False),
+            ("c", "[a--c]", True),
+            ("b", "[a--!]", True),
+            ("!", "[a--!]", True),
+            ("b", "[!c-a]", True),
+            ("!", "[a-!!-a]", True),
+            ("a", "[a-!!-a]", False),
+            ("-", "[a-!!-a]", False),
+            ("-", "[a-b-c]", True),
+            ("]", "[]]", True),
+            ("[", "[[]", True),
+            ("[x", "[x", True),
+        )
+        for candidate, pattern, expected in cases:
+            with self.subTest(candidate=candidate, pattern=pattern):
+                self.assertEqual(_match_text_glob(candidate, pattern), expected)
+
+    def test_glob_metacharacter_cap_is_enforced_during_path_validation(self):
+        pattern = "?" * (MAX_GLOB_METACHARACTERS_PER_SEGMENT + 1)
+        with self.assertRaisesRegex(ValueError, "wildcard metacharacters"):
+            _normalize_declared_path(pattern)
 
 
 class DiscoveryStreamingTests(unittest.TestCase):

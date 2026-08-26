@@ -25,7 +25,10 @@ from ._utils import (
     _bounded_diagnostic_repr,
     _bounded_sorted_paths,
     _iter_bounded_filesystem_paths,
+    _match_path_glob,
+    _match_text_glob,
     _read_bounded_path_bytes,
+    _validate_glob_pattern_complexity,
 )
 
 
@@ -51,6 +54,9 @@ _GIT_DIAGNOSTIC_TRUNCATION = b"\n...[Git diagnostic truncated by boundver]"
 MAX_FALLBACK_FILES = 50_000
 MAX_FALLBACK_TRAVERSAL_ENTRIES = 200_000
 MAX_GITIGNORE_BYTES = 1024 * 1024
+MAX_GITIGNORE_PATTERN_BYTES = MAX_GIT_PATH_BYTES
+MAX_GITIGNORE_RULES = 10_000
+MAX_GITIGNORE_MATCH_STEPS = 10_000_000
 
 
 def _git_text_encoding() -> str:
@@ -968,21 +974,61 @@ class _GitignoreRules:
     """Structured gitignore rules supporting negation (!) and ** globs."""
 
     def __init__(self) -> None:
-        self._rules: List[tuple] = []  # List[tuple[bool, str]]  (negate, pattern)
+        # Preserve root anchoring separately from the normalized pattern;
+        # otherwise stripping ``/`` would turn ``/foo`` into an any-depth rule.
+        self._rules: List[tuple] = []  # (negate, pattern, anchored)
+        self._has_negation = False
+        self._match_steps = 0
 
     def add(self, raw_line: str) -> None:
         negate = raw_line.startswith("!")
         pattern = raw_line[1:] if negate else raw_line
         pattern = pattern.rstrip("/")
+        anchored = pattern.startswith("/")
         if pattern:
-            self._rules.append((negate, pattern))
+            # A leading slash anchors a Git ignore rule at the repository root;
+            # slash-containing rules are already root-relative here.
+            pattern = pattern.lstrip("/")
+        if pattern:
+            try:
+                pattern_bytes = len(pattern.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                raise GuardrailError(
+                    "Gitignore guardrail exceeded: pattern contains invalid Unicode"
+                ) from exc
+            if pattern_bytes > MAX_GITIGNORE_PATTERN_BYTES:
+                raise GuardrailError(
+                    "Gitignore guardrail exceeded: pattern exceeds "
+                    f"{MAX_GITIGNORE_PATTERN_BYTES} UTF-8 bytes"
+                )
+            try:
+                _validate_glob_pattern_complexity(pattern)
+            except ValueError as exc:
+                raise GuardrailError(f"Gitignore guardrail exceeded: {exc}") from exc
+            if len(self._rules) >= MAX_GITIGNORE_RULES:
+                raise GuardrailError(
+                    "Gitignore guardrail exceeded: more than "
+                    f"{MAX_GITIGNORE_RULES} rules"
+                )
+            self._rules.append((negate, pattern, anchored))
+            self._has_negation = self._has_negation or negate
+
+    def _spend_match_steps(self, amount: int) -> None:
+        if amount < 0 or amount > MAX_GITIGNORE_MATCH_STEPS - self._match_steps:
+            raise GuardrailError(
+                "Gitignore guardrail exceeded: more than "
+                f"{MAX_GITIGNORE_MATCH_STEPS} aggregate matcher steps"
+            )
+        self._match_steps += amount
 
     def is_ignored(self, rel_path: str) -> bool:
         """Return True if rel_path should be excluded per gitignore rules."""
-        parts = rel_path.replace("\\", "/").split("/")
+        rel_path = rel_path.replace("\\", "/")
+        parts = rel_path.split("/")
         ignored = False
-        for negate, pattern in self._rules:
-            if self._matches(rel_path, parts, pattern):
+        for negate, pattern, anchored in self._rules:
+            self._spend_match_steps(1)
+            if self._matches(rel_path, parts, pattern, anchored=anchored):
                 ignored = not negate
         return ignored
 
@@ -994,86 +1040,44 @@ class _GitignoreRules:
         it preserves existing matching behavior while pruning the common
         all-exclusion case.
         """
-        if any(negate for negate, _pattern in self._rules):
+        if self._has_negation:
             return False
         return self.is_ignored(rel_path)
 
-    @staticmethod
-    def _matches(rel_path: str, parts: List[str], pattern: str) -> bool:
-        import fnmatch
-        # Handle ** recursive wildcard by converting to regex-friendly form
-        if "**" in pattern:
-            # "**/foo" matches foo at any depth
-            # "foo/**/bar" matches foo/bar, foo/x/bar, foo/x/y/bar etc.
-            regex = _gitignore_pattern_to_regex(pattern)
-            import re as _re
-            return _re.match(regex, rel_path) is not None
+    def _matches(
+        self,
+        rel_path: str,
+        parts: List[str],
+        pattern: str,
+        *,
+        anchored: bool,
+    ) -> bool:
         # Pattern without / matches any path component
         if "/" not in pattern:
-            return any(fnmatch.fnmatch(part, pattern) for part in parts)
-        # Pattern with / — match as prefix (directory) or full glob from root
-        if rel_path.startswith(pattern + "/") or rel_path == pattern:
-            return True
-        return fnmatch.fnmatch(rel_path, pattern)
-
-
-def _gitignore_pattern_to_regex(pattern: str) -> str:
-    """Convert a gitignore pattern with ** into a regex string."""
-    import re as _re
-    # Split on ** to get segments between recursive wildcards.
-    # "foo/**/bar" → ["foo/", "/bar"]
-    # "**/test" → ["", "/test"]
-    # "src/**" → ["src/", ""]
-    # "**" → ["", ""]
-    segments = pattern.split("**")
-    num_segments = len(segments)
-    regex_parts = []
-    for i, seg in enumerate(segments):
-        # Strip slashes that separate from the ** wildcard
-        if i > 0:
-            seg = seg.lstrip("/")
-        if i < num_segments - 1:
-            seg = seg.rstrip("/")
-        # Convert the segment's glob characters to regex
-        part = ""
-        for ch in seg:
-            if ch == "*":
-                part += "[^/]*"
-            elif ch == "?":
-                part += "[^/]"
-            elif ch == "/":
-                part += "/"
-            else:
-                part += _re.escape(ch)
-        regex_parts.append(part)
-
-    # Join with ** separators that depend on position:
-    result = ""
-    for i, part in enumerate(regex_parts):
-        if i > 0:
-            # Insert the ** separator between this part and the previous
-            prev_empty = (regex_parts[i - 1] == "")
-            curr_empty = (part == "")
-            if curr_empty and i == num_segments - 1:
-                # Trailing ** — match anything that follows the previous segment
-                # Require a slash separator if preceding segment is non-empty
-                if not prev_empty:
-                    result += "/.*"
-                else:
-                    result += ".*"
-            elif prev_empty and i == 1:
-                # Leading ** (already handled as prefix)
-                result += "(?:.*/)?" + part
-            else:
-                # Middle ** — optional path segments with required slash
-                result += "(?:/.*/|/)" + part
-        else:
-            if part == "" and num_segments > 1:
-                # Leading ** — will be handled by next iteration
-                pass
-            else:
-                result += part
-    return result + "$"
+            candidate_parts = parts[:1] if anchored else parts
+            for part in candidate_parts:
+                self._spend_match_steps(1)
+                if _match_text_glob(
+                    part,
+                    pattern,
+                    _step_consumer=self._spend_match_steps,
+                ):
+                    return True
+            return False
+        # Git gives a trailing ``/**`` stricter semantics than the generic
+        # recursive path glob: it matches everything *inside* the selected
+        # directory, but not the directory entry (or a regular file with that
+        # name) itself.  Requiring one final ordinary segment preserves that
+        # rule while still allowing ``**`` to consume any deeper directories.
+        match_pattern = pattern + "/*" if pattern.endswith("/**") else pattern
+        # A matched directory also ignores its descendants.  Prefix acceptance
+        # avoids repeated path slicing and nested recursive-wildcard regexes.
+        return _match_path_glob(
+            rel_path,
+            match_pattern,
+            _step_consumer=self._spend_match_steps,
+            _allow_descendants=True,
+        )
 
 
 def _matches_gitignore(rel_path: str, patterns: "_GitignoreRules") -> bool:
@@ -1146,13 +1150,32 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
 
     # An empty successful result is authoritative (for example, a legitimate
     # empty index). The one usability exception is an unborn repository in
-    # working-tree mode: before the first commit there is no tracked-file view,
-    # so use the bounded filesystem fallback to support initial setup.
-    if not result_files and source == "working-tree":
-        try:
-            _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
-        except subprocess.CalledProcessError:
-            git_failed = True
+    # working-tree mode: before the first commit there is no tracked-file view.
+    # Ask the installed Git to enumerate non-ignored bootstrap candidates so
+    # ignore behavior stays exact even across Git versions with different
+    # wildmatch edge semantics. The bounded filesystem matcher is reserved for
+    # directories that genuinely are not readable Git repositories.
+    if not result_files and source == "working-tree" and not git_failed:
+        head_oid = _resolve_head_oid(repo_root)
+        if head_oid is None:
+            bootstrap_args = [
+                "--literal-pathspecs",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                repo_rel_path,
+            ]
+            result_files = list(
+                _iter_bounded_git_paths(repo_root, bootstrap_args)
+            )
+            return [
+                path
+                for path in result_files
+                if (repo_root / path).exists()
+                or (repo_root / path).is_symlink()
+            ]
     if not git_failed:
         return result_files
 
