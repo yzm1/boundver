@@ -462,7 +462,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.14.0/spec/{schema_name}",
+                    f"v0.14.1/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):

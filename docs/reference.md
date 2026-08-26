@@ -199,7 +199,7 @@ schema annotation. A structural lock change must advance the lock schema and
 select a new canonical publication. The upgrade procedure is:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.14.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
 boundver validate-config
 # Stage changed config and every changed or newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml
