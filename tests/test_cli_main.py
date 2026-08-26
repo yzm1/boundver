@@ -1012,10 +1012,128 @@ class MainVerifyTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             _run_main("generate", "--source", "working-tree", repo_root=root)
-            code, _, _ = _run_main(
+            code, out, _ = _run_main(
                 "verify", "--source", "working-tree", "--changed-from", "HEAD", repo_root=root
             )
             self.assertEqual(code, 0)
+            self.assertIn(
+                "Changed component paths (0): none; validating full lock integrity.",
+                out,
+            )
+
+    def test_verify_changed_from_text_reports_changed_components(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            subprocess.run(
+                ["git", "add", "."], cwd=root, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "baseline"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            (root / "svc" / "main.py").write_text("x=2\n")
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--changed-from",
+                "HEAD",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_DRIFT, err)
+            self.assertIn(
+                "Changed component paths (1): svc; "
+                "validating full lock integrity.",
+                out,
+            )
+
+    def test_verify_changed_from_reports_safe_components_before_preflight(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            subprocess.run(
+                ["git", "add", "."], cwd=root, check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "baseline"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            subprocess.run(
+                ["git", "add", "boundary.lock.json"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "lock baseline"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            config_path = root / "boundary.config.json"
+            config = json.loads(config_path.read_text())
+            other_name = "other\nERROR: forged"
+            config["components"][other_name] = {
+                "path": "other",
+                "boundary": {"provider": "implicit"},
+            }
+            config_path.write_text(json.dumps(config) + "\n")
+            (root / "other").mkdir()
+            (root / "other" / "main.py").write_text("other\n")
+            subprocess.run(
+                ["git", "add", "boundary.config.json", "other/main.py"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--changed-from",
+                "HEAD",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, out + err)
+            self.assertIn(
+                "Changed component paths (2): other\\x0aERROR: forged, svc; "
+                "validating full lock integrity.",
+                out,
+            )
+            self.assertNotIn("\nERROR: forged", out)
+            self.assertIn("LOCKFILE component set differs from config", err)
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--changed-from",
+                "HEAD",
+                "--update",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            payload = json.loads(out)
+            self.assertTrue(payload["updated"])
+            self.assertEqual(payload["components_filter"], [])
+            self.assertEqual(payload["changed_components"], [other_name, "svc"])
 
     def test_verify_changed_from_uses_selected_head_snapshot(self):
         with tempfile.TemporaryDirectory() as td:

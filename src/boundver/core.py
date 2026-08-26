@@ -115,6 +115,7 @@ from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._output import (
     _bold as _bold,
+    _display_path,
     _green,
     _is_tty as _is_tty,
     _log,
@@ -1001,6 +1002,47 @@ def _cmd_verify(args, repo_root: Path) -> None:
     ]
     preflight_issues = _verify_lock_preflight_issues(config, lockfile)
     changed_components: List[str] = []
+    if args.changed_from:
+        try:
+            auto = changed_components_since_ref(
+                config,
+                repo_root,
+                args.changed_from,
+                source=args.source,
+                snapshot=snapshot,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            sys.exit(EXIT_USAGE)
+        if components_filter:
+            auto_set = set(auto)
+            components_filter = [c for c in components_filter if c in auto_set]
+        else:
+            components_filter = auto
+        # A path diff is only a scheduling hint, not proof that unselected lock
+        # entries are internally current. Recompute every component so stale
+        # metadata, provider upgrades, and digest errors cannot pass merely
+        # because another component happened to be selected. Resolve the hint
+        # before preflight so every text and JSON outcome reports it.
+        if not args.quiet and args.format != "json":
+            if components_filter:
+                print(
+                    f"Changed component paths ({len(components_filter)}): "
+                    + ", ".join(
+                        _display_path(component) for component in components_filter
+                    )
+                    + "; validating full lock integrity."
+                )
+            else:
+                print(
+                    "Changed component paths (0): none; "
+                    "validating full lock integrity."
+                )
+        changed_components = list(components_filter)
+        reported_components_filter = []
+        components_filter = []
+    else:
+        reported_components_filter = list(components_filter)
     scoped_preflight_update = (
         bool(preflight_issues)
         and args.update
@@ -1075,42 +1117,6 @@ def _cmd_verify(args, repo_root: Path) -> None:
             for issue in preflight_issues:
                 print(f"  - {issue}", file=sys.stderr)
         sys.exit(_drift_exit_code(preflight_issues))
-    if args.changed_from:
-        try:
-            auto = changed_components_since_ref(
-                config,
-                repo_root,
-                args.changed_from,
-                source=args.source,
-                snapshot=snapshot,
-            )
-        except ValueError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            sys.exit(EXIT_USAGE)
-        if components_filter:
-            auto_set = set(auto)
-            components_filter = [c for c in components_filter if c in auto_set]
-        else:
-            components_filter = auto
-        # A path diff is only a scheduling hint, not proof that unselected lock
-        # entries are internally current. Recompute every component so stale
-        # metadata, provider upgrades, and digest errors cannot pass merely
-        # because another component happened to be selected. Keep the resolved
-        # selection in JSON for observability.
-        if args.verbose and not args.quiet and args.format != "json":
-            if components_filter:
-                print(
-                    "Changed component paths: "
-                    + ", ".join(components_filter)
-                    + "; validating full lock integrity."
-                )
-            else:
-                print("No component paths changed; validating full lock integrity.")
-        changed_components = list(components_filter)
-        reported_components_filter = []
-        components_filter = []
-    else:
-        reported_components_filter = list(components_filter)
     observations: List[str] = []
     consumer_impact: List[dict] = []
     try:
