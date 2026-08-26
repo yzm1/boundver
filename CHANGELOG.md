@@ -15,10 +15,11 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Replaced regex-backed wildcard evaluation with deterministic, budgeted
-  matching for component selectors, migration analysis, and unborn-repository
-  `.gitignore` fallback; wildcard segments now also have explicit size and
-  complexity limits, and shell character-class normalization is stable across
-  supported Python versions.
+  matching for component selectors, migration analysis, and non-Git
+  `.gitignore` fallback; unborn repositories now ask the installed Git for a
+  bounded, version-exact non-ignored file listing. Wildcard segments also have
+  explicit size and complexity limits, and shell character-class normalization
+  is stable across supported Python versions.
 - Prevented malformed YAML diagnostics from copying source lines into CLI logs
   or GitHub Action outputs while retaining the parser type and location.
 - Disabled implicit network retrieval during optional JSON Schema validation

@@ -133,7 +133,7 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo/x/y/bar"))
         self.assertFalse(rules.is_ignored("baz/foo/bar"))
 
-    def test_gitignore_embedded_doublestar_stays_within_segment(self):
+    def test_unborn_listing_uses_installed_gitignore_semantics(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_git_repo(root)
@@ -153,13 +153,12 @@ class GitignoreTests(unittest.TestCase):
                 )
                 for relative in ("ax/b", "a/x/b")
             }
+            files = set(_list_files_for_source(root, ".", "working-tree"))
 
         self.assertEqual(git_results["ax/b"].returncode, 0)
-        self.assertEqual(git_results["a/x/b"].returncode, 1)
-        rules = _GitignoreRules()
-        rules.add("a**/b")
-        self.assertTrue(rules.is_ignored("ax/b"))
-        self.assertFalse(rules.is_ignored("a/x/b"))
+        for relative, result in git_results.items():
+            with self.subTest(relative=relative):
+                self.assertEqual(relative not in files, result.returncode == 0)
 
     def test_gitignore_trailing_doublestar_requires_a_descendant(self):
         rules = _GitignoreRules()
@@ -201,7 +200,6 @@ class ListFilesForSourceTests(unittest.TestCase):
     def test_unborn_repository_fallback_bounds_adversarial_gitignore(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            _init_git_repo(root)
             pattern = "a" + "/**/a" * 11 + "/z"
             (root / ".gitignore").write_text(pattern + "\n", encoding="utf-8")
             directory = root

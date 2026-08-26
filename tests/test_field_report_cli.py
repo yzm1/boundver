@@ -518,7 +518,7 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
                     declaration["legacy_only_examples"], ["nested/b"]
                 )
 
-    def test_explain_working_tree_uses_filesystem_for_unborn_empty_index(self):
+    def test_explain_working_tree_uses_untracked_files_for_unborn_empty_index(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)

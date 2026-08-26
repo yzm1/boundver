@@ -1150,13 +1150,32 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
 
     # An empty successful result is authoritative (for example, a legitimate
     # empty index). The one usability exception is an unborn repository in
-    # working-tree mode: before the first commit there is no tracked-file view,
-    # so use the bounded filesystem fallback to support initial setup.
-    if not result_files and source == "working-tree":
-        try:
-            _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
-        except subprocess.CalledProcessError:
-            git_failed = True
+    # working-tree mode: before the first commit there is no tracked-file view.
+    # Ask the installed Git to enumerate non-ignored bootstrap candidates so
+    # ignore behavior stays exact even across Git versions with different
+    # wildmatch edge semantics. The bounded filesystem matcher is reserved for
+    # directories that genuinely are not readable Git repositories.
+    if not result_files and source == "working-tree" and not git_failed:
+        head_oid = _resolve_head_oid(repo_root)
+        if head_oid is None:
+            bootstrap_args = [
+                "--literal-pathspecs",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                repo_rel_path,
+            ]
+            result_files = list(
+                _iter_bounded_git_paths(repo_root, bootstrap_args)
+            )
+            return [
+                path
+                for path in result_files
+                if (repo_root / path).exists()
+                or (repo_root / path).is_symlink()
+            ]
     if not git_failed:
         return result_files
 
