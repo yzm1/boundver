@@ -974,7 +974,9 @@ class _GitignoreRules:
     """Structured gitignore rules supporting negation (!) and ** globs."""
 
     def __init__(self) -> None:
-        self._rules: List[tuple] = []  # List[tuple[bool, str]]  (negate, pattern)
+        # Preserve root anchoring separately from the normalized pattern;
+        # otherwise stripping ``/`` would turn ``/foo`` into an any-depth rule.
+        self._rules: List[tuple] = []  # (negate, pattern, anchored)
         self._has_negation = False
         self._match_steps = 0
 
@@ -982,6 +984,7 @@ class _GitignoreRules:
         negate = raw_line.startswith("!")
         pattern = raw_line[1:] if negate else raw_line
         pattern = pattern.rstrip("/")
+        anchored = pattern.startswith("/")
         if pattern:
             # A leading slash anchors a Git ignore rule at the repository root;
             # slash-containing rules are already root-relative here.
@@ -1007,7 +1010,7 @@ class _GitignoreRules:
                     "Gitignore guardrail exceeded: more than "
                     f"{MAX_GITIGNORE_RULES} rules"
                 )
-            self._rules.append((negate, pattern))
+            self._rules.append((negate, pattern, anchored))
             self._has_negation = self._has_negation or negate
 
     def _spend_match_steps(self, amount: int) -> None:
@@ -1023,9 +1026,9 @@ class _GitignoreRules:
         rel_path = rel_path.replace("\\", "/")
         parts = rel_path.split("/")
         ignored = False
-        for negate, pattern in self._rules:
+        for negate, pattern, anchored in self._rules:
             self._spend_match_steps(1)
-            if self._matches(rel_path, parts, pattern):
+            if self._matches(rel_path, parts, pattern, anchored=anchored):
                 ignored = not negate
         return ignored
 
@@ -1041,10 +1044,18 @@ class _GitignoreRules:
             return False
         return self.is_ignored(rel_path)
 
-    def _matches(self, rel_path: str, parts: List[str], pattern: str) -> bool:
+    def _matches(
+        self,
+        rel_path: str,
+        parts: List[str],
+        pattern: str,
+        *,
+        anchored: bool,
+    ) -> bool:
         # Pattern without / matches any path component
         if "/" not in pattern:
-            for part in parts:
+            candidate_parts = parts[:1] if anchored else parts
+            for part in candidate_parts:
                 self._spend_match_steps(1)
                 if _match_text_glob(
                     part,

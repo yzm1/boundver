@@ -83,6 +83,15 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo.pyc"))
         self.assertFalse(rules.is_ignored("foo.py"))
 
+    def test_gitignore_leading_slash_anchors_slashless_pattern(self):
+        rules = _GitignoreRules()
+        rules.add("/foo")
+
+        self.assertTrue(rules.is_ignored("foo"))
+        self.assertTrue(rules.is_ignored("foo/contract.json"))
+        self.assertFalse(rules.is_ignored("nested/foo"))
+        self.assertFalse(rules.is_ignored("nested/foo/contract.json"))
+
     def test_gitignore_rules_directory_pattern(self):
         """Patterns with / match from root."""
         rules = _GitignoreRules()
@@ -188,6 +197,20 @@ class ListFilesForSourceTests(unittest.TestCase):
             files = _list_files_for_source(root, "src", "working-tree")
 
             self.assertIn("src", files)
+
+    def test_unborn_fallback_preserves_root_anchored_ignore_rule(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("/foo\n", encoding="utf-8")
+            nested = root / "nested" / "foo"
+            nested.mkdir(parents=True)
+            contract = nested / "contract.json"
+            contract.write_text("{}\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "nested", "working-tree")
+
+            self.assertIn("nested/foo/contract.json", files)
 
     def test_gitignore_rule_count_fails_closed(self):
         rules = _GitignoreRules()
