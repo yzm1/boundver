@@ -18,6 +18,7 @@ from boundver._git import (
     git_latest_tag,
     changed_components_since_ref,
 )
+from boundver._utils import GuardrailError
 from tests._repo_fixtures import init_git_repo as _init_git_repo
 
 
@@ -123,6 +124,15 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo/x/y/bar"))
         self.assertFalse(rules.is_ignored("baz/foo/bar"))
 
+    def test_gitignore_many_middle_doublestars_have_bounded_work(self):
+        rules = _GitignoreRules()
+        pattern = "a" + "/**/a" * 11 + "/z"
+        candidate = "/".join(["a"] * 33) + "/y"
+        rules.add(pattern)
+
+        self.assertFalse(rules.is_ignored(candidate))
+        self.assertLess(rules._match_steps, 10_000)
+
 
 class ListFilesForSourceTests(unittest.TestCase):
     """Tests for _list_files_for_source filesystem fallback."""
@@ -142,6 +152,37 @@ class ListFilesForSourceTests(unittest.TestCase):
             self.assertIn("svc/main.py", result)
             self.assertNotIn("svc/debug.log", result)
             self.assertNotIn("svc/build/out.js", result)
+
+    def test_unborn_repository_fallback_bounds_adversarial_gitignore(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            pattern = "a" + "/**/a" * 11 + "/z"
+            (root / ".gitignore").write_text(pattern + "\n", encoding="utf-8")
+            directory = root
+            for _ in range(33):
+                directory /= "a"
+                directory.mkdir()
+            candidate = directory / "y"
+            candidate.write_text("contract\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "a", "working-tree")
+
+            self.assertIn(candidate.relative_to(root).as_posix(), files)
+
+    def test_gitignore_rule_count_fails_closed(self):
+        rules = _GitignoreRules()
+        with patch("boundver._git.MAX_GITIGNORE_RULES", 1):
+            rules.add("first")
+            with self.assertRaisesRegex(GuardrailError, "more than 1 rules"):
+                rules.add("second")
+
+    def test_gitignore_aggregate_match_budget_fails_closed(self):
+        rules = _GitignoreRules()
+        rules.add("*.log")
+        with patch("boundver._git.MAX_GITIGNORE_MATCH_STEPS", 3):
+            with self.assertRaisesRegex(GuardrailError, "aggregate matcher steps"):
+                rules.is_ignored("nested/debug.log")
 
     def test_filesystem_fallback_single_file(self):
         """Falls back to single file when path is a file."""

@@ -135,7 +135,10 @@ Path selectors are case-sensitive:
 - `api/**/*.yaml` matches direct and deeper YAML files below `api`.
 
 `*`, `?`, and character classes stay within one segment and may match a leading
-`.`. A complete `**` segment matches zero or more directories. Raw providers,
+`.`. A complete `**` segment matches zero or more directories. A
+wildcard-bearing segment is limited to 4,096 UTF-8 bytes and 256 wildcard
+metacharacters; matching is budgeted and fails closed if that work limit is
+exceeded. Raw providers,
 canonical providers, behavior paths, validation, and explain output share this
 grammar. Every
 declaration must match at least one selected file during strict generation.

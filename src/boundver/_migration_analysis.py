@@ -9,7 +9,6 @@ providers had provider-specific selection rules.  This module records those
 cases explicitly instead of inventing a legacy match set.
 """
 
-import fnmatch
 import posixpath
 from bisect import bisect_left
 from pathlib import Path
@@ -21,6 +20,7 @@ from ._utils import (
     GuardrailError,
     _is_glob,
     _match_path_glob,
+    _match_text_glob,
     _normalize_declared_path,
 )
 from .providers import MAX_PROVIDER_DECLARATIONS
@@ -457,8 +457,11 @@ def analyze_selector_migration(
                 legacy = []
                 current = []
                 for candidate in files:
-                    spend_evaluations(1)
-                    if fnmatch.fnmatchcase(candidate, legacy_selector):
+                    if _match_text_glob(
+                        candidate,
+                        legacy_selector,
+                        _step_consumer=spend_evaluations,
+                    ):
                         legacy.append(candidate)
                 for candidate in files:
                     if _match_path_glob(

@@ -890,6 +890,34 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             ):
                 self._analyze(config, Path("unused"))
 
+    def test_analysis_charges_legacy_segment_regex_work_to_global_budget(self):
+        pattern = "*a*a*a*a*ab"
+        config = {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {
+                        "provider": "openapi",
+                        "paths": [pattern],
+                    },
+                }
+            },
+            "slices": {},
+        }
+        with patch(
+            "boundver._migration_analysis._component_files",
+            return_value=["a" * 4000],
+        ), patch(
+            "boundver._migration_analysis.MAX_SELECTOR_MATCH_EVALUATIONS",
+            1000,
+        ):
+            with self.assertRaisesRegex(
+                core.GuardrailError,
+                "1000-step aggregate matching-work limit",
+            ):
+                self._analyze(config, Path("unused"))
+
     def test_analysis_bounds_captured_path_index_work_for_empty_roots(self):
         from boundver._git import GitSourceSnapshot, GitTreeEntry
         from boundver._migration_analysis import analyze_selector_migration

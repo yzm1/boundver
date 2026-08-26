@@ -241,6 +241,18 @@ def _parse_yaml_strict(text: str, path_label: str) -> Any:
         return yaml.load(text, Loader=StrictOpenApiLoader)
     except ProviderError:
         raise
+    except yaml.MarkedYAMLError as exc:
+        # PyYAML's string form embeds the offending source line.  Contract
+        # contents must not be copied into CI logs or Action outputs merely
+        # because parsing failed; retain only the error kind and coordinates.
+        mark = exc.context_mark or exc.problem_mark
+        location = ""
+        if mark is not None:
+            location = f" at line {mark.line + 1}, column {mark.column + 1}"
+        raise ProviderError(
+            f"YAML parse failed for {path_label}: "
+            f"{exc.__class__.__name__}{location}"
+        ) from exc
     except Exception as exc:
         raise ProviderError(
             f"YAML parse failed for {path_label}: {_bounded_exception(exc)}"

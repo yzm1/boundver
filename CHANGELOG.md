@@ -14,6 +14,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Replaced regex-backed wildcard evaluation with deterministic, budgeted
+  matching for component selectors, migration analysis, and unborn-repository
+  `.gitignore` fallback; wildcard segments now also have explicit size and
+  complexity limits.
+- Prevented malformed YAML diagnostics from copying source lines into CLI logs
+  or GitHub Action outputs while retaining the parser type and location.
+- Disabled implicit network retrieval during optional JSON Schema validation
+  and raised the `schema` extra's minimum to `jsonschema>=4.18` for the explicit
+  offline registry API.
 - Corrected the recorded 0.12.0 release date to match its immutable tagged
   commit and public release.
 - Accepted the remaining clean status flourishes already observed from the

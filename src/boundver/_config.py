@@ -335,6 +335,7 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
         return []
     try:
         import jsonschema  # type: ignore
+        from referencing import Registry  # type: ignore
     except ImportError:
         return []
 
@@ -398,7 +399,10 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
                     target_value.append(transformed_child)
 
     try:
-        validator = jsonschema.Draft202012Validator(schema)
+        # An explicit empty registry resolves same-document fragments but has
+        # no retrieval callback.  Validation must never turn a schema $ref
+        # into an implicit network request.
+        validator = jsonschema.Draft202012Validator(schema, registry=Registry())
     except Exception as exc:  # pragma: no cover - defensive path
         try:
             detail = str(exc)

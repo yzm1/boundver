@@ -58,11 +58,11 @@ Homebrew = "https://github.com/yzm1/homebrew-boundver"
 "GitLab CI/CD Catalog" = "https://gitlab.com/boundver-project/boundver"
 
 [project.optional-dependencies]
-schema = ["jsonschema>=4"]
+schema = ["jsonschema>=4.18"]
 yaml = ["PyYAML>=6"]
 dev = [
   "pytest>=7,<9",
-  "jsonschema>=4",
+  "jsonschema>=4.18",
   "build>=1.2",
   "PyYAML>=6",
   "ruff==0.16.3",

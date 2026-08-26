@@ -1143,7 +1143,7 @@ class TestGlobPatterns(unittest.TestCase):
             files=files,
         )
 
-        with patch("boundver._utils.MAX_GLOB_MATCH_STEPS", 12):
+        with patch("boundver._utils.MAX_GLOB_MATCH_STEPS", 30):
             self.assertTrue(_match_path_glob("target", "**/target"))
             with self.assertRaisesRegex(GuardrailError, "matcher steps"):
                 _match_path_glob("z/z/z/z/z/target", "**/target")
