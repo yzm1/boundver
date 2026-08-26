@@ -1053,11 +1053,17 @@ class _GitignoreRules:
                 ):
                     return True
             return False
+        # Git gives a trailing ``/**`` stricter semantics than the generic
+        # recursive path glob: it matches everything *inside* the selected
+        # directory, but not the directory entry (or a regular file with that
+        # name) itself.  Requiring one final ordinary segment preserves that
+        # rule while still allowing ``**`` to consume any deeper directories.
+        match_pattern = pattern + "/*" if pattern.endswith("/**") else pattern
         # A matched directory also ignores its descendants.  Prefix acceptance
         # avoids repeated path slicing and nested recursive-wildcard regexes.
         return _match_path_glob(
             rel_path,
-            pattern,
+            match_pattern,
             _step_consumer=self._spend_match_steps,
             _allow_descendants=True,
         )

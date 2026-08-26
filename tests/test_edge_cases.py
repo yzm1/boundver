@@ -124,6 +124,14 @@ class GitignoreTests(unittest.TestCase):
         self.assertTrue(rules.is_ignored("foo/x/y/bar"))
         self.assertFalse(rules.is_ignored("baz/foo/bar"))
 
+    def test_gitignore_trailing_doublestar_requires_a_descendant(self):
+        rules = _GitignoreRules()
+        rules.add("src/**")
+
+        self.assertFalse(rules.is_ignored("src"))
+        self.assertTrue(rules.is_ignored("src/module.py"))
+        self.assertTrue(rules.is_ignored("src/package/module.py"))
+
     def test_gitignore_many_middle_doublestars_have_bounded_work(self):
         rules = _GitignoreRules()
         pattern = "a" + "/**/a" * 11 + "/z"
@@ -169,6 +177,17 @@ class ListFilesForSourceTests(unittest.TestCase):
             files = _list_files_for_source(root, "a", "working-tree")
 
             self.assertIn(candidate.relative_to(root).as_posix(), files)
+
+    def test_unborn_fallback_trailing_doublestar_keeps_same_named_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_git_repo(root)
+            (root / ".gitignore").write_text("src/**\n", encoding="utf-8")
+            (root / "src").write_text("contract\n", encoding="utf-8")
+
+            files = _list_files_for_source(root, "src", "working-tree")
+
+            self.assertIn("src", files)
 
     def test_gitignore_rule_count_fails_closed(self):
         rules = _GitignoreRules()
