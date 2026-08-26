@@ -6,16 +6,18 @@
       <stop stop-color="#11162c"/>
       <stop offset="1" stop-color="#0d2630"/>
     </linearGradient>
-    <linearGradient id="mark" x1="98" y1="154" x2="342" y2="420" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7180ff"/>
-      <stop offset="1" stop-color="#00b8d4"/>
-    </linearGradient>
   </defs>
   <rect width="1280" height="640" fill="url(#background)"/>
   <circle cx="1120" cy="110" r="250" fill="#4051b5" opacity=".16"/>
   <circle cx="1110" cy="590" r="330" fill="#00b8d4" opacity=".09"/>
-  <path fill="url(#mark)" d="M220 114 356 165v96c0 88-55 151-136 181-81-30-136-93-136-181v-96l136-51Z"/>
-  <path fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="27" d="m145 270 45 45 103-103"/>
+  <g transform="translate(60 90) scale(5.5)">
+    <path
+      fill="#6674f8"
+      fill-rule="evenodd"
+      d="M10 5h23c12 0 20 5.8 20 15.8 0 5.8-3 10.2-8.2 12.8C51.6 36 55 41.2 55 47.7 55 57.8 47.2 62 34 62H10V5Zm8 8v16h15c7.2 0 11-2.8 11-8s-3.8-8-11-8H18Zm0 24v17h16c8.1 0 12-2.8 12-8.5S42.1 37 34 37H18Z"
+    />
+    <path fill="#08b8d1" d="m40 32 7-7 7 7-7 7-7-7Z" />
+  </g>
   <text x="430" y="260" fill="#fff" font-family="Inter, Segoe UI, sans-serif" font-size="92" font-weight="750">boundver</text>
   <text x="434" y="338" fill="#aeb9ee" font-family="Inter, Segoe UI, sans-serif" font-size="35">Know which contracts changed.</text>
   <text x="434" y="390" fill="#8be9fd" font-family="Inter, Segoe UI, sans-serif" font-size="35">Verify the consumers that matter.</text>

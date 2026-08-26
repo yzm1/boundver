@@ -61,7 +61,7 @@ an exact semantic version:
 
 ```yaml
 include:
-  - component: gitlab.com/yzm1/boundver/boundver@<version>
+  - component: gitlab.com/boundver-project/boundver/boundver@<version>
     inputs:
       stage: test
       source: head

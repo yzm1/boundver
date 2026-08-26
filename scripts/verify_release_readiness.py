@@ -680,6 +680,7 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         "GitHub Action": "https://github.com/marketplace/actions/boundver",
         "Container": "https://github.com/yzm1/boundver/pkgs/container/boundver",
         "Homebrew": "https://github.com/yzm1/homebrew-boundver",
+        "GitLab CI/CD Catalog": "https://gitlab.com/boundver-project/boundver",
     }
     urls = project.get("urls")
     if not isinstance(urls, dict):
@@ -726,6 +727,7 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
         "https://pypi.org/project/boundver/",
         "https://github.com/marketplace/actions/boundver",
         "https://yzm1.github.io/boundver/",
+        "https://yzm1.github.io/boundver/assets/logo.png",
         "ghcr.io/yzm1/boundver:",
         "brew install yzm1/boundver/boundver",
         "https://yzm1.github.io/boundver/assets/verify-demo.svg",

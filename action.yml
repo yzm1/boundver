@@ -3,8 +3,8 @@ description: Classify contract drift and downstream impact across polyglot repos
 author: yzm1
 
 branding:
-  icon: shield
-  color: blue
+  icon: layers
+  color: purple
 
 inputs:
   config:

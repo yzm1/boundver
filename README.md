@@ -1,11 +1,18 @@
 # boundver
 
+<p align="center">
+  <a href="https://yzm1.github.io/boundver/">
+    <img src="https://yzm1.github.io/boundver/assets/logo.png" alt="boundver logo" width="128">
+  </a>
+</p>
+
 > Know which contracts changed — and which consumers to verify.
 
 [![CI](https://github.com/yzm1/boundver/actions/workflows/ci.yml/badge.svg)](https://github.com/yzm1/boundver/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-4051b5)](https://yzm1.github.io/boundver/)
 [![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-boundver-blue?logo=github)](https://github.com/marketplace/actions/boundver)
+[![GitLab Catalog](https://img.shields.io/badge/GitLab%20Catalog-boundver-FC6D26?logo=gitlab)](https://gitlab.com/boundver-project/boundver)
 [![Python 3.9+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 

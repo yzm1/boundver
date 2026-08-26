@@ -6,12 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Replaced the generic shield/check branding with a Boundver-specific boundary
+  change mark, aligned README/social/Marketplace presentation, and added a
+  transparent project-avatar asset plus GitLab Catalog metadata.
+
 ### Fixed
 
 - Corrected the recorded 0.12.0 release date to match its immutable tagged
   commit and public release.
 - Accepted the remaining clean status flourishes already observed from the
   trusted Codex review app while retaining a positive verdict allowlist.
+- Corrected the GitLab CI/CD Catalog component address to its public
+  `boundver-project/boundver` namespace.
 
 ## [0.14.0] - 2026-08-25
 
