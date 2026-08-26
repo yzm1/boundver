@@ -9,7 +9,8 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Replaced the generic shield/check branding with a Boundver-specific boundary
-  change mark and added a transparent project-avatar asset.
+  change mark, aligned README/social/Marketplace presentation, and added a
+  transparent project-avatar asset plus GitLab Catalog metadata.
 
 ### Fixed
 

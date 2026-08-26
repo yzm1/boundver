@@ -52,6 +52,10 @@ The repository owner must configure these controls before starting a release:
 - Keep the repository homepage pointed at the public Marketplace listing and
   keep the repository description/topics current. These are discovery
   metadata, not versioned release content.
+- Keep the GitHub social preview and GitLab Catalog project avatar synchronized
+  with `docs/assets/social-preview.png` and `docs/assets/logo.png`. Marketplace
+  Action badges support only GitHub's approved Feather icons and colors, so
+  `action.yml` uses the closest native branding rather than a custom image.
 - Maintain the public `yzm1/homebrew-boundver` tap. Formula changes must use
   the immutable `.pyz` release asset and its SHA-256, pass `brew audit` and
   `brew test`, and merge through normal review.
@@ -69,6 +73,7 @@ credentials from the protected environments.
 | Surface | Source of truth | Release requirement |
 |---|---|---|
 | Git source and documentation | Exact commit on `main` | Version, schemas, examples, migration text, and links describe the release—not a future or already-published state. |
+| Project branding | `docs/assets/logo.svg`, `logo.png`, and `social-preview.*` | README, hosted docs, repository social preview, and GitLab Catalog avatar agree; the release gate requires all canonical assets. Historical immutable releases are not rewritten. |
 | Hosted documentation | `mkdocs.yml`, `docs/`, and the hash-locked docs profile | Strict build passes and GitHub Pages deploys the exact `main` documentation commit. |
 | Version tag | `vX.Y.Z` | Immutable tag resolves to the tested `main` commit. |
 | TestPyPI | Verified wheel and sdist artifact | File names and SHA-256 digests equal the candidate; the wheel installs directly from TestPyPI. |

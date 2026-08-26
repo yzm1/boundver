@@ -79,6 +79,7 @@ Repository = 'https://github.com/yzm1/boundver'
 'GitHub Action' = 'https://github.com/marketplace/actions/boundver'
 Container = 'https://github.com/yzm1/boundver/pkgs/container/boundver'
 Homebrew = 'https://github.com/yzm1/homebrew-boundver'
+'GitLab CI/CD Catalog' = 'https://gitlab.com/boundver-project/boundver'
 """,
         encoding="utf-8",
     )
@@ -90,6 +91,7 @@ Homebrew = 'https://github.com/yzm1/homebrew-boundver'
 https://pypi.org/project/boundver/
 https://github.com/marketplace/actions/boundver
 https://yzm1.github.io/boundver/
+https://yzm1.github.io/boundver/assets/logo.png
 ghcr.io/yzm1/boundver:1.2.3
 brew install yzm1/boundver/boundver
 https://yzm1.github.io/boundver/assets/verify-demo.svg

@@ -1817,6 +1817,35 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("checked-in SHA-256", releasing)
         self.assertIn("immutable Debian snapshot", releasing)
 
+    def test_public_brand_assets_and_native_marketplace_badge_are_consistent(self):
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertEqual(action["branding"], {"icon": "layers", "color": "purple"})
+
+        logo_svg = (REPO_ROOT / "docs/assets/logo.svg").read_text(encoding="utf-8")
+        self.assertIn('viewBox="-4 -4 72 72"', logo_svg)
+        self.assertIn("#6674f8", logo_svg)
+        self.assertIn("#08b8d1", logo_svg)
+        self.assertNotIn("linearGradient", logo_svg)
+
+        for relative, dimensions, max_bytes in (
+            ("docs/assets/logo.png", (512, 512), 200_000),
+            ("docs/assets/social-preview.png", (1280, 640), 1_000_000),
+        ):
+            with self.subTest(asset=relative):
+                payload = (REPO_ROOT / relative).read_bytes()
+                self.assertLess(len(payload), max_bytes)
+                self.assertEqual(payload[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertEqual(payload[12:16], b"IHDR")
+                actual = (
+                    int.from_bytes(payload[16:20], "big"),
+                    int.from_bytes(payload[20:24], "big"),
+                )
+                self.assertEqual(actual, dimensions)
+
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("https://yzm1.github.io/boundver/assets/logo.png", readme)
+        self.assertIn("https://gitlab.com/boundver-project/boundver", readme)
+
     def test_container_and_sdist_exclude_repository_only_material(self):
         import datetime
         import re
