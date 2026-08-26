@@ -17,7 +17,8 @@ All notable changes to this project are documented here. The format follows
 - Replaced regex-backed wildcard evaluation with deterministic, budgeted
   matching for component selectors, migration analysis, and unborn-repository
   `.gitignore` fallback; wildcard segments now also have explicit size and
-  complexity limits.
+  complexity limits, and shell character-class normalization is stable across
+  supported Python versions.
 - Prevented malformed YAML diagnostics from copying source lines into CLI logs
   or GitHub Action outputs while retaining the parser type and location.
 - Disabled implicit network retrieval during optional JSON Schema validation

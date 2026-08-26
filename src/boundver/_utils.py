@@ -1017,6 +1017,93 @@ _GLOB_STAR = 2
 _GLOB_CLASS = 3
 
 
+def _normalize_glob_class_chunks(
+    content: str,
+    spend_step: Callable[[], None],
+) -> Tuple[str, ...]:
+    """Normalize one character class using stable ``fnmatch`` semantics.
+
+    CPython 3.10+ removes reversed ranges before compiling a shell class.  That
+    normalization has observable edge cases: for example, ``[a--c]`` becomes
+    ``[c]`` and ``[a--!]`` becomes a single-character wildcard.  Reproduce the
+    normalization directly so supported runtimes agree without invoking the
+    regex engine.  Hyphens retained inside a chunk are literals; hyphens
+    between chunks are ranges.
+    """
+    chunks: List[str] = []
+    chunk_start = 0
+    search_index = 2 if content.startswith("!") else 1
+    content_length = len(content)
+
+    # A leading hyphen (or one immediately after ``!``) is literal.  After a
+    # range separator, skip its two endpoints before looking for another range
+    # separator.  This is the bounded equivalent of fnmatch's class splitting.
+    while search_index < content_length:
+        spend_step()
+        if content[search_index] != "-":
+            search_index += 1
+            continue
+        chunks.append(content[chunk_start:search_index])
+        chunk_start = search_index + 1
+        search_index += 3
+
+    if not chunks:
+        return (content,)
+
+    tail = content[chunk_start:]
+    if tail:
+        chunks.append(tail)
+    else:
+        # A final hyphen is literal rather than a range separator.
+        chunks[-1] += "-"
+
+    # Remove reversed ranges from right to left exactly as fnmatch does.  An
+    # invalid range can collapse the complete class to an empty or negated
+    # empty class, represented here without a regex.
+    for chunk_index in range(len(chunks) - 1, 0, -1):
+        spend_step()
+        previous = chunks[chunk_index - 1]
+        current = chunks[chunk_index]
+        if previous[-1] > current[0]:
+            chunks[chunk_index - 1] = previous[:-1] + current[1:]
+            del chunks[chunk_index]
+
+    return tuple(chunks)
+
+
+def _compile_glob_class(
+    content: str,
+    spend_step: Callable[[], None],
+) -> Tuple[bool, Tuple[Tuple[int, int], ...]]:
+    """Compile a normalized shell class to bounded code-point intervals."""
+    chunks = _normalize_glob_class_chunks(content, spend_step)
+    negated = bool(chunks and chunks[0].startswith("!"))
+    intervals: List[Tuple[int, int]] = []
+
+    for chunk_index, chunk in enumerate(chunks):
+        for character_index, character in enumerate(chunk):
+            spend_step()
+            if negated and chunk_index == 0 and character_index == 0:
+                continue
+            # Range endpoints are covered by the interval emitted below.  All
+            # other characters, including retained hyphens and backslashes,
+            # are literal class members.
+            is_left_endpoint = (
+                chunk_index < len(chunks) - 1
+                and character_index == len(chunk) - 1
+            )
+            is_right_endpoint = chunk_index > 0 and character_index == 0
+            if not is_left_endpoint and not is_right_endpoint:
+                value = ord(character)
+                intervals.append((value, value))
+
+        if chunk_index < len(chunks) - 1:
+            spend_step()
+            intervals.append((ord(chunk[-1]), ord(chunks[chunk_index + 1][0])))
+
+    return negated, tuple(intervals)
+
+
 def _compile_text_glob(
     pattern: str,
     spend_step: Callable[[], None],
@@ -1058,26 +1145,7 @@ def _compile_text_glob(
             continue
 
         content = pattern[index + 1 : closing]
-        negated = content.startswith("!")
-        if negated:
-            content = content[1:]
-        intervals: List[Tuple[int, int]] = []
-        class_index = 0
-        while class_index < len(content):
-            spend_step()
-            if class_index + 2 < len(content) and content[class_index + 1] == "-":
-                lower = ord(content[class_index])
-                upper = ord(content[class_index + 2])
-                # fnmatch treats a reversed range as empty rather than letting
-                # the regex compiler reject the complete pattern.
-                if lower <= upper:
-                    intervals.append((lower, upper))
-                class_index += 3
-            else:
-                value = ord(content[class_index])
-                intervals.append((value, value))
-                class_index += 1
-        tokens.append((_GLOB_CLASS, (negated, tuple(intervals))))
+        tokens.append((_GLOB_CLASS, _compile_glob_class(content, spend_step)))
         index = closing + 1
     return tuple(tokens)
 

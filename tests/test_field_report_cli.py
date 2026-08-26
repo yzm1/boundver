@@ -487,6 +487,33 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             )
             jsonschema.validate(payload, schema)
 
+    def test_analysis_preserves_legacy_invalid_range_normalization(self):
+        config = {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {
+                        "provider": "openapi",
+                        "paths": ["[a--!]*"],
+                    },
+                }
+            },
+            "slices": {},
+        }
+        with patch(
+            "boundver._migration_analysis._component_files",
+            return_value=["b", "nested/b"],
+        ):
+            payload = self._analyze(config, Path("unused"))
+
+        declaration = payload["declarations"][0]
+        self.assertEqual(declaration["analysis_status"], "compared")
+        self.assertEqual(declaration["impact"], "narrowed")
+        self.assertEqual(declaration["legacy_match_count"], 2)
+        self.assertEqual(declaration["current_match_count"], 1)
+        self.assertEqual(declaration["legacy_only_examples"], ["nested/b"])
+
     def test_explain_working_tree_uses_filesystem_for_unborn_empty_index(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
