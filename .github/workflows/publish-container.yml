@@ -22,6 +22,11 @@ on:
         description: Exact commit referenced by the release tag.
         required: true
         type: string
+      reuse_retained_artifact:
+        description: Reuse the prevalidated OCI artifact retained by the caller.
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -37,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     steps:
       - name: Bind the read-only build to the immutable release tag
@@ -63,6 +69,7 @@ jobs:
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the released commit without credentials
+        if: inputs.reuse_retained_artifact != true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -70,6 +77,7 @@ jobs:
           ref: ${{ inputs.release_sha }}
 
       - name: Record the reproducible image timestamp
+        if: inputs.reuse_retained_artifact != true
         id: timestamp
         shell: bash
         run: |
@@ -82,18 +90,21 @@ jobs:
           echo "epoch=$timestamp" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
+        if: inputs.reuse_retained_artifact != true
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
         with:
           image: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
           platforms: arm64
 
       - name: Set up Docker Buildx
+        if: inputs.reuse_retained_artifact != true
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         with:
           version: v0.36.1
           driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 
       - name: Build the retained multi-platform OCI image
+        if: inputs.reuse_retained_artifact != true
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         env:
           SOURCE_DATE_EPOCH: ${{ steps.timestamp.outputs.epoch }}
@@ -120,6 +131,7 @@ jobs:
           outputs: type=oci,dest=${{ runner.temp }}/boundver.oci.tar,rewrite-timestamp=true
 
       - name: Retain the exact OCI image for the protected publisher
+        if: inputs.reuse_retained_artifact != true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.IMAGE_ARTIFACT }}
@@ -127,6 +139,34 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+      - name: Require the prevalidated retained image in recovery mode
+        if: inputs.reuse_retained_artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ env.IMAGE_ARTIFACT }}
+          path: ${{ runner.temp }}/recovered-container-check
+
+      - name: Validate the recovered image handoff
+        if: inputs.reuse_retained_artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/recovered-container-check/boundver.oci.tar"
+          if [[ ! -f "$archive" || -L "$archive" ]]; then
+            echo "Prevalidated retained OCI archive is absent or unsafe" >&2
+            exit 1
+          fi
+          if [[ $(find "$RUNNER_TEMP/recovered-container-check" -mindepth 1 \
+                    -maxdepth 1 -printf '.' | wc -c) -ne 1 ]]; then
+            echo "Prevalidated retained OCI artifact has unexpected entries" >&2
+            exit 1
+          fi
+          size=$(stat --format=%s "$archive")
+          if [[ ! "$size" =~ ^[1-9][0-9]*$ || "$size" -gt 2147483648 ]]; then
+            echo "Prevalidated retained OCI archive is empty or exceeds 2 GiB" >&2
+            exit 1
+          fi
 
   publish:
     needs: build

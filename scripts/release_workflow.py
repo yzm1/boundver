@@ -54,7 +54,7 @@ MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 16
 MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024
 MAX_ARCHIVE_PATH_BYTES = 1024
-MAX_ARCHIVE_MEMBER_BYTES = 128 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_CHECKSUM_BYTES = 4096
 MAX_PROBE_BYTES = 32 * 1024 * 1024
@@ -333,6 +333,8 @@ class RecoverySelection:
     python_dist_artifact_digest: str
     release_assets_artifact_id: int
     release_assets_artifact_digest: str
+    container_artifact_id: int | None
+    container_artifact_digest: str
     release_note_artifact_count: int
     downstream_artifact_count: int
 
@@ -344,6 +346,10 @@ class RecoverySelection:
             "python-dist-artifact-digest": self.python_dist_artifact_digest,
             "release-assets-artifact-id": str(self.release_assets_artifact_id),
             "release-assets-artifact-digest": self.release_assets_artifact_digest,
+            "container-artifact-id": (
+                "" if self.container_artifact_id is None else str(self.container_artifact_id)
+            ),
+            "container-artifact-digest": self.container_artifact_digest,
         }
 
 
@@ -497,6 +503,7 @@ def select_recovery_artifacts(
     release_note_count = 0
     downstream_artifact_count = 0
     docker_build_record_count = 0
+    container_artifacts: list[tuple[int, int, str]] = []
     current_time = now or datetime.now(timezone.utc)
     for artifact in artifacts:
         artifact_id = artifact.get("id")
@@ -556,10 +563,14 @@ def select_recovery_artifacts(
             else:
                 container_match = container_artifact_re.fullmatch(name)
                 if container_match is not None:
-                    if int(container_match.group(1)) > attempt:
+                    container_attempt = int(container_match.group(1))
+                    if container_attempt > attempt:
                         raise ReleaseWorkflowError(
                             "source artifact names do not match the release tag, run, and attempt"
                         )
+                    container_artifacts.append(
+                        (container_attempt, artifact_id, artifact_digest)
+                    )
                     downstream_artifact_count += 1
                 elif docker_build_record_re.fullmatch(name) is not None:
                     docker_build_record_count += 1
@@ -596,6 +607,14 @@ def select_recovery_artifacts(
     verification = verify_jobs[0]
     python_id, python_digest = retained[("python-dist", artifact_attempt)]
     release_id, release_digest = retained[("release-assets", artifact_attempt)]
+    if len(container_artifacts) > 1:
+        raise ReleaseWorkflowError(
+            "source run has multiple retained container artifacts; recovery is ambiguous"
+        )
+    if container_artifacts:
+        _, container_id, container_digest = container_artifacts[0]
+    else:
+        container_id, container_digest = None, ""
     return RecoverySelection(
         source_run_id=run_id,
         source_run_attempt=attempt,
@@ -605,6 +624,8 @@ def select_recovery_artifacts(
         python_dist_artifact_digest=python_digest,
         release_assets_artifact_id=release_id,
         release_assets_artifact_digest=release_digest,
+        container_artifact_id=container_id,
+        container_artifact_digest=container_digest,
         release_note_artifact_count=release_note_count,
         downstream_artifact_count=downstream_artifact_count,
     )
@@ -682,6 +703,8 @@ def select_artifact_values(
     recovered_python_digest: str,
     recovered_release_id: str,
     recovered_release_digest: str,
+    recovered_container_id: str,
+    recovered_container_digest: str,
 ) -> dict[str, str]:
     """Normalize the fresh or recovered immutable artifact outputs."""
     if resume_run_id:
@@ -691,6 +714,8 @@ def select_artifact_values(
             "python-dist-artifact-digest": recovered_python_digest,
             "release-assets-artifact-id": recovered_release_id,
             "release-assets-artifact-digest": recovered_release_digest,
+            "container-artifact-id": recovered_container_id,
+            "container-artifact-digest": recovered_container_digest,
         }
         if recovered_run_id != resume_run_id:
             raise ReleaseWorkflowError("selected recovery run ID disagrees")
@@ -701,6 +726,8 @@ def select_artifact_values(
             "python-dist-artifact-digest": fresh_python_digest,
             "release-assets-artifact-id": fresh_release_id,
             "release-assets-artifact-digest": fresh_release_digest,
+            "container-artifact-id": "",
+            "container-artifact-digest": "",
         }
     for key in (
         "source-run-id",
@@ -713,6 +740,20 @@ def select_artifact_values(
         "release-assets-artifact-digest",
     ):
         values[key] = _digest(values[key], f"selected {key}")
+    if bool(values["container-artifact-id"]) != bool(
+        values["container-artifact-digest"]
+    ):
+        raise ReleaseWorkflowError(
+            "selected retained container artifact ID and digest must appear together"
+        )
+    if values["container-artifact-id"]:
+        _positive_int_text(
+            values["container-artifact-id"], "selected container-artifact-id"
+        )
+        values["container-artifact-digest"] = _digest(
+            values["container-artifact-digest"],
+            "selected container-artifact-digest",
+        )
     return values
 
 
@@ -1147,6 +1188,8 @@ def _parser() -> argparse.ArgumentParser:
         "recovered-python-digest",
         "recovered-release-id",
         "recovered-release-digest",
+        "recovered-container-id",
+        "recovered-container-digest",
     ):
         selection.add_argument(f"--{name}", default="")
     selection.add_argument("--output", type=Path, required=True)
@@ -1237,6 +1280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "recovered-python-digest",
                         "recovered-release-id",
                         "recovered-release-digest",
+                        "recovered-container-id",
+                        "recovered-container-digest",
                     )
                 }
             )

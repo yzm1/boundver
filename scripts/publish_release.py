@@ -1919,6 +1919,19 @@ def _surface_inventory(repo: Path) -> str:
         raise GateError(
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
         )
+    required_recovery_contracts = (
+        "container-artifact-id:",
+        "Re-retain the exact recovered OCI image for the protected publisher",
+        "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
+    )
+    missing_recovery_contracts = [
+        value for value in required_recovery_contracts if value not in publish_workflow
+    ]
+    if missing_recovery_contracts:
+        raise GateError(
+            "publication workflow is missing retained-container recovery contracts: "
+            + ", ".join(missing_recovery_contracts)
+        )
     container_workflow = _read_bounded_text(
         repo / ".github/workflows/publish-container.yml",
         ".github/workflows/publish-container.yml",
@@ -1936,6 +1949,8 @@ def _surface_inventory(repo: Path) -> str:
         '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"',
         'DOCKER_CONFIG="$anonymous_config" docker pull',
         'gh attestation verify "oci://$IMAGE@$DIGEST"',
+        "reuse_retained_artifact:",
+        "Require the prevalidated retained image in recovery mode",
     )
     missing_container_contracts = [
         value for value in required_container_contracts if value not in container_workflow

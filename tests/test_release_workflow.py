@@ -100,7 +100,10 @@ class RecoverySelectionTests(unittest.TestCase):
         self.assertEqual(selection.verification_job_id, 456)
         self.assertEqual(selection.python_dist_artifact_id, 1001)
         self.assertEqual(selection.release_assets_artifact_id, 1002)
+        self.assertIsNone(selection.container_artifact_id)
+        self.assertEqual(selection.container_artifact_digest, "")
         self.assertEqual(selection.outputs()["source-run-id"], str(RUN_ID))
+        self.assertEqual(selection.outputs()["container-artifact-id"], "")
 
     def test_rejects_wrong_repository_incomplete_jobs_and_expired_artifact(self):
         run, jobs, artifacts = _payloads()
@@ -193,6 +196,18 @@ class RecoverySelectionTests(unittest.TestCase):
         selection = self._select(run, jobs, artifacts)
 
         self.assertEqual(selection.downstream_artifact_count, 2)
+        self.assertEqual(selection.container_artifact_id, 1003)
+        self.assertEqual(selection.container_artifact_digest, "sha256:" + "d" * 64)
+
+        duplicate = dict(artifacts["artifacts"][-2])
+        duplicate["id"] = 1005
+        duplicate["name"] = f"boundver-container-{RUN_ID}-3"
+        artifacts["artifacts"].append(duplicate)
+        artifacts["total_count"] = 5
+        with self.assertRaisesRegex(
+            self.release.ReleaseWorkflowError, "multiple retained container artifacts"
+        ):
+            self._select(run, jobs, artifacts)
 
         for bad_name in (
             f"boundver-container-{RUN_ID + 1}-2",
@@ -333,15 +348,28 @@ class ReleasePolicyEvidenceTests(unittest.TestCase):
             "recovered_python_digest": "sha256:" + "c" * 64,
             "recovered_release_id": "24",
             "recovered_release_digest": "d" * 64,
+            "recovered_container_id": "25",
+            "recovered_container_digest": "sha256:" + "e" * 64,
         }
         fresh = self.release.select_artifact_values(resume_run_id="", **common)
         self.assertEqual(fresh["source-run-id"], "12")
         self.assertEqual(fresh["python-dist-artifact-digest"], "sha256:" + "a" * 64)
+        self.assertEqual(fresh["container-artifact-id"], "")
         recovered = self.release.select_artifact_values(
             resume_run_id="22", **common
         )
         self.assertEqual(recovered["source-run-id"], "22")
         self.assertEqual(recovered["release-assets-artifact-id"], "24")
+        self.assertEqual(recovered["container-artifact-id"], "25")
+        self.assertEqual(
+            recovered["container-artifact-digest"], "sha256:" + "e" * 64
+        )
+
+        common["recovered_container_digest"] = ""
+        with self.assertRaisesRegex(
+            self.release.ReleaseWorkflowError, "must appear together"
+        ):
+            self.release.select_artifact_values(resume_run_id="22", **common)
 
 
 class ArtifactPayloadTests(unittest.TestCase):

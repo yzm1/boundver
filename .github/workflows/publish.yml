@@ -48,6 +48,7 @@ jobs:
       source-run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
       python-dist-artifact-id: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
       release-assets-artifact-id: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
+      container-artifact-id: ${{ steps.select-artifacts.outputs.container-artifact-id }}
     steps:
       - name: Bind this dispatch to the exact version tag and commit
         shell: bash
@@ -576,6 +577,8 @@ jobs:
           RECOVERED_PYTHON_DIGEST: ${{ steps.recover-artifacts.outputs.python-dist-artifact-digest }}
           RECOVERED_RELEASE_ID: ${{ steps.recover-artifacts.outputs.release-assets-artifact-id }}
           RECOVERED_RELEASE_DIGEST: ${{ steps.recover-artifacts.outputs.release-assets-artifact-digest }}
+          RECOVERED_CONTAINER_ID: ${{ steps.recover-artifacts.outputs.container-artifact-id }}
+          RECOVERED_CONTAINER_DIGEST: ${{ steps.recover-artifacts.outputs.container-artifact-digest }}
         run: |
           set -euo pipefail
           workflow_script="$GITHUB_WORKSPACE/scripts/release_workflow.py"
@@ -594,6 +597,8 @@ jobs:
             --recovered-python-digest "$RECOVERED_PYTHON_DIGEST" \
             --recovered-release-id "$RECOVERED_RELEASE_ID" \
             --recovered-release-digest "$RECOVERED_RELEASE_DIGEST" \
+            --recovered-container-id "$RECOVERED_CONTAINER_ID" \
+            --recovered-container-digest "$RECOVERED_CONTAINER_DIGEST" \
             --output "$GITHUB_OUTPUT"
 
       - name: Download recovered Python distributions
@@ -618,6 +623,17 @@ jobs:
           run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
           merge-multiple: true
 
+      - name: Download the recovered retained OCI image
+        if: inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.select-artifacts.outputs.container-artifact-id }}
+          path: recovered-container
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
+          merge-multiple: true
+
       - name: Fail on any recovered artifact archive digest mismatch
         if: inputs.resume_run_id != ''
         shell: bash
@@ -627,6 +643,8 @@ jobs:
           PYTHON_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.python-dist-artifact-digest }}
           RELEASE_ARTIFACT_ID: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
           RELEASE_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.release-assets-artifact-digest }}
+          CONTAINER_ARTIFACT_ID: ${{ steps.select-artifacts.outputs.container-artifact-id }}
+          CONTAINER_ARTIFACT_DIGEST: ${{ steps.select-artifacts.outputs.container-artifact-digest }}
         run: |
           set -euo pipefail
           readonly MAX_RECOVERED_ARCHIVE_BYTES=268435456
@@ -665,6 +683,11 @@ jobs:
           verify_archive \
             "$RELEASE_ARTIFACT_ID" "$RELEASE_ARTIFACT_DIGEST" \
             "$RUNNER_TEMP/release-assets.zip" "$GITHUB_WORKSPACE/recovered-release-assets"
+          if [[ -n "$CONTAINER_ARTIFACT_ID" ]]; then
+            verify_archive \
+              "$CONTAINER_ARTIFACT_ID" "$CONTAINER_ARTIFACT_DIGEST" \
+              "$RUNNER_TEMP/container.zip" "$GITHUB_WORKSPACE/recovered-container"
+          fi
 
       - name: Validate the exact recovered release payload
         if: inputs.resume_run_id != ''
@@ -680,6 +703,16 @@ jobs:
           python3 -I -m twine check \
             "recovered-python-dist/boundver-$version-py3-none-any.whl" \
             "recovered-python-dist/boundver-$version.tar.gz"
+
+      - name: Re-retain the exact recovered OCI image for the protected publisher
+        if: inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: boundver-container-${{ github.run_id }}-${{ github.run_attempt }}
+          path: recovered-container/boundver.oci.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   testpypi-preflight:
     name: Reject conflicting TestPyPI release state
@@ -1921,7 +1954,7 @@ jobs:
 
   publish-container:
     name: Publish and verify the release container
-    needs: verify-pypi
+    needs: [verify-release, verify-pypi]
     permissions:
       actions: read
       attestations: write
@@ -1932,6 +1965,7 @@ jobs:
     with:
       release_tag: ${{ inputs.release_tag }}
       release_sha: ${{ inputs.release_sha }}
+      reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}
 
   advance-compatibility-alias:
     name: Apply the explicit Action alias decision

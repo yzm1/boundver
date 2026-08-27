@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Reused the uniquely identified, digest-verified retained OCI artifact when a
+  release resumes after container publication, instead of rebuilding an
+  immutable image and treating wall-clock build drift as a registry conflict.
+  Future container builds also remove volatile Debian logs/cache and compile
+  Python bytecode under `SOURCE_DATE_EPOCH` in both image stages.
 - Allowed failed release runs to resume from their exact retained source
   artifacts after later container jobs add their own strictly named artifacts;
   unknown, stale, malformed, or cross-run artifacts remain fatal. Disabled the

@@ -423,19 +423,25 @@ and that it contains one uniquely identified successful `verify-release` job.
 The command fetches that job's retained log and requires every GitHub-emitted
 `RELEASE_TAG`, `RELEASE_SHA`, and `COMPATIBILITY_ALIAS` environment triple to
 be complete and to match the requested recovery exactly. Missing, malformed,
-or alternate values fail closed. Finally, it requires exactly the two
-expected, unexpired, SHA-256-identified artifacts whose names bind the source
-run and successful verification attempt. If **Re-run failed jobs** advanced
-the run attempt, the earlier successful verification job, its logged input
-policy, and its original two artifacts remain the accepted source; any extra
-rebuilt artifact set is ambiguous and rejected.
+or alternate values fail closed. Finally, it requires exactly the two expected,
+unexpired, SHA-256-identified release artifacts whose names bind the source run
+and successful verification attempt. If **Re-run failed jobs** advanced the run
+attempt, the earlier successful verification job, its logged input policy, and
+its original two release artifacts remain the accepted source. Strictly named
+downstream release-note, container, and disabled Docker diagnostic records are
+validated separately; unknown records remain fatal, and more than one retained
+container is ambiguous and rejected.
 
 Immediately before its only mutation, `resume` re-reads current remote `main`.
 It then dispatches `publish.yml` on `main` with the exact release tag, tagged
 SHA, alias policy, and source run ID. The recovery workflow downloads those
-identified source artifacts. It does not create or move the version tag and
-must not rebuild or replace release bytes. Any malformed, stale, ambiguous, or
-unreadable GitHub state fails closed. Public-surface checks use the reviewed
+identified source artifacts. When the source run retained a container, the
+unprivileged verifier independently checks its GitHub artifact ZIP digest and
+the extracted OCI bytes, then re-retains that exact file under the current run
+for the protected publisher; it does not rebuild or overwrite the immutable
+public image. The workflow does not create or move the version tag and must not
+rebuild or replace release bytes. Any malformed, stale, ambiguous, or unreadable
+GitHub state fails closed. Public-surface checks use the reviewed
 recovery-control implementation from current `main`, while release notes and
 artifact identity remain bound to the immutable tagged source. Once PyPI and
 the public container verify, recovery reaches the same protected
