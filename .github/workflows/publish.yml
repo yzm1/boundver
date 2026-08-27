@@ -49,6 +49,7 @@ jobs:
       python-dist-artifact-id: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
       release-assets-artifact-id: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
       container-artifact-id: ${{ steps.select-artifacts.outputs.container-artifact-id }}
+      container-artifact-name: ${{ steps.recovered-container-handoff.outputs.name }}
     steps:
       - name: Bind this dispatch to the exact version tag and commit
         shell: bash
@@ -706,9 +707,18 @@ jobs:
 
       - name: Re-retain the exact recovered OCI image for the protected publisher
         if: inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''
+        id: recovered-container-handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "name=boundver-container-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Upload the exact recovered OCI image for the protected publisher
+        if: inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: boundver-container-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.recovered-container-handoff.outputs.name }}
           path: recovered-container/boundver.oci.tar
           if-no-files-found: error
           compression-level: 0
@@ -1966,6 +1976,7 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       release_sha: ${{ inputs.release_sha }}
       reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}
+      retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}
 
   advance-compatibility-alias:
     name: Apply the explicit Action alias decision

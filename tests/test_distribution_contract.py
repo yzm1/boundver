@@ -498,6 +498,10 @@ class AutomationContractTests(unittest.TestCase):
             "${{ needs.verify-release.outputs.container-artifact-id != '' }}",
         )
         self.assertEqual(
+            jobs["publish-container"]["with"]["retained_artifact_name"],
+            "${{ needs.verify-release.outputs.container-artifact-name }}",
+        )
+        self.assertEqual(
             jobs["advance-compatibility-alias"]["needs"],
             ["verify-pypi", "publish-container"],
         )
@@ -855,8 +859,33 @@ class AutomationContractTests(unittest.TestCase):
             container_jobs["build"]["permissions"],
             {"actions": "read", "contents": "read"},
         )
+        self.assertEqual(
+            container_jobs["build"]["outputs"]["artifact-name"],
+            "${{ steps.artifact.outputs.name }}",
+        )
+        build_steps = container_jobs["build"]["steps"]
+        artifact_binding = next(
+            step for step in build_steps if step.get("id") == "artifact"
+        )
+        self.assertIn("artifact-producing attempt", artifact_binding["name"])
+        for step in build_steps:
+            if str(step.get("uses", "")).startswith(
+                ("actions/upload-artifact@", "actions/download-artifact@")
+            ):
+                self.assertEqual(
+                    step["with"]["name"], "${{ steps.artifact.outputs.name }}"
+                )
         self.assertEqual(container_jobs["publish"]["needs"], "build")
         publisher_steps = container_jobs["publish"]["steps"]
+        publisher_download = next(
+            step
+            for step in publisher_steps
+            if str(step.get("uses", "")).startswith("actions/download-artifact@")
+        )
+        self.assertEqual(
+            publisher_download["with"]["name"],
+            "${{ needs.build.outputs.artifact-name }}",
+        )
         self.assertFalse(
             any(
                 str(step.get("uses", "")).startswith("actions/checkout@")
@@ -1119,6 +1148,7 @@ class AutomationContractTests(unittest.TestCase):
                 "python-dist-artifact-id",
                 "release-assets-artifact-id",
                 "container-artifact-id",
+                "container-artifact-name",
             },
         )
         self.assertEqual(

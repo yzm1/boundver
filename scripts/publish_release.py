@@ -1921,8 +1921,10 @@ def _surface_inventory(repo: Path) -> str:
         )
     required_recovery_contracts = (
         "container-artifact-id:",
+        "container-artifact-name:",
         "Re-retain the exact recovered OCI image for the protected publisher",
         "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
+        "retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}",
     )
     missing_recovery_contracts = [
         value for value in required_recovery_contracts if value not in publish_workflow
@@ -1950,6 +1952,8 @@ def _surface_inventory(repo: Path) -> str:
         'DOCKER_CONFIG="$anonymous_config" docker pull',
         'gh attestation verify "oci://$IMAGE@$DIGEST"',
         "reuse_retained_artifact:",
+        "retained_artifact_name:",
+        "Bind consumers to the artifact-producing attempt",
         "Require the prevalidated retained image in recovery mode",
     )
     missing_container_contracts = [

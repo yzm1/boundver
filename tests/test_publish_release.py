@@ -1186,8 +1186,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "environment: action-alias",
                 "Dispatch exact-tag alias handoff verification",
                 "container-artifact-id:",
+                "container-artifact-name:",
                 "Re-retain the exact recovered OCI image for the protected publisher",
                 "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
+                "retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}",
             )
         )
         container_workflow = "\n".join(
@@ -1204,6 +1206,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 'DOCKER_CONFIG="$anonymous_config" docker pull',
                 'gh attestation verify "oci://$IMAGE@$DIGEST"',
                 "reuse_retained_artifact:",
+                "retained_artifact_name:",
+                "Bind consumers to the artifact-producing attempt",
                 "Require the prevalidated retained image in recovery mode",
             )
         )

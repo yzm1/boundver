@@ -27,6 +27,11 @@ on:
         required: false
         default: false
         type: boolean
+      retained_artifact_name:
+        description: Exact current-run artifact name selected by its producing job.
+        required: false
+        default: ""
+        type: string
 
 permissions: {}
 
@@ -34,7 +39,6 @@ env:
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   IMAGE: ghcr.io/yzm1/boundver
-  IMAGE_ARTIFACT: boundver-container-${{ github.run_id }}-${{ github.run_attempt }}
   DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
@@ -44,6 +48,8 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      artifact-name: ${{ steps.artifact.outputs.name }}
     steps:
       - name: Bind the read-only build to the immutable release tag
         id: identity
@@ -67,6 +73,34 @@ jobs:
             exit 1
           fi
           echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Bind consumers to the artifact-producing attempt
+        id: artifact
+        shell: bash
+        env:
+          RETAINED_ARTIFACT_NAME: ${{ inputs.retained_artifact_name }}
+          REUSE_RETAINED_ARTIFACT: ${{ inputs.reuse_retained_artifact }}
+        run: |
+          set -euo pipefail
+          if [[ "$REUSE_RETAINED_ARTIFACT" == true ]]; then
+            if [[ ! "$RETAINED_ARTIFACT_NAME" =~ ^boundver-container-${GITHUB_RUN_ID}-([1-9][0-9]*)$ ]]; then
+              echo "Retained container artifact name is malformed or cross-run" >&2
+              exit 1
+            fi
+            artifact_attempt=${BASH_REMATCH[1]}
+            if (( artifact_attempt > GITHUB_RUN_ATTEMPT )); then
+              echo "Retained container artifact comes from a future attempt" >&2
+              exit 1
+            fi
+            artifact_name=$RETAINED_ARTIFACT_NAME
+          else
+            if [[ -n "$RETAINED_ARTIFACT_NAME" ]]; then
+              echo "A retained artifact name requires recovery mode" >&2
+              exit 1
+            fi
+            artifact_name="boundver-container-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          fi
+          echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the released commit without credentials
         if: inputs.reuse_retained_artifact != true
@@ -134,7 +168,7 @@ jobs:
         if: inputs.reuse_retained_artifact != true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.IMAGE_ARTIFACT }}
+          name: ${{ steps.artifact.outputs.name }}
           path: ${{ runner.temp }}/boundver.oci.tar
           if-no-files-found: error
           compression-level: 0
@@ -144,7 +178,7 @@ jobs:
         if: inputs.reuse_retained_artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ env.IMAGE_ARTIFACT }}
+          name: ${{ steps.artifact.outputs.name }}
           path: ${{ runner.temp }}/recovered-container-check
 
       - name: Validate the recovered image handoff
@@ -190,7 +224,7 @@ jobs:
       - name: Download the retained read-only build output
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ env.IMAGE_ARTIFACT }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: ${{ runner.temp }}/container
 
       - name: Validate the retained OCI archive identity
