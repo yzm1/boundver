@@ -208,6 +208,26 @@ class GitSourceContractTests(unittest.TestCase):
                 files,
             )
 
+    def test_unborn_working_tree_excludes_embedded_git_repository(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "svc").mkdir()
+            (root / "svc" / "contract.txt").write_bytes(b"contract")
+            nested = root / "svc" / "nested"
+            nested.mkdir()
+            init_git_repo(nested)
+            nested_contract = nested / "private.txt"
+            nested_contract.write_bytes(b"private-one")
+
+            files = _list_files_for_source(root, "svc", source="working-tree")
+            before = source_tree_digest(root, "svc", source="working-tree")
+            nested_contract.write_bytes(b"private-two")
+            after = source_tree_digest(root, "svc", source="working-tree")
+
+            self.assertEqual(files, ["svc/contract.txt"])
+            self.assertEqual(before, after)
+
     def test_filesystem_fallback_fails_instead_of_truncating_at_file_limit(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
