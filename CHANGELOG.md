@@ -28,7 +28,9 @@ All notable changes to this project are documented here. The format follows
   `.gitignore` fallback; unborn repositories now ask the installed Git for a
   bounded, version-exact non-ignored file listing. Wildcard segments also have
   explicit size and complexity limits, and shell character-class normalization
-  is stable across supported Python versions.
+  is stable across supported Python versions. Embedded Git repositories are
+  treated as opaque and excluded from unborn-repository fingerprints instead
+  of being misclassified as hashable files.
 - Prevented malformed YAML diagnostics from copying source lines into CLI logs
   or GitHub Action outputs while retaining the parser type and location.
 - Disabled implicit network retrieval during optional JSON Schema validation

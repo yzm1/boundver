@@ -1170,12 +1170,28 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
             result_files = list(
                 _iter_bounded_git_paths(repo_root, bootstrap_args)
             )
-            return [
-                path
-                for path in result_files
-                if (repo_root / path).exists()
-                or (repo_root / path).is_symlink()
-            ]
+            bootstrap_files: List[str] = []
+            for path in result_files:
+                full_path = repo_root / path
+                try:
+                    path_stat = full_path.lstat()
+                except FileNotFoundError:
+                    continue
+                # Git represents an untracked embedded repository as one
+                # opaque directory row (for example, ``svc/nested/``). Match
+                # superproject semantics by excluding that row and never
+                # traversing the nested repository. Ordinary files and
+                # symlinks remain hashable; unsupported special files still
+                # fail closed through the canonical mode classifier.
+                if stat.S_ISDIR(path_stat.st_mode):
+                    continue
+                _working_tree_mode(
+                    repo_root,
+                    path,
+                    path_stat=path_stat,
+                )
+                bootstrap_files.append(path)
+            return bootstrap_files
     if not git_failed:
         return result_files
 
