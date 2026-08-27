@@ -138,12 +138,13 @@ jobs:
       - name: Require current reviews for the recovery control commit
         if: inputs.resume_run_id != ''
         shell: bash
+        working-directory: .release-control
         env:
           CONTROL_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          bash .release-control/scripts/audit_release_reviews.sh \
+          bash scripts/audit_release_reviews.sh \
             "$CONTROL_SHA" "$RELEASE_TAG"
 
       - name: Rebind recovery to current main after its control audit

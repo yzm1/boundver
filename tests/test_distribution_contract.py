@@ -1392,6 +1392,20 @@ class AutomationContractTests(unittest.TestCase):
         )
         self.assertEqual(control_checkout["with"]["path"], ".release-control")
         self.assertIs(control_checkout["with"]["persist-credentials"], False)
+        control_review = next(
+            step
+            for step in steps
+            if step["name"]
+            == "Require current reviews for the recovery control commit"
+        )
+        self.assertEqual(control_review["working-directory"], ".release-control")
+        self.assertIn(
+            "bash scripts/audit_release_reviews.sh", control_review["run"]
+        )
+        self.assertNotIn(
+            ".release-control/scripts/audit_release_reviews.sh",
+            control_review["run"],
+        )
         control_rebind = next(
             step
             for step in steps
