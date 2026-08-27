@@ -51,6 +51,10 @@ RUN python -I -m pip wheel \
 
 FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
+# pip compiles installed modules in this stage. Force hash-based bytecode so
+# retries do not embed the wall clock in hundreds of .pyc headers.
+ENV SOURCE_DATE_EPOCH=1785715200
+
 ARG BOUNDVER_VERSION=development
 ARG BOUNDVER_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/yzm1/boundver" \
@@ -81,7 +85,12 @@ RUN export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
     && apt-get install -y --no-install-recommends git=1:2.47.3-0+deb13u1 \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f \
+      /var/cache/ldconfig/aux-cache \
+      /var/log/apt/history.log \
+      /var/log/apt/term.log \
+      /var/log/dpkg.log
 
 ARG BOUNDVER_UID=1000
 ARG BOUNDVER_GID=1000

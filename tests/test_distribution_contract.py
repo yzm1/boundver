@@ -485,12 +485,22 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
         self.assertIn("verify-marketplace", jobs["publish-pypi"]["needs"])
         self.assertIn("publish-pypi", jobs["verify-pypi"]["needs"])
-        self.assertEqual(jobs["publish-container"]["needs"], "verify-pypi")
+        self.assertEqual(
+            jobs["publish-container"]["needs"], ["verify-release", "verify-pypi"]
+        )
         self.assertEqual(
             jobs["publish-container"]["uses"],
             "./.github/workflows/publish-container.yml",
         )
         self.assertEqual(jobs["publish-container"]["permissions"]["actions"], "read")
+        self.assertEqual(
+            jobs["publish-container"]["with"]["reuse_retained_artifact"],
+            "${{ needs.verify-release.outputs.container-artifact-id != '' }}",
+        )
+        self.assertEqual(
+            jobs["publish-container"]["with"]["retained_artifact_name"],
+            "${{ needs.verify-release.outputs.container-artifact-name }}",
+        )
         self.assertEqual(
             jobs["advance-compatibility-alias"]["needs"],
             ["verify-pypi", "publish-container"],
@@ -845,9 +855,37 @@ class AutomationContractTests(unittest.TestCase):
             container_workflow["env"]["DOCKER_BUILD_RECORD_UPLOAD"], "false"
         )
         container_jobs = container_workflow["jobs"]
-        self.assertEqual(container_jobs["build"]["permissions"], {"contents": "read"})
+        self.assertEqual(
+            container_jobs["build"]["permissions"],
+            {"actions": "read", "contents": "read"},
+        )
+        self.assertEqual(
+            container_jobs["build"]["outputs"]["artifact-name"],
+            "${{ steps.artifact.outputs.name }}",
+        )
+        build_steps = container_jobs["build"]["steps"]
+        artifact_binding = next(
+            step for step in build_steps if step.get("id") == "artifact"
+        )
+        self.assertIn("artifact-producing attempt", artifact_binding["name"])
+        for step in build_steps:
+            if str(step.get("uses", "")).startswith(
+                ("actions/upload-artifact@", "actions/download-artifact@")
+            ):
+                self.assertEqual(
+                    step["with"]["name"], "${{ steps.artifact.outputs.name }}"
+                )
         self.assertEqual(container_jobs["publish"]["needs"], "build")
         publisher_steps = container_jobs["publish"]["steps"]
+        publisher_download = next(
+            step
+            for step in publisher_steps
+            if str(step.get("uses", "")).startswith("actions/download-artifact@")
+        )
+        self.assertEqual(
+            publisher_download["with"]["name"],
+            "${{ needs.build.outputs.artifact-name }}",
+        )
         self.assertFalse(
             any(
                 str(step.get("uses", "")).startswith("actions/checkout@")
@@ -1109,6 +1147,8 @@ class AutomationContractTests(unittest.TestCase):
                 "source-run-id",
                 "python-dist-artifact-id",
                 "release-assets-artifact-id",
+                "container-artifact-id",
+                "container-artifact-name",
             },
         )
         self.assertEqual(
@@ -1366,9 +1406,15 @@ class AutomationContractTests(unittest.TestCase):
             for step in steps
             if str(step.get("uses", "")).startswith("actions/download-artifact@")
         ]
-        self.assertEqual(len(recovery_downloads), 2)
+        self.assertEqual(len(recovery_downloads), 3)
         for download in recovery_downloads:
-            self.assertEqual(download["if"], "inputs.resume_run_id != ''")
+            if download["with"]["path"] == "recovered-container":
+                self.assertEqual(
+                    download["if"],
+                    "inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''",
+                )
+            else:
+                self.assertEqual(download["if"], "inputs.resume_run_id != ''")
             self.assertEqual(
                 download["with"]["github-token"], "${{ github.token }}"
             )
@@ -1382,7 +1428,11 @@ class AutomationContractTests(unittest.TestCase):
             self.assertIs(download["with"]["merge-multiple"], True)
             self.assertIn(
                 download["with"]["path"],
-                {"recovered-python-dist", "recovered-release-assets"},
+                {
+                    "recovered-python-dist",
+                    "recovered-release-assets",
+                    "recovered-container",
+                },
             )
 
         control_checkout = next(
@@ -1480,7 +1530,7 @@ class AutomationContractTests(unittest.TestCase):
             "MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024",
             "MAX_ARCHIVE_MEMBERS = 16",
             "MAX_ARCHIVE_PATH_BYTES = 1024",
-            "MAX_ARCHIVE_MEMBER_BYTES = 128 * 1024 * 1024",
+            "MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024",
             "MAX_ARCHIVE_TOTAL_BYTES = 256 * 1024 * 1024",
             "download action output disagrees with artifact archive",
             "download action changed artifact bytes",
@@ -1803,7 +1853,14 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertIn("ENV SOURCE_DATE_EPOCH=1785715200", dockerfile)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1785715200"), 2)
+        for volatile_path in (
+            "/var/cache/ldconfig/aux-cache",
+            "/var/log/apt/history.log",
+            "/var/log/apt/term.log",
+            "/var/log/dpkg.log",
+        ):
+            self.assertIn(volatile_path, dockerfile)
         self.assertIn("git config --system --add safe.directory /repo", dockerfile)
         self.assertRegex(dockerfile, r"(?m)^USER\s+boundver\s*$")
         self.assertIn("scripts/install_locked_tools.py\" action", action)
