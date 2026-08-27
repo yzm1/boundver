@@ -334,6 +334,7 @@ class RecoverySelection:
     release_assets_artifact_id: int
     release_assets_artifact_digest: str
     release_note_artifact_count: int
+    downstream_artifact_count: int
 
     def outputs(self) -> dict[str, str]:
         return {
@@ -484,10 +485,18 @@ def select_recovery_artifacts(
     release_notes_re = re.compile(
         rf"release-notes-{re.escape(sha)}-{run_id}-([1-9][0-9]*)"
     )
+    container_artifact_re = re.compile(
+        rf"boundver-container-{run_id}-([1-9][0-9]*)"
+    )
+    docker_build_record_re = re.compile(
+        rf"{re.escape(repository.replace('/', '~'))}~[A-Z0-9]{{6}}\.dockerbuild"
+    )
     actual_names: set[str] = set()
     artifact_attempts = {label: set() for label in artifact_name_res}
     retained: dict[tuple[str, int], tuple[int, str]] = {}
     release_note_count = 0
+    downstream_artifact_count = 0
+    docker_build_record_count = 0
     current_time = now or datetime.now(timezone.utc)
     for artifact in artifacts:
         artifact_id = artifact.get("id")
@@ -537,12 +546,32 @@ def select_recovery_artifacts(
             matched_artifact = True
             break
         if not matched_artifact:
-            match = release_notes_re.fullmatch(name)
-            if match is None or int(match.group(1)) > attempt:
-                raise ReleaseWorkflowError(
-                    "source artifact names do not match the release tag, run, and attempt"
-                )
-            release_note_count += 1
+            release_note_match = release_notes_re.fullmatch(name)
+            if release_note_match is not None:
+                if int(release_note_match.group(1)) > attempt:
+                    raise ReleaseWorkflowError(
+                        "source artifact names do not match the release tag, run, and attempt"
+                    )
+                release_note_count += 1
+            else:
+                container_match = container_artifact_re.fullmatch(name)
+                if container_match is not None:
+                    if int(container_match.group(1)) > attempt:
+                        raise ReleaseWorkflowError(
+                            "source artifact names do not match the release tag, run, and attempt"
+                        )
+                    downstream_artifact_count += 1
+                elif docker_build_record_re.fullmatch(name) is not None:
+                    docker_build_record_count += 1
+                    if docker_build_record_count > attempt:
+                        raise ReleaseWorkflowError(
+                            "source artifact names do not match the release tag, run, and attempt"
+                        )
+                    downstream_artifact_count += 1
+                else:
+                    raise ReleaseWorkflowError(
+                        "source artifact names do not match the release tag, run, and attempt"
+                    )
         actual_names.add(name)
 
     retained_attempts = set.union(*artifact_attempts.values())
@@ -577,6 +606,7 @@ def select_recovery_artifacts(
         release_assets_artifact_id=release_id,
         release_assets_artifact_digest=release_digest,
         release_note_artifact_count=release_note_count,
+        downstream_artifact_count=downstream_artifact_count,
     )
 
 
@@ -1152,7 +1182,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_outputs(args.output, selection.outputs())
             detail = (
                 f"selected run {selection.source_run_id} attempt "
-                f"{selection.artifact_attempt} retained artifacts"
+                f"{selection.artifact_attempt} retained artifacts; validated "
+                f"{selection.downstream_artifact_count} downstream artifact(s)"
             )
         elif args.command == "recover-artifacts":
             run_id = _positive_int_text(args.run_id, "source publication run ID")
@@ -1167,7 +1198,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             detail = (
                 f"selected run {selection.source_run_id} attempt "
                 f"{selection.artifact_attempt} retained artifacts; validated "
-                f"{selection.release_note_artifact_count} release-note artifact(s)"
+                f"{selection.release_note_artifact_count} release-note artifact(s) and "
+                f"{selection.downstream_artifact_count} downstream artifact(s)"
             )
         elif args.command == "verify-input-log":
             if args.job_id is not None:

@@ -165,6 +165,61 @@ class RecoverySelectionTests(unittest.TestCase):
         ):
             self._select(run, jobs, artifacts)
 
+    def test_accepts_only_strictly_bound_downstream_artifacts(self):
+        run, jobs, artifacts = _payloads()
+        run["run_attempt"] = 3
+        association = {
+            "id": RUN_ID,
+            "head_branch": TAG,
+            "head_sha": SHA,
+        }
+        for artifact_id, name in (
+            (1003, f"boundver-container-{RUN_ID}-2"),
+            (1004, "yzm1~boundver~DCC2KJ.dockerbuild"),
+        ):
+            artifacts["artifacts"].append(
+                {
+                    "id": artifact_id,
+                    "name": name,
+                    "size_in_bytes": 100,
+                    "expired": False,
+                    "digest": "sha256:" + "d" * 64,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "workflow_run": dict(association),
+                }
+            )
+        artifacts["total_count"] = 4
+
+        selection = self._select(run, jobs, artifacts)
+
+        self.assertEqual(selection.downstream_artifact_count, 2)
+
+        for bad_name in (
+            f"boundver-container-{RUN_ID + 1}-2",
+            f"boundver-container-{RUN_ID}-4",
+            "attacker~boundver~DCC2KJ.dockerbuild",
+            "yzm1~boundver~TOO-LONG.dockerbuild",
+        ):
+            with self.subTest(name=bad_name):
+                bad_run, bad_jobs, bad_artifacts = _payloads()
+                bad_run["run_attempt"] = 3
+                bad_artifacts["artifacts"].append(
+                    {
+                        "id": 1003,
+                        "name": bad_name,
+                        "size_in_bytes": 100,
+                        "expired": False,
+                        "digest": "sha256:" + "d" * 64,
+                        "expires_at": "2099-01-01T00:00:00Z",
+                        "workflow_run": dict(association),
+                    }
+                )
+                bad_artifacts["total_count"] = 3
+                with self.assertRaisesRegex(
+                    self.release.ReleaseWorkflowError, "names"
+                ):
+                    self._select(bad_run, bad_jobs, bad_artifacts)
+
     def test_cli_writes_only_validated_outputs(self):
         run, jobs, artifacts = _payloads()
         with tempfile.TemporaryDirectory() as temporary:

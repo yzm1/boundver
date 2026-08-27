@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Allowed failed release runs to resume from their exact retained source
+  artifacts after later container jobs add their own strictly named artifacts;
+  unknown, stale, malformed, or cross-run artifacts remain fatal. Disabled the
+  optional Docker diagnostic build-record upload for future release runs.
+
 ## [0.14.1] - 2026-08-26
 
 ### Upgrade contract
