@@ -12,7 +12,7 @@
 
 # Keep the multi-architecture base digest and Debian snapshot together. The
 # snapshot timestamp is the one recorded by this exact official Python image.
-FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a AS builder
+FROM python:3.14.6-slim-trixie@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144 AS builder
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
 # source inputs produce the same local wheel bytes.
@@ -49,7 +49,7 @@ RUN python -I -m pip wheel \
       .
 
 
-FROM python:3.12.14-slim-trixie@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+FROM python:3.14.6-slim-trixie@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
 
 # pip compiles installed modules in this stage. Force hash-based bytecode so
 # retries do not embed the wall clock in hundreds of .pyc headers.
