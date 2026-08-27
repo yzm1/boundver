@@ -836,11 +836,15 @@ class AutomationContractTests(unittest.TestCase):
             self.assertNotIn("python3 - ", scripts, job_name)
             self.assertNotIn("python3 -c ", scripts, job_name)
 
-        container_jobs = yaml.safe_load(
+        container_workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/publish-container.yml").read_text(
                 encoding="utf-8"
             )
-        )["jobs"]
+        )
+        self.assertEqual(
+            container_workflow["env"]["DOCKER_BUILD_RECORD_UPLOAD"], "false"
+        )
+        container_jobs = container_workflow["jobs"]
         self.assertEqual(container_jobs["build"]["permissions"], {"contents": "read"})
         self.assertEqual(container_jobs["publish"]["needs"], "build")
         publisher_steps = container_jobs["publish"]["steps"]

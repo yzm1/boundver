@@ -90,6 +90,7 @@ def _resume_api_payloads(
     artifact_attempt: int | None = None,
     release_note_attempts: tuple[int, ...] = (),
     extra_verify_attempts: tuple[int, ...] = (),
+    downstream_artifact_names: tuple[str, ...] = (),
 ) -> dict[str, object]:
     if artifact_attempt is None:
         artifact_attempt = run_attempt
@@ -128,6 +129,20 @@ def _resume_api_payloads(
                 "expired": False,
                 "expires_at": "2999-01-01T00:00:00Z",
                 "digest": f"sha256:{'c' * 64}",
+                "workflow_run": dict(association),
+            }
+        )
+    for index, name in enumerate(
+        downstream_artifact_names, start=43 + len(release_note_attempts)
+    ):
+        artifacts.append(
+            {
+                "id": index,
+                "size_in_bytes": 50,
+                "name": name,
+                "expired": False,
+                "expires_at": "2999-01-01T00:00:00Z",
+                "digest": f"sha256:{'d' * 64}",
                 "workflow_run": dict(association),
             }
         )
@@ -1809,6 +1824,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             run_attempt=3,
             artifact_attempt=1,
             release_note_attempts=(1, 2),
+            downstream_artifact_names=(
+                f"boundver-container-{RUN_ID}-2",
+                "yzm1~boundver~DCC2KJ.dockerbuild",
+            ),
         )
 
         def response(_repo, _repository, endpoint):
@@ -1826,6 +1845,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             )
 
         self.assertIn("validated 2 retained release-note artifact(s)", detail)
+        self.assertIn("2 downstream artifact(s)", detail)
 
     def test_resume_source_log_binds_the_exact_original_release_inputs(self):
         publisher = _load_script()

@@ -30,6 +30,7 @@ env:
   RELEASE_SHA: ${{ inputs.release_sha }}
   IMAGE: ghcr.io/yzm1/boundver
   IMAGE_ARTIFACT: boundver-container-${{ github.run_id }}-${{ github.run_attempt }}
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
   build:

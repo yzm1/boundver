@@ -1669,7 +1669,8 @@ def _source_release_artifacts(
         f"reuses successful verify-release attempt {selection.artifact_attempt} "
         "and its two exact unexpired artifacts; "
         f"validated {selection.release_note_artifact_count} retained "
-        f"release-note artifact(s); {source_inputs}"
+        f"release-note artifact(s) and {selection.downstream_artifact_count} "
+        f"downstream artifact(s); {source_inputs}"
     )
 
 
