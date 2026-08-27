@@ -12,6 +12,9 @@ All notable changes to this project are documented here. The format follows
   artifacts after later container jobs add their own strictly named artifacts;
   unknown, stale, malformed, or cross-run artifacts remain fatal. Disabled the
   optional Docker diagnostic build-record upload for future release runs.
+- Ran the recovery-control review audit from its checked-out Git repository so
+  resumed workflows can validate current `main` before the release checkout
+  exists.
 
 ## [0.14.1] - 2026-08-26
 
