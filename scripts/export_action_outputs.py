@@ -194,7 +194,11 @@ def export_outputs(
         "observations": observations,
         "consumer-impact": consumer_impact,
         "truncated-outputs": json.dumps(truncated, separators=(",", ":")),
-        "result-file": _transport_text(result_path.resolve()),
+        # This is a machine-routing value, not terminal text. GitHub's
+        # delimiter form safely carries newlines, so preserve the exact path
+        # even on POSIX self-hosted runners whose temporary directory contains
+        # otherwise terminal-sensitive characters.
+        "result-file": str(result_path.resolve()),
     }
     with github_output.open("a", encoding="utf-8", newline="\n") as handle:
         for name, value in values.items():

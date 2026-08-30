@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,6 +77,33 @@ class ActionOutputTests(unittest.TestCase):
             )
             self.assertEqual(json.loads(values["truncated-outputs"]), [])
             self.assertEqual(Path(values["result-file"]), result.resolve())
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows filenames cannot contain control characters",
+    )
+    def test_result_path_is_exported_losslessly(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "runner\ttemp\npath"
+            root.mkdir()
+            result = root / "result.json"
+            output = Path(temporary) / "github-output"
+            result.write_text(
+                json.dumps(
+                    {
+                        "issues": [],
+                        "observations": [],
+                        "consumer_impact": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+
+            self.assertEqual(values["result-file"], str(result.resolve()))
 
     def test_repository_text_cannot_forge_action_commands_or_terminal_output(self):
         exporter = _load_script()
