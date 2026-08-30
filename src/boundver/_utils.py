@@ -1,5 +1,6 @@
 """Shared utilities, enums, and exception types for boundver."""
 
+import io
 import json
 import math
 import os
@@ -237,13 +238,16 @@ def _bounded_json_dumps(
     separators: Optional[tuple] = None,
     default: Optional[Callable[[Any], Any]] = None,
     sort_keys: bool = False,
+    max_bytes: Optional[int] = None,
 ) -> str:
-    """Serialize JSON without Python's setting-dependent integer rendering.
+    """Serialize JSON with deterministic integers and an optional byte cap.
 
     This small encoder intentionally uses only the public ``json.dumps`` API
     for individual strings and floats. Container traversal and integer
     rendering stay in boundver, avoiding the private ``json.encoder`` helpers
-    whose signatures can change between supported Python releases.
+    whose signatures can change between supported Python releases. When
+    ``max_bytes`` is provided, emitted UTF-8 is accounted incrementally so an
+    oversized aggregate is rejected before the complete string is allocated.
     """
     if indent is None or isinstance(indent, str):
         indent_text = indent
@@ -254,8 +258,24 @@ def _bounded_json_dumps(
         key_separator = ": "
     else:
         item_separator, key_separator = separators
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ValueError("JSON output byte limit must be a non-negative integer")
 
     active: Set[int] = set()
+    output = io.StringIO()
+    emitted_bytes = 0
+
+    def emit(text: str) -> None:
+        nonlocal emitted_bytes
+        if max_bytes is not None:
+            emitted_bytes += (
+                len(text) if text.isascii() else len(text.encode("utf-8"))
+            )
+            if emitted_bytes > max_bytes:
+                raise GuardrailError(
+                    f"JSON output exceeds the {max_bytes}-byte limit"
+                )
+        output.write(text)
 
     def quote(text: str) -> str:
         return json.dumps(text, ensure_ascii=ensure_ascii)
@@ -295,78 +315,81 @@ def _bounded_json_dumps(
             )
         return quote(text)
 
-    def encode(item: Any, level: int) -> str:
+    def encode(item: Any, level: int) -> None:
         if item is None:
-            return "null"
+            emit("null")
+            return
         if item is True:
-            return "true"
+            emit("true")
+            return
         if item is False:
-            return "false"
+            emit("false")
+            return
         if isinstance(item, str):
-            return quote(item)
+            emit(quote(item))
+            return
         if isinstance(item, int):
-            return _bounded_int_to_decimal(item)
+            emit(_bounded_int_to_decimal(item))
+            return
         if isinstance(item, float):
-            return json.dumps(item, allow_nan=allow_nan)
+            emit(json.dumps(item, allow_nan=allow_nan))
+            return
         if isinstance(item, (list, tuple)):
             marker = enter(item)
             try:
-                encoded = [encode(child, level + 1) for child in item]
+                emit("[")
+                for index, child in enumerate(item):
+                    if index:
+                        emit(item_separator)
+                    if indent_text is not None:
+                        emit("\n" + indent_text * (level + 1))
+                    encode(child, level + 1)
+                if item and indent_text is not None:
+                    emit("\n" + indent_text * level)
+                emit("]")
             finally:
                 leave(marker)
-            if not encoded:
-                return "[]"
-            if indent_text is None:
-                return "[" + item_separator.join(encoded) + "]"
-            child_indent = "\n" + indent_text * (level + 1)
-            closing_indent = "\n" + indent_text * level
-            return (
-                "["
-                + child_indent
-                + (item_separator + child_indent).join(encoded)
-                + closing_indent
-                + "]"
-            )
+            return
         if isinstance(item, dict):
             marker = enter(item)
             try:
-                pairs = list(item.items())
-                if sort_keys:
-                    pairs.sort(key=lambda pair: pair[0])
-                encoded_pairs = []
+                pairs = (
+                    sorted(item.items(), key=lambda pair: pair[0])
+                    if sort_keys
+                    else item.items()
+                )
+                emit("{")
+                emitted_pair = False
                 for key, child in pairs:
                     encoded_key = encode_key(key)
                     if encoded_key is None:
                         continue
-                    encoded_pairs.append(
-                        encoded_key + key_separator + encode(child, level + 1)
-                    )
+                    if emitted_pair:
+                        emit(item_separator)
+                    if indent_text is not None:
+                        emit("\n" + indent_text * (level + 1))
+                    emit(encoded_key)
+                    emit(key_separator)
+                    encode(child, level + 1)
+                    emitted_pair = True
+                if emitted_pair and indent_text is not None:
+                    emit("\n" + indent_text * level)
+                emit("}")
             finally:
                 leave(marker)
-            if not encoded_pairs:
-                return "{}"
-            if indent_text is None:
-                return "{" + item_separator.join(encoded_pairs) + "}"
-            child_indent = "\n" + indent_text * (level + 1)
-            closing_indent = "\n" + indent_text * level
-            return (
-                "{"
-                + child_indent
-                + (item_separator + child_indent).join(encoded_pairs)
-                + closing_indent
-                + "}"
-            )
+            return
         if default is None:
             raise TypeError(
                 f"Object of type {type(item).__name__} is not JSON serializable"
             )
         marker = enter(item)
         try:
-            return encode(default(item), level)
+            encode(default(item), level)
         finally:
             leave(marker)
 
-    return encode(value, 0)
+    encode(value, 0)
+    return output.getvalue()
 
 
 class _BoundedJsonPath:

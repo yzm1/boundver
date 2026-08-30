@@ -22,6 +22,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Bounded every generated config and lockfile to the same 10 MiB UTF-8
+  contract enforced by its loader. Full and scoped generation, verification
+  updates, migration, init/add/remove, and the public Python API now reject an
+  oversized result before atomic publication and leave an existing target
+  byte-for-byte unchanged.
 - Escaped repository-controlled control characters and leading GitHub workflow
   command markers in every human-readable CLI value and in the composite
   Action's line-oriented outputs. Normal Unicode remains readable, trusted TTY

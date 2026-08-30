@@ -74,7 +74,6 @@ from ._utils import (
     FACETS,
     FACET_SET,
     SOURCE_MODE_SET,
-    _bounded_json_dumps,
     _effective_component_facets,
     _is_windows_reparse_point,
     BoundverError as BoundverError,
@@ -92,6 +91,7 @@ from ._config import (
     _schema_engine_errors as _schema_engine_errors,
     _schema_required_fields as _schema_required_fields,
     discover_components,
+    dump_config,
     find_config_file,
     load_config_file,
     validate_config,
@@ -107,6 +107,7 @@ from ._lockfile import (
     _recompute_slice_entry as _recompute_slice_entry,
     generate_lockfile,
     generate_lockfile_for_components,
+    dump_lockfile,
     load_lockfile_file,
     migrate_lockfile,
     verify_lockfile,
@@ -555,6 +556,16 @@ def _write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+def _write_lockfile_atomic(path: Path, value: dict) -> None:
+    """Serialize a readable lock completely before opening a temp file."""
+    _write_text_atomic(path, dump_lockfile(value))
+
+
+def _write_config_atomic(path: Path, value: dict) -> None:
+    """Serialize a readable config completely before opening a temp file."""
+    _write_text_atomic(path, dump_config(value))
+
+
 def _resolve_baseline_path(repo_root: Path, raw_path: str) -> Path:
     """Return a normalized lexical baseline path inside the repository.
 
@@ -649,7 +660,7 @@ def _run_cli_handler(command: str, handler, *handler_args) -> None:
     """Run a command with operational failures converted to usage errors."""
     try:
         handler(*handler_args)
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, subprocess.CalledProcessError, BoundverError) as exc:
         detail = str(exc).strip() or type(exc).__name__
         print(f"ERROR: {command} failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -785,7 +796,7 @@ def _cmd_migrate_lock(args) -> None:
                     )
         return
     assert migrated is not None
-    out = _bounded_json_dumps(migrated, indent=2, sort_keys=False) + "\n"
+    out = dump_lockfile(migrated)
     if args.dry_run:
         sys.stdout.write(out)
     else:
@@ -922,7 +933,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
             quiet=(args.quiet or args.format == "json"),
         )
     else:
-        _write_text_atomic(out_path, _bounded_json_dumps(lockfile, indent=2) + "\n")
+        _write_lockfile_atomic(out_path, lockfile)
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
     if args.verbose and not args.quiet and args.format != "json":
         print(f"Generation source={args.source} strict={not args.allow_partial}")
@@ -1166,7 +1177,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         except ValueError as exc:
             print(f"ERROR: update failed: {exc}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
-        _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
+        _write_lockfile_atomic(lock_path, updated)
         if args.format == "json":
             _print_verify_json(
                 ok=True,
@@ -1421,7 +1432,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
-            _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
+            _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
                 _print_verify_json(
                     ok=True,
@@ -1483,7 +1494,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
             except ValueError as exc:
                 print(f"ERROR: update failed: {exc}", file=sys.stderr)
                 sys.exit(EXIT_USAGE)
-            _write_text_atomic(lock_path, _bounded_json_dumps(updated, indent=2) + "\n")
+            _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
                 _print_verify_json(
                     ok=True,
@@ -1684,7 +1695,7 @@ def _cmd_init(args, repo_root: Path) -> None:
             }
         },
     }
-    _write_text_atomic(config_path, _bounded_json_dumps(starter, indent=2) + "\n")
+    _write_config_atomic(config_path, starter)
     print(f"Created {config_path} with {len(starter['components'])} component(s).")
     print(
         "Next: review the config, then run `boundver validate-config` and `boundver generate`."
@@ -1749,7 +1760,7 @@ def _cmd_add(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_text_atomic(config_path, _bounded_json_dumps(config, indent=2) + "\n")
+    _write_config_atomic(config_path, config)
     print(f"Added component '{args.name}' at path '{args.path}'")
     print(f"Run: boundver generate --components {args.name}")
 
@@ -1811,7 +1822,7 @@ def _cmd_remove(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_text_atomic(config_path, _bounded_json_dumps(config, indent=2) + "\n")
+    _write_config_atomic(config_path, config)
     print(f"Removed component '{args.name}'")
     print("Run: boundver generate")
 
