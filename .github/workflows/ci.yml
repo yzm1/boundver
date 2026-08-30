@@ -260,19 +260,3 @@ jobs:
             --workdir /repo \
             boundver-ci:${GITHUB_SHA} \
             verify --source head --facets exact
-
-  required-pr-gate:
-    name: required-pr-gate
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    needs: [test, build, action, public-installations]
-    steps:
-      - name: Checkout aggregate verifier
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Require every merge-critical job
-        env:
-          BOUNDVER_REQUIRED_CI_NEEDS: ${{ toJSON(needs) }}
-        run: python -I scripts/check_required_ci_results.py

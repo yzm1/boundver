@@ -2435,6 +2435,21 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     for rule in valid["rules"]
                 ],
             },
+            "extra merge method": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "allowed_merge_methods": ["squash", "merge"],
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
         }
         for name, value in cases.items():
             with self.subTest(name=name), self.assertRaisesRegex(

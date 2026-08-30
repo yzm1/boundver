@@ -923,7 +923,7 @@ def _validate_main_branch_rulesets(rulesets: Sequence[dict]) -> None:
             "deletion" in by_type
             and "non_fast_forward" in by_type
             and pull_parameters.get("required_review_thread_resolution") is True
-            and "squash" in pull_parameters.get("allowed_merge_methods", [])
+            and pull_parameters.get("allowed_merge_methods") == ["squash"]
             and status_parameters.get("strict_required_status_checks_policy") is True
             and required_gate
         ):

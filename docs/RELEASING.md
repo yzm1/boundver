@@ -36,12 +36,23 @@ The repository owner must configure these controls before starting a release:
   and the strict `required-pr-gate` status from the GitHub Actions App; it also
   blocks deletion and force pushes. The aggregate check fails unless the full
   supported-platform matrix plus build, public Action, and public installation
-  jobs all succeed. Zero mandatory human approvals keeps ordinary maintenance
-  workable for the solo-owned repository; exact Codex and independent release
-  review evidence is enforced separately by the review auditors. The ruleset
-  has no bypass actor. An owner emergency change to the ruleset must be recorded
-  in an issue, restored through a reviewed pull request, and resolved before
-  release promotion.
+  jobs all succeed. The status is published by `required-pr-gate.yml`, which
+  runs trusted code from the pull request's base commit after `CI` completes;
+  it never executes pull-request code or consumes its artifacts. It also rejects
+  any pull request that changes a workflow, the gate verifier, or the checked-in
+  ruleset contract. This keeps a pull request from weakening the policy that
+  judges it and still permits contributions from forks. Zero mandatory human
+  approvals keeps ordinary maintenance workable for the solo-owned repository;
+  exact Codex and independent release review evidence is enforced separately by
+  the review auditors. The ruleset has no bypass actor.
+- A necessary change to a protected gate control requires a short, auditable
+  maintenance window. Freeze the exact reviewed pull-request head, require all
+  ordinary CI and review gates, record the reason and exact commit in its issue,
+  disable only this ruleset's enforcement, squash-merge that frozen head, and
+  immediately restore the canonical active ruleset from the merged JSON. Verify
+  the live ruleset after restoration and keep the issue open until a subsequent
+  ordinary pull request proves that the base-controlled status is emitted by the
+  GitHub Actions App. Do not add a bypass actor or weaken the tracked contract.
 - Set GitHub Pages to **GitHub Actions** and retain the protected
   `github-pages` deployment environment created by Pages.
 - Create protected GitHub environments named `testpypi`, `pypi`,
