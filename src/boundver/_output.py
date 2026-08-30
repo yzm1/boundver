@@ -227,6 +227,60 @@ def _encoding_safe_text(text: str, stream: Any) -> str:
     return text
 
 
+def _display_text(value: object) -> str:
+    """Return readable, single-line text safe for terminals and CI logs."""
+    rendered: List[str] = []
+    for character in str(value):
+        codepoint = ord(character)
+        if character == "\n":
+            rendered.append("\\n")
+        elif character == "\r":
+            rendered.append("\\r")
+        elif character == "\t":
+            rendered.append("\\t")
+        elif character == "\b":
+            rendered.append("\\b")
+        elif character == "\f":
+            rendered.append("\\f")
+        elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint in {0x2028, 0x2029}:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(character)
+    text = "".join(rendered)
+    if text.startswith("::"):
+        # A value written at the start of a GitHub Actions log line must not be
+        # interpreted as a workflow command.
+        return "\\x3a" + text[1:]
+    return text
+
+
+class _StyledText:
+    """Human text with a trusted SGR wrapper applied only after escaping."""
+
+    __slots__ = ("code", "value")
+
+    def __init__(self, code: str, value: object) -> None:
+        self.code = code
+        self.value = value
+
+    def __str__(self) -> str:
+        # Embedding a styled value in another string safely drops styling. A
+        # direct ``safe_print`` call restores the trusted wrapper on a TTY.
+        return _display_text(self.value)
+
+
+def _render_human_value(value: object, stream: Any) -> str:
+    if isinstance(value, _StyledText):
+        text = _display_text(value.value)
+        isatty = getattr(stream, "isatty", None)
+        if callable(isatty) and isatty():
+            return f"\033[{value.code}m{text}\033[0m"
+        return text
+    return _display_text(value)
+
+
 def safe_print(
     *values: object,
     sep: Optional[str] = " ",
@@ -234,10 +288,12 @@ def safe_print(
     file: Any = None,
     flush: bool = False,
 ) -> None:
-    """Print without failing when a redirected stream cannot encode Unicode.
+    """Print terminal-safe values without failing on legacy encodings.
 
-    ``backslashreplace`` is reversible enough for diagnostics and, unlike
-    replacement characters or ignored bytes, retains every code point.
+    Values are rendered as one line: repository-controlled control characters
+    cannot create terminal escapes or GitHub workflow commands. ``sep`` and
+    ``end`` remain trusted layout supplied by boundver itself. Encoding fallback
+    retains unrepresentable code points with ``backslashreplace``.
     """
     if sep is None:
         sep = " "
@@ -249,7 +305,7 @@ def safe_print(
         raise TypeError(f"end must be None or a string, not {type(end).__name__}")
 
     stream = sys.stdout if file is None else file
-    text = sep.join(str(value) for value in values) + end
+    text = sep.join(_render_human_value(value, stream) for value in values) + end
     safe = _encoding_safe_text(text, stream)
     try:
         stream.write(safe)
@@ -287,20 +343,20 @@ def _is_tty() -> bool:
     return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
 
-def _green(s: str) -> str:
-    return f"\033[32m{s}\033[0m" if _is_tty() else s
+def _green(s: str) -> _StyledText:
+    return _StyledText("32", s)
 
 
-def _red(s: str) -> str:
-    return f"\033[31m{s}\033[0m" if _is_tty() else s
+def _red(s: str) -> _StyledText:
+    return _StyledText("31", s)
 
 
-def _yellow(s: str) -> str:
-    return f"\033[33m{s}\033[0m" if _is_tty() else s
+def _yellow(s: str) -> _StyledText:
+    return _StyledText("33", s)
 
 
-def _bold(s: str) -> str:
-    return f"\033[1m{s}\033[0m" if _is_tty() else s
+def _bold(s: str) -> _StyledText:
+    return _StyledText("1", s)
 
 
 def _display_path(path: object) -> str:
@@ -329,7 +385,8 @@ def _display_value(value: object) -> str:
 def print_diff(diff: dict) -> None:
     lock_metadata = diff.get("changed_metadata", {})
     if lock_metadata:
-        print("\n  LOCKFILE METADATA CHANGED:")
+        print()
+        print("  LOCKFILE METADATA CHANGED:")
         for field, values in lock_metadata.items():
             print(
                 f"    {field}: {_display_value(values['old'])} -> "
@@ -339,17 +396,20 @@ def print_diff(diff: dict) -> None:
     comps = diff["components"]
 
     if comps["added"]:
-        print("\n  ADDED:")
+        print()
+        print("  ADDED:")
         for c in comps["added"]:
             print(_green(f"    + {c['name']} @ {c.get('version', 'unversioned')}"))
 
     if comps["removed"]:
-        print("\n  REMOVED:")
+        print()
+        print("  REMOVED:")
         for c in comps["removed"]:
             print(_red(f"    - {c['name']} @ {c.get('version', 'unversioned')}"))
 
     if comps["changed"]:
-        print("\n  CHANGED:")
+        print()
+        print("  CHANGED:")
         for c in comps["changed"]:
             ver_str = ""
             if c["old_version"] != c["new_version"]:
@@ -365,19 +425,23 @@ def print_diff(diff: dict) -> None:
                 )
 
     if comps["unchanged"]:
-        print(f"\n  UNCHANGED: {len(comps['unchanged'])} components")
+        print()
+        print(f"  UNCHANGED: {len(comps['unchanged'])} components")
 
     slices = diff["slices"]
     if slices.get("added"):
-        print("\n  SLICES ADDED:")
+        print()
+        print("  SLICES ADDED:")
         for s in slices["added"]:
             print(_green(f"    + {s['name']}"))
     if slices.get("removed"):
-        print("\n  SLICES REMOVED:")
+        print()
+        print("  SLICES REMOVED:")
         for s in slices["removed"]:
             print(_red(f"    - {s['name']}"))
     if slices["changed"]:
-        print("\n  SLICES CHANGED:")
+        print()
+        print("  SLICES CHANGED:")
         for s in slices["changed"]:
             print(_yellow(f"    ~ {s['name']}: {_short(s['old'])} -> {_short(s['new'])}"))
             for field, values in s.get("changed_metadata", {}).items():
@@ -386,7 +450,8 @@ def print_diff(diff: dict) -> None:
                     f"{_display_value(values['new'])}"
                 )
     if slices["unchanged"]:
-        print(f"\n  SLICES UNCHANGED: {', '.join(slices['unchanged'])}")
+        print()
+        print(f"  SLICES UNCHANGED: {', '.join(slices['unchanged'])}")
 
 
 def print_status(lockfile: dict) -> None:
@@ -394,16 +459,19 @@ def print_status(lockfile: dict) -> None:
     comps = lockfile.get("components", {})
     slices = lockfile.get("slices", {})
 
-    print(f"\n  Project: {lockfile.get('project', '?')}")
+    print()
+    print(f"  Project: {lockfile.get('project', '?')}")
     print(f"  Components: {len(comps)}")
     print(f"  Slices: {len(slices)}")
 
     # Version coverage
     versioned = sum(1 for c in comps.values() if c.get("version"))
     unversioned = len(comps) - versioned
-    print(f"\n  Versioned: {versioned}  |  Unversioned: {unversioned}")
+    print()
+    print(f"  Versioned: {versioned}  |  Unversioned: {unversioned}")
 
-    print("\n  Component details:")
+    print()
+    print("  Component details:")
     for name, component in sorted(comps.items()):
         fps = component.get("fingerprints", {})
         version = component.get("version") or "unversioned"
@@ -429,10 +497,12 @@ def print_status(lockfile: dict) -> None:
         boundary_kinds[kind] = boundary_kinds.get(kind, 0) + 1
         state = c.get("boundary_status", "unknown")
         boundary_states[state] = boundary_states.get(state, 0) + 1
-    print("\n  Boundary coverage:")
+    print()
+    print("  Boundary coverage:")
     for kind, count in sorted(boundary_kinds.items()):
         print(f"    {kind}: {count}")
-    print("\n  Boundary extraction status:")
+    print()
+    print("  Boundary extraction status:")
     for state, count in sorted(boundary_states.items()):
         print(f"    {state}: {count}")
 
@@ -442,7 +512,8 @@ def print_status(lockfile: dict) -> None:
         if c.get("boundary_status") == "partial" and c.get("boundary_provider") == "implicit"
     ]
     if implicit_partial:
-        print(f"\n  Note: {len(implicit_partial)} component(s) use the 'implicit' provider (boundary fingerprint = null).")
+        print()
+        print(f"  Note: {len(implicit_partial)} component(s) use the 'implicit' provider (boundary fingerprint = null).")
         print("    This is expected -- implicit tracks exact changes only.")
         print("    To track a declared boundary, edit the component's boundary provider and paths in the config.")
 
@@ -460,12 +531,14 @@ def print_status(lockfile: dict) -> None:
         for e in c.get("exact_errors", []):
             warnings.append(f"    {name}: exact error - {e}")
     if warnings:
-        print(_yellow(f"\n  WARNINGS ({len(warnings)}):"))
+        print()
+        print(_yellow(f"  WARNINGS ({len(warnings)}):"))
         for w in warnings:
             print(_yellow(w))
 
     # Slices
-    print("\n  Slices:")
+    print()
+    print("  Slices:")
     for sname, sdata in slices.items():
         fp = _short(sdata.get("fingerprint"))
         mode = sdata.get("mode", "exact")
@@ -687,34 +760,48 @@ def explain_component_changes(
     print(f"Gated facets: {', '.join(sorted(gated_facets)) or 'none'}")
 
     if not changed:
-        print("\nNo tracked file changes detected for this component path.")
+        print()
+        print("No tracked file changes detected for this component path.")
         return 0
 
-    print(f"\nChanged files ({len(changed)}):")
+    print()
+    print(f"Changed files ({len(changed)}):")
     for status, rel in changed:
         print(f"  {status:>2}  {_display_path(rel)}")
 
     if not boundary_paths:
-        print("\nBoundary paths: none declared")
+        print()
+        print("Boundary paths: none declared")
         return 0
 
-    print(f"\nBoundary provider: {result['boundary_provider']}")
+    print()
+    print(f"Boundary provider: {result['boundary_provider']}")
     print("Boundary paths:")
     for bp in boundary_paths:
         print(f"  - {_display_path(bp)}")
 
     if boundary_changed:
-        print(f"\nBoundary-relevant changed files ({len(boundary_changed)}):")
+        print()
+        print(f"Boundary-relevant changed files ({len(boundary_changed)}):")
         for status, rel in boundary_changed:
             print(f"  {status:>2}  {_display_path(rel)}")
     else:
-        print("\nBoundary-relevant changed files: none")
+        print()
+        print("Boundary-relevant changed files: none")
 
     return 0
 
 
 def _print_json(data: Any) -> None:
-    print(_bounded_json_dumps(data, indent=2, sort_keys=True))
+    # JSON quoting already escapes repository-controlled controls. Write the
+    # serialized document directly so trusted pretty-print line breaks retain
+    # their machine-readable meaning instead of passing through human output.
+    text = _bounded_json_dumps(data, indent=2, sort_keys=True) + "\n"
+    safe = _encoding_safe_text(text, sys.stdout)
+    try:
+        sys.stdout.write(safe)
+    except UnicodeEncodeError:
+        sys.stdout.write(safe.encode("ascii", "backslashreplace").decode("ascii"))
 
 
 def _log(msg: str, quiet: bool = False) -> None:
@@ -833,7 +920,8 @@ def why_component(
         return 1 if has_gated_drift else 0
 
     # Format human-readable output.
-    print(f"\nComponent:  {_bold(component_name)}")
+    print()
+    print("Component:  ", _bold(component_name), sep="")
     print(f"Path:       {_display_path(comp_path)}")
     print(f"Source:     {source}")
     if lock_provenance:
@@ -843,7 +931,8 @@ def why_component(
         print(f"Version:    {result['version']}")
 
     if not has_observed_drift:
-        print(_green("\nStatus: UP TO DATE -- no fingerprint or metadata drift detected."))
+        print()
+        print(_green("Status: UP TO DATE -- no fingerprint or metadata drift detected."))
         return 0
 
     drift_count = (
@@ -852,18 +941,19 @@ def why_component(
         + len(result["digest_errors"])
     )
     if has_gated_drift:
-        print(_red(f"\nStatus: DRIFTED -- {drift_count} gated issue(s) detected"))
+        print()
+        print(_red(f"Status: DRIFTED -- {drift_count} gated issue(s) detected"))
     else:
-        print(
-            _green("\nStatus: UP TO DATE -- no gated drift detected.")
-        )
+        print()
+        print(_green("Status: UP TO DATE -- no gated drift detected."))
         print(
             _yellow(
                 f"Non-gating drift observed ({len(non_gating_changes)} facet(s))."
             )
         )
 
-    print("\nFingerprint changes:")
+    print()
+    print("Fingerprint changes:")
     for facet in FACETS:
         lv = result["locked_fps"].get(facet)
         cv = result["current_fps"].get(facet)
@@ -871,16 +961,20 @@ def why_component(
             classification = "gating" if facet in gated_facets else "non-gating"
             rendered = _red(_short(cv)) if facet in gated_facets else _yellow(_short(cv))
             print(
-                f"  {facet:<10}  {_short(lv)}  ->  {rendered}  "
-                f"(changed, {classification})"
+                f"  {facet:<10}  {_short(lv)}  ->  ",
+                rendered,
+                f"  (changed, {classification})",
+                sep="",
             )
         else:
             print(f"  {facet:<10}  {_short(lv)}  ->  {_short(cv)}  (unchanged)")
 
-    print(f"\n{_yellow('Change type:')}  {result['summary']}")
+    print()
+    print(_yellow("Change type:"), f"  {result['summary']}", sep="")
 
     if result["metadata_changes"]:
-        print("\nMetadata changes:")
+        print()
+        print("Metadata changes:")
         for field, values in result["metadata_changes"].items():
             print(
                 f"  {field}: {_display_value(values['locked'])} -> "
@@ -888,7 +982,8 @@ def why_component(
             )
 
     if result["digest_errors"]:
-        print(_red("\nFingerprint errors:"))
+        print()
+        print(_red("Fingerprint errors:"))
         for message in result["digest_errors"]:
             print(f"  {message}")
 
@@ -898,22 +993,25 @@ def why_component(
     )
     if changed_files_status == "error":
         detail = result.get("changed_files_error") or "unknown diagnostic error"
+        print()
         print(
             _red(
-                f"\nChanged-file diagnostics failed under "
+                f"Changed-file diagnostics failed under "
                 f"{_display_path(comp_path)}: {detail}"
             )
         )
     elif result["changed_files"]:
-        print(f"\nModified files under {_display_path(comp_path)}:")
+        print()
+        print(f"Modified files under {_display_path(comp_path)}:")
         seen: set = set()
         for status, rel in result["changed_files"]:
             if rel not in seen:
                 seen.add(rel)
                 print(f"  {status:>2}  {_display_path(rel)}")
     elif changed_files_status == "ok" and source == "index":
+        print()
         print(
-            f"\nChanged-file diagnostics found no staged tracked changes "
+            f"Changed-file diagnostics found no staged tracked changes "
             f"under {_display_path(comp_path)}."
         )
         print(
@@ -921,12 +1019,14 @@ def why_component(
             f"{_display_path(comp_path)}` to inspect the index."
         )
     elif changed_files_status == "ok" and source == "working-tree":
+        print()
         print(
-            f"\nChanged-file diagnostics found no tracked staged or "
+            f"Changed-file diagnostics found no tracked staged or "
             f"unstaged changes under {_display_path(comp_path)}."
         )
     else:
-        print(f"\nChanged-file diagnostics were not run for source={source}.")
+        print()
+        print(f"Changed-file diagnostics were not run for source={source}.")
         if source == "head":
             print(
                 f"  Tip: run `git log --oneline -- "
@@ -935,7 +1035,8 @@ def why_component(
 
     boundary_paths = comp_cfg.get("boundary", {}).get("paths", [])
     if boundary_paths and "boundary" in changes:
-        print(f"\nBoundary paths:  {', '.join(_display_path(path) for path in boundary_paths)}")
+        print()
+        print(f"Boundary paths:  {', '.join(_display_path(path) for path in boundary_paths)}")
     if result.get("provider_explanation"):
         print(f"Provider detail: {result['provider_explanation']}")
 
@@ -947,15 +1048,20 @@ def why_component(
 
     if consumers and ({"boundary", "compat"} & set(changes)):
         qualifier = " (transitive)" if transitive_consumers else ""
-        print(f"\nAffected consumers{qualifier}: {', '.join(consumers)}")
+        print()
+        print(f"Affected consumers{qualifier}: {', '.join(consumers)}")
 
     if has_gated_drift:
+        print()
         print(
-            f"\n{_bold('Recommendation:')} run `boundver generate --components "
-            f"{component_name} --source {source}` to update the lockfile."
+            _bold("Recommendation:"),
+            f" run `boundver generate --components {component_name} "
+            f"--source {source}` to update the lockfile.",
+            sep="",
         )
         return 1
-    print("\nNo lockfile update is required by the effective facet policy.")
+    print()
+    print("No lockfile update is required by the effective facet policy.")
     return 0
 
 

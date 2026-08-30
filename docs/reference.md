@@ -112,6 +112,14 @@ component selection, update status, exact input provenance, and typed
 `drifted`; an exact-only observation does not recommend regeneration when
 `exact` is not gated.
 
+Human-readable output renders every value as one terminal-safe line. Embedded
+newlines, carriage returns, C0/C1 controls, DEL, ANSI/OSC introducers, and
+Unicode line separators appear as visible escapes; a value beginning with
+`::` cannot become a GitHub Actions workflow command. Ordinary Unicode remains
+readable. The composite Action applies the same rule to each `issues` and
+`observations` item before joining items with newlines. Structured JSON output,
+including `consumer_impact`, preserves the exact machine data instead.
+
 ### Consumer graph limits
 
 Machine-readable impact remains complete and schema-valid: a config may contain

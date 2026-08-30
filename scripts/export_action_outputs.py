@@ -32,7 +32,29 @@ def _utf16_size(value: str) -> int:
 
 
 def _transport_text(value: object) -> str:
-    return str(value).encode("utf-8", errors="backslashreplace").decode("utf-8")
+    rendered: list[str] = []
+    for character in str(value):
+        codepoint = ord(character)
+        if character == "\n":
+            rendered.append("\\n")
+        elif character == "\r":
+            rendered.append("\\r")
+        elif character == "\t":
+            rendered.append("\\t")
+        elif character == "\b":
+            rendered.append("\\b")
+        elif character == "\f":
+            rendered.append("\\f")
+        elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif codepoint in {0x2028, 0x2029}:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(character)
+    text = "".join(rendered)
+    if text.startswith("::"):
+        text = "\\x3a" + text[1:]
+    return text.encode("utf-8", errors="backslashreplace").decode("utf-8")
 
 
 def _bounded_lines(value: object, limit: int) -> tuple[str, bool]:
@@ -172,7 +194,7 @@ def export_outputs(
         "observations": observations,
         "consumer-impact": consumer_impact,
         "truncated-outputs": json.dumps(truncated, separators=(",", ":")),
-        "result-file": str(result_path.resolve()),
+        "result-file": _transport_text(result_path.resolve()),
     }
     with github_output.open("a", encoding="utf-8", newline="\n") as handle:
         for name, value in values.items():

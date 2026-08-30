@@ -935,13 +935,14 @@ def _cmd_generate(args, repo_root: Path) -> None:
     if args.source == "head" and not args.quiet and args.format != "json":
         comps = lockfile.get("components", {})
         if comps and all(c.get("exact_errors") for c in comps.values()):
+            print()
             print(
                 _yellow(
-                    "\nHint: All components have errors at HEAD. "
-                    "If you haven't committed yet, try:\n"
-                    "  boundver generate --source working-tree"
+                    "Hint: All components have errors at HEAD. "
+                    "If you haven't committed yet, try:"
                 )
             )
+            print(_yellow("  boundver generate --source working-tree"))
 
 
 def _print_verify_json(
@@ -1350,26 +1351,27 @@ def _cmd_verify(args, repo_root: Path) -> None:
         )
         if args.format != "json" and not args.quiet:
             print(input_line)
-            print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):") + "\n")
+            print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):"))
+            print()
             for issue in issues:
                 print(f"  {issue}")
             if observations:
-                print(_yellow("\nNON-GATING DRIFT:"))
+                print()
+                print(_yellow("NON-GATING DRIFT:"))
                 for observation in observations:
                     print(f"  {observation}")
             if baseline_info and baseline_info["baselined_issues"]:
-                print(_yellow("\nKNOWN BASELINE VIOLATIONS:"))
+                print()
+                print(_yellow("KNOWN BASELINE VIOLATIONS:"))
                 for issue in baseline_info["baselined_issues"]:
                     print(f"  {issue}")
             if not args.update and unavailable_issues:
-                print(
-                    "\nInspect with `boundver why <component>`.\n"
-                    + unavailable_guidance
-                )
+                print()
+                print("Inspect with `boundver why <component>`.")
+                print(unavailable_guidance)
             elif not args.update:
-                print(
-                    "\nInspect with `boundver why <component>`, then run `boundver verify --update` after review."
-                )
+                print()
+                print("Inspect with `boundver why <component>`, then run `boundver verify --update` after review.")
         # Regeneration cannot manufacture a facet that the configuration does
         # not define. Treat this as a controlled policy/input error and leave
         # the reviewed lock bytes untouched even when --update was requested.
@@ -1389,7 +1391,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     consumer_impact=consumer_impact,
                 )
             elif not args.quiet:
-                print("\nLOCKFILE NOT UPDATED: " + unavailable_guidance)
+                print()
+                print("LOCKFILE NOT UPDATED: " + unavailable_guidance)
             sys.exit(EXIT_USAGE)
         if args.update:
             try:
@@ -1601,7 +1604,8 @@ def _cmd_slice(args, repo_root: Path) -> None:
             }
         )
         return
-    print(f"\n  Slice: {args.name}")
+    print()
+    print(f"  Slice: {args.name}")
     print(f"  Mode: {sl.get('mode', 'exact')}")
     print(f"  Fingerprint: {sl['fingerprint']}")
     print("  Components:")
@@ -1958,12 +1962,14 @@ def _cmd_status(args, repo_root: Path) -> None:
             status_payload["issues"].extend(issues)
             if issues:
                 if not args.quiet and args.format != "json":
-                    print(f"\n  DRIFT DETECTED ({len(issues)} issues):")
+                    print()
+                    print(f"  DRIFT DETECTED ({len(issues)} issues):")
                     for issue in issues:
                         print(f"    {issue}")
             if status_payload["observations"] and not args.quiet and args.format != "json":
+                print()
                 print(
-                    f"\n  NON-GATING DRIFT ({len(status_payload['observations'])} observations):"
+                    f"  NON-GATING DRIFT ({len(status_payload['observations'])} observations):"
                 )
                 for observation in status_payload["observations"]:
                     print(f"    {observation}")
@@ -2133,14 +2139,23 @@ def main():
     try:
         repo_root = git_root()
     except (subprocess.CalledProcessError, OSError):
+        print("ERROR: Not inside a git repository.", file=sys.stderr)
+        print(file=sys.stderr)
         print(
-            "ERROR: Not inside a git repository.\n"
-            "\n"
-            "boundver requires git history to compute fingerprints.\n"
-            "Common fixes:\n"
-            "  - In CI: set fetch-depth: 0 (GitHub Actions) or GIT_DEPTH: 0 (GitLab)\n"
-            "  - In Docker: copy .git into the build context or mount it\n"
-            "  - Locally: run from within a git-initialized directory (git init)\n",
+            "boundver requires git history to compute fingerprints.",
+            file=sys.stderr,
+        )
+        print("Common fixes:", file=sys.stderr)
+        print(
+            "  - In CI: set fetch-depth: 0 (GitHub Actions) or GIT_DEPTH: 0 (GitLab)",
+            file=sys.stderr,
+        )
+        print(
+            "  - In Docker: copy .git into the build context or mount it",
+            file=sys.stderr,
+        )
+        print(
+            "  - Locally: run from within a git-initialized directory (git init)",
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)

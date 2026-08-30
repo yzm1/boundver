@@ -77,6 +77,61 @@ class ActionOutputTests(unittest.TestCase):
             self.assertEqual(json.loads(values["truncated-outputs"]), [])
             self.assertEqual(Path(values["result-file"]), result.resolve())
 
+    def test_repository_text_cannot_forge_action_commands_or_terminal_output(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            payload = {
+                "issues": [
+                    "first\n::warning title=forged::not real",
+                    "::error title=forged::not real",
+                    "controls\r\t\x00\x1b[2J\x9b31m\u2028 café שלום",
+                ],
+                "observations": ["::notice::forged\nsecond line"],
+                "consumer_impact": [
+                    {
+                        "component": "api\n::warning::machine-json",
+                        "components": [],
+                        "external_consumers": [],
+                        "facets": ["boundary"],
+                        "transitive": False,
+                    }
+                ],
+            }
+            result.write_text(json.dumps(payload), encoding="utf-8")
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+
+            self.assertEqual(truncated, ())
+            self.assertEqual(
+                values["issues"].splitlines(),
+                [
+                    "first\\n::warning title=forged::not real",
+                    "\\x3a:error title=forged::not real",
+                    "controls\\r\\t\\x00\\x1b[2J\\x9b31m\\u2028 café שלום",
+                ],
+            )
+            self.assertEqual(
+                values["observations"],
+                "\\x3a:notice::forged\\nsecond line",
+            )
+            self.assertFalse(
+                any(line.startswith("::") for line in values["issues"].splitlines())
+            )
+            self.assertEqual(
+                json.loads(values["consumer-impact"]), payload["consumer_impact"]
+            )
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8")), payload)
+
+    def test_action_does_not_echo_an_invalid_source_value(self):
+        action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
+
+        self.assertIn('echo "Invalid source input."', action)
+        self.assertNotIn('echo "Invalid source: $BOUNDVER_SOURCE"', action)
+
     def test_oversized_values_are_bounded_and_explicit(self):
         exporter = _load_script()
         with tempfile.TemporaryDirectory() as temporary:

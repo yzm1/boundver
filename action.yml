@@ -116,7 +116,7 @@ runs:
 
         case "$BOUNDVER_SOURCE" in
           head|index|working-tree) ;;
-          *) echo "Invalid source: $BOUNDVER_SOURCE" >&2; exit 2 ;;
+          *) echo "Invalid source input." >&2; exit 2 ;;
         esac
         case "$BOUNDVER_FAIL_FAST" in
           true|false) ;;
