@@ -87,7 +87,12 @@ def generate(
         raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     if out_path is not None:
         dest = repo_root / out_path
-        _ensure_lock_outside_components(repo_root, dest, config)
+        _ensure_lock_outside_components(
+            repo_root,
+            dest,
+            config,
+            config_path=resolved_config_path,
+        )
     lockfile = generate_lockfile(
         config, repo_root, source=source, strict=True,
         allow_custom_providers=allow_custom_providers,
@@ -143,7 +148,12 @@ def verify(
     if config_errors:
         raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     resolved_lock_path = repo_root / lock_path
-    _ensure_lock_outside_components(repo_root, resolved_lock_path, config)
+    _ensure_lock_outside_components(
+        repo_root,
+        resolved_lock_path,
+        config,
+        config_path=resolved_config_path,
+    )
     lf = _load_lockfile(
         resolved_lock_path, repo_root=repo_root, snapshot=snapshot
     )
