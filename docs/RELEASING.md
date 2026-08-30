@@ -49,7 +49,9 @@ The repository owner must configure these controls before starting a release:
   the review auditors. The ruleset has no bypass actor. Release checks compare
   its complete effective API policy with the checked-in contract, including
   GitHub-added defaults, and reject any other active ruleset that also targets
-  `main`; an inherited or stale rule cannot be treated as harmless.
+  `main`. Classic branch protection must remain absent because GitHub would
+  enforce it in addition to the ruleset; an inherited or stale rule cannot be
+  treated as harmless.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,
