@@ -1646,6 +1646,29 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("reviewThreads(first:100,after:$endCursor)", snapshot_program)
         self.assertIn("fullDatabaseId lastEditedAt", snapshot_program)
         self.assertIn('"repository_id": repository_id', snapshot_program)
+        self.assertIn("SEMANTIC_REVIEW_ENVIRONMENTS", snapshot_program)
+        self.assertIn("semantic-provider-security-review", snapshot_program)
+        self.assertIn("semantic-provider-product-review", snapshot_program)
+        self.assertIn(
+            'environment.get("can_admins_bypass") is not False',
+            snapshot_program,
+        )
+        self.assertIn(
+            'rule.get("prevent_self_review") is not True',
+            snapshot_program,
+        )
+        self.assertIn(
+            'permission_record.get("permission") != "read"',
+            snapshot_program,
+        )
+        self.assertIn(
+            "Semantic environment reviewer is not read-only",
+            snapshot_program,
+        )
+        self.assertIn(
+            '"semantic_review_authority": semantic_review_authority',
+            snapshot_program,
+        )
         self.assertIn(
             'review["last_edited_at"] = review_edit_times[review["id"]]',
             snapshot_program,

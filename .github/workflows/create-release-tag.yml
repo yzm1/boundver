@@ -49,6 +49,10 @@ env:
     MAX_JSON_NUMBER_DIGITS = 4300
     READ_CHUNK_BYTES = 64 * 1024
     TRUSTED_CODEX_BOT_ID = 199175422
+    SEMANTIC_REVIEW_ENVIRONMENTS = (
+        ("product", "semantic-provider-product-review"),
+        ("security", "semantic-provider-security-review"),
+    )
     GITHUB_TIMESTAMP_RE = re.compile(
         r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
         r"(?:\.[0-9]{1,9})?Z"
@@ -320,6 +324,105 @@ env:
     if repository_owner["login"].casefold() != owner.casefold():
         raise SystemExit("GitHub repository ownership changed")
 
+    semantic_review_authority = None
+    semantic_reviewer_ids = set()
+    if release_tag == "v0.15.0":
+        environments = {}
+        for role, environment_name in SEMANTIC_REVIEW_ENVIRONMENTS:
+            encoded_environment = urllib.parse.quote(environment_name, safe="")
+            environment = rest(
+                f"repos/{repository}/environments/{encoded_environment}"
+            )
+            if not isinstance(environment, dict):
+                raise SystemExit("GitHub returned malformed semantic review environment")
+            environment_id = environment.get("id")
+            returned_name = environment.get("name")
+            returned_url = environment.get("url")
+            created_at = environment.get("created_at")
+            updated_at = environment.get("updated_at")
+            expected_url = (
+                f"https://api.github.com/repos/{repository}/environments/"
+                f"{encoded_environment}"
+            )
+            rules = environment.get("protection_rules")
+            if (type(environment_id) is not int or environment_id <= 0 or
+                    returned_name != environment_name or returned_url != expected_url or
+                    environment.get("can_admins_bypass") is not False or
+                    environment.get("deployment_branch_policy") is not None or
+                    not isinstance(created_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(created_at) is None or
+                    not isinstance(updated_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(updated_at) is None or
+                    not isinstance(rules, list) or len(rules) != 1 or
+                    not isinstance(rules[0], dict)):
+                raise SystemExit("GitHub returned unsafe semantic review environment")
+            rule = rules[0]
+            rule_id = rule.get("id")
+            reviewers = rule.get("reviewers")
+            if (type(rule_id) is not int or rule_id <= 0 or
+                    rule.get("type") != "required_reviewers" or
+                    rule.get("prevent_self_review") is not True or
+                    not isinstance(reviewers, list) or len(reviewers) != 1 or
+                    not isinstance(reviewers[0], dict) or
+                    reviewers[0].get("type") != "User"):
+                raise SystemExit("GitHub returned unsafe semantic review rule")
+            reviewer = actor(reviewers[0].get("reviewer"))
+            if (reviewer["type"] != "User" or
+                    reviewer["id"] == repository_owner["id"] or
+                    reviewer["id"] in semantic_reviewer_ids):
+                raise SystemExit("Semantic review environments need distinct external humans")
+            encoded_reviewer = urllib.parse.quote(reviewer["login"], safe="")
+            permission_record = rest(
+                f"repos/{repository}/collaborators/{encoded_reviewer}/permission"
+            )
+            permission_user = (
+                permission_record.get("user")
+                if isinstance(permission_record, dict) else None
+            )
+            permission_actor = actor(permission_user)
+            permission_flags = (
+                permission_user.get("permissions")
+                if isinstance(permission_user, dict) else None
+            )
+            expected_permission_flags = {
+                "admin": False,
+                "maintain": False,
+                "push": False,
+                "triage": False,
+                "pull": True,
+            }
+            if (not isinstance(permission_record, dict) or
+                    permission_actor != reviewer or
+                    permission_record.get("permission") != "read" or
+                    permission_record.get("role_name") != "read" or
+                    permission_flags != expected_permission_flags):
+                raise SystemExit("Semantic environment reviewer is not read-only")
+            semantic_reviewer_ids.add(reviewer["id"])
+            environments[role] = {
+                "id": environment_id,
+                "name": returned_name,
+                "url": returned_url,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "can_admins_bypass": False,
+                "deployment_branch_policy": None,
+                "rule": {
+                    "id": rule_id,
+                    "type": "required_reviewers",
+                    "prevent_self_review": True,
+                    "reviewer": reviewer,
+                    "repository_permission": {
+                        "permission": "read",
+                        "role_name": "read",
+                        "permissions": expected_permission_flags,
+                    },
+                },
+            }
+        semantic_review_authority = {
+            "source": "github-environment-required-reviewers/v1",
+            "environments": environments,
+        }
+
     thread_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewDecision reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}"""
     review_edit_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{fullDatabaseId lastEditedAt} pageInfo{hasNextPage endCursor}}}}}"""
     pull_requests = {}
@@ -390,7 +493,8 @@ env:
             if (evidence_actor and isinstance(commit_id, str) and
                     re.fullmatch(r"[0-9a-fA-F]{7,40}", commit_id) is not None):
                 evidence_candidates.add(commit_id.lower())
-            if state == "APPROVED" and reviewer["type"] == "User":
+            if (state == "APPROVED" and reviewer["type"] == "User" and
+                    reviewer["id"] not in semantic_reviewer_ids):
                 permission_logins.add(reviewer["login"])
 
         review_edit_times = {}
@@ -598,6 +702,7 @@ env:
         "associations": associations,
         "repository_id": repository_id,
         "repository_owner": repository_owner,
+        "semantic_review_authority": semantic_review_authority,
         "pull_requests": pull_requests,
     }
     encoded = json.dumps(

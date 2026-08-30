@@ -65,6 +65,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+
             def validate():
                 return _CHECKER.validate_proposal(
                     ROOT,
@@ -143,6 +144,77 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 "login": "yzm1",
                 "type": "User",
             },
+            "review_authority": {
+                "source": "github-environment-required-reviewers/v1",
+                "environments": {
+                    "product": {
+                        "id": 11,
+                        "name": "semantic-provider-product-review",
+                        "url": (
+                            "https://api.github.com/repos/yzm1/boundver/"
+                            "environments/semantic-provider-product-review"
+                        ),
+                        "created_at": "2026-08-30T09:00:00Z",
+                        "updated_at": "2026-08-30T10:00:00Z",
+                        "can_admins_bypass": False,
+                        "deployment_branch_policy": None,
+                        "rule": {
+                            "id": 21,
+                            "type": "required_reviewers",
+                            "prevent_self_review": True,
+                            "reviewer": {
+                                "id": 3,
+                                "login": "product-reviewer",
+                                "type": "User",
+                            },
+                            "repository_permission": {
+                                "permission": "read",
+                                "role_name": "read",
+                                "permissions": {
+                                    "admin": False,
+                                    "maintain": False,
+                                    "push": False,
+                                    "triage": False,
+                                    "pull": True,
+                                },
+                            },
+                        },
+                    },
+                    "security": {
+                        "id": 12,
+                        "name": "semantic-provider-security-review",
+                        "url": (
+                            "https://api.github.com/repos/yzm1/boundver/"
+                            "environments/semantic-provider-security-review"
+                        ),
+                        "created_at": "2026-08-30T09:00:00Z",
+                        "updated_at": "2026-08-30T10:00:00Z",
+                        "can_admins_bypass": False,
+                        "deployment_branch_policy": None,
+                        "rule": {
+                            "id": 22,
+                            "type": "required_reviewers",
+                            "prevent_self_review": True,
+                            "reviewer": {
+                                "id": 2,
+                                "login": "security-reviewer",
+                                "type": "User",
+                            },
+                            "repository_permission": {
+                                "permission": "read",
+                                "role_name": "read",
+                                "permissions": {
+                                    "admin": False,
+                                    "maintain": False,
+                                    "push": False,
+                                    "triage": False,
+                                    "pull": True,
+                                },
+                            },
+                        },
+                    },
+                },
+            },
             "record_commit": record_commit,
             "record_parent": record_parent,
             "local_tree": tree,
@@ -196,10 +268,6 @@ class SemanticProviderProposalTests(unittest.TestCase):
                         },
                     },
                 ],
-                "permissions": {
-                    "security-reviewer": "write",
-                    "product-reviewer": "maintain",
-                },
             },
         }
 
@@ -260,9 +328,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
 
     def _initialize_gate_repository(self, directory):
         root = Path(directory)
-        subprocess.run(
-            ["git", "init", "--quiet"], cwd=root, check=True, timeout=30
-        )
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True, timeout=30)
         subprocess.run(
             ["git", "config", "user.name", "Proposal Test"],
             cwd=root,
@@ -308,7 +374,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "review-ready")
         self.assertEqual(result["threats"], 43)
-        self.assertEqual(result["controls"], 43)
+        self.assertEqual(result["controls"], 44)
         self.assertEqual(result["verifications"], 38)
         self.assertFalse(result["implementation_allowed"])
         self.assertFalse(result["v0_15_work_allowed"])
@@ -386,7 +452,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
         def orphan_verification(value):
             threat = next(item for item in value["threats"] if item["id"] == "SPT-042")
             threat["verifications"].remove("SPV-037")
-            control = next(item for item in value["controls"] if item["id"] == "SPC-042")
+            control = next(
+                item for item in value["controls"] if item["id"] == "SPC-042"
+            )
             control["verifications"].remove("SPV-037")
 
         def duplicate_finding(value):
@@ -471,9 +539,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
             ),
             (
                 "round fields",
-                lambda value: value["red_team"]["rounds"][0].update(
-                    {"extra": True}
-                ),
+                lambda value: value["red_team"]["rounds"][0].update({"extra": True}),
             ),
             (
                 "round status",
@@ -494,14 +560,36 @@ class SemanticProviderProposalTests(unittest.TestCase):
             ),
             (
                 "review repository ID",
-                lambda value: value["review_requirements"].update(
-                    {"repository_id": 1}
-                ),
+                lambda value: value["review_requirements"].update({"repository_id": 1}),
             ),
             (
                 "review base",
                 lambda value: value["review_requirements"].update(
                     {"base_branch": "develop"}
+                ),
+            ),
+            (
+                "review authority",
+                lambda value: value["review_requirements"].update(
+                    {"reviewer_authority": "repository-write/v1"}
+                ),
+            ),
+            (
+                "review security environment",
+                lambda value: value["review_requirements"].update(
+                    {"security_reviewer_environment": "attacker-controlled"}
+                ),
+            ),
+            (
+                "review product environment",
+                lambda value: value["review_requirements"].update(
+                    {"product_reviewer_environment": "attacker-controlled"}
+                ),
+            ),
+            (
+                "review distinct environments",
+                lambda value: value["review_requirements"].update(
+                    {"distinct_environment_reviewers_required": False}
                 ),
             ),
             (
@@ -545,14 +633,30 @@ class SemanticProviderProposalTests(unittest.TestCase):
             ),
             (
                 "release fields",
-                lambda value: value["release_gates"]["v0.15.0"].update(
-                    {"extra": True}
-                ),
+                lambda value: value["release_gates"]["v0.15.0"].update({"extra": True}),
             ),
             (
                 "release evidence source",
                 lambda value: value["release_gates"]["v0.15.0"].update(
                     {"evidence_source": "manifest-self-attestation/v1"}
+                ),
+            ),
+            (
+                "release reviewer authority",
+                lambda value: value["release_gates"]["v0.15.0"].update(
+                    {"reviewer_authority": "repository-write/v1"}
+                ),
+            ),
+            (
+                "release reviewer environment",
+                lambda value: value["release_gates"]["v0.15.0"].update(
+                    {"product_reviewer_environment": "attacker-controlled"}
+                ),
+            ),
+            (
+                "release distinct environments",
+                lambda value: value["release_gates"]["v0.15.0"].update(
+                    {"distinct_environment_reviewers_required": False}
                 ),
             ),
             (
@@ -592,7 +696,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
             value["open_findings"] = [copy.deepcopy(base)]
 
         result = self._validate_mutation(add_open)
-        self.assertIn("Open red-team findings remain unresolved", result["acceptance_blockers"])
+        self.assertIn(
+            "Open red-team findings remain unresolved", result["acceptance_blockers"]
+        )
 
         def add_closed(value):
             finding = copy.deepcopy(base)
@@ -606,7 +712,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
             value["open_findings"] = [finding]
 
         result = self._validate_mutation(add_closed)
-        self.assertNotIn("Open red-team findings remain unresolved", result["acceptance_blockers"])
+        self.assertNotIn(
+            "Open red-team findings remain unresolved", result["acceptance_blockers"]
+        )
 
         def add_accepted(value):
             finding = copy.deepcopy(base)
@@ -649,7 +757,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
         def mutate(value):
             threat = next(item for item in value["threats"] if item["id"] == "SPT-008")
             threat["controls"] = ["SPC-027"]
-            control = next(item for item in value["controls"] if item["id"] == "SPC-028")
+            control = next(
+                item for item in value["controls"] if item["id"] == "SPC-028"
+            )
             control["threats"].remove("SPT-008")
 
         with self.assertRaisesRegex(
@@ -661,9 +771,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
     def test_passed_verification_requires_evidence(self):
         def mutate(value):
             verification = next(
-                item
-                for item in value["verifications"]
-                if item["status"] == "planned"
+                item for item in value["verifications"] if item["status"] == "planned"
             )
             verification["status"] = "passed"
 
@@ -697,12 +805,242 @@ class SemanticProviderProposalTests(unittest.TestCase):
         self.assertEqual(completed.stderr, "")
 
     def test_authoritative_review_snapshot_passes(self):
-        result = self._evaluate_review(self._review_snapshot())
+        snapshot = self._review_snapshot()
+        self.assertNotIn("permissions", snapshot["pull_request"])
+        result = self._evaluate_review(snapshot)
         self.assertEqual(result["pull_request"], 80)
-        self.assertEqual(
-            result["reviewers"], ["product-reviewer", "security-reviewer"]
-        )
+        self.assertEqual(result["reviewers"], ["product-reviewer", "security-reviewer"])
         self.assertEqual(result["security_reviewers"], ["security-reviewer"])
+
+    def test_review_authority_environment_matrix_fails_closed(self):
+        def duplicate_reviewer(value):
+            security = value["review_authority"]["environments"]["security"]
+            value["review_authority"]["environments"]["product"]["rule"]["reviewer"] = (
+                copy.deepcopy(security["rule"]["reviewer"])
+            )
+
+        mutations = {
+            "source": lambda value: value["review_authority"].update(
+                {"source": "repository-write/v1"}
+            ),
+            "missing environment": lambda value: value["review_authority"][
+                "environments"
+            ].pop("product"),
+            "environment id": lambda value: value["review_authority"]["environments"][
+                "product"
+            ].update({"id": 0}),
+            "environment name": lambda value: value["review_authority"]["environments"][
+                "product"
+            ].update({"name": "attacker-controlled"}),
+            "environment url": lambda value: value["review_authority"]["environments"][
+                "product"
+            ].update({"url": "https://api.github.com/attacker"}),
+            "administrator bypass": lambda value: value["review_authority"][
+                "environments"
+            ]["product"].update({"can_admins_bypass": True}),
+            "branch policy": lambda value: value["review_authority"]["environments"][
+                "product"
+            ].update({"deployment_branch_policy": {}}),
+            "timestamp inversion": lambda value: value["review_authority"][
+                "environments"
+            ]["product"].update({"created_at": "2026-08-30T10:00:01Z"}),
+            "rule id": lambda value: value["review_authority"]["environments"][
+                "product"
+            ]["rule"].update({"id": 0}),
+            "self review allowed": lambda value: value["review_authority"][
+                "environments"
+            ]["product"]["rule"].update({"prevent_self_review": False}),
+            "write permission": lambda value: value["review_authority"]["environments"][
+                "product"
+            ]["rule"]["repository_permission"].update(
+                {"permission": "write", "role_name": "write"}
+            ),
+            "duplicate reviewer": duplicate_reviewer,
+            "bot reviewer": lambda value: value["review_authority"]["environments"][
+                "product"
+            ]["rule"].update(
+                {
+                    "reviewer": {
+                        "id": 30,
+                        "login": "product-reviewer[bot]",
+                        "type": "Bot",
+                    }
+                }
+            ),
+            "repository owner": lambda value: value["review_authority"]["environments"][
+                "product"
+            ]["rule"].update(
+                {
+                    "reviewer": {
+                        "id": 22440724,
+                        "login": "yzm1",
+                        "type": "User",
+                    }
+                }
+            ),
+            "roster changed after approval": lambda value: value["review_authority"][
+                "environments"
+            ]["product"].update({"updated_at": "2026-08-30T10:02:00Z"}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                snapshot = self._review_snapshot()
+                mutate(snapshot)
+                with self.assertRaises(_AUDITOR.AuditError):
+                    self._evaluate_review(snapshot)
+
+    def test_external_review_aggregate_state_is_fail_closed_but_not_required(self):
+        snapshot = self._review_snapshot()
+        snapshot["pull_request"]["review_decision"] = None
+        self.assertEqual(self._evaluate_review(snapshot)["pull_request"], 80)
+
+        for decision in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+            with self.subTest(decision=decision):
+                snapshot = self._review_snapshot()
+                snapshot["pull_request"]["review_decision"] = decision
+                with self.assertRaisesRegex(_AUDITOR.AuditError, "blocking"):
+                    self._evaluate_review(snapshot)
+
+    def test_only_designated_security_reviewer_can_supply_marker(self):
+        snapshot = self._review_snapshot()
+        marker = snapshot["pull_request"]["reviews"][0]["body"]
+        snapshot["pull_request"]["reviews"][0]["body"] = ""
+        snapshot["pull_request"]["reviews"][1]["body"] = marker
+        with self.assertRaisesRegex(_AUDITOR.AuditError, "security review"):
+            self._evaluate_review(snapshot)
+
+    def test_environment_api_normalization_is_bounded_and_fail_closed(self):
+        def records():
+            normalized = self._review_snapshot()["review_authority"]["environments"]
+            result = {}
+            for role, environment in normalized.items():
+                rule = environment["rule"]
+                result["repos/yzm1/boundver/environments/" + environment["name"]] = {
+                    "id": environment["id"],
+                    "name": environment["name"],
+                    "url": environment["url"],
+                    "created_at": environment["created_at"],
+                    "updated_at": environment["updated_at"],
+                    "can_admins_bypass": environment["can_admins_bypass"],
+                    "protection_rules": [
+                        {
+                            "id": rule["id"],
+                            "type": rule["type"],
+                            "prevent_self_review": rule["prevent_self_review"],
+                            "reviewers": [
+                                {
+                                    "type": "User",
+                                    "reviewer": copy.deepcopy(rule["reviewer"]),
+                                }
+                            ],
+                        }
+                    ],
+                    "deployment_branch_policy": None,
+                }
+                reviewer = rule["reviewer"]
+                result[
+                    "repos/yzm1/boundver/collaborators/"
+                    + reviewer["login"]
+                    + "/permission"
+                ] = {
+                    "permission": "read",
+                    "role_name": "read",
+                    "user": {
+                        **copy.deepcopy(reviewer),
+                        "permissions": {
+                            "admin": False,
+                            "maintain": False,
+                            "push": False,
+                            "triage": False,
+                            "pull": True,
+                        },
+                    },
+                }
+            return result
+
+        def collect(values):
+            client = mock.Mock(spec=_AUDITOR.GitHubClient)
+            client.rest.side_effect = lambda endpoint, _label: copy.deepcopy(
+                values[endpoint]
+            )
+            return _AUDITOR._collect_review_authority(client, "yzm1/boundver")
+
+        authority = collect(records())
+        self.assertEqual(
+            authority["environments"]["security"]["rule"]["reviewer"]["id"],
+            2,
+        )
+
+        product_endpoint = (
+            "repos/yzm1/boundver/environments/semantic-provider-product-review"
+        )
+        security_endpoint = (
+            "repos/yzm1/boundver/environments/semantic-provider-security-review"
+        )
+
+        def duplicate(values):
+            values[product_endpoint]["protection_rules"][0]["reviewers"][0][
+                "reviewer"
+            ] = copy.deepcopy(
+                values[security_endpoint]["protection_rules"][0]["reviewers"][0][
+                    "reviewer"
+                ]
+            )
+
+        mutations = {
+            "record type": lambda values: values.__setitem__(product_endpoint, []),
+            "environment id": lambda values: values[product_endpoint].update({"id": 0}),
+            "environment name": lambda values: values[product_endpoint].update(
+                {"name": "wrong"}
+            ),
+            "environment url": lambda values: values[product_endpoint].update(
+                {"url": "https://api.github.com/wrong"}
+            ),
+            "administrator bypass": lambda values: values[product_endpoint].update(
+                {"can_admins_bypass": True}
+            ),
+            "branch policy": lambda values: values[product_endpoint].update(
+                {"deployment_branch_policy": {}}
+            ),
+            "invalid timestamp": lambda values: values[product_endpoint].update(
+                {"updated_at": "not-a-time"}
+            ),
+            "inverted timestamp": lambda values: values[product_endpoint].update(
+                {"created_at": "2026-08-30T10:00:01Z"}
+            ),
+            "multiple rules": lambda values: values[product_endpoint][
+                "protection_rules"
+            ].append({}),
+            "rule id": lambda values: values[product_endpoint]["protection_rules"][
+                0
+            ].update({"id": 0}),
+            "rule type": lambda values: values[product_endpoint]["protection_rules"][
+                0
+            ].update({"type": "wait_timer"}),
+            "self review": lambda values: values[product_endpoint]["protection_rules"][
+                0
+            ].update({"prevent_self_review": False}),
+            "multiple reviewers": lambda values: values[product_endpoint][
+                "protection_rules"
+            ][0]["reviewers"].append(
+                copy.deepcopy(
+                    values[product_endpoint]["protection_rules"][0]["reviewers"][0]
+                )
+            ),
+            "bot reviewer": lambda values: values[product_endpoint]["protection_rules"][
+                0
+            ]["reviewers"][0].update({"type": "Bot"}),
+            "duplicate reviewer": duplicate,
+            "write permission": lambda values: values[
+                "repos/yzm1/boundver/collaborators/product-reviewer/permission"
+            ].update({"permission": "write", "role_name": "write"}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                values = records()
+                mutate(values)
+                with self.assertRaises(_AUDITOR.AuditError):
+                    collect(values)
 
     def test_authoritative_release_snapshot_passes_with_exact_attestation(self):
         result = self._evaluate_release(self._release_snapshot())
@@ -710,9 +1048,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         self.assertEqual(result["record_commit"], "e" * 40)
         self.assertEqual(result["reviewed_commit"], "9" * 40)
         self.assertEqual(result["valid_until"], "2026-09-13T10:01:00Z")
-        self.assertEqual(
-            result["reviewers"], ["product-reviewer", "security-reviewer"]
-        )
+        self.assertEqual(result["reviewers"], ["product-reviewer", "security-reviewer"])
         self.assertEqual(result["security_reviewers"], ["security-reviewer"])
 
     def test_release_attestation_body_is_exact_and_ordered(self):
@@ -743,13 +1079,8 @@ class SemanticProviderProposalTests(unittest.TestCase):
 
     def test_release_review_is_fresh_independent_and_exact_tree_bound(self):
         mutations = {
-            "one reviewer": lambda value: (
-                value["pull_request"]["reviews"].pop(),
-                value["pull_request"]["permissions"].pop("product-reviewer"),
-            ),
-            "wrong local tree": lambda value: value.update(
-                {"local_tree": "7" * 40}
-            ),
+            "one reviewer": lambda value: value["pull_request"]["reviews"].pop(),
+            "wrong local tree": lambda value: value.update({"local_tree": "7" * 40}),
             "wrong reviewed tree": lambda value: value["pull_request"].update(
                 {"reviewed_tree": "7" * 40}
             ),
@@ -795,8 +1126,8 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 "--gate accepted",
             ),
             "semantic-provider publication gate": (
-                "--release-sha \"$RELEASE_SHA\"",
-                "--release-sha \"$CONTROL_SHA\"",
+                '--release-sha "$RELEASE_SHA"',
+                '--release-sha "$CONTROL_SHA"',
             ),
             "semantic-provider local release gate": (
                 'if tag == "v0.15.0":',
@@ -805,6 +1136,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         }
         for target_field, (old, new) in mutations.items():
             with self.subTest(target_field=target_field):
+
                 def read_document(repo, raw, field):
                     text = original_reader(repo, raw, field)
                     return text.replace(old, new) if field == target_field else text
@@ -864,18 +1196,29 @@ class SemanticProviderProposalTests(unittest.TestCase):
     def test_authoritative_auditor_pins_supported_github_contract(self):
         self.assertEqual(_AUDITOR.GITHUB_REST_API_VERSION, "2022-11-28")
 
-    def test_author_and_read_only_reviews_do_not_qualify(self):
+    def test_owner_and_non_designated_reviews_do_not_qualify(self):
         snapshot = self._review_snapshot()
+        snapshot["review_authority"]["environments"]["security"]["rule"]["reviewer"] = {
+            "id": 22440724,
+            "login": "yzm1",
+            "type": "User",
+        }
         reviews = snapshot["pull_request"]["reviews"]
         reviews[0]["reviewer"] = {
             "id": 22440724,
             "login": "yzm1",
             "type": "User",
         }
-        snapshot["pull_request"]["permissions"]["product-reviewer"] = "read"
-        with self.assertRaisesRegex(
-            _AUDITOR.AuditError, "0 qualifying exact-head non-author reviews"
-        ):
+        with self.assertRaisesRegex(_AUDITOR.AuditError, "external non-author"):
+            self._evaluate_review(snapshot)
+
+        snapshot = self._review_snapshot()
+        snapshot["pull_request"]["reviews"][1]["reviewer"] = {
+            "id": 4,
+            "login": "drive-by-reviewer",
+            "type": "User",
+        }
+        with self.assertRaisesRegex(_AUDITOR.AuditError, "1 qualifying"):
             self._evaluate_review(snapshot)
 
     def test_stale_review_commit_does_not_qualify(self):
@@ -1043,9 +1386,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
 
     def test_post_merge_review_does_not_qualify(self):
         snapshot = self._review_snapshot()
-        snapshot["pull_request"]["reviews"][0][
-            "submitted_at"
-        ] = "2026-08-30T10:11:00Z"
+        snapshot["pull_request"]["reviews"][0]["submitted_at"] = "2026-08-30T10:11:00Z"
         with self.assertRaisesRegex(_AUDITOR.AuditError, "1 qualifying"):
             self._evaluate_review(snapshot)
 
@@ -1054,17 +1395,15 @@ class SemanticProviderProposalTests(unittest.TestCase):
         for timestamp in ("2026-08-30T10:10:00Z", "2026-08-30T10:11:00Z"):
             with self.subTest(timestamp=timestamp):
                 candidate = copy.deepcopy(snapshot)
-                candidate["pull_request"]["reviews"][0][
-                    "last_edited_at"
-                ] = timestamp
+                candidate["pull_request"]["reviews"][0]["last_edited_at"] = timestamp
                 with self.assertRaisesRegex(_AUDITOR.AuditError, "1 qualifying"):
                     self._evaluate_review(candidate)
 
     def test_review_submission_must_strictly_precede_merge(self):
         snapshot = self._review_snapshot()
-        snapshot["pull_request"]["reviews"][0][
-            "submitted_at"
-        ] = snapshot["pull_request"]["merged_at"]
+        snapshot["pull_request"]["reviews"][0]["submitted_at"] = snapshot[
+            "pull_request"
+        ]["merged_at"]
         with self.assertRaisesRegex(_AUDITOR.AuditError, "1 qualifying"):
             self._evaluate_review(snapshot)
 
@@ -1098,17 +1437,22 @@ class SemanticProviderProposalTests(unittest.TestCase):
         proposal = self._review_snapshot()
         release = self._release_snapshot()
         now = datetime.now(timezone.utc)
-        merged_at = (now - timedelta(minutes=1)).isoformat().replace(
-            "+00:00", "Z"
-        )
+        merged_at = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
         for snapshot in (proposal, release):
             snapshot["pull_request"]["merged_at"] = merged_at
+            for environment in snapshot["review_authority"]["environments"].values():
+                environment["created_at"] = (
+                    (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+                )
+                environment["updated_at"] = (
+                    (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+                )
             for index, review in enumerate(
                 snapshot["pull_request"]["reviews"], start=2
             ):
                 review["submitted_at"] = (
-                    now - timedelta(minutes=index)
-                ).isoformat().replace("+00:00", "Z")
+                    (now - timedelta(minutes=index)).isoformat().replace("+00:00", "Z")
+                )
         checker = mock.Mock()
         checker.validate_proposal.return_value = {
             "proposal": "boundver-semantic-provider-system/v1"
@@ -1290,11 +1634,95 @@ class SemanticProviderProposalTests(unittest.TestCase):
                     "requested_reviewers": [],
                     "requested_teams": [],
                 },
-                "repos/yzm1/boundver/collaborators/security-reviewer/permission": {
-                    "permission": "write"
+                "repos/yzm1/boundver/environments/semantic-provider-product-review": {
+                    "id": 11,
+                    "name": "semantic-provider-product-review",
+                    "url": (
+                        "https://api.github.com/repos/yzm1/boundver/environments/"
+                        "semantic-provider-product-review"
+                    ),
+                    "created_at": "2026-08-30T09:00:00Z",
+                    "updated_at": "2026-08-30T10:00:00Z",
+                    "can_admins_bypass": False,
+                    "protection_rules": [
+                        {
+                            "id": 21,
+                            "type": "required_reviewers",
+                            "prevent_self_review": True,
+                            "reviewers": [
+                                {
+                                    "type": "User",
+                                    "reviewer": {
+                                        "id": 3,
+                                        "login": "product-reviewer",
+                                        "type": "User",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                    "deployment_branch_policy": None,
+                },
+                "repos/yzm1/boundver/environments/semantic-provider-security-review": {
+                    "id": 12,
+                    "name": "semantic-provider-security-review",
+                    "url": (
+                        "https://api.github.com/repos/yzm1/boundver/environments/"
+                        "semantic-provider-security-review"
+                    ),
+                    "created_at": "2026-08-30T09:00:00Z",
+                    "updated_at": "2026-08-30T10:00:00Z",
+                    "can_admins_bypass": False,
+                    "protection_rules": [
+                        {
+                            "id": 22,
+                            "type": "required_reviewers",
+                            "prevent_self_review": True,
+                            "reviewers": [
+                                {
+                                    "type": "User",
+                                    "reviewer": {
+                                        "id": 2,
+                                        "login": "security-reviewer",
+                                        "type": "User",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                    "deployment_branch_policy": None,
                 },
                 "repos/yzm1/boundver/collaborators/product-reviewer/permission": {
-                    "permission": "maintain"
+                    "permission": "read",
+                    "role_name": "read",
+                    "user": {
+                        "id": 3,
+                        "login": "product-reviewer",
+                        "type": "User",
+                        "permissions": {
+                            "admin": False,
+                            "maintain": False,
+                            "push": False,
+                            "triage": False,
+                            "pull": True,
+                        },
+                    },
+                },
+                "repos/yzm1/boundver/collaborators/security-reviewer/permission": {
+                    "permission": "read",
+                    "role_name": "read",
+                    "user": {
+                        "id": 2,
+                        "login": "security-reviewer",
+                        "type": "User",
+                        "permissions": {
+                            "admin": False,
+                            "maintain": False,
+                            "push": False,
+                            "triage": False,
+                            "pull": True,
+                        },
+                    },
                 },
                 f"repos/yzm1/boundver/git/commits/{record}": {
                     "sha": record,
@@ -1351,17 +1779,14 @@ class SemanticProviderProposalTests(unittest.TestCase):
         }
         snapshot = _AUDITOR.collect_snapshot(
             client,
-            "yzm1/boundver",
-            "main",
+            self._review_requirements(),
             record,
             parent,
             tree,
         )
         result = self._evaluate_review(snapshot)
         self.assertEqual(result["pull_request"], 80)
-        self.assertEqual(
-            result["reviewers"], ["product-reviewer", "security-reviewer"]
-        )
+        self.assertEqual(result["reviewers"], ["product-reviewer", "security-reviewer"])
 
     def test_review_requirements_are_fixed_and_fail_closed(self):
         requirements = _AUDITOR._load_requirements(MANIFEST)

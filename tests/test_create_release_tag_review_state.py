@@ -255,6 +255,14 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         self.assertIn("fullDatabaseId lastEditedAt", program)
         self.assertIn("GitHub REST and GraphQL review identities differ", program)
         self.assertIn('"repository_id": repository_id', program)
+        self.assertIn("SEMANTIC_REVIEW_ENVIRONMENTS", program)
+        self.assertIn("semantic-provider-security-review", program)
+        self.assertIn("semantic-provider-product-review", program)
+        self.assertIn('environment.get("can_admins_bypass") is not False', program)
+        self.assertIn('rule.get("prevent_self_review") is not True', program)
+        self.assertIn('permission_record.get("permission") != "read"', program)
+        self.assertIn("Semantic environment reviewer is not read-only", program)
+        self.assertIn('"semantic_review_authority": semantic_review_authority', program)
 
     def test_snapshot_normalizes_only_the_local_candidate_tag(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]

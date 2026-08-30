@@ -25,6 +25,9 @@ MAX_ITEMS = 1_000
 MAX_TEXT_CHARS = 16_384
 MAX_JSON_INTEGER = (1 << 63) - 1
 PROPOSAL_ID = "boundver-semantic-provider-system/v1"
+REVIEW_AUTHORITY_SOURCE = "github-environment-required-reviewers/v1"
+SECURITY_REVIEW_ENVIRONMENT = "semantic-provider-security-review"
+PRODUCT_REVIEW_ENVIRONMENT = "semantic-provider-product-review"
 THREAT_RE = re.compile(r"^SPT-[0-9]{3}$")
 CONTROL_RE = re.compile(r"^SPC-[0-9]{3}$")
 VERIFICATION_RE = re.compile(r"^SPV-[0-9]{3}$")
@@ -186,14 +189,18 @@ def _object(value: Any, field: str) -> dict[str, Any]:
     return value
 
 
-def _unique_ids(items: list[Any], field: str, pattern: re.Pattern[str]) -> dict[str, dict[str, Any]]:
+def _unique_ids(
+    items: list[Any], field: str, pattern: re.Pattern[str]
+) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for index, raw in enumerate(items):
         item = _object(raw, f"{field}[{index}]")
         identifier = _bounded_text(item.get("id"), f"{field}[{index}].id")
         if pattern.fullmatch(identifier) is None:
-            raise ProposalError(f"{field}[{index}].id has an invalid identifier: {identifier!r}")
+            raise ProposalError(
+                f"{field}[{index}].id has an invalid identifier: {identifier!r}"
+            )
         if identifier in result:
             raise ProposalError(f"duplicate {field} identifier: {identifier}")
         result[identifier] = item
@@ -209,7 +216,9 @@ def _id_list(value: Any, field: str, pattern: re.Pattern[str]) -> list[str]:
     for index, raw in enumerate(raw_items):
         identifier = _bounded_text(raw, f"{field}[{index}]")
         if pattern.fullmatch(identifier) is None:
-            raise ProposalError(f"{field}[{index}] has an invalid identifier: {identifier!r}")
+            raise ProposalError(
+                f"{field}[{index}] has an invalid identifier: {identifier!r}"
+            )
         items.append(identifier)
     if len(items) != len(set(items)):
         raise ProposalError(f"{field} contains duplicate identifiers")
@@ -251,7 +260,9 @@ def _read_document(repo: Path, raw: Any, field: str) -> str:
 
 def _validate_evidence(value: Any, field: str, *, required: bool) -> list[str]:
     evidence = _list(value, field)
-    result = [_bounded_text(item, f"{field}[{index}]") for index, item in enumerate(evidence)]
+    result = [
+        _bounded_text(item, f"{field}[{index}]") for index, item in enumerate(evidence)
+    ]
     if required and not result:
         raise ProposalError(f"{field} must contain evidence")
     return result
@@ -309,10 +320,15 @@ def validate_proposal(
     unknown = set(manifest) - ROOT_FIELDS
     missing = ROOT_FIELDS - set(manifest)
     if unknown:
-        raise ProposalError(f"proposal has unknown fields: {', '.join(sorted(unknown))}")
+        raise ProposalError(
+            f"proposal has unknown fields: {', '.join(sorted(unknown))}"
+        )
     if missing:
         raise ProposalError(f"proposal is missing fields: {', '.join(sorted(missing))}")
-    if manifest.get("schema_version") != 1 or type(manifest.get("schema_version")) is not int:
+    if (
+        manifest.get("schema_version") != 1
+        or type(manifest.get("schema_version")) is not int
+    ):
         raise ProposalError("schema_version must be integer 1")
     if manifest.get("proposal") != PROPOSAL_ID:
         raise ProposalError(f"proposal must be {PROPOSAL_ID!r}")
@@ -352,7 +368,9 @@ def validate_proposal(
     )
     ci_gate = "run: python -I scripts/check_semantic_provider_proposal.py"
     if ci_text.count(ci_gate) != 1:
-        raise ProposalError("CI must invoke the semantic-provider proposal checker exactly once")
+        raise ProposalError(
+            "CI must invoke the semantic-provider proposal checker exactly once"
+        )
     coverage_gate = (
         'python -I -m coverage report --include="scripts/audit_semantic_provider_'
         'proposal.py,scripts/check_semantic_provider_proposal.py" --fail-under=75'
@@ -418,7 +436,19 @@ def validate_proposal(
         != 1
         or "fullDatabaseId lastEditedAt" not in create_tag_text
         or '"repository_id": repository_id' not in create_tag_text
-        or 'review["last_edited_at"] = review_edit_times[review["id"]]' not in create_tag_text
+        or create_tag_text.count("SEMANTIC_REVIEW_ENVIRONMENTS") < 2
+        or create_tag_text.count("semantic-provider-security-review") != 1
+        or create_tag_text.count("semantic-provider-product-review") != 1
+        or create_tag_text.count("github-environment-required-reviewers/v1") != 1
+        or 'environment.get("can_admins_bypass") is not False' not in create_tag_text
+        or 'rule.get("prevent_self_review") is not True' not in create_tag_text
+        or 'permission_record.get("permission") != "read"' not in create_tag_text
+        or "Semantic environment reviewer is not read-only" not in create_tag_text
+        or '"repository_permission": {' not in create_tag_text
+        or '"semantic_review_authority": semantic_review_authority'
+        not in create_tag_text
+        or 'review["last_edited_at"] = review_edit_times[review["id"]]'
+        not in create_tag_text
         or create_tag_text.count("require_semantic_review_fresh") < 4
         or create_tag_text.count("now_epoch + 300 >= expiry_epoch") != 1
         or create_tag_text.count("timeout --signal=KILL 60s") != 1
@@ -463,9 +493,7 @@ def validate_proposal(
     launcher_review_position = publish_launcher_text.find(
         '"scripts/audit_release_reviews.sh"'
     )
-    launcher_tooling_position = publish_launcher_text.find(
-        "tooling = Path(temporary)"
-    )
+    launcher_tooling_position = publish_launcher_text.find("tooling = Path(temporary)")
     if (
         publish_launcher_text.count('if tag == "v0.15.0":') != 1
         or publish_launcher_text.count(launcher_audit) != 1
@@ -478,8 +506,12 @@ def validate_proposal(
             "local release launcher must enforce the v0.15 exact-tree audit before candidate checks"
         )
 
-    threats = _unique_ids(_list(manifest.get("threats"), "threats"), "threats", THREAT_RE)
-    controls = _unique_ids(_list(manifest.get("controls"), "controls"), "controls", CONTROL_RE)
+    threats = _unique_ids(
+        _list(manifest.get("threats"), "threats"), "threats", THREAT_RE
+    )
+    controls = _unique_ids(
+        _list(manifest.get("controls"), "controls"), "controls", CONTROL_RE
+    )
     verifications = _unique_ids(
         _list(manifest.get("verifications"), "verifications"),
         "verifications",
@@ -495,22 +527,34 @@ def validate_proposal(
         severity = item.get("severity")
         if type(severity) is not str or severity not in SEVERITIES:
             raise ProposalError(f"{identifier}.severity is invalid")
-        control_ids = _id_list(item.get("controls"), f"{identifier}.controls", CONTROL_RE)
+        control_ids = _id_list(
+            item.get("controls"), f"{identifier}.controls", CONTROL_RE
+        )
         verification_ids = _id_list(
             item.get("verifications"), f"{identifier}.verifications", VERIFICATION_RE
         )
         missing_controls = set(control_ids) - set(controls)
         missing_verifications = set(verification_ids) - set(verifications)
         if missing_controls:
-            raise ProposalError(f"{identifier} references unknown controls: {sorted(missing_controls)}")
+            raise ProposalError(
+                f"{identifier} references unknown controls: {sorted(missing_controls)}"
+            )
         if missing_verifications:
             raise ProposalError(
                 f"{identifier} references unknown verifications: {sorted(missing_verifications)}"
             )
         if severity in {"critical", "high"} and len(control_ids) < 2:
-            raise ProposalError(f"{identifier} requires at least two defense-in-depth controls")
-        kinds = {kind for control_id in control_ids for kind in controls[control_id].get("kinds", [])}
-        if "preventive" not in kinds or not kinds.intersection({"detective", "recovery"}):
+            raise ProposalError(
+                f"{identifier} requires at least two defense-in-depth controls"
+            )
+        kinds = {
+            kind
+            for control_id in control_ids
+            for kind in controls[control_id].get("kinds", [])
+        }
+        if "preventive" not in kinds or not kinds.intersection(
+            {"detective", "recovery"}
+        ):
             raise ProposalError(
                 f"{identifier} requires preventive and detective/recovery coverage"
             )
@@ -522,7 +566,9 @@ def validate_proposal(
             raise ProposalError(f"{identifier} has unknown or missing fields")
         _bounded_text(item.get("title"), f"{identifier}.title")
         kinds = _list(item.get("kinds"), f"{identifier}.kinds")
-        if not kinds or any(type(kind) is not str or kind not in CONTROL_KINDS for kind in kinds):
+        if not kinds or any(
+            type(kind) is not str or kind not in CONTROL_KINDS for kind in kinds
+        ):
             raise ProposalError(f"{identifier}.kinds is invalid")
         if len(kinds) != len(set(kinds)):
             raise ProposalError(f"{identifier}.kinds contains duplicates")
@@ -536,10 +582,14 @@ def validate_proposal(
             raise ProposalError(f"{identifier} references unknown verifications")
         for threat_id in threat_ids:
             if identifier not in threats[threat_id]["controls"]:
-                raise ProposalError(f"{identifier}/{threat_id} mapping is not bidirectional")
+                raise ProposalError(
+                    f"{identifier}/{threat_id} mapping is not bidirectional"
+                )
         for threat_id, threat in threats.items():
             if identifier in threat["controls"] and threat_id not in threat_ids:
-                raise ProposalError(f"{threat_id}/{identifier} mapping is not bidirectional")
+                raise ProposalError(
+                    f"{threat_id}/{identifier} mapping is not bidirectional"
+                )
         if identifier not in rfc_text:
             raise ProposalError(f"RFC does not mention {identifier}")
 
@@ -552,7 +602,10 @@ def validate_proposal(
         verification_status = item.get("status")
         if type(phase) is not str or phase not in VERIFICATION_PHASES:
             raise ProposalError(f"{identifier}.phase is invalid")
-        if type(verification_status) is not str or verification_status not in VERIFICATION_STATUSES:
+        if (
+            type(verification_status) is not str
+            or verification_status not in VERIFICATION_STATUSES
+        ):
             raise ProposalError(f"{identifier}.status is invalid")
         _validate_evidence(
             item.get("evidence"),
@@ -560,7 +613,9 @@ def validate_proposal(
             required=verification_status == "passed",
         )
         if verification_status == "not-applicable" and not item.get("evidence"):
-            raise ProposalError(f"{identifier} needs evidence for not-applicable status")
+            raise ProposalError(
+                f"{identifier} needs evidence for not-applicable status"
+            )
         if phase == "proposal":
             proposal_verifications.append(identifier)
         if identifier not in threat_text:
@@ -626,8 +681,7 @@ def validate_proposal(
     if len(documented_finding_ids) != len(set(documented_finding_ids)):
         raise ProposalError("threat model contains duplicate red-team finding headings")
     documented_findings = {
-        identifier: severity.lower()
-        for identifier, severity in documented_finding_rows
+        identifier: severity.lower() for identifier, severity in documented_finding_rows
     }
     if set(documented_findings) != set(red_team_findings):
         missing = sorted(set(red_team_findings) - set(documented_findings))
@@ -644,6 +698,10 @@ def validate_proposal(
         "repository_id",
         "repository_owner_id",
         "base_branch",
+        "reviewer_authority",
+        "security_reviewer_environment",
+        "product_reviewer_environment",
+        "distinct_environment_reviewers_required",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
@@ -669,9 +727,24 @@ def validate_proposal(
         raise ProposalError("review_requirements.repository_owner_id is invalid")
     if review_requirements.get("base_branch") != "main":
         raise ProposalError("review_requirements.base_branch is invalid")
+    if review_requirements.get("reviewer_authority") != REVIEW_AUTHORITY_SOURCE:
+        raise ProposalError("review_requirements.reviewer_authority is invalid")
+    if (
+        review_requirements.get("security_reviewer_environment")
+        != SECURITY_REVIEW_ENVIRONMENT
+        or review_requirements.get("product_reviewer_environment")
+        != PRODUCT_REVIEW_ENVIRONMENT
+    ):
+        raise ProposalError("review_requirements reviewer environments are invalid")
+    if review_requirements.get("distinct_environment_reviewers_required") is not True:
+        raise ProposalError(
+            "review_requirements.distinct_environment_reviewers_required must be true"
+        )
     minimum_reviews = review_requirements.get("minimum_non_author_reviews")
     if type(minimum_reviews) is not int or minimum_reviews < 2:
-        raise ProposalError("review_requirements requires at least two non-author reviews")
+        raise ProposalError(
+            "review_requirements requires at least two non-author reviews"
+        )
     if review_requirements.get("maximum_review_age_days") != 90:
         raise ProposalError("review_requirements.maximum_review_age_days must be 90")
     for field in (
@@ -680,14 +753,19 @@ def validate_proposal(
         "resolved_threads_required",
         "no_pending_review_requests",
     ):
-        if not _exact_bool(review_requirements.get(field), f"review_requirements.{field}"):
+        if not _exact_bool(
+            review_requirements.get(field), f"review_requirements.{field}"
+        ):
             raise ProposalError(f"review_requirements.{field} must remain true")
     if (
         review_requirements.get("security_review_marker")
         != "semantic-provider-security-review/v1"
     ):
         raise ProposalError("review_requirements.security_review_marker is invalid")
-    if review_requirements.get("authoritative_audit") != "scripts/audit_semantic_provider_proposal.py":
+    if (
+        review_requirements.get("authoritative_audit")
+        != "scripts/audit_semantic_provider_proposal.py"
+    ):
         raise ProposalError("review_requirements.authoritative_audit is invalid")
     _safe_repo_path(
         repo,
@@ -728,9 +806,7 @@ def validate_proposal(
         _bounded_text(finding.get("owner"), f"open_findings[{index}].owner")
         disposition = finding.get("disposition")
         if disposition in {"accepted", "closed"}:
-            _bounded_text(
-                finding.get("rationale"), f"open_findings[{index}].rationale"
-            )
+            _bounded_text(finding.get("rationale"), f"open_findings[{index}].rationale")
             _validate_evidence(
                 finding.get("evidence"),
                 f"open_findings[{index}].evidence",
@@ -779,6 +855,10 @@ def validate_proposal(
         "repository_id",
         "repository_owner_id",
         "base_branch",
+        "reviewer_authority",
+        "security_reviewer_environment",
+        "product_reviewer_environment",
+        "distinct_environment_reviewers_required",
         "evidence_source",
         "candidate_identity",
         "minimum_non_author_reviews",
@@ -799,6 +879,10 @@ def validate_proposal(
         "repository_id": 1226008327,
         "repository_owner_id": 22440724,
         "base_branch": "main",
+        "reviewer_authority": REVIEW_AUTHORITY_SOURCE,
+        "security_reviewer_environment": SECURITY_REVIEW_ENVIRONMENT,
+        "product_reviewer_environment": PRODUCT_REVIEW_ENVIRONMENT,
+        "distinct_environment_reviewers_required": True,
         "evidence_source": "github-exact-tree-review/v1",
         "candidate_identity": "reviewed-head-tree-equals-release-tree",
         "minimum_non_author_reviews": 2,
@@ -812,10 +896,10 @@ def validate_proposal(
         "authoritative_audit": "scripts/audit_semantic_provider_proposal.py",
     }
     for field, expected in expected_release_values.items():
-        if release.get(field) != expected or type(release.get(field)) is not type(expected):
-            raise ProposalError(
-                f"release_gates.v0.15.0.{field} is not authoritative"
-            )
+        if release.get(field) != expected or type(release.get(field)) is not type(
+            expected
+        ):
+            raise ProposalError(f"release_gates.v0.15.0.{field} is not authoritative")
     attestations = _validate_evidence(
         release.get("required_attestations"),
         "release_gates.v0.15.0.required_attestations",
@@ -845,7 +929,9 @@ def validate_proposal(
         and finding.get("severity") in {"critical", "high", "medium"}
     ]
     if blocking_findings:
-        static_acceptance_blockers.append("Critical/High/Medium findings remain unresolved")
+        static_acceptance_blockers.append(
+            "Critical/High/Medium findings remain unresolved"
+        )
     pending_proposal = [
         identifier
         for identifier in proposal_verifications
@@ -868,21 +954,27 @@ def validate_proposal(
             + "; ".join(static_acceptance_blockers)
         )
     if status == "accepted" and (not implementation_allowed or not v0_15_work_allowed):
-        raise ProposalError("accepted proposal must explicitly allow implementation and v0.15 work")
+        raise ProposalError(
+            "accepted proposal must explicitly allow implementation and v0.15 work"
+        )
     if status != "accepted" and (implementation_allowed or v0_15_work_allowed):
-        raise ProposalError("unaccepted proposal cannot allow implementation or v0.15 work")
+        raise ProposalError(
+            "unaccepted proposal cannot allow implementation or v0.15 work"
+        )
     if implementation_allowed != v0_15_work_allowed:
-        raise ProposalError("implementation_allowed and v0_15_work_allowed must advance together")
+        raise ProposalError(
+            "implementation_allowed and v0_15_work_allowed must advance together"
+        )
 
     if require_accepted and accepted_requirements:
-        raise ProposalError("proposal acceptance gate is blocked: " + "; ".join(accepted_requirements))
+        raise ProposalError(
+            "proposal acceptance gate is blocked: " + "; ".join(accepted_requirements)
+        )
     if require_v0_15_work and (not v0_15_work_allowed or accepted_requirements):
         raise ProposalError(
             "v0.15 work is blocked until the proposal and authoritative review audit pass"
         )
-    if require_v0_15_release and (
-        not release_allowed or accepted_requirements
-    ):
+    if require_v0_15_release and (not release_allowed or accepted_requirements):
         raise ProposalError(
             "v0.15.0 release is blocked until proposal reviews and full-source release evidence pass"
         )
@@ -905,7 +997,9 @@ def validate_proposal(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--repo", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument(
         "--manifest",
         type=Path,

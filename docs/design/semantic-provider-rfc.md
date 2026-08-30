@@ -302,8 +302,9 @@ in `spec/semantic-provider-proposal.json`.
   provider-controlled bytes or metadata.
 - **SPC-043 - v0.15 release authority is external and exact-tree bound.** The
   proposal declares only immutable requirements. A separate release-candidate
-  PR supplies two fresh, non-author, write-equivalent human approvals; one
-  approval contains the exact required scan/platform/publication attestation.
+  PR supplies two fresh approvals from the distinct external humans named by
+  the security and product review environments; the security approval contains
+  the exact required scan/platform/publication attestation.
   The bounded auditor obtains that mutable state directly from GitHub twice,
   proves the reviewed PR-head tree equals the externally supplied release
   commit tree, and grants release authority only in memory. Local launch, tag
@@ -311,6 +312,15 @@ in `spec/semantic-provider-proposal.json`.
   all fail closed if this evidence is absent or changes. Review-edit timestamps
   are part of the workflow-owned mutation handoff, and the earliest proposal or
   release-review expiry is rechecked at every tag mutation boundary.
+- **SPC-044 - Reviewer authority uses least privilege.** The two reviewer
+  identities come from separate admin-managed GitHub Environments, each with
+  exactly one human required reviewer, self-review prevention, and no
+  administrator bypass. The designated humans must have exactly GitHub's
+  read-only repository role; broader access fails the gate. Proposal review
+  never requires repository or tag mutation authority. Environment
+  identity and update time are part of every snapshot, the two users must be
+  distinct and external to the repository owner and PR author, and the roster
+  must predate their exact-head approvals.
 
 ## Architecture
 
@@ -821,10 +831,16 @@ The proposal can move from Draft to Accepted only when:
 3. Red-team findings are closed or explicitly accepted with owner, rationale,
    expiry, and compensating controls. No Critical, High, or Medium finding may
    remain accepted for the initial design.
-4. At least two distinct non-author humans with current `write`, `maintain`, or
-   `admin` access approve the exact reviewed head. The latest decisive review
-   from each counted reviewer is `APPROVED`; bots and author reviews do not
-   count. One counted review body contains exactly these meaningful lines:
+4. The admin-managed `semantic-provider-security-review` and
+   `semantic-provider-product-review` GitHub Environments each name exactly one
+   distinct external human as their sole required reviewer. Both environments
+   disable administrator bypass, prevent self-review, have no branch policy,
+   and were last updated before either approval. Each reviewer must have the
+   exact read-only repository role; `triage`, `write`, `maintain`, or `admin`
+   access fails the gate. Neither reviewer receives repository or tag mutation authority. The
+   repository owner, PR author, bots, and duplicate identities cannot count.
+   Each designated human approves the exact reviewed head, and the security
+   review body contains exactly these meaningful lines:
 
    ```text
    semantic-provider-security-review/v1
@@ -832,9 +848,12 @@ The proposal can move from Draft to Accepted only when:
    Verdict: approved
    ```
 
-   Every review thread is resolved, no user or team review request remains,
-   and GitHub's aggregate review decision is `APPROVED`. Counted approvals are
-   no more than 90 days old, are not future-dated, and precede the merge.
+   Every review thread is resolved and no user or team review request remains.
+   An aggregate `CHANGES_REQUESTED` or `REVIEW_REQUIRED` state blocks the gate;
+   `null` is accepted because read-only external approvals do not necessarily
+   participate in repository branch-protection counts. Counted approvals are no
+   more than 90 days old, are not future-dated, postdate their reviewer-roster
+   configuration, and precede the merge.
    A counted review edited after the merge does not qualify, including a
    security marker added to an older approval.
 5. Documentation builds strictly and repository hygiene, lint, tests, schemas,
@@ -864,9 +883,9 @@ immutable GitHub repository ID, and immutable owner account ID must all match
 the accepted record; transfer or namespace recreation requires re-review. It queries the
 version-pinned GitHub APIs (REST `2022-11-28`, whose documented support ends
 2028-03-10) under hard per-response, aggregate-byte, request, record,
-pagination, reviewer, integer, command, and 55-second total limits; rejects
-floating-point and non-finite evidence numbers; checks current
-collaborator permissions; evaluates latest review
+pagination, reviewer, integer, command, and 90-second total limits; rejects
+floating-point and non-finite evidence numbers; checks both immutable-named
+GitHub Environment reviewer rosters and their update times; evaluates latest review
 states; and requires two identical normalized snapshots to narrow API race
 windows. REST review identities are cross-bound to GraphQL edit timestamps so
 post-merge review-body edits cannot create approval evidence. It emits reviewer
@@ -896,10 +915,13 @@ gate-code revision therefore requires a blocked gate-change PR followed by a
 separate reviewed acceptance PR. The acceptance review binds the resulting
 complete tree, not just the small declaration diff.
 
-The GitHub credential needs only repository Metadata, Contents, and Pull
-requests read access. The audit is a read-only observation and must run from a
-trusted, clean control environment; it does not make a compromised local Git,
-`gh`, Python runtime, GitHub account, or GitHub service trustworthy.
+The GitHub credential needs only repository Actions, Metadata, Contents, and
+Pull requests read access. Actions read is the documented authenticated-token
+permission for reading Environment metadata; the same metadata is public-readable
+without authentication for a public repository. The audit is a read-only
+observation and must run from a trusted, clean control environment; it does not
+make a compromised local Git, `gh`, Python runtime, GitHub account, or GitHub
+service trustworthy.
 
 ### Implementation gate
 
@@ -953,11 +975,12 @@ gates.
 The release candidate must be the merge result of a separate PR into `main`.
 Its reviewed head tree must be byte-identical to the release commit tree, and
 the release commit's first parent must be the PR's recorded base commit. Within
-14 days before promotion, at least two distinct non-author humans with current
-`write`, `maintain`, or `admin` permission must approve that exact PR head. All
-threads must be resolved, no review requests may remain, and the latest
-decisive review from each counted reviewer must still be an approval. At least
-one counted approval body must contain exactly these non-empty lines, in order:
+14 days before promotion, the same two distinct external humans designated by
+the security and product review environments must approve that exact PR head.
+Their repository permission must still be exactly read-only and must not grant
+repository or tag mutation authority. All threads must be resolved, no review requests may remain, and the
+latest decisive review from each designated reviewer must still be an approval.
+The security review body must contain exactly these non-empty lines, in order:
 
 ```text
 semantic-provider-v0.15-release-review/v1
@@ -982,11 +1005,12 @@ Removing or weakening those calls is itself a governed bootstrap change that
 invalidates proposal acceptance. The read-only tag job hands the minimum of the
 proposal-review and release-review validity windows to the write-token job;
 that job also recomputes a workflow-owned digest containing review bodies,
-latest states, edit timestamps, roles, requests, and threads before each tag
-mutation boundary. An identical-text post-audit edit or a review crossing its
-freshness deadline therefore aborts promotion. The final check reserves a
-five-minute safety margin and the tag push has a 60-second hard timeout, so the
-approval cannot cross its deadline during an unbounded network operation.
+latest states, edit timestamps, environment reviewer rosters, roles, requests,
+and threads before each tag mutation boundary. An environment change,
+identical-text post-audit edit, or review crossing its freshness deadline
+therefore aborts promotion. The final check reserves a five-minute safety
+margin and the tag push has a 60-second hard timeout, so the approval cannot
+cross its deadline during an unbounded network operation.
 
 ## Rollout
 
@@ -1060,7 +1084,8 @@ must fail closed or use a narrower, honestly named provider contract.
 - [GitHub REST API versioning](https://docs.github.com/en/rest/about-the-rest-api/api-versions)
 - [GitHub pull-request review records](https://docs.github.com/en/rest/pulls/reviews)
 - [GitHub commit-to-pull-request association](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit)
-- [GitHub effective collaborator permissions](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user)
+- [GitHub environment metadata](https://docs.github.com/en/rest/deployments/environments#get-an-environment)
+- [GitHub Environment required reviewers](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#required-reviewers)
 - [GitHub GraphQL pull-request review state](https://docs.github.com/en/graphql/reference/objects#pullrequest)
 
 These references inform the design; none is imported wholesale as a security
