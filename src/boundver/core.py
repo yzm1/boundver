@@ -424,13 +424,17 @@ def _ensure_lock_outside_components(
 
     def normalized_paths(path: Path, label: str) -> tuple[Path, Path]:
         absolute = path if path.is_absolute() else repo_root / path
-        lexical = Path(os.path.abspath(absolute))
         try:
-            resolved = lexical.resolve(strict=False)
+            # Resolve the uncollapsed path first.  Filesystems follow a symlink
+            # before interpreting a later ``..`` segment, whereas abspath()
+            # would erase that distinction and could validate a different
+            # destination from the one opened by the writer.
+            resolved = absolute.resolve(strict=False)
         except (OSError, RuntimeError) as exc:
             raise ConfigError(
-                f"Cannot safely resolve {label} path {lexical}: {exc}"
+                f"Cannot safely resolve {label} path {absolute}: {exc}"
             ) from exc
+        lexical = Path(os.path.abspath(absolute))
         return lexical, resolved
 
     def is_within(candidate: tuple[Path, Path], root: tuple[Path, Path]) -> bool:
@@ -445,7 +449,7 @@ def _ensure_lock_outside_components(
     lock_paths = normalized_paths(lock_path, "lockfile")
     config_paths = normalized_paths(config_path, "selected config")
     try:
-        same_existing_file = lock_paths[0].samefile(config_paths[0])
+        same_existing_file = lock_paths[1].samefile(config_paths[1])
     except OSError:
         same_existing_file = False
     if same_existing_file or any(

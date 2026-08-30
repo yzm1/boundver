@@ -184,6 +184,35 @@ class ConfigAliasSafetyTests(unittest.TestCase):
             self.assertEqual(config_path.read_bytes(), expected)
             generate_lockfile.assert_not_called()
 
+    def test_cli_generate_resolves_symlink_before_parent_segments_for_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config_path = _build_repo(root)
+            (root / "deep").mkdir()
+            (root / "outer").mkdir()
+            alias = root / "outer" / "alias"
+            try:
+                alias.symlink_to(root / "deep", target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks are unavailable: {exc}")
+            expected = config_path.read_bytes()
+            output = (Path("outer") / "alias" / ".." / config_path.name).as_posix()
+
+            with patch.object(core, "generate_lockfile") as generate_lockfile:
+                code, _stdout, stderr = _run_cli(
+                    root,
+                    "generate",
+                    "--source",
+                    "working-tree",
+                    "--out",
+                    output,
+                )
+
+            self.assertEqual(code, core.EXIT_USAGE, stderr)
+            self.assertIn("aliases the selected config", stderr)
+            self.assertEqual(config_path.read_bytes(), expected)
+            generate_lockfile.assert_not_called()
+
     def test_cli_generate_rejects_existing_hardlink_alias(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -424,6 +453,33 @@ class VendoredCopyLockSafetyTests(unittest.TestCase):
             self.assertEqual(code, core.EXIT_USAGE, stderr)
             self.assertIn("inside vendored copy root", stderr)
             self.assertFalse(output.exists())
+
+    def test_cli_generate_resolves_symlink_before_parent_segments_for_component(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _build_repo(root, vendored=True)
+            (root / "svc" / "deep").mkdir()
+            alias = root / "component-alias"
+            try:
+                alias.symlink_to(root / "svc" / "deep", target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlinks are unavailable: {exc}")
+            output = Path("component-alias") / ".." / "boundary.lock.json"
+
+            with patch.object(core, "generate_lockfile") as generate_lockfile:
+                code, _stdout, stderr = _run_cli(
+                    root,
+                    "generate",
+                    "--source",
+                    "working-tree",
+                    "--out",
+                    output.as_posix(),
+                )
+
+            self.assertEqual(code, core.EXIT_USAGE, stderr)
+            self.assertIn("inside component root", stderr)
+            self.assertFalse((root / "svc" / "boundary.lock.json").exists())
+            generate_lockfile.assert_not_called()
 
     def test_staged_self_referential_lock_cannot_be_verified_or_regenerated(self):
         with tempfile.TemporaryDirectory() as td:
