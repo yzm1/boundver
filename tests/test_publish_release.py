@@ -2435,6 +2435,24 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     for rule in valid["rules"]
                 ],
             },
+            "extra status": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_status_checks": [
+                                *rule["parameters"]["required_status_checks"],
+                                {"context": "stale", "integration_id": 15368},
+                            ],
+                        },
+                    }
+                    if rule["type"] == "required_status_checks"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
             "extra merge method": {
                 **valid,
                 "rules": [

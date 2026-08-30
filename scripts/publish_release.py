@@ -913,19 +913,19 @@ def _validate_main_branch_rulesets(rulesets: Sequence[dict]) -> None:
         ):
             continue
         checks = status_parameters.get("required_status_checks")
-        required_gate = any(
-            isinstance(check, dict)
-            and check.get("context") == REQUIRED_PR_GATE_CONTEXT
-            and check.get("integration_id") == GITHUB_ACTIONS_APP_ID
-            for check in checks or []
-        )
+        required_gate = [
+            {
+                "context": REQUIRED_PR_GATE_CONTEXT,
+                "integration_id": GITHUB_ACTIONS_APP_ID,
+            }
+        ]
         if (
             "deletion" in by_type
             and "non_fast_forward" in by_type
             and pull_parameters.get("required_review_thread_resolution") is True
             and pull_parameters.get("allowed_merge_methods") == ["squash"]
             and status_parameters.get("strict_required_status_checks_policy") is True
-            and required_gate
+            and checks == required_gate
         ):
             return
     raise GateError(
