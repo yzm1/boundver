@@ -424,12 +424,31 @@ def _ensure_lock_outside_components(
 
     def normalized_paths(path: Path, label: str) -> tuple[Path, Path]:
         absolute = path if path.is_absolute() else repo_root / path
+
+        def resolve_before_parents(candidate: Path) -> Path:
+            """Resolve each prefix before interpreting a following ``..``."""
+            if not candidate.is_absolute():
+                candidate = Path.cwd() / candidate
+            parts = candidate.parts
+            if not parts or not candidate.anchor:
+                raise ConfigError(
+                    f"Cannot safely resolve {label} path {candidate}: "
+                    "path has no absolute filesystem anchor"
+                )
+            current = Path(candidate.anchor)
+            for part in parts[1:]:
+                if part == "..":
+                    current = current.resolve(strict=False).parent
+                else:
+                    current = current / part
+            return current.resolve(strict=False)
+
         try:
-            # Resolve the uncollapsed path first.  Filesystems follow a symlink
-            # before interpreting a later ``..`` segment, whereas abspath()
-            # would erase that distinction and could validate a different
+            # Filesystems may follow a symlink before interpreting a later
+            # ``..`` segment.  Path.resolve() and abspath() can collapse the
+            # parent first on some platforms, validating a different
             # destination from the one opened by the writer.
-            resolved = absolute.resolve(strict=False)
+            resolved = resolve_before_parents(absolute)
         except (OSError, RuntimeError) as exc:
             raise ConfigError(
                 f"Cannot safely resolve {label} path {absolute}: {exc}"

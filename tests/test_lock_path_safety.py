@@ -21,6 +21,28 @@ from tests._repo_fixtures import commit_all, init_git_repo
 SOURCES = ("head", "index", "working-tree")
 
 
+def _make_directory_link(link: Path, target: Path) -> None:
+    """Create a directory symlink, falling back to a Windows junction."""
+    symlink_failure = None
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            raise
+        symlink_failure = exc
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise OSError(
+            "directory symlink and junction creation both failed: "
+            f"{symlink_failure}; {result.stderr.strip()}"
+        ) from symlink_failure
+
+
 def _run_cli(root: Path, *args: str) -> tuple[int, str, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -162,7 +184,7 @@ class ConfigAliasSafetyTests(unittest.TestCase):
             config_path = _build_repo(root, config_dir="config")
             alias = root / "config-alias"
             try:
-                alias.symlink_to(config_path.parent, target_is_directory=True)
+                _make_directory_link(alias, config_path.parent)
             except OSError as exc:
                 self.skipTest(f"directory symlinks are unavailable: {exc}")
             expected = config_path.read_bytes()
@@ -192,7 +214,7 @@ class ConfigAliasSafetyTests(unittest.TestCase):
             (root / "outer").mkdir()
             alias = root / "outer" / "alias"
             try:
-                alias.symlink_to(root / "deep", target_is_directory=True)
+                _make_directory_link(alias, root / "deep")
             except OSError as exc:
                 self.skipTest(f"directory symlinks are unavailable: {exc}")
             expected = config_path.read_bytes()
@@ -436,7 +458,7 @@ class VendoredCopyLockSafetyTests(unittest.TestCase):
             _build_repo(root, vendored=True)
             alias = root / "vendor-alias"
             try:
-                alias.symlink_to(root / "vendor" / "svc", target_is_directory=True)
+                _make_directory_link(alias, root / "vendor" / "svc")
             except OSError as exc:
                 self.skipTest(f"directory symlinks are unavailable: {exc}")
             output = alias / "boundary.lock.json"
@@ -461,7 +483,7 @@ class VendoredCopyLockSafetyTests(unittest.TestCase):
             (root / "svc" / "deep").mkdir()
             alias = root / "component-alias"
             try:
-                alias.symlink_to(root / "svc" / "deep", target_is_directory=True)
+                _make_directory_link(alias, root / "svc" / "deep")
             except OSError as exc:
                 self.skipTest(f"directory symlinks are unavailable: {exc}")
             output = Path("component-alias") / ".." / "boundary.lock.json"
