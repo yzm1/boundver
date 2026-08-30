@@ -31,6 +31,17 @@ The repository owner must configure these controls before starting a release:
   must not target mutable compatibility aliases such as `vX.Y`, and it must
   not restrict initial tag creation. Immutable-release protection takes over
   once the Release is published.
+- Keep the checked-in `.github/rulesets/protect-main.json` contract active for
+  `refs/heads/main`. It requires pull requests, resolved review conversations,
+  and the strict `required-pr-gate` status from the GitHub Actions App; it also
+  blocks deletion and force pushes. The aggregate check fails unless the full
+  supported-platform matrix plus build, public Action, and public installation
+  jobs all succeed. Zero mandatory human approvals keeps ordinary maintenance
+  workable for the solo-owned repository; exact Codex and independent release
+  review evidence is enforced separately by the review auditors. The ruleset
+  has no bypass actor. An owner emergency change to the ruleset must be recorded
+  in an issue, restored through a reviewed pull request, and resolved before
+  release promotion.
 - Set GitHub Pages to **GitHub Actions** and retain the protected
   `github-pages` deployment environment created by Pages.
 - Create protected GitHub environments named `testpypi`, `pypi`,

@@ -55,6 +55,11 @@ All notable changes to this project are documented here. The format follows
   arrays; diagnose shallow history with platform-specific remediation; and
   retain exact review artifacts. GitHub source annotations are limited to
   precise target files whose commit matches the checked-out `HEAD`.
+- Added one stable, fail-closed `required-pr-gate` over the complete supported
+  platform, build, public Action, and public installation CI topology, plus a
+  checked-in active `main` ruleset contract requiring that exact GitHub Actions
+  check, pull requests, and resolved conversations while blocking deletion and
+  force pushes.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined

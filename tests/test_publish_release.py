@@ -38,6 +38,14 @@ _MAJOR, _MINOR, _PATCH = (int(part) for part in CURRENT_VERSION.split("."))
 OTHER_TAG = f"v{_MAJOR}.{_MINOR}.{_PATCH + 1}"
 
 
+def _main_ruleset_detail() -> dict:
+    return json.loads(
+        (REPO_ROOT / ".github" / "rulesets" / "protect-main.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
 def _load_script():
     spec = importlib.util.spec_from_file_location("publish_release", SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - import invariant
@@ -1587,12 +1595,17 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
             if endpoint.endswith("/rulesets?includes_parents=true"):
-                return [{"id": 7, "target": "tag", "enforcement": "active"}]
+                return [
+                    {"id": 7, "target": "tag", "enforcement": "active"},
+                    {"id": 8, "target": "branch", "enforcement": "active"},
+                ]
             if endpoint.endswith("/rulesets/7"):
                 return {
                     "rules": [{"type": "update"}, {"type": "deletion"}],
                     "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*"], "exclude": []}},
                 }
+            if endpoint.endswith("/rulesets/8"):
+                return _main_ruleset_detail()
             if "actions/workflows/ci.yml/runs" in endpoint:
                 return {
                     "workflow_runs": [
@@ -1609,7 +1622,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+        rulesets = [
+            {"id": 7, "target": "tag", "enforcement": "active"},
+            {"id": 8, "target": "branch", "enforcement": "active"},
+        ]
 
         def paginated(_repo, endpoint, *, collection=None):
             if endpoint.endswith("/environments?per_page=100"):
@@ -2232,7 +2248,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
             if endpoint.endswith("/rulesets?includes_parents=true"):
-                return [{"id": 7, "target": "tag", "enforcement": "active"}]
+                return [
+                    {"id": 7, "target": "tag", "enforcement": "active"},
+                    {"id": 8, "target": "branch", "enforcement": "active"},
+                ]
             if endpoint.endswith("/rulesets/7"):
                 return {
                     "rules": [{"type": "update"}, {"type": "deletion"}],
@@ -2243,6 +2262,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         }
                     },
                 }
+            if endpoint.endswith("/rulesets/8"):
+                return _main_ruleset_detail()
             if "actions/workflows/ci.yml/runs" in endpoint:
                 return {
                     "workflow_runs": [
@@ -2259,7 +2280,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+        rulesets = [
+            {"id": 7, "target": "tag", "enforcement": "active"},
+            {"id": 8, "target": "branch", "enforcement": "active"},
+        ]
         draft_release = {"id": 42, "tag_name": TAG, "draft": True}
 
         def paginated(_repo, endpoint, *, collection=None):
@@ -2378,6 +2402,46 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(publisher.GateError, "creation restriction"):
             publisher._validate_tag_rulesets([scoped, exact_creation], TAG)
+
+    def test_main_ruleset_requires_complete_no_bypass_merge_contract(self):
+        publisher = _load_script()
+        valid = _main_ruleset_detail()
+        publisher._validate_main_branch_rulesets([valid])
+
+        cases = {
+            "bypass": {**valid, "bypass_actors": [{"actor_id": 5}]},
+            "force push": {
+                **valid,
+                "rules": [
+                    rule
+                    for rule in valid["rules"]
+                    if rule["type"] != "non_fast_forward"
+                ],
+            },
+            "status": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_status_checks": [
+                                {"context": "other", "integration_id": 15368}
+                            ],
+                        },
+                    }
+                    if rule["type"] == "required_status_checks"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                publisher.GateError,
+                "main ruleset",
+            ):
+                publisher._validate_main_branch_rulesets([value])
 
     def test_release_environments_require_real_reviewers(self):
         publisher = _load_script()
