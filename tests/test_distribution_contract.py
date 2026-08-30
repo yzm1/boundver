@@ -1646,15 +1646,31 @@ class AutomationContractTests(unittest.TestCase):
         self.assertIn("reviewThreads(first:100,after:$endCursor)", snapshot_program)
         self.assertIn("fullDatabaseId lastEditedAt", snapshot_program)
         self.assertIn('"repository_id": repository_id', snapshot_program)
-        self.assertIn("SEMANTIC_REVIEW_ENVIRONMENTS", snapshot_program)
-        self.assertIn("semantic-provider-security-review", snapshot_program)
-        self.assertIn("semantic-provider-product-review", snapshot_program)
+        self.assertIn("SEMANTIC_REVIEW_ROSTER_GIST_ID", snapshot_program)
         self.assertIn(
-            'environment.get("can_admins_bypass") is not False',
+            "G_kwDOAVZrFNoAIDBjYWVkYjc5OGQxNjhiOTc0ZjlkOWZiNjNjMzc3Zjcz",
+            snapshot_program,
+        )
+        self.assertIn("parse_semantic_review_roster", snapshot_program)
+        self.assertIn("def public_gist_json(endpoint):", snapshot_program)
+        self.assertIn("http.client.HTTPSConnection", snapshot_program)
+        self.assertNotIn('"Authorization"', snapshot_program)
+        self.assertIn(
+            'GITHUB_REST_API_VERSION = "2022-11-28"', snapshot_program
+        )
+        self.assertIn(
+            "Independent-beneficial-owners-attested: true", snapshot_program
+        )
+        self.assertIn(
+            "Owner-exclusive-mutation-authority-attested: true",
             snapshot_program,
         )
         self.assertIn(
-            'rule.get("prevent_self_review") is not True',
+            "normalize_semantic_roster_gist",
+            snapshot_program,
+        )
+        self.assertIn(
+            "Semantic review roster gist changed during collection",
             snapshot_program,
         )
         self.assertIn(
@@ -1662,7 +1678,18 @@ class AutomationContractTests(unittest.TestCase):
             snapshot_program,
         )
         self.assertIn(
-            "Semantic environment reviewer is not read-only",
+            "Semantic roster reviewer is not read-only",
+            snapshot_program,
+        )
+        self.assertIn(
+            'f"repos/{repository}/collaborators?per_page=100"', snapshot_program
+        )
+        self.assertIn(
+            "Repository mutation authority is not owner-exclusive",
+            snapshot_program,
+        )
+        self.assertIn(
+            '"repository_mutation_authority": repository_mutation_authority',
             snapshot_program,
         )
         self.assertIn(

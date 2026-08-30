@@ -25,9 +25,20 @@ MAX_ITEMS = 1_000
 MAX_TEXT_CHARS = 16_384
 MAX_JSON_INTEGER = (1 << 63) - 1
 PROPOSAL_ID = "boundver-semantic-provider-system/v1"
-REVIEW_AUTHORITY_SOURCE = "github-environment-required-reviewers/v1"
-SECURITY_REVIEW_ENVIRONMENT = "semantic-provider-security-review"
-PRODUCT_REVIEW_ENVIRONMENT = "semantic-provider-product-review"
+REVIEW_AUTHORITY_SOURCE = "github-account-owned-public-gist/v1"
+REVIEW_ROSTER_GIST_ID = "0caedb798d168b974f9d9fb63c377f73"
+REVIEW_ROSTER_GIST_NODE_ID = (
+    "G_kwDOAVZrFNoAIDBjYWVkYjc5OGQxNjhiOTc0ZjlkOWZiNjNjMzc3Zjcz"
+)
+REVIEW_ROSTER_GIST_DESCRIPTION = (
+    "boundver semantic-provider independent reviewer roster"
+)
+REVIEW_ROSTER_GIST_FILENAME = "semantic-provider-review-roster.txt"
+REVIEWER_INDEPENDENCE_ATTESTATION = "Independent-reviewer: confirmed"
+PROPOSAL_SECURITY_REVIEW_MARKER = "semantic-provider-security-review/v1"
+PROPOSAL_PRODUCT_REVIEW_MARKER = "semantic-provider-product-review/v1"
+V015_SECURITY_REVIEW_MARKER = "semantic-provider-v0.15-release-review/v1"
+V015_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.15-product-review/v1"
 THREAT_RE = re.compile(r"^SPT-[0-9]{3}$")
 CONTROL_RE = re.compile(r"^SPC-[0-9]{3}$")
 VERIFICATION_RE = re.compile(r"^SPV-[0-9]{3}$")
@@ -392,6 +403,22 @@ def validate_proposal(
         "scripts/publish_release.py",
         "semantic-provider local release gate",
     )
+    for workflow_name, workflow_text in (
+        ("release-tag", create_tag_text),
+        ("publication", publish_workflow_text),
+    ):
+        gh_token_sources = re.findall(
+            r"(?m)^\s+GH_TOKEN:\s*(\S.*?)\s*$",
+            workflow_text,
+        )
+        if (
+            "${{ secrets." in workflow_text
+            or not gh_token_sources
+            or any(source != "${{ github.token }}" for source in gh_token_sources)
+        ):
+            raise ProposalError(
+                f"{workflow_name} workflow must not receive user-secret authority"
+            )
     release_audit_script = (
         '"$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py"'
     )
@@ -419,6 +446,13 @@ def validate_proposal(
     tag_mutation_position = create_tag_text.find(
         'git tag "$RELEASE_TAG" "$RELEASE_SHA"'
     )
+    public_gist_start = create_tag_text.find("    def public_gist_json(endpoint):")
+    public_gist_end = create_tag_text.find("\n    def rest_records", public_gist_start)
+    public_gist_program = (
+        create_tag_text[public_gist_start:public_gist_end]
+        if public_gist_start >= 0 and public_gist_end > public_gist_start
+        else ""
+    )
     if (
         len(create_semantic_positions) != 2
         or any(
@@ -436,14 +470,43 @@ def validate_proposal(
         != 1
         or "fullDatabaseId lastEditedAt" not in create_tag_text
         or '"repository_id": repository_id' not in create_tag_text
-        or create_tag_text.count("SEMANTIC_REVIEW_ENVIRONMENTS") < 2
-        or create_tag_text.count("semantic-provider-security-review") != 1
-        or create_tag_text.count("semantic-provider-product-review") != 1
-        or create_tag_text.count("github-environment-required-reviewers/v1") != 1
-        or 'environment.get("can_admins_bypass") is not False' not in create_tag_text
-        or 'rule.get("prevent_self_review") is not True' not in create_tag_text
+        or create_tag_text.count("SEMANTIC_REVIEW_ROSTER_GIST_ID") < 8
+        or create_tag_text.count(REVIEW_ROSTER_GIST_ID) != 1
+        or create_tag_text.count(REVIEW_ROSTER_GIST_NODE_ID) != 1
+        or create_tag_text.count(REVIEW_ROSTER_GIST_DESCRIPTION) != 1
+        or create_tag_text.count(REVIEW_ROSTER_GIST_FILENAME) != 1
+        or create_tag_text.count(REVIEW_AUTHORITY_SOURCE) != 1
+        or create_tag_text.count("public_gist_json(") != 3
+        or "http.client.HTTPSConnection" not in public_gist_program
+        or '"api.github.com"' not in public_gist_program
+        or 'connection.request(\n                "GET"' not in public_gist_program
+        or '"Authorization"' in public_gist_program
+        or "GH_TOKEN" in public_gist_program
+        or 'GITHUB_REST_API_VERSION = "2022-11-28"' not in create_tag_text
+        or create_tag_text.count("X-GitHub-Api-Version") < 2
+        or 'rest(f"gists/' in create_tag_text
+        or "normalize_semantic_roster_gist" not in create_tag_text
+        or 'record.get("public") is not True' not in create_tag_text
+        or 'record.get("truncated") is not False' not in create_tag_text
+        or "Semantic review roster revision is not owner-authored"
+        not in create_tag_text
+        or "Semantic review roster gist changed during collection"
+        not in create_tag_text
+        or "Independent-beneficial-owners-attested: true" not in create_tag_text
+        or "Owner-exclusive-mutation-authority-attested: true"
+        not in create_tag_text
+        or "parse_semantic_review_roster" not in create_tag_text
         or 'permission_record.get("permission") != "read"' not in create_tag_text
-        or "Semantic environment reviewer is not read-only" not in create_tag_text
+        or "type(permission_flags[field]) is not bool" not in create_tag_text
+        or "Semantic roster reviewer is not read-only" not in create_tag_text
+        or "Repository mutation authority is not owner-exclusive"
+        not in create_tag_text
+        or 'f"repos/{repository}/collaborators?per_page=100"'
+        not in create_tag_text
+        or '"repository_mutation_authority": repository_mutation_authority'
+        not in create_tag_text
+        or '"owner_attested_exclusive_mutation_authority": True'
+        not in create_tag_text
         or '"repository_permission": {' not in create_tag_text
         or '"semantic_review_authority": semantic_review_authority'
         not in create_tag_text
@@ -699,13 +762,20 @@ def validate_proposal(
         "repository_owner_id",
         "base_branch",
         "reviewer_authority",
-        "security_reviewer_environment",
-        "product_reviewer_environment",
-        "distinct_environment_reviewers_required",
+        "review_roster_gist_id",
+        "review_roster_gist_node_id",
+        "review_roster_gist_description",
+        "review_roster_gist_filename",
+        "distinct_roster_reviewers_required",
+        "owner_exclusive_repository_collaborators_required",
+        "owner_exclusive_mutation_authority_attestation_required",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
+        "product_review_required",
         "security_review_marker",
+        "product_review_marker",
+        "reviewer_independence_attestation",
         "exact_commit_required",
         "resolved_threads_required",
         "no_pending_review_requests",
@@ -729,16 +799,39 @@ def validate_proposal(
         raise ProposalError("review_requirements.base_branch is invalid")
     if review_requirements.get("reviewer_authority") != REVIEW_AUTHORITY_SOURCE:
         raise ProposalError("review_requirements.reviewer_authority is invalid")
-    if (
-        review_requirements.get("security_reviewer_environment")
-        != SECURITY_REVIEW_ENVIRONMENT
-        or review_requirements.get("product_reviewer_environment")
-        != PRODUCT_REVIEW_ENVIRONMENT
+    expected_roster_identity = {
+        "review_roster_gist_id": REVIEW_ROSTER_GIST_ID,
+        "review_roster_gist_node_id": REVIEW_ROSTER_GIST_NODE_ID,
+        "review_roster_gist_description": REVIEW_ROSTER_GIST_DESCRIPTION,
+        "review_roster_gist_filename": REVIEW_ROSTER_GIST_FILENAME,
+    }
+    if any(
+        review_requirements.get(field) != expected
+        or type(review_requirements.get(field)) is not type(expected)
+        for field, expected in expected_roster_identity.items()
     ):
-        raise ProposalError("review_requirements reviewer environments are invalid")
-    if review_requirements.get("distinct_environment_reviewers_required") is not True:
+        raise ProposalError("review_requirements reviewer roster is invalid")
+    if review_requirements.get("distinct_roster_reviewers_required") is not True:
         raise ProposalError(
-            "review_requirements.distinct_environment_reviewers_required must be true"
+            "review_requirements.distinct_roster_reviewers_required must be true"
+        )
+    if (
+        review_requirements.get(
+            "owner_exclusive_repository_collaborators_required"
+        )
+        is not True
+    ):
+        raise ProposalError(
+            "review_requirements owner-exclusive mutation authority must remain true"
+        )
+    if (
+        review_requirements.get(
+            "owner_exclusive_mutation_authority_attestation_required"
+        )
+        is not True
+    ):
+        raise ProposalError(
+            "review_requirements owner mutation attestation must remain required"
         )
     minimum_reviews = review_requirements.get("minimum_non_author_reviews")
     if type(minimum_reviews) is not int or minimum_reviews < 2:
@@ -749,6 +842,7 @@ def validate_proposal(
         raise ProposalError("review_requirements.maximum_review_age_days must be 90")
     for field in (
         "security_review_required",
+        "product_review_required",
         "exact_commit_required",
         "resolved_threads_required",
         "no_pending_review_requests",
@@ -757,11 +851,14 @@ def validate_proposal(
             review_requirements.get(field), f"review_requirements.{field}"
         ):
             raise ProposalError(f"review_requirements.{field} must remain true")
-    if (
-        review_requirements.get("security_review_marker")
-        != "semantic-provider-security-review/v1"
-    ):
-        raise ProposalError("review_requirements.security_review_marker is invalid")
+    expected_review_text = {
+        "security_review_marker": PROPOSAL_SECURITY_REVIEW_MARKER,
+        "product_review_marker": PROPOSAL_PRODUCT_REVIEW_MARKER,
+        "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
+    }
+    for field, expected in expected_review_text.items():
+        if review_requirements.get(field) != expected:
+            raise ProposalError(f"review_requirements.{field} is invalid")
     if (
         review_requirements.get("authoritative_audit")
         != "scripts/audit_semantic_provider_proposal.py"
@@ -856,15 +953,22 @@ def validate_proposal(
         "repository_owner_id",
         "base_branch",
         "reviewer_authority",
-        "security_reviewer_environment",
-        "product_reviewer_environment",
-        "distinct_environment_reviewers_required",
+        "review_roster_gist_id",
+        "review_roster_gist_node_id",
+        "review_roster_gist_description",
+        "review_roster_gist_filename",
+        "distinct_roster_reviewers_required",
+        "owner_exclusive_repository_collaborators_required",
+        "owner_exclusive_mutation_authority_attestation_required",
         "evidence_source",
         "candidate_identity",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
+        "product_review_required",
         "security_review_marker",
+        "product_review_marker",
+        "reviewer_independence_attestation",
         "required_attestations",
         "exact_commit_required",
         "exact_tree_required",
@@ -880,15 +984,22 @@ def validate_proposal(
         "repository_owner_id": 22440724,
         "base_branch": "main",
         "reviewer_authority": REVIEW_AUTHORITY_SOURCE,
-        "security_reviewer_environment": SECURITY_REVIEW_ENVIRONMENT,
-        "product_reviewer_environment": PRODUCT_REVIEW_ENVIRONMENT,
-        "distinct_environment_reviewers_required": True,
+        "review_roster_gist_id": REVIEW_ROSTER_GIST_ID,
+        "review_roster_gist_node_id": REVIEW_ROSTER_GIST_NODE_ID,
+        "review_roster_gist_description": REVIEW_ROSTER_GIST_DESCRIPTION,
+        "review_roster_gist_filename": REVIEW_ROSTER_GIST_FILENAME,
+        "distinct_roster_reviewers_required": True,
+        "owner_exclusive_repository_collaborators_required": True,
+        "owner_exclusive_mutation_authority_attestation_required": True,
         "evidence_source": "github-exact-tree-review/v1",
         "candidate_identity": "reviewed-head-tree-equals-release-tree",
         "minimum_non_author_reviews": 2,
         "maximum_review_age_days": 14,
         "security_review_required": True,
-        "security_review_marker": "semantic-provider-v0.15-release-review/v1",
+        "product_review_required": True,
+        "security_review_marker": V015_SECURITY_REVIEW_MARKER,
+        "product_review_marker": V015_PRODUCT_REVIEW_MARKER,
+        "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
         "exact_commit_required": True,
         "exact_tree_required": True,
         "resolved_threads_required": True,
