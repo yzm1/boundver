@@ -429,11 +429,13 @@ GitHub can continue to report an old exact-head approval after reviewers leave,
 assumptions change, or the platform/runtime threat landscape moves. Exact SHA
 binding alone does not make a years-old security judgment current.
 
-**Disposition:** closed for the proposal gate by SPC-033 and SPC-040. Counted
-reviewers must still have write-equivalent access, their latest decisive review
-must precede the merge and not be future-dated, and approvals expire after 90
-days. Expiry requires a new acceptance PR and fresh review; old evidence cannot
-be refreshed by editing the immutable commit.
+**Disposition:** closed for the proposal gate by SPC-033, SPC-040, and SPC-044.
+Counted reviewers must still be the two distinct external humans configured in
+the fixed security/product review environments and must retain exactly the
+read-only repository role. Their latest decisive review
+must postdate the unchanged roster, precede the merge, and not be future-dated;
+approvals expire after 90 days. Expiry requires a new acceptance PR and fresh
+review; old evidence cannot be refreshed by editing the immutable commit.
 
 ### RTF-032: merged-PR metadata survives canonical history rewrite - High
 
@@ -456,7 +458,7 @@ time. Per-command timeout and per-page validation alone leave this gap.
 **Disposition:** closed by SPC-034 and SPC-040. The authoritative auditor has
 independent per-response and aggregate response-byte limits, plus ceilings for
 pages, records, reviewer identities, API requests, each command, and a
-55-second monotonic total. Exhausting any budget fails the gate without using
+90-second monotonic total. Exhausting any budget fails the gate without using
 partial evidence.
 
 ### RTF-034: host-side artifact inspection runs the attack before the sandbox - Critical
@@ -668,13 +670,14 @@ the documented prohibition could be bypassed by the ordinary release path.
 declares only immutable release-review requirements. The authoritative auditor
 accepts the v0.15.0 tag and release SHA externally, requires local `HEAD` and
 the GitHub release record to match, and proves a separate merged release PR's
-reviewed head tree equals the release commit tree. Two fresh non-author
-write-equivalent human approvals, resolved threads, no pending requests, and
-one exact six-assertion review marker are required from two identical bounded
-GitHub snapshots. The local launcher, both read-only tag checks, and fresh or
-resumed publication invoke the audit fail closed. Those enforcement files are
-bootstrap-protected, and SPV-038 mutates every identity, review, attestation,
-ordering, and workflow-enforcement edge.
+reviewed head tree equals the release commit tree. Two fresh approvals from the
+distinct external humans in the fixed security/product review environments,
+resolved threads, no pending requests, and one exact six-assertion security
+review marker are required from two identical bounded GitHub snapshots. The
+local launcher, both read-only tag checks, and fresh or resumed publication
+invoke the audit fail closed. Those enforcement files are bootstrap-protected,
+and SPV-038 mutates every identity, review, environment, attestation, ordering,
+and workflow-enforcement edge.
 
 ### RTF-048: release authority expires or is edited during the tag handoff - Critical
 
@@ -694,8 +697,10 @@ off the earlier of proposal and release authority expiry. The tag job strictly
 validates that value and rechecks it alongside the mutable-state digest before
 tag creation, authentication, and push. Missing IDs, same-text edits, changed
 roles/states/threads/requests, malformed timestamps, expiry, or a racing
-snapshot fails closed under SPV-038. A five-minute minimum remaining-validity
-margin plus a 60-second tag-push timeout bounds the final check/use interval.
+snapshot fails closed under SPV-038. The workflow snapshot also binds both
+admin-managed reviewer environments, so a roster or bypass-policy edit aborts
+the handoff. A five-minute minimum remaining-validity margin plus a 60-second
+tag-push timeout bounds the final check/use interval.
 
 ### RTF-049: repository namespace reuse inherits old approval authority - High
 
@@ -713,6 +718,34 @@ is evaluated. A legitimate ownership transfer or repository replacement fails
 closed and requires a blocked governance update followed by fresh independent
 acceptance. Namespace/ID mutation fixtures are included in SPV-035 and
 SPV-038.
+
+### RTF-050: write-level reviewer authority expands the attack surface - Critical
+
+The first independent-review rule accepted only humans with current `write`,
+`maintain`, or `admin` permission. This repository belongs to a personal
+account, where adding a collaborator grants write access rather than an
+organization's narrower triage role. At discovery time `main` had no branch
+protection and the SemVer tag ruleset intentionally did not restrict creation.
+Recruiting reviewers under that rule would grant repository and release-state
+mutation authority merely to obtain an opinion, turning the assurance gate
+itself into a supply-chain exposure.
+
+**Disposition:** closed by SPC-033, SPC-040, and SPC-044. Reviewer authority is
+now an admin-controlled pair of GitHub Environment required-reviewer rosters:
+`semantic-provider-security-review` and
+`semantic-provider-product-review`. Each environment must name exactly one
+distinct human, disable administrator bypass, enable self-review prevention,
+and have no branch policy. The designated identities must be external to the
+repository owner and PR author, and the roster update must strictly predate the
+counted exact-head approval. Public-repository read access is sufficient, so
+reviewers receive no push, tag, release, secret, or settings authority. The
+auditor reads both environment records and effective repository permissions
+twice, and the release workflow includes them in every mutation-handoff digest.
+Environment deletion, recreation,
+reviewer substitution, duplicate identities, bot reviewers, any permission
+above read, bypass toggles, post-approval edits, or malformed metadata fail
+closed under SPV-035 and SPV-038. Beneficial-owner independence remains a human governance assertion,
+not something GitHub account IDs can prove.
 
 ## Threat catalog and traceability
 
@@ -760,7 +793,7 @@ table is the human review surface.
 | SPT-037 | Host policy is spoofed, raced, or locally replaced | Unauthorized execution | SPC-002, SPC-037, SPC-040 | SPV-004, SPV-011, SPV-031 |
 | SPT-038 | Provider option schema triggers host work or divergent defaults | DoS, network access, digest ambiguity | SPC-027, SPC-028, SPC-038 | SPV-007, SPV-008, SPV-032 |
 | SPT-039 | Provider output or metadata discloses selected source beyond the narrow contract | Information disclosure | SPC-012, SPC-015, SPC-039, SPC-041 | SPV-015, SPV-033, SPV-036 |
-| SPT-040 | Stale/mutable/misattributed evidence satisfies approval | Governance and release bypass | SPC-033, SPC-034, SPC-040 | SPV-021, SPV-024, SPV-035 |
+| SPT-040 | Stale, mutable, misattributed, or over-privileged evidence satisfies approval | Governance, supply-chain, and release bypass | SPC-033, SPC-034, SPC-040, SPC-044 | SPV-021, SPV-024, SPV-035, SPV-038 |
 | SPT-041 | Authorized sandboxed provider returns deterministic but false output | False stable or changed boundary | SPC-002, SPC-019, SPC-031, SPC-041 | SPV-016, SPV-026, SPV-036 |
 | SPT-042 | Host parses, compiles, or deserializes provider artifact/evidence before containment | Main-process compromise before sandbox | SPC-008, SPC-009, SPC-021, SPC-042 | SPV-006, SPV-011, SPV-037 |
 | SPT-043 | Self-attested, stale, or unenforced v0.15 release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043 | SPV-024, SPV-035, SPV-038 |
@@ -868,10 +901,10 @@ documented ignored and retained construct.
 | SPV-032 | Option-schema recursion, regex, reference, default, complexity, and host/guest differential tests pass |
 | SPV-033 | Output/metadata allowlist, minimization, retention, and private-source non-disclosure tests pass |
 | SPV-034 | Semantic/artifact/authorization/runtime identity-placement and cross-platform migration tests pass |
-| SPV-035 | Review self-reference, canonical-manifest/tool/API-host/blob/mode binding, numeric-parser bounds, merge-mode-safe gate bootstrap, post-merge review edits, scan, expiry, role, canonical ancestry, exact-commit/tree/artifact, API-race/budget, TOCTOU, and evidence-tampering negative matrix passes |
+| SPV-035 | Review self-reference, least-authority environment roster, canonical-manifest/tool/API-host/blob/mode binding, numeric-parser bounds, merge-mode-safe gate bootstrap, post-merge review edits, scan, expiry, role, canonical ancestry, exact-commit/tree/artifact, API-race/budget, TOCTOU, and evidence-tampering negative matrix passes |
 | SPV-036 | Malicious-valid output, targeted logic-bomb, independent-oracle, differential, and provider-quorum tests pass |
 | SPV-037 | Pre-sandbox manifest/evidence/crypto/decoder/runtime/AOT corpus proves no provider-controlled structure is parsed outside containment |
-| SPV-038 | External exact-tree v0.15 attestation identity/review/age/marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
+| SPV-038 | External exact-tree v0.15 attestation environment/identity/review/age/marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
 
 ## Residual risks
 

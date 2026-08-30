@@ -43,16 +43,22 @@ MAX_API_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_API_REQUESTS = 100
 MAX_PAGES = 10
 MAX_RECORDS = 1_000
-MAX_PERMISSION_REVIEWERS = 50
 MAX_REVIEW_BODY_CHARS = 256 * 1024
 MAX_GITHUB_ID = (1 << 63) - 1
 MAX_JSON_INTEGER = (1 << 63) - 1
 COMMAND_TIMEOUT_SECONDS = 15
-AUDIT_TIMEOUT_SECONDS = 55
+AUDIT_TIMEOUT_SECONDS = 90
 STREAM_CHUNK_BYTES = 64 * 1024
 CANONICAL_MANIFEST = Path("spec/semantic-provider-proposal.json")
 V015_RELEASE_TAG = "v0.15.0"
 V015_RELEASE_MARKER = "semantic-provider-v0.15-release-review/v1"
+REVIEW_AUTHORITY_SOURCE = "github-environment-required-reviewers/v1"
+SECURITY_REVIEW_ENVIRONMENT = "semantic-provider-security-review"
+PRODUCT_REVIEW_ENVIRONMENT = "semantic-provider-product-review"
+REVIEW_ENVIRONMENTS = {
+    "product": PRODUCT_REVIEW_ENVIRONMENT,
+    "security": SECURITY_REVIEW_ENVIRONMENT,
+}
 V015_RELEASE_ATTESTATIONS = (
     "Full-source-bug-scan: passed",
     "Full-issue-audit: passed",
@@ -72,8 +78,6 @@ TIMESTAMP_RE = re.compile(
     r"^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
     r"(?:\.([0-9]{1,9}))?Z$"
 )
-ALLOWED_PERMISSIONS = {"admin", "maintain", "write", "triage", "read", "none"}
-QUALIFYING_PERMISSIONS = {"admin", "maintain", "write"}
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 REVIEW_STATES = DECISIVE_REVIEW_STATES | {"COMMENTED", "PENDING"}
 
@@ -257,7 +261,9 @@ def _run_bounded(
             reader.join()
 
     if read_errors:
-        raise AuditError("failed while reading bounded subprocess output") from read_errors[0]
+        raise AuditError(
+            "failed while reading bounded subprocess output"
+        ) from read_errors[0]
     if timed_out:
         raise AuditError(f"{command[0]} exceeded the {timeout}-second timeout")
     if overflows:
@@ -266,7 +272,9 @@ def _run_bounded(
         raise AuditError(f"{command[0]} {stream_name} exceeds the {limit}-byte limit")
     if returncode != 0:
         diagnostic = captured.get("stderr") or captured.get("stdout") or b""
-        detail = diagnostic.decode(locale.getpreferredencoding(False), "replace").strip()
+        detail = diagnostic.decode(
+            locale.getpreferredencoding(False), "replace"
+        ).strip()
         if len(detail) > 2_000:
             detail = detail[:2_000] + "..."
         raise AuditError(detail or f"{command[0]} exited with status {returncode}")
@@ -297,7 +305,11 @@ def _read_regular(path: Path, limit: int, label: str) -> bytes:
         before = path.lstat()
     except OSError as exc:
         raise AuditError(f"cannot stat {label}") from exc
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size > limit
+    ):
         raise AuditError(f"{label} must be a bounded regular file")
     try:
         with path.open("rb") as stream:
@@ -316,7 +328,12 @@ def _read_regular(path: Path, limit: int, label: str) -> bytes:
         current = path.lstat()
     except OSError as exc:
         raise AuditError(f"cannot restat {label}") from exc
-    identity = (os_fstat.st_dev, os_fstat.st_ino, os_fstat.st_size, os_fstat.st_mtime_ns)
+    identity = (
+        os_fstat.st_dev,
+        os_fstat.st_ino,
+        os_fstat.st_size,
+        os_fstat.st_mtime_ns,
+    )
     for candidate in (after_read, current):
         if identity != (
             candidate.st_dev,
@@ -326,6 +343,8 @@ def _read_regular(path: Path, limit: int, label: str) -> bytes:
         ):
             raise AuditError(f"{label} changed while reading")
     return raw
+
+
 def _git(repo: Path, *arguments: str) -> bytes:
     return _run_bounded([_trusted_tool("git", repo), *arguments], cwd=repo)
 
@@ -353,7 +372,9 @@ def _git_blob(repo: Path, commit: str, path: str) -> bytes:
         returned_path_text = returned_path.decode("utf-8", "strict")
         blob_text = raw_blob.decode("ascii", "strict")
     except (UnicodeError, ValueError) as exc:
-        raise AuditError(f"reviewed path has a malformed Git tree entry: {path}") from exc
+        raise AuditError(
+            f"reviewed path has a malformed Git tree entry: {path}"
+        ) from exc
     if (
         returned_path != expected_path
         or returned_path_text != path
@@ -408,7 +429,11 @@ def _bounded_string(
     maximum: int = 4_096,
     allow_empty: bool = False,
 ) -> str:
-    if type(value) is not str or (not value and not allow_empty) or len(value) > maximum:
+    if (
+        type(value) is not str
+        or (not value and not allow_empty)
+        or len(value) > maximum
+    ):
         qualifier = "a bounded string" if allow_empty else "a non-empty bounded string"
         raise AuditError(f"{field} must be {qualifier}")
     return value
@@ -463,9 +488,7 @@ def _actor(value: Any, field: str) -> dict[str, Any]:
 class GitHubClient:
     """Small, bounded GitHub API client backed by the authenticated gh CLI."""
 
-    def __init__(
-        self, repo_root: Path, *, gh_executable: Optional[str] = None
-    ) -> None:
+    def __init__(self, repo_root: Path, *, gh_executable: Optional[str] = None) -> None:
         self.repo_root = repo_root
         self.gh_executable = gh_executable or _trusted_tool("gh", repo_root)
         self.deadline = time.monotonic() + AUDIT_TIMEOUT_SECONDS
@@ -555,16 +578,27 @@ class GitHubClient:
                 nodes = thread_connection["nodes"]
                 page_info = thread_connection["pageInfo"]
             except (KeyError, TypeError) as exc:
-                raise AuditError("GitHub returned malformed review-thread data") from exc
+                raise AuditError(
+                    "GitHub returned malformed review-thread data"
+                ) from exc
             page_decision = pull_request.get("reviewDecision")
-            if page_decision not in {None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}:
+            if page_decision not in {
+                None,
+                "APPROVED",
+                "CHANGES_REQUESTED",
+                "REVIEW_REQUIRED",
+            }:
                 raise AuditError("GitHub returned an unknown review decision")
             if not decision_seen:
                 decision = page_decision
                 decision_seen = True
             elif decision != page_decision:
                 raise AuditError("GitHub review decision changed during pagination")
-            if type(nodes) is not list or len(nodes) > 100 or type(page_info) is not dict:
+            if (
+                type(nodes) is not list
+                or len(nodes) > 100
+                or type(page_info) is not dict
+            ):
                 raise AuditError("GitHub returned malformed review-thread pagination")
             if len(threads) + len(nodes) > MAX_RECORDS:
                 raise AuditError("GitHub returned too many review threads")
@@ -576,7 +610,9 @@ class GitHubClient:
                 )
                 resolved = node.get("isResolved")
                 if type(resolved) is not bool or thread_id in thread_ids:
-                    raise AuditError("GitHub returned a duplicate or malformed review thread")
+                    raise AuditError(
+                        "GitHub returned a duplicate or malformed review thread"
+                    )
                 thread_ids.add(thread_id)
                 threads.append({"id": thread_id, "is_resolved": resolved})
             has_next = page_info.get("hasNextPage")
@@ -627,14 +663,16 @@ class GitHubClient:
                 arguments.extend(("-f", f"endCursor={cursor}"))
             response = self.api(arguments, f"review edit times page {page}")
             try:
-                connection = response["data"]["repository"]["pullRequest"][
-                    "reviews"
-                ]
+                connection = response["data"]["repository"]["pullRequest"]["reviews"]
                 nodes = connection["nodes"]
                 page_info = connection["pageInfo"]
             except (KeyError, TypeError) as exc:
                 raise AuditError("GitHub returned malformed review-edit data") from exc
-            if type(nodes) is not list or len(nodes) > 100 or type(page_info) is not dict:
+            if (
+                type(nodes) is not list
+                or len(nodes) > 100
+                or type(page_info) is not dict
+            ):
                 raise AuditError("GitHub returned malformed review-edit pagination")
             if len(edits) + len(nodes) > MAX_RECORDS:
                 raise AuditError("GitHub returned too many review edit records")
@@ -680,6 +718,132 @@ class GitHubClient:
                 raise AuditError("GitHub returned a malformed review-edit cursor")
             cursor = end_cursor
         raise AuditError("GitHub review-edit pagination reached the page ceiling")
+
+
+def _collect_review_authority(
+    client: GitHubClient,
+    repository: str,
+) -> dict[str, Any]:
+    """Read the two admin-managed, non-write reviewer rosters."""
+    environments: dict[str, dict[str, Any]] = {}
+    reviewer_ids: set[int] = set()
+    for role, name in sorted(REVIEW_ENVIRONMENTS.items()):
+        encoded = urllib.parse.quote(name, safe="")
+        record = client.rest(
+            f"repos/{repository}/environments/{encoded}",
+            f"{role} review environment",
+        )
+        if type(record) is not dict:
+            raise AuditError(f"GitHub returned malformed {role} review environment")
+        environment_id = _positive_id(record.get("id"), f"{role} review environment.id")
+        returned_name = _bounded_string(
+            record.get("name"), f"{role} review environment.name", maximum=255
+        )
+        expected_url = (
+            f"https://api.github.com/repos/{repository}/environments/{encoded}"
+        )
+        returned_url = _bounded_string(
+            record.get("url"), f"{role} review environment.url", maximum=512
+        )
+        if returned_name != name or returned_url != expected_url:
+            raise AuditError(f"GitHub returned mismatched {role} review environment")
+        if record.get("can_admins_bypass") is not False:
+            raise AuditError(f"{role} review environment permits administrator bypass")
+        if record.get("deployment_branch_policy") is not None:
+            raise AuditError(
+                f"{role} review environment has an unexpected branch policy"
+            )
+        created_at = _timestamp(
+            record.get("created_at"), f"{role} review environment.created_at"
+        )
+        updated_at = _timestamp(
+            record.get("updated_at"), f"{role} review environment.updated_at"
+        )
+        if _timestamp_datetime(created_at) > _timestamp_datetime(updated_at):
+            raise AuditError(f"{role} review environment timestamps are inconsistent")
+
+        rules = record.get("protection_rules")
+        if type(rules) is not list or len(rules) != 1 or type(rules[0]) is not dict:
+            raise AuditError(
+                f"{role} review environment must have exactly one protection rule"
+            )
+        rule = rules[0]
+        rule_id = _positive_id(rule.get("id"), f"{role} review rule.id")
+        if (
+            rule.get("type") != "required_reviewers"
+            or rule.get("prevent_self_review") is not True
+        ):
+            raise AuditError(f"{role} review environment must prevent self-review")
+        reviewers = rule.get("reviewers")
+        if (
+            type(reviewers) is not list
+            or len(reviewers) != 1
+            or type(reviewers[0]) is not dict
+            or reviewers[0].get("type") != "User"
+        ):
+            raise AuditError(
+                f"{role} review environment must name exactly one human reviewer"
+            )
+        reviewer = _actor(
+            reviewers[0].get("reviewer"), f"{role} review environment.reviewer"
+        )
+        if reviewer["type"] != "User" or reviewer["id"] in reviewer_ids:
+            raise AuditError("review environments must name distinct human reviewers")
+        reviewer_ids.add(reviewer["id"])
+        encoded_reviewer = urllib.parse.quote(reviewer["login"], safe="")
+        permission_record = client.rest(
+            f"repos/{repository}/collaborators/{encoded_reviewer}/permission",
+            f"{role} reviewer repository permission",
+        )
+        permission_user = (
+            permission_record.get("user") if type(permission_record) is dict else None
+        )
+        permission_actor = _actor(
+            permission_user, f"{role} reviewer repository permission.user"
+        )
+        permission_flags = (
+            permission_user.get("permissions")
+            if type(permission_user) is dict
+            else None
+        )
+        expected_flags = {
+            "admin": False,
+            "maintain": False,
+            "push": False,
+            "triage": False,
+            "pull": True,
+        }
+        if (
+            permission_actor != reviewer
+            or permission_record.get("permission") != "read"
+            or permission_record.get("role_name") != "read"
+            or permission_flags != expected_flags
+        ):
+            raise AuditError(f"{role} reviewer has repository mutation authority")
+        environments[role] = {
+            "id": environment_id,
+            "name": returned_name,
+            "url": returned_url,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "can_admins_bypass": False,
+            "deployment_branch_policy": None,
+            "rule": {
+                "id": rule_id,
+                "type": "required_reviewers",
+                "prevent_self_review": True,
+                "reviewer": reviewer,
+                "repository_permission": {
+                    "permission": "read",
+                    "role_name": "read",
+                    "permissions": expected_flags,
+                },
+            },
+        }
+    return {
+        "source": REVIEW_AUTHORITY_SOURCE,
+        "environments": environments,
+    }
 
 
 def _normalize_reviews(raw_reviews: list[Any]) -> list[dict[str, Any]]:
@@ -754,13 +918,14 @@ def _commit_tree(client: GitHubClient, repository: str, commit: str, label: str)
 
 def collect_snapshot(
     client: GitHubClient,
-    repository: str,
-    base_branch: str,
+    requirements: dict[str, Any],
     record_commit: str,
     record_parent: str,
     local_tree: str,
 ) -> dict[str, Any]:
     """Collect one normalized, bounded proposal-review snapshot."""
+    repository = requirements["repository"]
+    base_branch = requirements["base_branch"]
     owner, name = repository.split("/", 1)
     repository_record = client.rest(f"repos/{repository}", "repository metadata")
     if type(repository_record) is not dict:
@@ -770,8 +935,12 @@ def collect_snapshot(
     )
     repository_id = _positive_id(repository_record.get("id"), "repository.id")
     repository_owner = _actor(repository_record.get("owner"), "repository.owner")
-    if full_name.casefold() != repository.casefold() or repository_owner["login"].casefold() != owner.casefold():
+    if (
+        full_name.casefold() != repository.casefold()
+        or repository_owner["login"].casefold() != owner.casefold()
+    ):
         raise AuditError("GitHub repository identity does not match the proposal")
+    review_authority = _collect_review_authority(client, repository)
 
     main_ref = client.rest(
         f"repos/{repository}/git/ref/heads/{base_branch}",
@@ -789,11 +958,12 @@ def collect_snapshot(
         raise AuditError("GitHub returned malformed proposal ancestry comparison")
     comparison_status = comparison.get("status")
     merge_base = comparison.get("merge_base_commit")
-    if comparison_status not in {"ahead", "behind", "diverged", "identical"} or type(merge_base) is not dict:
+    if (
+        comparison_status not in {"ahead", "behind", "diverged", "identical"}
+        or type(merge_base) is not dict
+    ):
         raise AuditError("GitHub returned malformed proposal ancestry status")
-    merge_base_sha = _sha(
-        merge_base.get("sha"), "proposal ancestry merge-base SHA"
-    )
+    merge_base_sha = _sha(merge_base.get("sha"), "proposal ancestry merge-base SHA")
 
     associations = client.rest_pages(
         f"repos/{repository}/commits/{record_commit}/pulls",
@@ -803,10 +973,14 @@ def collect_snapshot(
     for index, association in enumerate(associations):
         if type(association) is not dict:
             raise AuditError(f"associated pull request {index} is malformed")
-        number = _positive_id(association.get("number"), f"associations[{index}].number")
+        number = _positive_id(
+            association.get("number"), f"associations[{index}].number"
+        )
         numbers.append(number)
     if len(numbers) != 1 or len(numbers) != len(set(numbers)):
-        raise AuditError("proposal record commit must have exactly one associated pull request")
+        raise AuditError(
+            "proposal record commit must have exactly one associated pull request"
+        )
     number = numbers[0]
 
     pull_request = client.rest(f"repos/{repository}/pulls/{number}", "pull request")
@@ -841,7 +1015,10 @@ def collect_snapshot(
 
     requested_reviewers_raw = pull_request.get("requested_reviewers")
     requested_teams_raw = pull_request.get("requested_teams")
-    if type(requested_reviewers_raw) is not list or type(requested_teams_raw) is not list:
+    if (
+        type(requested_reviewers_raw) is not list
+        or type(requested_teams_raw) is not list
+    ):
         raise AuditError("GitHub returned malformed pending-review metadata")
     requested_reviewers = [
         _actor(item, f"requested_reviewers[{index}]")
@@ -856,7 +1033,9 @@ def collect_snapshot(
         if type(item) is not dict:
             raise AuditError(f"requested_teams[{index}] is malformed")
         team_id = _positive_id(item.get("id"), f"requested_teams[{index}].id")
-        slug = _bounded_string(item.get("slug"), f"requested_teams[{index}].slug", maximum=100)
+        slug = _bounded_string(
+            item.get("slug"), f"requested_teams[{index}].slug", maximum=100
+        )
         if team_id in team_ids:
             raise AuditError("GitHub returned duplicate requested teams")
         team_ids.add(team_id)
@@ -872,27 +1051,6 @@ def collect_snapshot(
     _bind_review_edit_times(reviews, review_edit_times)
     review_state = client.review_state(owner, name, number)
 
-    permission_logins = {
-        review["reviewer"]["login"]
-        for review in reviews
-        if review["reviewer"]["type"] == "User"
-        and review["reviewer"]["id"] != author["id"]
-        and review["state"] in DECISIVE_REVIEW_STATES
-    }
-    if len(permission_logins) > MAX_PERMISSION_REVIEWERS:
-        raise AuditError("proposal has too many decisive human reviewers to audit")
-    permissions: dict[str, str] = {}
-    for login in sorted(permission_logins, key=str.casefold):
-        encoded = urllib.parse.quote(login, safe="")
-        value = client.rest(
-            f"repos/{repository}/collaborators/{encoded}/permission",
-            f"collaborator permission for {login}",
-        )
-        permission = value.get("permission") if type(value) is dict else None
-        if permission not in ALLOWED_PERMISSIONS:
-            raise AuditError("GitHub returned malformed collaborator permission")
-        permissions[login] = permission
-
     record_tree = _commit_tree(
         client, repository, record_commit, "proposal record commit"
     )
@@ -903,6 +1061,7 @@ def collect_snapshot(
         "repository": full_name,
         "repository_id": repository_id,
         "repository_owner": repository_owner,
+        "review_authority": review_authority,
         "record_commit": record_commit,
         "record_parent": record_parent,
         "local_tree": local_tree,
@@ -930,7 +1089,6 @@ def collect_snapshot(
             "review_decision": review_state["review_decision"],
             "threads": review_state["threads"],
             "reviews": reviews,
-            "permissions": permissions,
         },
     }
 
@@ -956,6 +1114,129 @@ def _security_marker_matches(
     ]
 
 
+def _evaluate_review_authority(
+    snapshot: dict[str, Any],
+    requirements: dict[str, Any],
+    *,
+    repository_owner: dict[str, Any],
+    pull_request_author: dict[str, Any],
+) -> dict[int, dict[str, Any]]:
+    authority = snapshot.get("review_authority")
+    if type(authority) is not dict or set(authority) != {"source", "environments"}:
+        raise AuditError("snapshot review authority is malformed")
+    if authority.get("source") != requirements["reviewer_authority"]:
+        raise AuditError("snapshot review authority source is not authoritative")
+    environments = authority.get("environments")
+    if type(environments) is not dict or set(environments) != set(REVIEW_ENVIRONMENTS):
+        raise AuditError("snapshot review environments are malformed")
+
+    result: dict[int, dict[str, Any]] = {}
+    actor_id_by_login: dict[tuple[str, str], int] = {}
+    for actor in (repository_owner, pull_request_author):
+        identity = (actor["login"].casefold(), actor["type"])
+        previous_id = actor_id_by_login.setdefault(identity, actor["id"])
+        if previous_id != actor["id"]:
+            raise AuditError("actor login is bound to multiple GitHub IDs")
+    for role, expected_name in sorted(REVIEW_ENVIRONMENTS.items()):
+        configured_name = requirements[f"{role}_reviewer_environment"]
+        if configured_name != expected_name:
+            raise AuditError(f"{role} reviewer environment is not authoritative")
+        environment = environments.get(role)
+        expected_fields = {
+            "id",
+            "name",
+            "url",
+            "created_at",
+            "updated_at",
+            "can_admins_bypass",
+            "deployment_branch_policy",
+            "rule",
+        }
+        if type(environment) is not dict or set(environment) != expected_fields:
+            raise AuditError(f"snapshot {role} review environment is malformed")
+        _positive_id(environment.get("id"), f"snapshot.{role}_environment.id")
+        name = _bounded_string(
+            environment.get("name"),
+            f"snapshot.{role}_environment.name",
+            maximum=255,
+        )
+        encoded = urllib.parse.quote(expected_name, safe="")
+        expected_url = (
+            f"https://api.github.com/repos/{requirements['repository']}"
+            f"/environments/{encoded}"
+        )
+        if name != expected_name or environment.get("url") != expected_url:
+            raise AuditError(f"snapshot {role} review environment identity changed")
+        if (
+            environment.get("can_admins_bypass") is not False
+            or environment.get("deployment_branch_policy") is not None
+        ):
+            raise AuditError(f"snapshot {role} review environment is bypassable")
+        created_at_text = _timestamp(
+            environment.get("created_at"),
+            f"snapshot.{role}_environment.created_at",
+        )
+        updated_at_text = _timestamp(
+            environment.get("updated_at"),
+            f"snapshot.{role}_environment.updated_at",
+        )
+        created_at = _timestamp_datetime(created_at_text)
+        updated_at = _timestamp_datetime(updated_at_text)
+        if created_at > updated_at:
+            raise AuditError(f"snapshot {role} review environment timestamps conflict")
+        rule = environment.get("rule")
+        if type(rule) is not dict or set(rule) != {
+            "id",
+            "type",
+            "prevent_self_review",
+            "reviewer",
+            "repository_permission",
+        }:
+            raise AuditError(f"snapshot {role} review rule is malformed")
+        _positive_id(rule.get("id"), f"snapshot.{role}_environment.rule.id")
+        if (
+            rule.get("type") != "required_reviewers"
+            or rule.get("prevent_self_review") is not True
+        ):
+            raise AuditError(f"snapshot {role} review rule permits self-review")
+        reviewer = _actor(rule.get("reviewer"), f"snapshot.{role}_environment.reviewer")
+        permission = rule.get("repository_permission")
+        expected_permission = {
+            "permission": "read",
+            "role_name": "read",
+            "permissions": {
+                "admin": False,
+                "maintain": False,
+                "push": False,
+                "triage": False,
+                "pull": True,
+            },
+        }
+        if permission != expected_permission:
+            raise AuditError(f"snapshot {role} reviewer is not read-only")
+        if reviewer["type"] != "User":
+            raise AuditError("review environments must designate human reviewers")
+        if reviewer["id"] in {repository_owner["id"], pull_request_author["id"]}:
+            raise AuditError(
+                "review environments must designate external non-author reviewers"
+            )
+        identity = (reviewer["login"].casefold(), reviewer["type"])
+        previous_id = actor_id_by_login.setdefault(identity, reviewer["id"])
+        if previous_id != reviewer["id"] or reviewer["id"] in result:
+            raise AuditError("review environments must designate distinct identities")
+        result[reviewer["id"]] = {
+            "role": role,
+            "reviewer": reviewer,
+            "authority_updated_at": updated_at,
+        }
+    if (
+        requirements.get("distinct_environment_reviewers_required") is not True
+        or len(result) != requirements["minimum_non_author_reviews"]
+    ):
+        raise AuditError("review authority does not contain two distinct reviewers")
+    return result
+
+
 def evaluate_snapshot(
     snapshot: dict[str, Any],
     requirements: dict[str, Any],
@@ -972,7 +1253,9 @@ def evaluate_snapshot(
         snapshot.get("repository_owner"), "snapshot.repository_owner"
     )
     if repository_owner["id"] != requirements["repository_owner_id"]:
-        raise AuditError("snapshot repository owner ID does not match review requirements")
+        raise AuditError(
+            "snapshot repository owner ID does not match review requirements"
+        )
     if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
         raise AuditError("proposal audit time must be timezone-aware")
     evaluated_at = evaluated_at.astimezone(timezone.utc)
@@ -985,7 +1268,10 @@ def evaluate_snapshot(
     canonical_main = _sha(snapshot.get("canonical_main"), "snapshot.canonical_main")
     comparison_status = snapshot.get("main_comparison_status")
     main_merge_base = _sha(snapshot.get("main_merge_base"), "snapshot.main_merge_base")
-    if comparison_status not in {"ahead", "identical"} or main_merge_base != record_commit:
+    if (
+        comparison_status not in {"ahead", "identical"}
+        or main_merge_base != record_commit
+    ):
         raise AuditError(
             "proposal record commit is no longer an ancestor of canonical main"
         )
@@ -995,10 +1281,15 @@ def evaluate_snapshot(
     if type(pull_request) is not dict:
         raise AuditError("snapshot pull request is malformed")
     if pull_request.get("merge_commit") != record_commit:
-        raise AuditError("reviewed pull request is not bound to the proposal record commit")
+        raise AuditError(
+            "reviewed pull request is not bound to the proposal record commit"
+        )
     if pull_request.get("reviewed_tree") != record_tree:
         raise AuditError("reviewed head and merged proposal trees differ")
-    if pull_request.get("base_repository", "").casefold() != requirements["repository"].casefold():
+    if (
+        pull_request.get("base_repository", "").casefold()
+        != requirements["repository"].casefold()
+    ):
         raise AuditError("reviewed pull request targets a different repository")
     if pull_request.get("base_ref") != requirements["base_branch"]:
         raise AuditError("reviewed pull request targets a different base branch")
@@ -1008,8 +1299,8 @@ def evaluate_snapshot(
         )
     if pull_request.get("requested_reviewers") or pull_request.get("requested_teams"):
         raise AuditError("proposal has pending review requests")
-    if pull_request.get("review_decision") != "APPROVED":
-        raise AuditError("GitHub review decision is not APPROVED")
+    if pull_request.get("review_decision") not in {None, "APPROVED"}:
+        raise AuditError("GitHub aggregate review decision is blocking")
     threads = pull_request.get("threads")
     if type(threads) is not list or any(
         type(thread) is not dict or thread.get("is_resolved") is not True
@@ -1025,9 +1316,14 @@ def evaluate_snapshot(
         raise AuditError("proposal merge timestamp is in the future")
     reviewed_sha = _sha(pull_request.get("head_sha"), "snapshot.pull_request.head_sha")
     reviews = pull_request.get("reviews")
-    permissions = pull_request.get("permissions")
-    if type(reviews) is not list or type(permissions) is not dict:
+    if type(reviews) is not list:
         raise AuditError("snapshot review evidence is malformed")
+    designated = _evaluate_review_authority(
+        snapshot,
+        requirements,
+        repository_owner=repository_owner,
+        pull_request_author=author,
+    )
 
     decisive_by_reviewer: dict[int, list[dict[str, Any]]] = {}
     reviewer_identity: dict[int, tuple[str, str]] = {}
@@ -1057,7 +1353,9 @@ def evaluate_snapshot(
         if previous_id != reviewer["id"]:
             raise AuditError("actor login is bound to multiple GitHub IDs")
         if state in DECISIVE_REVIEW_STATES:
-            _timestamp(review.get("submitted_at"), f"snapshot.reviews[{index}].submitted_at")
+            _timestamp(
+                review.get("submitted_at"), f"snapshot.reviews[{index}].submitted_at"
+            )
             decisive_by_reviewer.setdefault(reviewer["id"], []).append(review)
         last_edited_at = review.get("last_edited_at")
         if last_edited_at is not None:
@@ -1068,12 +1366,17 @@ def evaluate_snapshot(
     security_reviewers: list[str] = []
     marker = requirements["security_review_marker"]
     maximum_age = timedelta(days=requirements["maximum_review_age_days"])
-    for reviewer_id, decisive in decisive_by_reviewer.items():
+    for reviewer_id, authority in designated.items():
+        decisive = decisive_by_reviewer.get(reviewer_id, [])
+        if not decisive:
+            continue
         decisive.sort(
             key=lambda item: (_timestamp_key(item["submitted_at"]), item["id"])
         )
         latest = decisive[-1]
         reviewer = latest["reviewer"]
+        if reviewer != authority["reviewer"]:
+            raise AuditError("designated reviewer identity changed in review evidence")
         if reviewer["type"] != "User" or reviewer_id == author["id"]:
             continue
         if latest["state"] != "APPROVED" or latest.get("commit_id") != reviewed_sha:
@@ -1089,15 +1392,18 @@ def evaluate_snapshot(
             continue
         if evaluated_at - submitted_at > maximum_age:
             continue
-        permission = permissions.get(reviewer["login"])
-        if permission not in QUALIFYING_PERMISSIONS:
+        if submitted_at <= authority["authority_updated_at"]:
             continue
         body = latest.get("body")
-        is_security_review = type(body) is str and _security_marker_matches(
-            body,
-            marker,
-            reviewed_sha,
-            attestations,
+        is_security_review = (
+            authority["role"] == "security"
+            and type(body) is str
+            and _security_marker_matches(
+                body,
+                marker,
+                reviewed_sha,
+                attestations,
+            )
         )
         qualified.append(reviewer)
         qualified_records.append(
@@ -1105,6 +1411,7 @@ def evaluate_snapshot(
                 "reviewer": reviewer,
                 "valid_until": submitted_at + maximum_age,
                 "security": is_security_review,
+                "role": authority["role"],
             }
         )
         if is_security_review:
@@ -1119,15 +1426,11 @@ def evaluate_snapshot(
         )
     if requirements["security_review_required"] and not security_reviewers:
         raise AuditError("proposal has no qualifying exact-head security review marker")
-    validity_candidates = {
-        item["valid_until"] for item in qualified_records
-    }
+    validity_candidates = {item["valid_until"] for item in qualified_records}
     valid_until = max(
         candidate
         for candidate in validity_candidates
-        if sum(
-            item["valid_until"] >= candidate for item in qualified_records
-        )
+        if sum(item["valid_until"] >= candidate for item in qualified_records)
         >= minimum
         and any(
             item["security"] and item["valid_until"] >= candidate
@@ -1172,6 +1475,10 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_id",
         "repository_owner_id",
         "base_branch",
+        "reviewer_authority",
+        "security_reviewer_environment",
+        "product_reviewer_environment",
+        "distinct_environment_reviewers_required",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
@@ -1197,6 +1504,16 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal review repository owner ID is not authoritative")
     if requirements.get("base_branch") != "main":
         raise AuditError("proposal review base branch is not authoritative")
+    if requirements.get("reviewer_authority") != REVIEW_AUTHORITY_SOURCE:
+        raise AuditError("proposal reviewer authority is not authoritative")
+    if (
+        requirements.get("security_reviewer_environment") != SECURITY_REVIEW_ENVIRONMENT
+        or requirements.get("product_reviewer_environment")
+        != PRODUCT_REVIEW_ENVIRONMENT
+    ):
+        raise AuditError("proposal reviewer environments are not authoritative")
+    if requirements.get("distinct_environment_reviewers_required") is not True:
+        raise AuditError("proposal reviewer environments need distinct humans")
     minimum = requirements.get("minimum_non_author_reviews")
     if type(minimum) is not int or minimum < 2:
         raise AuditError("proposal requires fewer than two independent reviews")
@@ -1210,9 +1527,15 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
     ):
         if requirements.get(field) is not True:
             raise AuditError(f"proposal review requirement {field} is not fail-closed")
-    if requirements.get("security_review_marker") != "semantic-provider-security-review/v1":
+    if (
+        requirements.get("security_review_marker")
+        != "semantic-provider-security-review/v1"
+    ):
         raise AuditError("proposal security-review marker is not authoritative")
-    if requirements.get("authoritative_audit") != "scripts/audit_semantic_provider_proposal.py":
+    if (
+        requirements.get("authoritative_audit")
+        != "scripts/audit_semantic_provider_proposal.py"
+    ):
         raise AuditError("proposal authoritative-audit path is not fixed")
     return requirements
 
@@ -1229,6 +1552,10 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_id",
         "repository_owner_id",
         "base_branch",
+        "reviewer_authority",
+        "security_reviewer_environment",
+        "product_reviewer_environment",
+        "distinct_environment_reviewers_required",
         "evidence_source",
         "candidate_identity",
         "minimum_non_author_reviews",
@@ -1249,6 +1576,10 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_id": 1226008327,
         "repository_owner_id": 22440724,
         "base_branch": "main",
+        "reviewer_authority": REVIEW_AUTHORITY_SOURCE,
+        "security_reviewer_environment": SECURITY_REVIEW_ENVIRONMENT,
+        "product_reviewer_environment": PRODUCT_REVIEW_ENVIRONMENT,
+        "distinct_environment_reviewers_required": True,
         "evidence_source": "github-exact-tree-review/v1",
         "candidate_identity": "reviewed-head-tree-equals-release-tree",
         "minimum_non_author_reviews": 2,
@@ -1289,16 +1620,20 @@ def _local_record(repo: Path) -> tuple[str, str, str]:
     )
     if dirty:
         raise AuditError("governed proposal files have uncommitted changes")
-    raw_commit = _git(
-        repo,
-        "log",
-        "-1",
-        "--first-parent",
-        "--format=%H",
-        "HEAD",
-        "--",
-        *GOVERNED_PATHS,
-    ).decode("ascii", "strict").strip()
+    raw_commit = (
+        _git(
+            repo,
+            "log",
+            "-1",
+            "--first-parent",
+            "--format=%H",
+            "HEAD",
+            "--",
+            *GOVERNED_PATHS,
+        )
+        .decode("ascii", "strict")
+        .strip()
+    )
     record_commit = _sha(raw_commit, "latest governed proposal commit")
     parent = _sha(
         _git(repo, "rev-parse", f"{record_commit}^1").decode("ascii", "strict").strip(),
@@ -1347,9 +1682,7 @@ def _local_release_record(repo: Path, release_sha: str) -> tuple[str, str, str]:
     if head != release_sha:
         raise AuditError("release SHA does not equal local HEAD")
     parent = _sha(
-        _git(repo, "rev-parse", f"{release_sha}^1")
-        .decode("ascii", "strict")
-        .strip(),
+        _git(repo, "rev-parse", f"{release_sha}^1").decode("ascii", "strict").strip(),
         "release record parent",
     )
     local_tree = _sha(
@@ -1373,7 +1706,9 @@ def _stable_digest(value: Any) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--repo", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument(
         "--gate",
         choices=("accepted", "v0.15-work", "v0.15-release"),
@@ -1420,22 +1755,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             client = GitHubClient(repo)
             first = collect_snapshot(
                 client,
-                requirements["repository"],
-                requirements["base_branch"],
+                requirements,
                 record_commit,
                 record_parent,
                 local_tree,
             )
             second = collect_snapshot(
                 client,
-                requirements["repository"],
-                requirements["base_branch"],
+                requirements,
                 record_commit,
                 record_parent,
                 local_tree,
             )
             if first != second:
-                raise AuditError("GitHub proposal-review state changed during the audit")
+                raise AuditError(
+                    "GitHub proposal-review state changed during the audit"
+                )
             release_first = None
             release_review_result = None
             if release_record is not None:
@@ -1443,16 +1778,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 release_commit, release_parent, release_tree = release_record
                 release_first = collect_snapshot(
                     client,
-                    release_requirements["repository"],
-                    release_requirements["base_branch"],
+                    release_requirements,
                     release_commit,
                     release_parent,
                     release_tree,
                 )
                 release_second = collect_snapshot(
                     client,
-                    release_requirements["repository"],
-                    release_requirements["base_branch"],
+                    release_requirements,
                     release_commit,
                     release_parent,
                     release_tree,
@@ -1482,11 +1815,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "proposal acceptance and v0.15 release require separate pull requests"
                     )
             authority_valid_until = review_result["valid_until"]
-            if (
-                release_review_result is not None
-                and _timestamp_datetime(release_review_result["valid_until"])
-                < _timestamp_datetime(authority_valid_until)
-            ):
+            if release_review_result is not None and _timestamp_datetime(
+                release_review_result["valid_until"]
+            ) < _timestamp_datetime(authority_valid_until):
                 authority_valid_until = release_review_result["valid_until"]
             checker = _load_checker(validation_root)
             checker_arguments = {

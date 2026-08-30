@@ -49,7 +49,7 @@
     {"id": "SPT-037", "title": "Host policy spoofing, race, or replacement", "severity": "critical", "controls": ["SPC-002", "SPC-037", "SPC-040"], "verifications": ["SPV-004", "SPV-011", "SPV-031"]},
     {"id": "SPT-038", "title": "Provider option-schema abuse or divergence", "severity": "high", "controls": ["SPC-027", "SPC-028", "SPC-038"], "verifications": ["SPV-007", "SPV-008", "SPV-032"]},
     {"id": "SPT-039", "title": "Selected-source disclosure through provider output or metadata", "severity": "high", "controls": ["SPC-012", "SPC-015", "SPC-039", "SPC-041"], "verifications": ["SPV-015", "SPV-033", "SPV-036"]},
-    {"id": "SPT-040", "title": "Stale or mutable approval evidence", "severity": "high", "controls": ["SPC-033", "SPC-034", "SPC-040"], "verifications": ["SPV-021", "SPV-024", "SPV-035"]},
+    {"id": "SPT-040", "title": "Stale, mutable, or over-privileged approval evidence", "severity": "high", "controls": ["SPC-033", "SPC-034", "SPC-040", "SPC-044"], "verifications": ["SPV-021", "SPV-024", "SPV-035", "SPV-038"]},
     {"id": "SPT-041", "title": "Deterministic but semantically false provider output", "severity": "high", "controls": ["SPC-002", "SPC-019", "SPC-031", "SPC-041"], "verifications": ["SPV-016", "SPV-026", "SPV-036"]},
     {"id": "SPT-042", "title": "Pre-sandbox provider artifact or evidence decoding", "severity": "critical", "controls": ["SPC-008", "SPC-009", "SPC-021", "SPC-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]},
     {"id": "SPT-043", "title": "Self-attested, stale, or unenforced v0.15 release evidence", "severity": "critical", "controls": ["SPC-034", "SPC-040", "SPC-043"], "verifications": ["SPV-024", "SPV-035", "SPV-038"]}
@@ -97,7 +97,8 @@
     {"id": "SPC-040", "title": "Tamper-evident exact approval evidence", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-037", "SPT-040", "SPT-043"], "verifications": ["SPV-021", "SPV-024", "SPV-031", "SPV-035", "SPV-038"]},
     {"id": "SPC-041", "title": "Explicit semantic trust and independent validation", "kinds": ["preventive", "detective"], "threats": ["SPT-003", "SPT-039", "SPT-041"], "verifications": ["SPV-016", "SPV-026", "SPV-036"]},
     {"id": "SPC-042", "title": "Containment before provider artifact decoding", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]},
-    {"id": "SPC-043", "title": "External exact-tree v0.15 release attestation", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-043"], "verifications": ["SPV-024", "SPV-035", "SPV-038"]}
+    {"id": "SPC-043", "title": "External exact-tree v0.15 release attestation", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-043"], "verifications": ["SPV-024", "SPV-035", "SPV-038"]},
+    {"id": "SPC-044", "title": "Least-authority external reviewer rosters", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-040"], "verifications": ["SPV-021", "SPV-035", "SPV-038"]}
   ],
   "verifications": [
     {"id": "SPV-001", "title": "Proposal schema and cross-reference validation", "phase": "proposal", "status": "passed", "evidence": ["python -I scripts/check_semantic_provider_proposal.py --format json", "python -I -m pytest -q tests/test_semantic_provider_proposal.py"]},
@@ -134,7 +135,7 @@
     {"id": "SPV-032", "title": "Bounded option-schema and host/guest differential tests", "phase": "implementation", "status": "planned", "evidence": []},
     {"id": "SPV-033", "title": "Output minimization and private-source non-disclosure tests", "phase": "provider", "status": "planned", "evidence": []},
     {"id": "SPV-034", "title": "Identity-axis placement and portable migration tests", "phase": "implementation", "status": "planned", "evidence": []},
-    {"id": "SPV-035", "title": "Review and scan evidence tampering negative matrix", "phase": "proposal", "status": "passed", "evidence": ["python -I -m pytest -q tests/test_semantic_provider_proposal.py", "python -I -m coverage report --include proposal gate scripts --fail-under=75", "scripts/audit_semantic_provider_proposal.py"]},
+    {"id": "SPV-035", "title": "Review authority, environment-roster, and scan evidence tampering negative matrix", "phase": "proposal", "status": "passed", "evidence": ["python -I -m pytest -q tests/test_semantic_provider_proposal.py", "python -I -m coverage report --include proposal gate scripts --fail-under=75", "scripts/audit_semantic_provider_proposal.py"]},
     {"id": "SPV-036", "title": "Malicious semantic output and independent-oracle tests", "phase": "provider", "status": "planned", "evidence": []},
     {"id": "SPV-037", "title": "Pre-sandbox evidence, decoder, runtime, and AOT isolation tests", "phase": "implementation", "status": "planned", "evidence": []},
     {"id": "SPV-038", "title": "External exact-tree v0.15 attestation, expiry handoff, and workflow-enforcement negative matrix", "phase": "proposal", "status": "passed", "evidence": ["python -I -m pytest -q tests/test_semantic_provider_proposal.py", "python -I -m pytest -q tests/test_create_release_tag_review_state.py tests/test_distribution_contract.py", "scripts/audit_semantic_provider_proposal.py --gate v0.15-release", ".github/workflows/create-release-tag.yml", ".github/workflows/publish.yml", "scripts/publish_release.py"]}
@@ -153,7 +154,7 @@
         "id": "RTR-002",
         "scope": "Proposed host-policy, artifact, broker, protocol, sandbox, semantic, supply-chain, cache, CI, and governance design",
         "status": "passed",
-        "findings": ["RTF-004", "RTF-005", "RTF-006", "RTF-007", "RTF-008", "RTF-009", "RTF-010", "RTF-011", "RTF-012", "RTF-013", "RTF-014", "RTF-015", "RTF-016", "RTF-017", "RTF-018", "RTF-019", "RTF-020", "RTF-021", "RTF-022", "RTF-023", "RTF-024", "RTF-025", "RTF-026", "RTF-027", "RTF-028", "RTF-029", "RTF-030", "RTF-031", "RTF-032", "RTF-033", "RTF-034", "RTF-035", "RTF-036", "RTF-037", "RTF-038", "RTF-039", "RTF-040", "RTF-041", "RTF-042", "RTF-043", "RTF-044", "RTF-045", "RTF-046", "RTF-047", "RTF-048", "RTF-049"],
+        "findings": ["RTF-004", "RTF-005", "RTF-006", "RTF-007", "RTF-008", "RTF-009", "RTF-010", "RTF-011", "RTF-012", "RTF-013", "RTF-014", "RTF-015", "RTF-016", "RTF-017", "RTF-018", "RTF-019", "RTF-020", "RTF-021", "RTF-022", "RTF-023", "RTF-024", "RTF-025", "RTF-026", "RTF-027", "RTF-028", "RTF-029", "RTF-030", "RTF-031", "RTF-032", "RTF-033", "RTF-034", "RTF-035", "RTF-036", "RTF-037", "RTF-038", "RTF-039", "RTF-040", "RTF-041", "RTF-042", "RTF-043", "RTF-044", "RTF-045", "RTF-046", "RTF-047", "RTF-048", "RTF-049", "RTF-050"],
         "evidence": ["docs/design/semantic-provider-threat-model.md#red-team-findings-and-dispositions"]
       },
       {
@@ -171,6 +172,10 @@
     "repository_id": 1226008327,
     "repository_owner_id": 22440724,
     "base_branch": "main",
+    "reviewer_authority": "github-environment-required-reviewers/v1",
+    "security_reviewer_environment": "semantic-provider-security-review",
+    "product_reviewer_environment": "semantic-provider-product-review",
+    "distinct_environment_reviewers_required": true,
     "minimum_non_author_reviews": 2,
     "maximum_review_age_days": 90,
     "security_review_required": true,
@@ -187,6 +192,10 @@
       "repository_id": 1226008327,
       "repository_owner_id": 22440724,
       "base_branch": "main",
+      "reviewer_authority": "github-environment-required-reviewers/v1",
+      "security_reviewer_environment": "semantic-provider-security-review",
+      "product_reviewer_environment": "semantic-provider-product-review",
+      "distinct_environment_reviewers_required": true,
       "evidence_source": "github-exact-tree-review/v1",
       "candidate_identity": "reviewed-head-tree-equals-release-tree",
       "minimum_non_author_reviews": 2,
@@ -221,7 +230,8 @@
     "https://docs.github.com/en/rest/about-the-rest-api/api-versions",
     "https://docs.github.com/en/rest/pulls/reviews",
     "https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit",
-    "https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user",
+    "https://docs.github.com/en/rest/deployments/environments#get-an-environment",
+    "https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#required-reviewers",
     "https://docs.github.com/en/graphql/reference/objects#pullrequest"
   ]
 }
