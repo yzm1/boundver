@@ -1,13 +1,23 @@
 """Argument-parser construction for the public boundver CLI."""
 
 import argparse
+import sys
 
+from ._output import _display_text
 from ._utils import SOURCE_MODES
+
+
+class _TerminalSafeArgumentParser(argparse.ArgumentParser):
+    """Keep caller-controlled parse errors on one terminal-safe line."""
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {_display_text(message)}\n")
 
 
 def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     """Build the parser without executing or dispatching a command."""
-    parser = argparse.ArgumentParser(
+    parser = _TerminalSafeArgumentParser(
         prog="boundver",
         description="Detect declared component, behavior, boundary, and compatibility drift",
         formatter_class=argparse.RawDescriptionHelpFormatter,

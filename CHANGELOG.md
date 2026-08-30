@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Escaped repository-controlled control characters and leading GitHub workflow
+  command markers in every human-readable CLI value and in the composite
+  Action's line-oriented outputs. Normal Unicode remains readable, trusted TTY
+  styling is applied only after escaping, and machine JSON retains exact data.
 - Rejected lock outputs that alias the selected config or sit inside component
   and vendored-copy roots, including hard-link, symlink, junction, and parent-
   traversal spellings, before generation or update can mutate repository data.

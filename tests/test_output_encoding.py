@@ -11,6 +11,7 @@ from unittest.mock import patch
 import boundver._output as output
 import boundver.core as core
 from boundver._output import (
+    _display_text,
     configure_cli_streams,
     explain_component_changes,
     print_diff,
@@ -36,6 +37,35 @@ class LegacyCodePageOutputTests(unittest.TestCase):
     def test_safe_print_preserves_unencodable_codepoints_as_escapes(self):
         output = self._capture_cp1252(lambda: safe_print("name=svc\U0001f600"))
         self.assertEqual(output, "name=svc\\U0001f600\r\n" if sys.platform == "win32" else "name=svc\\U0001f600\n")
+
+    def test_human_text_escapes_terminal_controls_but_preserves_unicode(self):
+        value = "safe\n\r\t\b\f\x00\x1b[2J\x7f\x85\u2028\u2029 café שלום"
+
+        self.assertEqual(
+            _display_text(value),
+            "safe\\n\\r\\t\\b\\f\\x00\\x1b[2J\\x7f\\x85"
+            "\\u2028\\u2029 café שלום",
+        )
+
+    def test_human_text_neutralizes_leading_github_workflow_command(self):
+        self.assertEqual(
+            _display_text("::warning title=forged::not real"),
+            "\\x3a:warning title=forged::not real",
+        )
+
+    def test_safe_print_applies_trusted_style_after_escaping_untrusted_text(self):
+        class TtyStream(io.StringIO):
+            def isatty(self):
+                return True
+
+        stream = TtyStream()
+        with patch.object(sys, "stdout", stream):
+            safe_print(output._green("ok\x1b[2J\n::warning::forged"))
+
+        self.assertEqual(
+            stream.getvalue(),
+            "\x1b[32mok\\x1b[2J\\n::warning::forged\x1b[0m\n",
+        )
 
     def test_cli_entrypoint_configures_stdout_and_stderr_before_argparse(self):
         calls: list[tuple[str, dict[str, str]]] = []
