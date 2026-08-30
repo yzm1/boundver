@@ -203,6 +203,22 @@ class CustomProviderNameTests(unittest.TestCase):
             errors,
         )
 
+    def test_bare_custom_prefix_is_rejected_before_mixed_list_deferral(self):
+        config = self._config(
+            [
+                self._entry(ExplicitProvider, explicit_name=True),
+                self._entry(ImplicitProvider, explicit_name=False),
+            ],
+            selected_name="custom.",
+        )
+
+        errors = validate_config(config, self.root, source="head")
+
+        self.assertTrue(
+            any("must include a name after the 'custom.' prefix" in error for error in errors),
+            errors,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

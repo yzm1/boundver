@@ -760,6 +760,11 @@ def validate_config(
                 f"Component '{name}' has unsupported boundary.provider '{boundary['provider']}' "
                 "(use a known provider or custom.* namespace)"
             )
+        elif boundary["provider"] == "custom.":
+            errors.append(
+                f"Component '{name}' boundary.provider must include a name after "
+                "the 'custom.' prefix"
+            )
         elif boundary["provider"].startswith("custom."):
             # Verify the custom provider is declared in the top-level providers list.
             provider_name = boundary["provider"]
