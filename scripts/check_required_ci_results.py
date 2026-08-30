@@ -32,7 +32,7 @@ STATUS_CONTEXT = "required-pr-gate"
 API_ROOT = "https://api.github.com"
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_PULL_FILES = 3_000
+MAX_PULL_FILES = 300
 MAX_TOKEN_BYTES = 4_096
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
@@ -63,7 +63,11 @@ EXPECTED_JOBS = (
 
 PROTECTED_PATHS = frozenset(
     {
+        ".github",
+        ".github/rulesets",
         ".github/rulesets/protect-main.json",
+        ".github/workflows",
+        "scripts",
         "scripts/check_required_ci_results.py",
     }
 )
@@ -405,46 +409,73 @@ def _validate_repo_path(value: object, label: str) -> str:
 
 
 def _validate_files(
-    fetch: Callable[[str], object], *, number: int, changed_files: int
+    value: object,
+    *,
+    base_sha: str,
+    head_sha: str,
+    changed_files: int,
 ) -> None:
-    seen: set[str] = set()
-    page = 1
-    while len(seen) < changed_files:
-        value = fetch(
-            f"/repos/{REPOSITORY}/pulls/{number}/files?per_page=100&page={page}"
+    comparison = _require_dict(value, "immutable comparison response")
+    compare_path = f"{base_sha}...{head_sha}"
+    if (
+        comparison.get("url")
+        != f"{API_ROOT}/repos/{REPOSITORY}/compare/{compare_path}"
+        or comparison.get("html_url")
+        != f"https://github.com/{REPOSITORY}/compare/{compare_path}"
+    ):
+        raise RequiredCiGateError(
+            "immutable comparison does not identify the validated base and head"
         )
-        if type(value) is not list or not value:
-            raise RequiredCiGateError("pull-request file listing is incomplete")
-        if len(value) > 100:
-            raise RequiredCiGateError("pull-request file page exceeds 100 entries")
-        for index, item in enumerate(value):
-            record = _require_dict(item, f"pull-request file {index}")
-            filename = _validate_repo_path(
-                record.get("filename"), "pull-request filename"
+    base_commit = _require_dict(
+        comparison.get("base_commit"), "comparison base commit"
+    )
+    merge_base = _require_dict(
+        comparison.get("merge_base_commit"), "comparison merge-base commit"
+    )
+    if (
+        base_commit.get("sha") != base_sha
+        or merge_base.get("sha") != base_sha
+        or comparison.get("status") not in {"ahead", "identical"}
+        or comparison.get("behind_by") != 0
+    ):
+        raise RequiredCiGateError(
+            "immutable comparison is not anchored to the validated pull-request base"
+        )
+    ahead_by = comparison.get("ahead_by")
+    total_commits = comparison.get("total_commits")
+    if (
+        type(ahead_by) is not int
+        or type(total_commits) is not int
+        or ahead_by < 0
+        or total_commits != ahead_by
+        or (changed_files == 0) != (comparison.get("status") == "identical")
+    ):
+        raise RequiredCiGateError("immutable comparison has inconsistent commit counts")
+    files = comparison.get("files")
+    if type(files) is not list or len(files) != changed_files:
+        raise RequiredCiGateError("immutable comparison file listing is incomplete")
+    seen: set[str] = set()
+    for index, item in enumerate(files):
+        record = _require_dict(item, f"comparison file {index}")
+        filename = _validate_repo_path(record.get("filename"), "comparison filename")
+        if filename in seen:
+            raise RequiredCiGateError(
+                "immutable comparison file listing is malformed or duplicated"
             )
-            if filename in seen:
+        seen.add(filename)
+        paths = [filename]
+        previous = record.get("previous_filename")
+        if previous is not None:
+            paths.append(
+                _validate_repo_path(previous, "comparison previous filename")
+            )
+        for path in paths:
+            if _is_protected_path(path):
                 raise RequiredCiGateError(
-                    "pull-request file listing is malformed or duplicated"
+                    f"pull request changes protected gate control {path!r}"
                 )
-            seen.add(filename)
-            paths = [filename]
-            previous = record.get("previous_filename")
-            if previous is not None:
-                paths.append(
-                    _validate_repo_path(
-                        previous, "pull-request previous filename"
-                    )
-                )
-            for path in paths:
-                if _is_protected_path(path):
-                    raise RequiredCiGateError(
-                        f"pull request changes protected gate control {path!r}"
-                    )
-        page += 1
-        if page > 31:
-            raise RequiredCiGateError("pull-request file pagination exceeded its bound")
-    if len(seen) != changed_files:
-        raise RequiredCiGateError("pull-request changed-file count is inconsistent")
+    if len(seen) != changed_files:  # pragma: no cover - defensive invariant
+        raise RequiredCiGateError("immutable comparison file count is inconsistent")
 
 
 def evaluate(event: dict[str, Any], fetch: Callable[[str], object]) -> dict[str, object]:
@@ -463,9 +494,14 @@ def evaluate(event: dict[str, Any], fetch: Callable[[str], object]) -> dict[str,
         event_pull=event_pull,
         sha=source["sha"],
     )
+    base_sha = event_pull["base"]["sha"]
+    comparison = fetch(
+        f"/repos/{REPOSITORY}/compare/{base_sha}...{source['sha']}?per_page=1"
+    )
     _validate_files(
-        fetch,
-        number=number,
+        comparison,
+        base_sha=base_sha,
+        head_sha=source["sha"],
         changed_files=live_pull["changed_files"],
     )
     return {

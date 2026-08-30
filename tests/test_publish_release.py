@@ -38,12 +38,39 @@ _MAJOR, _MINOR, _PATCH = (int(part) for part in CURRENT_VERSION.split("."))
 OTHER_TAG = f"v{_MAJOR}.{_MINOR}.{_PATCH + 1}"
 
 
-def _main_ruleset_detail() -> dict:
+def _main_ruleset_contract() -> dict:
     return json.loads(
         (REPO_ROOT / ".github" / "rulesets" / "protect-main.json").read_text(
             encoding="utf-8"
         )
     )
+
+
+def _main_ruleset_detail() -> dict:
+    contract = _main_ruleset_contract()
+    rules = []
+    for rule in contract["rules"]:
+        if rule["type"] != "pull_request":
+            rules.append(rule)
+            continue
+        rules.append(
+            {
+                **rule,
+                "parameters": {
+                    **rule["parameters"],
+                    "required_reviewers": [],
+                    "require_extra_approval_for_unattributed_changes": True,
+                },
+            }
+        )
+    return {
+        **contract,
+        "id": 8,
+        "rules": rules,
+        "source_type": "Repository",
+        "source": "yzm1/boundver",
+        "current_user_can_bypass": "never",
+    }
 
 
 def _load_script():
@@ -1601,6 +1628,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 ]
             if endpoint.endswith("/rulesets/7"):
                 return {
+                    "id": 7,
+                    "target": "tag",
+                    "enforcement": "active",
                     "rules": [{"type": "update"}, {"type": "deletion"}],
                     "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*"], "exclude": []}},
                 }
@@ -2254,6 +2284,9 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 ]
             if endpoint.endswith("/rulesets/7"):
                 return {
+                    "id": 7,
+                    "target": "tag",
+                    "enforcement": "active",
                     "rules": [{"type": "update"}, {"type": "deletion"}],
                     "conditions": {
                         "ref_name": {
@@ -2406,7 +2439,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
     def test_main_ruleset_requires_complete_no_bypass_merge_contract(self):
         publisher = _load_script()
         valid = _main_ruleset_detail()
-        publisher._validate_main_branch_rulesets([valid])
+        contract = _main_ruleset_contract()
+        publisher._validate_main_branch_rulesets([valid], contract)
 
         cases = {
             "bypass": {**valid, "bypass_actors": [{"actor_id": 5}]},
@@ -2468,13 +2502,74 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     for rule in valid["rules"]
                 ],
             },
+            "approval count": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_approving_review_count": 1,
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+            "required reviewer": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_reviewers": [
+                                {
+                                    "file_patterns": ["**"],
+                                    "minimum_approvals": 1,
+                                    "reviewer": {"id": 1, "type": "Team"},
+                                }
+                            ],
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
         }
         for name, value in cases.items():
             with self.subTest(name=name), self.assertRaisesRegex(
                 publisher.GateError,
                 "main ruleset",
             ):
-                publisher._validate_main_branch_rulesets([value])
+                publisher._validate_main_branch_rulesets([value], contract)
+
+        inherited = {
+            **valid,
+            "name": "Inherited main policy",
+            "source_type": "Organization",
+            "source": "example-org",
+            "conditions": {
+                "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+            },
+        }
+        with self.assertRaisesRegex(publisher.GateError, "exactly one"):
+            publisher._validate_main_branch_rulesets([valid, inherited], contract)
+        with self.assertRaisesRegex(publisher.GateError, "repository-owned"):
+            publisher._validate_main_branch_rulesets([inherited], contract)
+
+        unrelated = {
+            **inherited,
+            "conditions": {
+                "ref_name": {
+                    "include": ["refs/heads/feature/**"],
+                    "exclude": [],
+                }
+            },
+        }
+        publisher._validate_main_branch_rulesets([valid, unrelated], contract)
 
     def test_release_environments_require_real_reviewers(self):
         publisher = _load_script()

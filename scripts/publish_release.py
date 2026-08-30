@@ -92,6 +92,12 @@ ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 GITHUB_ACTIONS_APP_ID = 15368
 REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
+MAIN_RULESET_PATH = ".github/rulesets/protect-main.json"
+MAX_MAIN_RULESET_BYTES = 64 * 1024
+GITHUB_EFFECTIVE_PULL_REQUEST_DEFAULTS = {
+    "required_reviewers": [],
+    "require_extra_approval_for_unattributed_changes": True,
+}
 ALIAS_CONTROL_PATHS = (
     "scripts/publish_release.py",
     "scripts/release_alias.py",
@@ -802,6 +808,8 @@ def _github_ref_pattern_matches(pattern: str, ref: str) -> bool:
     """Match GitHub ruleset ref patterns with slash-aware fnmatch semantics."""
     if pattern == "~ALL":
         return True
+    if pattern == "~DEFAULT_BRANCH":
+        return ref == "refs/heads/main"
     pattern_parts = pattern.split("/")
     ref_parts = ref.split("/")
 
@@ -888,51 +896,110 @@ def _validate_tag_rulesets(rulesets: Sequence[dict], tag: str) -> None:
         )
 
 
-def _validate_main_branch_rulesets(rulesets: Sequence[dict]) -> None:
-    """Require one no-bypass ruleset carrying the complete main contract."""
+def _main_ruleset_policy(value: object, *, expected: bool) -> dict[str, object]:
+    """Return every effective policy field, independent of API rule ordering."""
+    if not isinstance(value, dict):
+        raise GateError("main ruleset contract must be an object")
+    policy_keys = {
+        "name",
+        "target",
+        "enforcement",
+        "bypass_actors",
+        "conditions",
+        "rules",
+    }
+    if expected and set(value) != policy_keys:
+        raise GateError("checked-in main ruleset has unexpected or missing fields")
+    rules = value.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise GateError("main ruleset contract has no rules")
+    normalized_rules: dict[str, dict[str, object]] = {}
+    for rule in rules:
+        if not isinstance(rule, dict) or not isinstance(rule.get("type"), str):
+            raise GateError("main ruleset contract contains a malformed rule")
+        rule_type = rule["type"]
+        if rule_type in normalized_rules:
+            raise GateError(f"main ruleset repeats rule type {rule_type!r}")
+        normalized = dict(rule)
+        if expected and rule_type == "pull_request":
+            parameters = normalized.get("parameters")
+            if not isinstance(parameters, dict):
+                raise GateError("main pull-request rule has malformed parameters")
+            effective_parameters = dict(parameters)
+            for key, default in GITHUB_EFFECTIVE_PULL_REQUEST_DEFAULTS.items():
+                effective_parameters.setdefault(key, default)
+            normalized["parameters"] = effective_parameters
+        normalized_rules[rule_type] = normalized
+    return {
+        "name": value.get("name"),
+        "target": value.get("target"),
+        "enforcement": value.get("enforcement"),
+        "bypass_actors": value.get("bypass_actors"),
+        "conditions": value.get("conditions"),
+        "rules": normalized_rules,
+    }
+
+
+def _validate_main_branch_rulesets(
+    rulesets: Sequence[dict], expected_contract: dict
+) -> None:
+    """Require exactly the checked-in effective policy and no overlapping rule."""
     main_ref = "refs/heads/main"
+    applicable: list[dict] = []
     for detail in rulesets:
+        if not isinstance(detail, dict):
+            raise GateError("active branch ruleset detail is malformed")
+        if detail.get("target") != "branch" or detail.get("enforcement") != "active":
+            raise GateError("active branch ruleset detail has inconsistent state")
         conditions = detail.get("conditions")
         ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
-        if not _ruleset_targets_ref(ref_name, main_ref):
-            continue
-        if detail.get("bypass_actors") != []:
-            continue
-        rules = detail.get("rules")
-        if not isinstance(rules, list):
-            continue
-        by_type = {
-            rule.get("type"): rule for rule in rules if isinstance(rule, dict)
-        }
-        pull_parameters = by_type.get("pull_request", {}).get("parameters")
-        status_parameters = by_type.get("required_status_checks", {}).get(
-            "parameters"
+        if not (
+            isinstance(ref_name, dict)
+            and isinstance(ref_name.get("include"), list)
+            and all(isinstance(item, str) for item in ref_name["include"])
+            and isinstance(ref_name.get("exclude"), list)
+            and all(isinstance(item, str) for item in ref_name["exclude"])
+        ):
+            raise GateError("active branch ruleset has malformed ref conditions")
+        if _ruleset_targets_ref(ref_name, main_ref):
+            applicable.append(detail)
+
+    if len(applicable) != 1:
+        raise GateError(
+            "exactly one active main ruleset must define the complete effective policy"
         )
-        if not isinstance(pull_parameters, dict) or not isinstance(
-            status_parameters, dict
-        ):
-            continue
-        checks = status_parameters.get("required_status_checks")
-        required_gate = [
-            {
-                "context": REQUIRED_PR_GATE_CONTEXT,
-                "integration_id": GITHUB_ACTIONS_APP_ID,
-            }
-        ]
-        if (
-            "deletion" in by_type
-            and "non_fast_forward" in by_type
-            and pull_parameters.get("required_review_thread_resolution") is True
-            and pull_parameters.get("allowed_merge_methods") == ["squash"]
-            and status_parameters.get("strict_required_status_checks_policy") is True
-            and checks == required_gate
-        ):
-            return
-    raise GateError(
-        "an active no-bypass main ruleset must require pull requests with "
-        "resolved conversations, squash merges, the strict GitHub Actions "
-        "required-pr-gate, and block deletion and force pushes"
-    )
+    live = applicable[0]
+    if (
+        live.get("source_type") != "Repository"
+        or live.get("source") != REPOSITORY
+        or live.get("current_user_can_bypass") != "never"
+    ):
+        raise GateError(
+            "the active main ruleset must be repository-owned with no effective bypass"
+        )
+    if _main_ruleset_policy(live, expected=False) != _main_ruleset_policy(
+        expected_contract, expected=True
+    ):
+        raise GateError(
+            "the active main ruleset effective policy differs from the checked-in contract"
+        )
+
+
+def _load_main_ruleset_contract(repo: Path) -> dict:
+    path = repo / MAIN_RULESET_PATH
+    try:
+        value = _strict_json_loads(
+            _read_bounded_text(
+                path,
+                "checked-in main ruleset",
+                max_bytes=MAX_MAIN_RULESET_BYTES,
+            )
+        )
+    except (OSError, ValueError, RecursionError) as exc:
+        raise GateError(f"cannot load checked-in main ruleset contract: {exc}") from exc
+    if not isinstance(value, dict):
+        raise GateError("checked-in main ruleset contract must be an object")
+    return value
 
 
 def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
@@ -1408,25 +1475,33 @@ def _github_controls(
     tag_rulesets: list[dict] = []
     branch_rulesets: list[dict] = []
     for summary in rulesets:
-        if not isinstance(summary, dict) or summary.get("target") not in {
-            "tag",
-            "branch",
-        }:
+        if not isinstance(summary, dict):
+            raise GateError("GitHub returned a malformed ruleset summary")
+        target = summary.get("target")
+        if target not in {"tag", "branch"}:
             continue
         if summary.get("enforcement") != "active":
             continue
         ruleset_id = summary.get("id")
         if not _is_positive_github_id(ruleset_id):
-            continue
+            raise GateError("active GitHub ruleset has a malformed ID")
         detail = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/rulesets/{ruleset_id}")
-        if not isinstance(detail, dict):
-            continue
-        if summary.get("target") == "tag":
+        if (
+            not isinstance(detail, dict)
+            or detail.get("id") != ruleset_id
+            or detail.get("target") != target
+            or detail.get("enforcement") != "active"
+        ):
+            raise GateError("active GitHub ruleset detail is malformed or inconsistent")
+        if target == "tag":
             tag_rulesets.append(detail)
         else:
             branch_rulesets.append(detail)
     _validate_tag_rulesets(tag_rulesets, tag)
-    _validate_main_branch_rulesets(branch_rulesets)
+    _validate_main_branch_rulesets(
+        branch_rulesets,
+        _load_main_ruleset_contract(repo),
+    )
     workflow_runs = _gh_paginated_list(
         repo,
         f"repos/{REPOSITORY}/actions/workflows/ci.yml/runs"
