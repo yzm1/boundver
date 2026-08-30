@@ -9,7 +9,7 @@
 | Proposal | `boundver-semantic-provider-system/v1` |
 | Status | Review Ready; implementation is blocked |
 | Owners | boundver maintainers |
-| Tracking | [#73](https://github.com/yzm1/boundver/issues/73), [#31](https://github.com/yzm1/boundver/issues/31) |
+| Tracking | [#73](https://github.com/yzm1/boundver/issues/73), [#31](https://github.com/yzm1/boundver/issues/31), [#86](https://github.com/yzm1/boundver/issues/86) |
 | Threat model | [Semantic provider threat model](semantic-provider-threat-model.md) |
 | Machine-readable assurance record | [`spec/semantic-provider-proposal.json`](https://github.com/yzm1/boundver/blob/main/spec/semantic-provider-proposal.json) |
 
@@ -303,8 +303,9 @@ in `spec/semantic-provider-proposal.json`.
 - **SPC-043 - v0.15 release authority is external and exact-tree bound.** The
   proposal declares only immutable requirements. A separate release-candidate
   PR supplies two fresh approvals from the distinct external humans named by
-  the security and product review environments; the security approval contains
-  the exact required scan/platform/publication attestation.
+  the pinned public reviewer roster; both approvals contain role-specific
+  exact markers and independence attestations, and the security approval also
+  contains the required scan/platform/publication attestation.
   The bounded auditor obtains that mutable state directly from GitHub twice,
   proves the reviewed PR-head tree equals the externally supplied release
   commit tree, and grants release authority only in memory. Local launch, tag
@@ -313,14 +314,37 @@ in `spec/semantic-provider-proposal.json`.
   are part of the workflow-owned mutation handoff, and the earliest proposal or
   release-review expiry is rechecked at every tag mutation boundary.
 - **SPC-044 - Reviewer authority uses least privilege.** The two reviewer
-  identities come from separate admin-managed GitHub Environments, each with
-  exactly one human required reviewer, self-review prevention, and no
-  administrator bypass. The designated humans must have exactly GitHub's
-  read-only repository role; broader access fails the gate. Proposal review
-  never requires repository or tag mutation authority. Environment
-  identity and update time are part of every snapshot, the two users must be
-  distinct and external to the repository owner and PR author, and the roster
-  must predate their exact-head approvals.
+  identities come from an account-owned public gist, pinned by gist ID, node
+  ID, owner account ID, description, and sole filename. Its content is a strict
+  versioned record naming one security reviewer and one product reviewer by
+  numeric account ID and login, plus the owner's attestation that their
+  beneficial ownership is independent. Repository collaborators cannot update
+  the owner's gist with repository authority; mutation requires the owner's
+  separate user-level Gists authority. The designated humans must have exactly
+  GitHub's public read-only repository permission; broader access fails the
+  gate. Proposal review never requires repository or tag mutation authority.
+  Every snapshot binds the complete file metadata and content, owner-authored
+  latest revision, mutable gist timestamps, and the same content fetched by
+  immutable revision ID. Both users must be distinct and external to the
+  repository owner and PR author, and the roster must predate both
+  role-specific exact-head approvals. A roster edit invalidates all older
+  approvals.
+- **SPC-045 - Repository mutation authority is owner-exclusive.** The
+  authoritative proposal and v0.15 release snapshots enumerate every
+  repository collaborator through GitHub's [collaborator-list
+  endpoint](https://docs.github.com/en/rest/collaborators/collaborators#list-repository-collaborators)
+  and accept exactly one principal: repository owner account `22440724` with
+  GitHub's canonical `admin` permission record. Any additional collaborator,
+  duplicate record, malformed/numeric permission flag, role downgrade, or
+  owner identity change fails closed. Because repository workflow credentials
+  cannot enumerate every owner-delegated App, OAuth grant, deploy key, or
+  separately held credential, reviewer-roster format v2 additionally requires
+  the owner-signed literal
+  `Owner-exclusive-mutation-authority-attested: true`. It attests that no such
+  principal can mutate `main`, version tags, or Releases outside the audited
+  workflows. The complete normalized authority and immutable gist revision are
+  captured twice and included in every release mutation-handoff digest.
+  External reviewers remain ordinary public readers, never collaborators.
 
 ## Architecture
 
@@ -831,20 +855,50 @@ The proposal can move from Draft to Accepted only when:
 3. Red-team findings are closed or explicitly accepted with owner, rationale,
    expiry, and compensating controls. No Critical, High, or Medium finding may
    remain accepted for the initial design.
-4. The admin-managed `semantic-provider-security-review` and
-   `semantic-provider-product-review` GitHub Environments each name exactly one
-   distinct external human as their sole required reviewer. Both environments
-   disable administrator bypass, prevent self-review, have no branch policy,
-   and were last updated before either approval. Each reviewer must have the
-   exact read-only repository role; `triage`, `write`, `maintain`, or `admin`
-   access fails the gate. Neither reviewer receives repository or tag mutation authority. The
-   repository owner, PR author, bots, and duplicate identities cannot count.
-   Each designated human approves the exact reviewed head, and the security
-   review body contains exactly these meaningful lines:
+4. The account-owned public gist at
+   `https://gist.github.com/yzm1/0caedb798d168b974f9d9fb63c377f73`
+   names exactly one security and one product reviewer by numeric account ID
+   and login. The gist is pinned by ID, node ID, owner, description, and sole
+   filename. It must remain public, untruncated, UTF-8 text and contain exactly
+   one canonical roster file. The latest revision must identify owner account
+   `22440724`, and fetching that immutable revision must reproduce the current
+   file and metadata exactly. The owner attests that the two reviewer accounts
+   have independent beneficial owners and includes
+   `Owner-exclusive-mutation-authority-attested: true`. The second attestation
+   covers non-enumerable owner delegations; a false attestation is an explicit
+   owner root-of-trust failure. Each reviewer must have the exact public
+   read-only repository permission; `triage`, `write`, `maintain`, or `admin`
+   access fails the gate. Neither reviewer receives repository or tag mutation
+   authority. The repository owner, PR author, bots, and duplicate identities
+   cannot count. Each designated human approves the exact reviewed head after
+   the roster's latest update. The canonical roster body is:
+
+   ```text
+   semantic-provider-review-roster/v2
+   Repository-id: 1226008327
+   Repository-owner-id: 22440724
+   Security-reviewer: <numeric-account-id>:<login>
+   Product-reviewer: <numeric-account-id>:<login>
+   Independent-beneficial-owners-attested: true
+   Owner-exclusive-mutation-authority-attested: true
+   Attested-by: 22440724:yzm1
+   ```
+
+   The security review body contains exactly these meaningful lines:
 
    ```text
    semantic-provider-security-review/v1
    Reviewed-commit: <full 40-character reviewed-head SHA>
+   Independent-reviewer: confirmed
+   Verdict: approved
+   ```
+
+   The product review body contains exactly:
+
+   ```text
+   semantic-provider-product-review/v1
+   Reviewed-commit: <full 40-character reviewed-head SHA>
+   Independent-reviewer: confirmed
    Verdict: approved
    ```
 
@@ -856,12 +910,22 @@ The proposal can move from Draft to Accepted only when:
    configuration, and precede the merge.
    A counted review edited after the merge does not qualify, including a
    security marker added to an older approval.
-5. Documentation builds strictly and repository hygiene, lint, tests, schemas,
+5. Live repository controls leave no non-owner user, App, deploy key, or other
+   principal able to push `main`, create a protected release tag, or create a
+   GitHub Release outside the audited path. The machine gate proves enumerable
+   collaborator state and binds the owner-signed v2 attestation for
+   non-enumerable delegations. On this personal repository, the minimum live
+   closure is removal of all non-owner write collaborators and revocation of
+   every other non-owner mutation grant. A more elaborate ruleset/App design
+   must prove equivalent exclusivity before it can replace that closure.
+   Owner-account compromise or a knowingly false owner attestation remains an
+   explicit trust root; non-owner mutation authority does not.
+6. Documentation builds strictly and repository hygiene, lint, tests, schemas,
    and existing release-contract checks remain green. The adversarial gate
    suite retains at least 75% combined branch coverage of the authoritative
    auditor and structural checker; coverage is a regression floor, not proof
    of correctness.
-6. The tracking issues link the accepted exact commit and retain the rollout
+7. The tracking issues link the accepted exact commit and retain the rollout
    dependencies.
 
 The manifest declares these requirements but cannot attest to reviews that are
@@ -884,8 +948,9 @@ the accepted record; transfer or namespace recreation requires re-review. It que
 version-pinned GitHub APIs (REST `2022-11-28`, whose documented support ends
 2028-03-10) under hard per-response, aggregate-byte, request, record,
 pagination, reviewer, integer, command, and 90-second total limits; rejects
-floating-point and non-finite evidence numbers; checks both immutable-named
-GitHub Environment reviewer rosters and their update times; evaluates latest review
+floating-point and non-finite evidence numbers; checks the pinned public gist,
+its owner-authored immutable latest revision, complete normalized file, both
+exact read-only permissions, and its update time; evaluates latest review
 states; and requires two identical normalized snapshots to narrow API race
 windows. REST review identities are cross-bound to GraphQL edit timestamps so
 post-merge review-body edits cannot create approval evidence. It emits reviewer
@@ -915,13 +980,20 @@ gate-code revision therefore requires a blocked gate-change PR followed by a
 separate reviewed acceptance PR. The acceptance review binds the resulting
 complete tree, not just the small declaration diff.
 
-The GitHub credential needs only repository Actions, Metadata, Contents, and
-Pull requests read access. Actions read is the documented authenticated-token
-permission for reading Environment metadata; the same metadata is public-readable
-without authentication for a public repository. The audit is a read-only
-observation and must run from a trusted, clean control environment; it does not
-make a compromised local Git, `gh`, Python runtime, GitHub account, or GitHub
-service trustworthy.
+The GitHub credential needs only repository Metadata, Contents, Issues, and
+Pull requests read access. GitHub documents that public gists are anonymously
+readable while mutation requires separate user-level Gists write permission.
+The workflow reads the two fixed `api.github.com` gist paths anonymously over
+verified HTTPS, without redirects or an authorization header; repository API
+calls use only `github.token`. The allowed
+[`GITHUB_TOKEN` permission set](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idpermissions)
+has no Gists permission, and the governed tag and publication workflows may not
+reference repository or Environment secrets. A Gists-write PAT, GitHub App user
+token, OAuth token, or equivalent credential must never be stored in this
+repository's Actions secrets, environments, variables, artifacts, caches, or
+runners. The audit is a read-only observation and must run from a trusted, clean
+control environment; it does not make a compromised local Git, `gh`, Python
+runtime, GitHub account, user token, or GitHub service trustworthy.
 
 ### Implementation gate
 
@@ -976,7 +1048,7 @@ The release candidate must be the merge result of a separate PR into `main`.
 Its reviewed head tree must be byte-identical to the release commit tree, and
 the release commit's first parent must be the PR's recorded base commit. Within
 14 days before promotion, the same two distinct external humans designated by
-the security and product review environments must approve that exact PR head.
+the pinned account-owned gist roster must approve that exact PR head.
 Their repository permission must still be exactly read-only and must not grant
 repository or tag mutation authority. All threads must be resolved, no review requests may remain, and the
 latest decisive review from each designated reviewer must still be an approval.
@@ -985,12 +1057,22 @@ The security review body must contain exactly these non-empty lines, in order:
 ```text
 semantic-provider-v0.15-release-review/v1
 Reviewed-commit: <release PR head SHA>
+Independent-reviewer: confirmed
 Full-source-bug-scan: passed
 Full-issue-audit: passed
 Full-security-scan: passed
 All-blockers: closed
 Supported-platforms: passed
 Publication-gates: passed
+Verdict: approved
+```
+
+The product review body must contain exactly:
+
+```text
+semantic-provider-v0.15-product-review/v1
+Reviewed-commit: <release PR head SHA>
+Independent-reviewer: confirmed
 Verdict: approved
 ```
 
@@ -1005,8 +1087,8 @@ Removing or weakening those calls is itself a governed bootstrap change that
 invalidates proposal acceptance. The read-only tag job hands the minimum of the
 proposal-review and release-review validity windows to the write-token job;
 that job also recomputes a workflow-owned digest containing review bodies,
-latest states, edit timestamps, environment reviewer rosters, roles, requests,
-and threads before each tag mutation boundary. An environment change,
+latest states, edit timestamps, the gist roster and reviewer permissions,
+roles, requests, and threads before each tag mutation boundary. A roster change,
 identical-text post-audit edit, or review crossing its freshness deadline
 therefore aborts promotion. The final check reserves a five-minute safety
 margin and the tag push has a 60-second hard timeout, so the approval cannot
@@ -1084,8 +1166,13 @@ must fail closed or use a narrower, honestly named provider contract.
 - [GitHub REST API versioning](https://docs.github.com/en/rest/about-the-rest-api/api-versions)
 - [GitHub pull-request review records](https://docs.github.com/en/rest/pulls/reviews)
 - [GitHub commit-to-pull-request association](https://docs.github.com/en/rest/commits/commits#list-pull-requests-associated-with-a-commit)
-- [GitHub environment metadata](https://docs.github.com/en/rest/deployments/environments#get-an-environment)
-- [GitHub Environment required reviewers](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments#required-reviewers)
+- [GitHub gist metadata](https://docs.github.com/en/rest/gists/gists#get-a-gist)
+- [GitHub immutable gist revisions](https://docs.github.com/en/rest/gists/gists#get-a-gist-revision)
+- [GitHub gist update authority](https://docs.github.com/en/rest/gists/gists#update-a-gist)
+- [GitHub issue editing authority](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/editing-an-issue)
+- [Personal-repository permission levels](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/repository-access-and-collaboration/permission-levels-for-a-personal-account-repository)
+- [Repository collaborator listing](https://docs.github.com/en/rest/collaborators/collaborators#list-repository-collaborators)
+- [Repository permission lookup](https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user)
 - [GitHub GraphQL pull-request review state](https://docs.github.com/en/graphql/reference/objects#pullrequest)
 
 These references inform the design; none is imported wholesale as a security

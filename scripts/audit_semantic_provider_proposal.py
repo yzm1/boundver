@@ -52,12 +52,23 @@ STREAM_CHUNK_BYTES = 64 * 1024
 CANONICAL_MANIFEST = Path("spec/semantic-provider-proposal.json")
 V015_RELEASE_TAG = "v0.15.0"
 V015_RELEASE_MARKER = "semantic-provider-v0.15-release-review/v1"
-REVIEW_AUTHORITY_SOURCE = "github-environment-required-reviewers/v1"
-SECURITY_REVIEW_ENVIRONMENT = "semantic-provider-security-review"
-PRODUCT_REVIEW_ENVIRONMENT = "semantic-provider-product-review"
-REVIEW_ENVIRONMENTS = {
-    "product": PRODUCT_REVIEW_ENVIRONMENT,
-    "security": SECURITY_REVIEW_ENVIRONMENT,
+V015_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.15-product-review/v1"
+PROPOSAL_SECURITY_REVIEW_MARKER = "semantic-provider-security-review/v1"
+PROPOSAL_PRODUCT_REVIEW_MARKER = "semantic-provider-product-review/v1"
+REVIEWER_INDEPENDENCE_ATTESTATION = "Independent-reviewer: confirmed"
+REVIEW_AUTHORITY_SOURCE = "github-account-owned-public-gist/v1"
+REVIEW_ROSTER_GIST_ID = "0caedb798d168b974f9d9fb63c377f73"
+REVIEW_ROSTER_GIST_NODE_ID = (
+    "G_kwDOAVZrFNoAIDBjYWVkYjc5OGQxNjhiOTc0ZjlkOWZiNjNjMzc3Zjcz"
+)
+REVIEW_ROSTER_GIST_DESCRIPTION = (
+    "boundver semantic-provider independent reviewer roster"
+)
+REVIEW_ROSTER_GIST_FILENAME = "semantic-provider-review-roster.txt"
+REVIEW_ROLES = ("product", "security")
+REVIEW_ROSTER_FIELDS = {
+    "product": "Product-reviewer",
+    "security": "Security-reviewer",
 }
 V015_RELEASE_ATTESTATIONS = (
     "Full-source-bug-scan: passed",
@@ -485,6 +496,77 @@ def _actor(value: Any, field: str) -> dict[str, Any]:
     return {"id": actor_id, "login": login, "type": actor_type}
 
 
+def _parse_review_roster_body(
+    body: Any,
+    *,
+    repository_id: int,
+    repository_owner_id: int,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """Parse the canonical, owner-attested public reviewer roster."""
+    text = _bounded_string(body, "review roster gist content", maximum=4_096)
+    lines = text.splitlines()
+    legacy_unconfigured = [
+        "semantic-provider-review-roster/v1",
+        f"Repository-id: {repository_id}",
+        f"Repository-owner-id: {repository_owner_id}",
+        "Security-reviewer: unconfigured",
+        "Product-reviewer: unconfigured",
+        "Independent-beneficial-owners-attested: false",
+        f"Attested-by: {repository_owner_id}:yzm1",
+    ]
+    if lines == legacy_unconfigured and text == "\n".join(lines):
+        raise AuditError("semantic review roster is not configured and attested")
+    if text != "\n".join(lines) or len(lines) != 8:
+        raise AuditError("semantic review roster body is not canonical")
+    expected_literals = {
+        0: "semantic-provider-review-roster/v2",
+        1: f"Repository-id: {repository_id}",
+        2: f"Repository-owner-id: {repository_owner_id}",
+        5: "Independent-beneficial-owners-attested: true",
+        6: "Owner-exclusive-mutation-authority-attested: true",
+        7: f"Attested-by: {repository_owner_id}:yzm1",
+    }
+    if any(lines[index] != expected for index, expected in expected_literals.items()):
+        if (
+            lines[3] == "Security-reviewer: unconfigured"
+            or lines[4] == "Product-reviewer: unconfigured"
+            or lines[5] == "Independent-beneficial-owners-attested: false"
+            or lines[6] == "Owner-exclusive-mutation-authority-attested: false"
+        ):
+            raise AuditError("semantic review roster is not configured and attested")
+        raise AuditError("semantic review roster body is not authoritative")
+
+    reviewers: dict[str, dict[str, Any]] = {}
+    for role, line_index in (("security", 3), ("product", 4)):
+        prefix = f"{REVIEW_ROSTER_FIELDS[role]}: "
+        line = lines[line_index]
+        if not line.startswith(prefix):
+            raise AuditError(f"semantic review roster has no canonical {role} entry")
+        raw_identity = line[len(prefix) :]
+        if raw_identity == "unconfigured":
+            raise AuditError("semantic review roster is not configured and attested")
+        identifier, separator, login = raw_identity.partition(":")
+        if (
+            separator != ":"
+            or not identifier.isascii()
+            or not identifier.isdecimal()
+            or len(identifier) > 19
+            or USER_LOGIN_RE.fullmatch(login) is None
+        ):
+            raise AuditError(f"semantic review roster {role} identity is malformed")
+        reviewer_id = _positive_id(int(identifier), f"review roster {role} reviewer.id")
+        if str(reviewer_id) != identifier:
+            raise AuditError(f"semantic review roster {role} identity is not canonical")
+        reviewers[role] = {"id": reviewer_id, "login": login, "type": "User"}
+    if reviewers["security"]["id"] == reviewers["product"]["id"]:
+        raise AuditError("semantic review roster must name distinct human reviewers")
+    if reviewers["security"]["login"].casefold() == reviewers["product"][
+        "login"
+    ].casefold():
+        raise AuditError("semantic review roster binds one login to multiple IDs")
+    return text, reviewers
+
+
 class GitHubClient:
     """Small, bounded GitHub API client backed by the authenticated gh CLI."""
 
@@ -722,74 +804,231 @@ class GitHubClient:
 
 def _collect_review_authority(
     client: GitHubClient,
-    repository: str,
+    requirements: dict[str, Any],
 ) -> dict[str, Any]:
-    """Read the two admin-managed, non-write reviewer rosters."""
-    environments: dict[str, dict[str, Any]] = {}
-    reviewer_ids: set[int] = set()
-    for role, name in sorted(REVIEW_ENVIRONMENTS.items()):
-        encoded = urllib.parse.quote(name, safe="")
-        record = client.rest(
-            f"repos/{repository}/environments/{encoded}",
-            f"{role} review environment",
+    """Read the account-owned public roster without granting repository access."""
+    repository = requirements["repository"]
+    gist_id = requirements["review_roster_gist_id"]
+    gist = client.rest(
+        f"gists/{gist_id}",
+        "semantic review roster gist",
+    )
+    expected_owner = {
+        "id": requirements["repository_owner_id"],
+        "login": "yzm1",
+        "type": "User",
+    }
+    expected_owner_permissions = {
+        "admin": True,
+        "maintain": True,
+        "push": True,
+        "triage": True,
+        "pull": True,
+    }
+    collaborator_records = client.rest_pages(
+        f"repos/{repository}/collaborators",
+        "repository collaborators",
+    )
+    if len(collaborator_records) != 1 or type(collaborator_records[0]) is not dict:
+        raise AuditError("repository mutation authority is not owner-exclusive")
+    collaborator_actor = _actor(
+        collaborator_records[0], "repository collaborator"
+    )
+    collaborator_permissions = collaborator_records[0].get("permissions")
+    if (
+        requirements.get("owner_exclusive_repository_collaborators_required")
+        is not True
+        or collaborator_actor != expected_owner
+        or collaborator_records[0].get("role_name") != "admin"
+        or type(collaborator_permissions) is not dict
+        or set(collaborator_permissions) != set(expected_owner_permissions)
+        or any(
+            type(collaborator_permissions[field]) is not bool
+            or collaborator_permissions[field] is not expected
+            for field, expected in expected_owner_permissions.items()
         )
-        if type(record) is not dict:
-            raise AuditError(f"GitHub returned malformed {role} review environment")
-        environment_id = _positive_id(record.get("id"), f"{role} review environment.id")
-        returned_name = _bounded_string(
-            record.get("name"), f"{role} review environment.name", maximum=255
-        )
-        expected_url = (
-            f"https://api.github.com/repos/{repository}/environments/{encoded}"
-        )
-        returned_url = _bounded_string(
-            record.get("url"), f"{role} review environment.url", maximum=512
-        )
-        if returned_name != name or returned_url != expected_url:
-            raise AuditError(f"GitHub returned mismatched {role} review environment")
-        if record.get("can_admins_bypass") is not False:
-            raise AuditError(f"{role} review environment permits administrator bypass")
-        if record.get("deployment_branch_policy") is not None:
-            raise AuditError(
-                f"{role} review environment has an unexpected branch policy"
-            )
-        created_at = _timestamp(
-            record.get("created_at"), f"{role} review environment.created_at"
-        )
-        updated_at = _timestamp(
-            record.get("updated_at"), f"{role} review environment.updated_at"
-        )
-        if _timestamp_datetime(created_at) > _timestamp_datetime(updated_at):
-            raise AuditError(f"{role} review environment timestamps are inconsistent")
+    ):
+        raise AuditError("repository mutation authority is not owner-exclusive")
+    repository_mutation_authority = {
+        "owner": expected_owner,
+        "owner_attested_exclusive_mutation_authority": True,
+        "repository_collaborators": [
+            {
+                "actor": collaborator_actor,
+                "role_name": "admin",
+                "permissions": expected_owner_permissions,
+            }
+        ],
+    }
 
-        rules = record.get("protection_rules")
-        if type(rules) is not list or len(rules) != 1 or type(rules[0]) is not dict:
-            raise AuditError(
-                f"{role} review environment must have exactly one protection rule"
-            )
-        rule = rules[0]
-        rule_id = _positive_id(rule.get("id"), f"{role} review rule.id")
-        if (
-            rule.get("type") != "required_reviewers"
-            or rule.get("prevent_self_review") is not True
-        ):
-            raise AuditError(f"{role} review environment must prevent self-review")
-        reviewers = rule.get("reviewers")
-        if (
-            type(reviewers) is not list
-            or len(reviewers) != 1
-            or type(reviewers[0]) is not dict
-            or reviewers[0].get("type") != "User"
-        ):
-            raise AuditError(
-                f"{role} review environment must name exactly one human reviewer"
-            )
-        reviewer = _actor(
-            reviewers[0].get("reviewer"), f"{role} review environment.reviewer"
+    def normalize_gist_record(
+        record: Any,
+        *,
+        label: str,
+        expected_url: str,
+        expected_revision: Optional[str] = None,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        if type(record) is not dict:
+            raise AuditError(f"GitHub returned malformed {label}")
+        returned_id = _bounded_string(record.get("id"), f"{label}.id", maximum=64)
+        node_id = _bounded_string(
+            record.get("node_id"), f"{label}.node_id", maximum=128
         )
-        if reviewer["type"] != "User" or reviewer["id"] in reviewer_ids:
-            raise AuditError("review environments must name distinct human reviewers")
-        reviewer_ids.add(reviewer["id"])
+        url = _bounded_string(record.get("url"), f"{label}.url", maximum=512)
+        html_url = _bounded_string(
+            record.get("html_url"), f"{label}.html_url", maximum=512
+        )
+        owner = _actor(record.get("owner"), f"{label}.owner")
+        if (
+            returned_id != gist_id
+            or node_id != requirements["review_roster_gist_node_id"]
+            or url != expected_url
+            or html_url != f"https://gist.github.com/yzm1/{gist_id}"
+            or owner != expected_owner
+            or record.get("public") is not True
+            or record.get("user") is not None
+            or record.get("truncated") is not False
+            or record.get("description") != REVIEW_ROSTER_GIST_DESCRIPTION
+        ):
+            raise AuditError(f"{label} identity is not authoritative")
+        created_at = _timestamp(record.get("created_at"), f"{label}.created_at")
+        updated_at = _timestamp(record.get("updated_at"), f"{label}.updated_at")
+        if _timestamp_datetime(created_at) > _timestamp_datetime(updated_at):
+            raise AuditError(f"{label} timestamps are inconsistent")
+
+        history = record.get("history")
+        if type(history) is not list or not history or len(history) > 100:
+            raise AuditError(f"{label} revision history is malformed or excessive")
+        latest = history[0]
+        if type(latest) is not dict:
+            raise AuditError(f"{label} latest revision is malformed")
+        version = _sha(latest.get("version"), f"{label}.history[0].version")
+        committed_at = _timestamp(
+            latest.get("committed_at"), f"{label}.history[0].committed_at"
+        )
+        revision_owner = _actor(
+            latest.get("user"), f"{label}.history[0].user"
+        )
+        change_status = latest.get("change_status")
+        if (
+            (expected_revision is not None and version != expected_revision)
+            or latest.get("url") != f"https://api.github.com/gists/{gist_id}/{version}"
+            or revision_owner != expected_owner
+            or _timestamp_datetime(committed_at) > _timestamp_datetime(updated_at)
+            or type(change_status) is not dict
+            or set(change_status) != {"total", "additions", "deletions"}
+            or any(
+                type(change_status[field]) is not int or change_status[field] < 0
+                for field in change_status
+            )
+            or change_status.get("total")
+            != change_status.get("additions") + change_status.get("deletions")
+        ):
+            raise AuditError(f"{label} latest revision is not owner-authored")
+
+        files = record.get("files")
+        if type(files) is not dict or set(files) != {REVIEW_ROSTER_GIST_FILENAME}:
+            raise AuditError(f"{label} must contain exactly the roster file")
+        file_record = files[REVIEW_ROSTER_GIST_FILENAME]
+        expected_file_fields = {
+            "filename",
+            "type",
+            "language",
+            "raw_url",
+            "size",
+            "truncated",
+            "content",
+            "encoding",
+        }
+        if type(file_record) is not dict or set(file_record) != expected_file_fields:
+            raise AuditError(f"{label} roster file metadata is malformed")
+        content = _bounded_string(
+            file_record.get("content"), f"{label}.files.roster.content", maximum=4_096
+        )
+        size = file_record.get("size")
+        raw_url = file_record.get("raw_url")
+        raw_pattern = re.compile(
+            rf"^https://gist\.githubusercontent\.com/yzm1/{re.escape(gist_id)}/"
+            rf"raw/[0-9a-f]{{40}}/{re.escape(REVIEW_ROSTER_GIST_FILENAME)}$"
+        )
+        if (
+            file_record.get("filename") != REVIEW_ROSTER_GIST_FILENAME
+            or file_record.get("type") != "text/plain"
+            or file_record.get("language") != "Text"
+            or file_record.get("encoding") != "utf-8"
+            or file_record.get("truncated") is not False
+            or type(size) is not int
+            or size != len(content.encode("utf-8"))
+            or type(raw_url) is not str
+            or raw_pattern.fullmatch(raw_url) is None
+        ):
+            raise AuditError(f"{label} roster file is not canonical and complete")
+        body, configured = _parse_review_roster_body(
+            content,
+            repository_id=requirements["repository_id"],
+            repository_owner_id=requirements["repository_owner_id"],
+        )
+        return (
+            {
+                "id": returned_id,
+                "node_id": node_id,
+                "description": REVIEW_ROSTER_GIST_DESCRIPTION,
+                "url": url,
+                "html_url": html_url,
+                "owner": owner,
+                "public": True,
+                "created_at": created_at,
+                "updated_at": updated_at,
+                "latest_revision": {
+                    "version": version,
+                    "committed_at": committed_at,
+                    "owner": revision_owner,
+                    "url": latest["url"],
+                    "change_status": change_status,
+                },
+                "file": {
+                    "filename": REVIEW_ROSTER_GIST_FILENAME,
+                    "type": "text/plain",
+                    "language": "Text",
+                    "raw_url": raw_url,
+                    "size": size,
+                    "truncated": False,
+                    "content": body,
+                    "encoding": "utf-8",
+                },
+            },
+            configured,
+        )
+
+    current, configured_reviewers = normalize_gist_record(
+        gist,
+        label="semantic review roster gist",
+        expected_url=f"https://api.github.com/gists/{gist_id}",
+    )
+    revision = current["latest_revision"]["version"]
+    immutable_record = client.rest(
+        f"gists/{gist_id}/{revision}",
+        "semantic review roster gist revision",
+    )
+    immutable, immutable_reviewers = normalize_gist_record(
+        immutable_record,
+        label="semantic review roster gist revision",
+        expected_url=f"https://api.github.com/gists/{gist_id}/{revision}",
+        expected_revision=revision,
+    )
+    current_without_url = {key: value for key, value in current.items() if key != "url"}
+    immutable_without_url = {
+        key: value for key, value in immutable.items() if key != "url"
+    }
+    if (
+        current_without_url != immutable_without_url
+        or configured_reviewers != immutable_reviewers
+    ):
+        raise AuditError("semantic review roster gist changed during collection")
+
+    reviewers: dict[str, dict[str, Any]] = {}
+    for role in REVIEW_ROLES:
+        reviewer = configured_reviewers[role]
         encoded_reviewer = urllib.parse.quote(reviewer["login"], safe="")
         permission_record = client.rest(
             f"repos/{repository}/collaborators/{encoded_reviewer}/permission",
@@ -817,32 +1056,28 @@ def _collect_review_authority(
             permission_actor != reviewer
             or permission_record.get("permission") != "read"
             or permission_record.get("role_name") != "read"
-            or permission_flags != expected_flags
+            or type(permission_flags) is not dict
+            or set(permission_flags) != set(expected_flags)
+            or any(
+                type(permission_flags[field]) is not bool
+                or permission_flags[field] is not expected
+                for field, expected in expected_flags.items()
+            )
         ):
             raise AuditError(f"{role} reviewer has repository mutation authority")
-        environments[role] = {
-            "id": environment_id,
-            "name": returned_name,
-            "url": returned_url,
-            "created_at": created_at,
-            "updated_at": updated_at,
-            "can_admins_bypass": False,
-            "deployment_branch_policy": None,
-            "rule": {
-                "id": rule_id,
-                "type": "required_reviewers",
-                "prevent_self_review": True,
-                "reviewer": reviewer,
-                "repository_permission": {
-                    "permission": "read",
-                    "role_name": "read",
-                    "permissions": expected_flags,
-                },
+        reviewers[role] = {
+            "reviewer": reviewer,
+            "repository_permission": {
+                "permission": "read",
+                "role_name": "read",
+                "permissions": expected_flags,
             },
         }
     return {
         "source": REVIEW_AUTHORITY_SOURCE,
-        "environments": environments,
+        "roster": current,
+        "reviewers": reviewers,
+        "repository_mutation_authority": repository_mutation_authority,
     }
 
 
@@ -940,7 +1175,7 @@ def collect_snapshot(
         or repository_owner["login"].casefold() != owner.casefold()
     ):
         raise AuditError("GitHub repository identity does not match the proposal")
-    review_authority = _collect_review_authority(client, repository)
+    review_authority = _collect_review_authority(client, requirements)
 
     main_ref = client.rest(
         f"repos/{repository}/git/ref/heads/{base_branch}",
@@ -1093,10 +1328,11 @@ def collect_snapshot(
     }
 
 
-def _security_marker_matches(
+def _review_marker_matches(
     body: str,
     marker: str,
     reviewed_sha: str,
+    independence_attestation: str,
     attestations: Sequence[str] = (),
 ) -> bool:
     meaningful: list[str] = []
@@ -1109,6 +1345,7 @@ def _security_marker_matches(
     return meaningful == [
         marker,
         f"Reviewed-commit: {reviewed_sha}",
+        independence_attestation,
         *attestations,
         "Verdict: approved",
     ]
@@ -1122,13 +1359,187 @@ def _evaluate_review_authority(
     pull_request_author: dict[str, Any],
 ) -> dict[int, dict[str, Any]]:
     authority = snapshot.get("review_authority")
-    if type(authority) is not dict or set(authority) != {"source", "environments"}:
+    if type(authority) is not dict or set(authority) != {
+        "source",
+        "roster",
+        "reviewers",
+        "repository_mutation_authority",
+    }:
         raise AuditError("snapshot review authority is malformed")
     if authority.get("source") != requirements["reviewer_authority"]:
         raise AuditError("snapshot review authority source is not authoritative")
-    environments = authority.get("environments")
-    if type(environments) is not dict or set(environments) != set(REVIEW_ENVIRONMENTS):
-        raise AuditError("snapshot review environments are malformed")
+    roster = authority.get("roster")
+    expected_roster_fields = {
+        "id",
+        "node_id",
+        "description",
+        "url",
+        "html_url",
+        "owner",
+        "public",
+        "created_at",
+        "updated_at",
+        "latest_revision",
+        "file",
+    }
+    if type(roster) is not dict or set(roster) != expected_roster_fields:
+        raise AuditError("snapshot review roster gist is malformed")
+    gist_id = requirements["review_roster_gist_id"]
+    expected_owner = {
+        "id": requirements["repository_owner_id"],
+        "login": "yzm1",
+        "type": "User",
+    }
+    mutation_authority = authority.get("repository_mutation_authority")
+    if type(mutation_authority) is not dict or set(mutation_authority) != {
+        "owner",
+        "owner_attested_exclusive_mutation_authority",
+        "repository_collaborators",
+    }:
+        raise AuditError("snapshot repository mutation authority is malformed")
+    collaborators = mutation_authority.get("repository_collaborators")
+    if type(collaborators) is not list or len(collaborators) != 1:
+        raise AuditError("snapshot repository mutation authority is not exclusive")
+    collaborator = collaborators[0]
+    expected_owner_permissions = {
+        "admin": True,
+        "maintain": True,
+        "push": True,
+        "triage": True,
+        "pull": True,
+    }
+    permissions = collaborator.get("permissions") if type(collaborator) is dict else None
+    if (
+        requirements.get("owner_exclusive_repository_collaborators_required")
+        is not True
+        or requirements.get("owner_exclusive_mutation_authority_attestation_required")
+        is not True
+        or _actor(
+            mutation_authority.get("owner"),
+            "snapshot.repository_mutation_authority.owner",
+        )
+        != expected_owner
+        or mutation_authority.get("owner_attested_exclusive_mutation_authority")
+        is not True
+        or type(collaborator) is not dict
+        or set(collaborator) != {"actor", "role_name", "permissions"}
+        or _actor(
+            collaborator.get("actor"),
+            "snapshot.repository_mutation_authority.repository_collaborator",
+        )
+        != expected_owner
+        or collaborator.get("role_name") != "admin"
+        or type(permissions) is not dict
+        or set(permissions) != set(expected_owner_permissions)
+        or any(
+            type(permissions[field]) is not bool
+            or permissions[field] is not expected
+            for field, expected in expected_owner_permissions.items()
+        )
+    ):
+        raise AuditError("snapshot repository mutation authority is not owner-exclusive")
+    if (
+        _bounded_string(roster.get("id"), "snapshot.review_roster.id", maximum=64)
+        != gist_id
+        or _bounded_string(
+            roster.get("node_id"), "snapshot.review_roster.node_id", maximum=128
+        )
+        != requirements["review_roster_gist_node_id"]
+        or roster.get("description") != REVIEW_ROSTER_GIST_DESCRIPTION
+        or roster.get("url") != f"https://api.github.com/gists/{gist_id}"
+        or roster.get("html_url") != f"https://gist.github.com/yzm1/{gist_id}"
+        or _actor(roster.get("owner"), "snapshot.review_roster.owner")
+        != expected_owner
+        or roster.get("public") is not True
+    ):
+        raise AuditError("snapshot review roster gist identity changed")
+    created_at_text = _timestamp(
+        roster.get("created_at"), "snapshot.review_roster.created_at"
+    )
+    updated_at_text = _timestamp(
+        roster.get("updated_at"), "snapshot.review_roster.updated_at"
+    )
+    created_at = _timestamp_datetime(created_at_text)
+    updated_at = _timestamp_datetime(updated_at_text)
+    if created_at > updated_at:
+        raise AuditError("snapshot review roster gist timestamps conflict")
+
+    revision = roster.get("latest_revision")
+    expected_revision_fields = {
+        "version",
+        "committed_at",
+        "owner",
+        "url",
+        "change_status",
+    }
+    if type(revision) is not dict or set(revision) != expected_revision_fields:
+        raise AuditError("snapshot review roster revision is malformed")
+    version = _sha(revision.get("version"), "snapshot.review_roster.revision.version")
+    committed_at_text = _timestamp(
+        revision.get("committed_at"),
+        "snapshot.review_roster.revision.committed_at",
+    )
+    change_status = revision.get("change_status")
+    if (
+        _actor(revision.get("owner"), "snapshot.review_roster.revision.owner")
+        != expected_owner
+        or revision.get("url") != f"https://api.github.com/gists/{gist_id}/{version}"
+        or _timestamp_datetime(committed_at_text) > updated_at
+        or type(change_status) is not dict
+        or set(change_status) != {"total", "additions", "deletions"}
+        or any(
+            type(change_status[field]) is not int or change_status[field] < 0
+            for field in change_status
+        )
+        or change_status.get("total")
+        != change_status.get("additions") + change_status.get("deletions")
+    ):
+        raise AuditError("snapshot review roster revision is not owner-authored")
+
+    file_record = roster.get("file")
+    expected_file_fields = {
+        "filename",
+        "type",
+        "language",
+        "raw_url",
+        "size",
+        "truncated",
+        "content",
+        "encoding",
+    }
+    if type(file_record) is not dict or set(file_record) != expected_file_fields:
+        raise AuditError("snapshot review roster file metadata is malformed")
+    content = _bounded_string(
+        file_record.get("content"),
+        "snapshot.review_roster.file.content",
+        maximum=4_096,
+    )
+    size = file_record.get("size")
+    raw_url = file_record.get("raw_url")
+    raw_pattern = re.compile(
+        rf"^https://gist\.githubusercontent\.com/yzm1/{re.escape(gist_id)}/"
+        rf"raw/[0-9a-f]{{40}}/{re.escape(REVIEW_ROSTER_GIST_FILENAME)}$"
+    )
+    if (
+        file_record.get("filename") != REVIEW_ROSTER_GIST_FILENAME
+        or file_record.get("type") != "text/plain"
+        or file_record.get("language") != "Text"
+        or file_record.get("encoding") != "utf-8"
+        or file_record.get("truncated") is not False
+        or type(size) is not int
+        or size != len(content.encode("utf-8"))
+        or type(raw_url) is not str
+        or raw_pattern.fullmatch(raw_url) is None
+    ):
+        raise AuditError("snapshot review roster file is not canonical and complete")
+    _, configured_reviewers = _parse_review_roster_body(
+        content,
+        repository_id=requirements["repository_id"],
+        repository_owner_id=requirements["repository_owner_id"],
+    )
+    reviewers = authority.get("reviewers")
+    if type(reviewers) is not dict or set(reviewers) != set(REVIEW_ROLES):
+        raise AuditError("snapshot review roster identities are malformed")
 
     result: dict[int, dict[str, Any]] = {}
     actor_id_by_login: dict[tuple[str, str], int] = {}
@@ -1137,100 +1548,55 @@ def _evaluate_review_authority(
         previous_id = actor_id_by_login.setdefault(identity, actor["id"])
         if previous_id != actor["id"]:
             raise AuditError("actor login is bound to multiple GitHub IDs")
-    for role, expected_name in sorted(REVIEW_ENVIRONMENTS.items()):
-        configured_name = requirements[f"{role}_reviewer_environment"]
-        if configured_name != expected_name:
-            raise AuditError(f"{role} reviewer environment is not authoritative")
-        environment = environments.get(role)
-        expected_fields = {
-            "id",
-            "name",
-            "url",
-            "created_at",
-            "updated_at",
-            "can_admins_bypass",
-            "deployment_branch_policy",
-            "rule",
-        }
-        if type(environment) is not dict or set(environment) != expected_fields:
-            raise AuditError(f"snapshot {role} review environment is malformed")
-        _positive_id(environment.get("id"), f"snapshot.{role}_environment.id")
-        name = _bounded_string(
-            environment.get("name"),
-            f"snapshot.{role}_environment.name",
-            maximum=255,
-        )
-        encoded = urllib.parse.quote(expected_name, safe="")
-        expected_url = (
-            f"https://api.github.com/repos/{requirements['repository']}"
-            f"/environments/{encoded}"
-        )
-        if name != expected_name or environment.get("url") != expected_url:
-            raise AuditError(f"snapshot {role} review environment identity changed")
-        if (
-            environment.get("can_admins_bypass") is not False
-            or environment.get("deployment_branch_policy") is not None
-        ):
-            raise AuditError(f"snapshot {role} review environment is bypassable")
-        created_at_text = _timestamp(
-            environment.get("created_at"),
-            f"snapshot.{role}_environment.created_at",
-        )
-        updated_at_text = _timestamp(
-            environment.get("updated_at"),
-            f"snapshot.{role}_environment.updated_at",
-        )
-        created_at = _timestamp_datetime(created_at_text)
-        updated_at = _timestamp_datetime(updated_at_text)
-        if created_at > updated_at:
-            raise AuditError(f"snapshot {role} review environment timestamps conflict")
-        rule = environment.get("rule")
-        if type(rule) is not dict or set(rule) != {
-            "id",
-            "type",
-            "prevent_self_review",
+    for role in REVIEW_ROLES:
+        entry = reviewers.get(role)
+        if type(entry) is not dict or set(entry) != {
             "reviewer",
             "repository_permission",
         }:
-            raise AuditError(f"snapshot {role} review rule is malformed")
-        _positive_id(rule.get("id"), f"snapshot.{role}_environment.rule.id")
-        if (
-            rule.get("type") != "required_reviewers"
-            or rule.get("prevent_self_review") is not True
-        ):
-            raise AuditError(f"snapshot {role} review rule permits self-review")
-        reviewer = _actor(rule.get("reviewer"), f"snapshot.{role}_environment.reviewer")
-        permission = rule.get("repository_permission")
-        expected_permission = {
-            "permission": "read",
-            "role_name": "read",
-            "permissions": {
-                "admin": False,
-                "maintain": False,
-                "push": False,
-                "triage": False,
-                "pull": True,
-            },
+            raise AuditError(f"snapshot {role} review roster entry is malformed")
+        reviewer = _actor(entry.get("reviewer"), f"snapshot.{role}_reviewer")
+        if reviewer != configured_reviewers[role]:
+            raise AuditError(f"snapshot {role} reviewer differs from roster body")
+        permission = entry.get("repository_permission")
+        expected_flags = {
+            "admin": False,
+            "maintain": False,
+            "push": False,
+            "triage": False,
+            "pull": True,
         }
-        if permission != expected_permission:
+        flags = permission.get("permissions") if type(permission) is dict else None
+        if (
+            type(permission) is not dict
+            or set(permission) != {"permission", "role_name", "permissions"}
+            or permission.get("permission") != "read"
+            or permission.get("role_name") != "read"
+            or type(flags) is not dict
+            or set(flags) != set(expected_flags)
+            or any(
+                type(flags[field]) is not bool or flags[field] is not expected
+                for field, expected in expected_flags.items()
+            )
+        ):
             raise AuditError(f"snapshot {role} reviewer is not read-only")
         if reviewer["type"] != "User":
-            raise AuditError("review environments must designate human reviewers")
+            raise AuditError("review roster must designate human reviewers")
         if reviewer["id"] in {repository_owner["id"], pull_request_author["id"]}:
             raise AuditError(
-                "review environments must designate external non-author reviewers"
+                "review roster must designate external non-author reviewers"
             )
         identity = (reviewer["login"].casefold(), reviewer["type"])
         previous_id = actor_id_by_login.setdefault(identity, reviewer["id"])
         if previous_id != reviewer["id"] or reviewer["id"] in result:
-            raise AuditError("review environments must designate distinct identities")
+            raise AuditError("review roster must designate distinct identities")
         result[reviewer["id"]] = {
             "role": role,
             "reviewer": reviewer,
             "authority_updated_at": updated_at,
         }
     if (
-        requirements.get("distinct_environment_reviewers_required") is not True
+        requirements.get("distinct_roster_reviewers_required") is not True
         or len(result) != requirements["minimum_non_author_reviews"]
     ):
         raise AuditError("review authority does not contain two distinct reviewers")
@@ -1364,7 +1730,7 @@ def evaluate_snapshot(
     qualified: list[dict[str, Any]] = []
     qualified_records: list[dict[str, Any]] = []
     security_reviewers: list[str] = []
-    marker = requirements["security_review_marker"]
+    product_reviewers: list[str] = []
     maximum_age = timedelta(days=requirements["maximum_review_age_days"])
     for reviewer_id, authority in designated.items():
         decisive = decisive_by_reviewer.get(reviewer_id, [])
@@ -1395,37 +1761,41 @@ def evaluate_snapshot(
         if submitted_at <= authority["authority_updated_at"]:
             continue
         body = latest.get("body")
-        is_security_review = (
-            authority["role"] == "security"
-            and type(body) is str
-            and _security_marker_matches(
-                body,
-                marker,
-                reviewed_sha,
-                attestations,
-            )
+        role = authority["role"]
+        role_attestations = attestations if role == "security" else ()
+        is_role_review = type(body) is str and _review_marker_matches(
+            body,
+            requirements[f"{role}_review_marker"],
+            reviewed_sha,
+            requirements["reviewer_independence_attestation"],
+            role_attestations,
         )
+        if not is_role_review:
+            continue
         qualified.append(reviewer)
         qualified_records.append(
             {
                 "reviewer": reviewer,
                 "valid_until": submitted_at + maximum_age,
-                "security": is_security_review,
-                "role": authority["role"],
+                "role": role,
             }
         )
-        if is_security_review:
+        if role == "security":
             security_reviewers.append(reviewer["login"])
+        if role == "product":
+            product_reviewers.append(reviewer["login"])
 
     qualified_ids = {item["id"] for item in qualified}
     minimum = requirements["minimum_non_author_reviews"]
+    if requirements["security_review_required"] and not security_reviewers:
+        raise AuditError("proposal has no qualifying exact-head security review marker")
+    if requirements["product_review_required"] and not product_reviewers:
+        raise AuditError("proposal has no qualifying exact-head product review marker")
     if len(qualified_ids) < minimum:
         raise AuditError(
             f"proposal has {len(qualified_ids)} qualifying exact-head non-author "
             f"reviews; {minimum} are required"
         )
-    if requirements["security_review_required"] and not security_reviewers:
-        raise AuditError("proposal has no qualifying exact-head security review marker")
     validity_candidates = {item["valid_until"] for item in qualified_records}
     valid_until = max(
         candidate
@@ -1433,7 +1803,11 @@ def evaluate_snapshot(
         if sum(item["valid_until"] >= candidate for item in qualified_records)
         >= minimum
         and any(
-            item["security"] and item["valid_until"] >= candidate
+            item["role"] == "security" and item["valid_until"] >= candidate
+            for item in qualified_records
+        )
+        and any(
+            item["role"] == "product" and item["valid_until"] >= candidate
             for item in qualified_records
         )
     )
@@ -1445,6 +1819,7 @@ def evaluate_snapshot(
         "tree": record_tree,
         "reviewers": sorted({item["login"] for item in qualified}, key=str.casefold),
         "security_reviewers": sorted(set(security_reviewers), key=str.casefold),
+        "product_reviewers": sorted(set(product_reviewers), key=str.casefold),
         "valid_until": valid_until.isoformat().replace("+00:00", "Z"),
         "unresolved_threads": 0,
         "pending_review_requests": 0,
@@ -1476,13 +1851,20 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_owner_id",
         "base_branch",
         "reviewer_authority",
-        "security_reviewer_environment",
-        "product_reviewer_environment",
-        "distinct_environment_reviewers_required",
+        "review_roster_gist_id",
+        "review_roster_gist_node_id",
+        "review_roster_gist_description",
+        "review_roster_gist_filename",
+        "distinct_roster_reviewers_required",
+        "owner_exclusive_repository_collaborators_required",
+        "owner_exclusive_mutation_authority_attestation_required",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
+        "product_review_required",
         "security_review_marker",
+        "product_review_marker",
+        "reviewer_independence_attestation",
         "exact_commit_required",
         "resolved_threads_required",
         "no_pending_review_requests",
@@ -1506,14 +1888,30 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal review base branch is not authoritative")
     if requirements.get("reviewer_authority") != REVIEW_AUTHORITY_SOURCE:
         raise AuditError("proposal reviewer authority is not authoritative")
-    if (
-        requirements.get("security_reviewer_environment") != SECURITY_REVIEW_ENVIRONMENT
-        or requirements.get("product_reviewer_environment")
-        != PRODUCT_REVIEW_ENVIRONMENT
+    expected_roster_identity = {
+        "review_roster_gist_id": REVIEW_ROSTER_GIST_ID,
+        "review_roster_gist_node_id": REVIEW_ROSTER_GIST_NODE_ID,
+        "review_roster_gist_description": REVIEW_ROSTER_GIST_DESCRIPTION,
+        "review_roster_gist_filename": REVIEW_ROSTER_GIST_FILENAME,
+    }
+    if any(
+        requirements.get(field) != expected
+        or type(requirements.get(field)) is not type(expected)
+        for field, expected in expected_roster_identity.items()
     ):
-        raise AuditError("proposal reviewer environments are not authoritative")
-    if requirements.get("distinct_environment_reviewers_required") is not True:
-        raise AuditError("proposal reviewer environments need distinct humans")
+        raise AuditError("proposal reviewer roster identity is not authoritative")
+    if requirements.get("distinct_roster_reviewers_required") is not True:
+        raise AuditError("proposal reviewer roster needs distinct humans")
+    if (
+        requirements.get("owner_exclusive_repository_collaborators_required")
+        is not True
+    ):
+        raise AuditError("proposal release mutation authority must be owner-exclusive")
+    if (
+        requirements.get("owner_exclusive_mutation_authority_attestation_required")
+        is not True
+    ):
+        raise AuditError("proposal release mutation attestation must remain required")
     minimum = requirements.get("minimum_non_author_reviews")
     if type(minimum) is not int or minimum < 2:
         raise AuditError("proposal requires fewer than two independent reviews")
@@ -1521,17 +1919,23 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal review freshness window is not authoritative")
     for field in (
         "security_review_required",
+        "product_review_required",
         "exact_commit_required",
         "resolved_threads_required",
         "no_pending_review_requests",
     ):
         if requirements.get(field) is not True:
             raise AuditError(f"proposal review requirement {field} is not fail-closed")
-    if (
-        requirements.get("security_review_marker")
-        != "semantic-provider-security-review/v1"
+    expected_review_text = {
+        "security_review_marker": PROPOSAL_SECURITY_REVIEW_MARKER,
+        "product_review_marker": PROPOSAL_PRODUCT_REVIEW_MARKER,
+        "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
+    }
+    if any(
+        requirements.get(field) != expected
+        for field, expected in expected_review_text.items()
     ):
-        raise AuditError("proposal security-review marker is not authoritative")
+        raise AuditError("proposal role-review markers are not authoritative")
     if (
         requirements.get("authoritative_audit")
         != "scripts/audit_semantic_provider_proposal.py"
@@ -1553,15 +1957,22 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_owner_id",
         "base_branch",
         "reviewer_authority",
-        "security_reviewer_environment",
-        "product_reviewer_environment",
-        "distinct_environment_reviewers_required",
+        "review_roster_gist_id",
+        "review_roster_gist_node_id",
+        "review_roster_gist_description",
+        "review_roster_gist_filename",
+        "distinct_roster_reviewers_required",
+        "owner_exclusive_repository_collaborators_required",
+        "owner_exclusive_mutation_authority_attestation_required",
         "evidence_source",
         "candidate_identity",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
         "security_review_required",
+        "product_review_required",
         "security_review_marker",
+        "product_review_marker",
+        "reviewer_independence_attestation",
         "required_attestations",
         "exact_commit_required",
         "exact_tree_required",
@@ -1577,15 +1988,22 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "repository_owner_id": 22440724,
         "base_branch": "main",
         "reviewer_authority": REVIEW_AUTHORITY_SOURCE,
-        "security_reviewer_environment": SECURITY_REVIEW_ENVIRONMENT,
-        "product_reviewer_environment": PRODUCT_REVIEW_ENVIRONMENT,
-        "distinct_environment_reviewers_required": True,
+        "review_roster_gist_id": REVIEW_ROSTER_GIST_ID,
+        "review_roster_gist_node_id": REVIEW_ROSTER_GIST_NODE_ID,
+        "review_roster_gist_description": REVIEW_ROSTER_GIST_DESCRIPTION,
+        "review_roster_gist_filename": REVIEW_ROSTER_GIST_FILENAME,
+        "distinct_roster_reviewers_required": True,
+        "owner_exclusive_repository_collaborators_required": True,
+        "owner_exclusive_mutation_authority_attestation_required": True,
         "evidence_source": "github-exact-tree-review/v1",
         "candidate_identity": "reviewed-head-tree-equals-release-tree",
         "minimum_non_author_reviews": 2,
         "maximum_review_age_days": 14,
         "security_review_required": True,
+        "product_review_required": True,
         "security_review_marker": V015_RELEASE_MARKER,
+        "product_review_marker": V015_PRODUCT_REVIEW_MARKER,
+        "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
         "exact_commit_required": True,
         "exact_tree_required": True,
         "resolved_threads_required": True,

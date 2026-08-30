@@ -31,12 +31,14 @@ env:
   # its digest so candidate scripts never receive a contents-write token.
   REVIEW_STATE_PROGRAM: |
     import hashlib
+    import http.client
     import json
     import math
     import os
     import pathlib
     import re
     import shutil
+    import ssl
     import subprocess
     import sys
     import threading
@@ -48,10 +50,24 @@ env:
     MAX_PAGES = 500
     MAX_JSON_NUMBER_DIGITS = 4300
     READ_CHUNK_BYTES = 64 * 1024
+    GITHUB_REST_API_VERSION = "2022-11-28"
     TRUSTED_CODEX_BOT_ID = 199175422
-    SEMANTIC_REVIEW_ENVIRONMENTS = (
-        ("product", "semantic-provider-product-review"),
-        ("security", "semantic-provider-security-review"),
+    SEMANTIC_REVIEW_ROSTER_GIST_ID = "0caedb798d168b974f9d9fb63c377f73"
+    SEMANTIC_REVIEW_ROSTER_GIST_NODE_ID = (
+        "G_kwDOAVZrFNoAIDBjYWVkYjc5OGQxNjhiOTc0ZjlkOWZiNjNjMzc3Zjcz"
+    )
+    SEMANTIC_REVIEW_ROSTER_GIST_DESCRIPTION = (
+        "boundver semantic-provider independent reviewer roster"
+    )
+    SEMANTIC_REVIEW_ROSTER_GIST_FILENAME = (
+        "semantic-provider-review-roster.txt"
+    )
+    SEMANTIC_REVIEW_ROSTER_FIELDS = {
+        "product": "Product-reviewer",
+        "security": "Security-reviewer",
+    }
+    SEMANTIC_USER_LOGIN_RE = re.compile(
+        r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})"
     )
     GITHUB_TIMESTAMP_RE = re.compile(
         r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
@@ -229,8 +245,7 @@ env:
     def reject_json_constant(_value):
         raise ValueError("non-finite JSON constant")
 
-    def api_json(arguments):
-        raw = run([gh, "api", *arguments], cwd=runner_temp, api=True)
+    def decode_api_json(raw):
         try:
             return json.loads(
                 raw.decode("utf-8", "strict"),
@@ -242,8 +257,76 @@ env:
         except (UnicodeDecodeError, ValueError) as exc:
             raise SystemExit("GitHub returned malformed JSON during review snapshot") from exc
 
+    def api_json(arguments):
+        raw = run([gh, "api", *arguments], cwd=runner_temp, api=True)
+        return decode_api_json(raw)
+
     def rest(endpoint):
-        return api_json([endpoint, "-H", "Accept: application/vnd.github+json"])
+        return api_json([
+            endpoint,
+            "-H", "Accept: application/vnd.github+json",
+            "-H", f"X-GitHub-Api-Version: {GITHUB_REST_API_VERSION}",
+        ])
+
+    def public_gist_json(endpoint):
+        global consumed_api_bytes
+        current = f"gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}"
+        revision_pattern = re.compile(
+            rf"{re.escape(current)}/[0-9a-f]{{40}}"
+        )
+        if endpoint != current and revision_pattern.fullmatch(endpoint) is None:
+            raise SystemExit("review snapshot received an unsafe public-gist path")
+        remaining = MAX_API_BYTES - consumed_api_bytes
+        if remaining <= 0:
+            raise SystemExit("review snapshot API responses exceed the safety limit")
+        connection = http.client.HTTPSConnection(
+            "api.github.com",
+            timeout=30,
+            context=ssl.create_default_context(),
+        )
+        try:
+            connection.request(
+                "GET",
+                f"/{endpoint}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Connection": "close",
+                    "User-Agent": "boundver-release-review-state",
+                    "X-GitHub-Api-Version": GITHUB_REST_API_VERSION,
+                },
+            )
+            response = connection.getresponse()
+            content_type = response.getheader("Content-Type", "")
+            content_encoding = response.getheader("Content-Encoding")
+            raw_length = response.getheader("Content-Length")
+            if (response.status != 200 or
+                    not content_type.lower().startswith("application/json") or
+                    content_encoding not in {None, "identity"}):
+                raise SystemExit("GitHub public-gist response is not authoritative")
+            if raw_length is not None:
+                if (not raw_length.isascii() or not raw_length.isdecimal() or
+                        len(raw_length) > 20 or int(raw_length) > remaining):
+                    raise SystemExit(
+                        "review snapshot API responses exceed the safety limit"
+                    )
+            raw = bytearray()
+            while True:
+                chunk = response.read(
+                    min(READ_CHUNK_BYTES, max(1, remaining - len(raw) + 1))
+                )
+                if not chunk:
+                    break
+                if len(raw) + len(chunk) > remaining:
+                    raise SystemExit(
+                        "review snapshot API responses exceed the safety limit"
+                    )
+                raw.extend(chunk)
+        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+            raise SystemExit("GitHub public-gist request failed") from exc
+        finally:
+            connection.close()
+        consumed_api_bytes += len(raw)
+        return decode_api_json(bytes(raw))
 
     def rest_records(endpoint):
         records = []
@@ -275,6 +358,59 @@ env:
                 not isinstance(login, str) or not isinstance(actor_type, str)):
             raise SystemExit("GitHub returned a malformed actor")
         return {"id": actor_id, "login": login, "type": actor_type}
+
+    def timestamp_key(value):
+        match = GITHUB_TIMESTAMP_RE.fullmatch(value)
+        if match is None:
+            raise SystemExit("GitHub returned a malformed timestamp")
+        base, separator, fraction_and_zone = value.partition(".")
+        fraction = fraction_and_zone[:-1] if separator else ""
+        return base.rstrip("Z"), fraction.ljust(9, "0")
+
+    def parse_semantic_review_roster(body, repository_id, owner_id):
+        if not isinstance(body, str) or len(body) > 4096:
+            raise SystemExit("GitHub returned a malformed semantic review roster")
+        lines = body.splitlines()
+        expected_literals = {
+            0: "semantic-provider-review-roster/v2",
+            1: f"Repository-id: {repository_id}",
+            2: f"Repository-owner-id: {owner_id}",
+            5: "Independent-beneficial-owners-attested: true",
+            6: "Owner-exclusive-mutation-authority-attested: true",
+            7: f"Attested-by: {owner_id}:yzm1",
+        }
+        if (body != "\n".join(lines) or len(lines) != 8 or
+                any(lines[index] != expected
+                    for index, expected in expected_literals.items())):
+            raise SystemExit(
+                "Semantic review roster is unconfigured or non-canonical"
+            )
+        reviewers = {}
+        for role, line_index in (("security", 3), ("product", 4)):
+            prefix = f"{SEMANTIC_REVIEW_ROSTER_FIELDS[role]}: "
+            line = lines[line_index]
+            if not line.startswith(prefix):
+                raise SystemExit("Semantic review roster entry is non-canonical")
+            raw_identity = line[len(prefix):]
+            identifier, separator, login = raw_identity.partition(":")
+            if (separator != ":" or not identifier.isascii() or
+                    not identifier.isdecimal() or len(identifier) > 19 or
+                    SEMANTIC_USER_LOGIN_RE.fullmatch(login) is None):
+                raise SystemExit("Semantic review roster identity is malformed")
+            reviewer_id = int(identifier)
+            if (reviewer_id <= 0 or reviewer_id > (1 << 63) - 1 or
+                    str(reviewer_id) != identifier):
+                raise SystemExit("Semantic review roster identity is non-canonical")
+            reviewers[role] = {
+                "id": reviewer_id,
+                "login": login,
+                "type": "User",
+            }
+        if (reviewers["security"]["id"] == reviewers["product"]["id"] or
+                reviewers["security"]["login"].casefold() ==
+                reviewers["product"]["login"].casefold()):
+            raise SystemExit("Semantic review roster needs distinct external humans")
+        return reviewers
 
     merged_tags = []
     for candidate in git_text("tag", "--merged", release_sha).splitlines():
@@ -327,50 +463,189 @@ env:
     semantic_review_authority = None
     semantic_reviewer_ids = set()
     if release_tag == "v0.15.0":
-        environments = {}
-        for role, environment_name in SEMANTIC_REVIEW_ENVIRONMENTS:
-            encoded_environment = urllib.parse.quote(environment_name, safe="")
-            environment = rest(
-                f"repos/{repository}/environments/{encoded_environment}"
+        expected_owner_permissions = {
+            "admin": True,
+            "maintain": True,
+            "push": True,
+            "triage": True,
+            "pull": True,
+        }
+        repository_collaborators = rest_records(
+            f"repos/{repository}/collaborators?per_page=100"
+        )
+        if len(repository_collaborators) != 1 or not isinstance(
+            repository_collaborators[0], dict
+        ):
+            raise SystemExit(
+                "Repository mutation authority is not owner-exclusive"
             )
-            if not isinstance(environment, dict):
-                raise SystemExit("GitHub returned malformed semantic review environment")
-            environment_id = environment.get("id")
-            returned_name = environment.get("name")
-            returned_url = environment.get("url")
-            created_at = environment.get("created_at")
-            updated_at = environment.get("updated_at")
-            expected_url = (
-                f"https://api.github.com/repos/{repository}/environments/"
-                f"{encoded_environment}"
+        collaborator_record = repository_collaborators[0]
+        collaborator_actor = actor(collaborator_record)
+        collaborator_permissions = collaborator_record.get("permissions")
+        if (collaborator_actor != repository_owner or
+                collaborator_record.get("role_name") != "admin" or
+                not isinstance(collaborator_permissions, dict) or
+                set(collaborator_permissions) != set(expected_owner_permissions) or
+                any(type(collaborator_permissions[field]) is not bool or
+                    collaborator_permissions[field] is not expected
+                    for field, expected in expected_owner_permissions.items())):
+            raise SystemExit(
+                "Repository mutation authority is not owner-exclusive"
             )
-            rules = environment.get("protection_rules")
-            if (type(environment_id) is not int or environment_id <= 0 or
-                    returned_name != environment_name or returned_url != expected_url or
-                    environment.get("can_admins_bypass") is not False or
-                    environment.get("deployment_branch_policy") is not None or
-                    not isinstance(created_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(created_at) is None or
-                    not isinstance(updated_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(updated_at) is None or
-                    not isinstance(rules, list) or len(rules) != 1 or
-                    not isinstance(rules[0], dict)):
-                raise SystemExit("GitHub returned unsafe semantic review environment")
-            rule = rules[0]
-            rule_id = rule.get("id")
-            reviewers = rule.get("reviewers")
-            if (type(rule_id) is not int or rule_id <= 0 or
-                    rule.get("type") != "required_reviewers" or
-                    rule.get("prevent_self_review") is not True or
-                    not isinstance(reviewers, list) or len(reviewers) != 1 or
-                    not isinstance(reviewers[0], dict) or
-                    reviewers[0].get("type") != "User"):
-                raise SystemExit("GitHub returned unsafe semantic review rule")
-            reviewer = actor(reviewers[0].get("reviewer"))
+        repository_mutation_authority = {
+            "owner": repository_owner,
+            "owner_attested_exclusive_mutation_authority": True,
+            "repository_collaborators": [{
+                "actor": collaborator_actor,
+                "role_name": "admin",
+                "permissions": expected_owner_permissions,
+            }],
+        }
+
+        def normalize_semantic_roster_gist(record, expected_url, expected_revision=None):
+            if not isinstance(record, dict):
+                raise SystemExit("GitHub returned malformed semantic review roster gist")
+            roster_id = record.get("id")
+            roster_node_id = record.get("node_id")
+            roster_created_at = record.get("created_at")
+            roster_updated_at = record.get("updated_at")
+            roster_owner = actor(record.get("owner"))
+            if (roster_id != SEMANTIC_REVIEW_ROSTER_GIST_ID or
+                    roster_node_id != SEMANTIC_REVIEW_ROSTER_GIST_NODE_ID or
+                    record.get("description") !=
+                    SEMANTIC_REVIEW_ROSTER_GIST_DESCRIPTION or
+                    record.get("url") != expected_url or
+                    record.get("html_url") !=
+                    f"https://gist.github.com/yzm1/{SEMANTIC_REVIEW_ROSTER_GIST_ID}" or
+                    roster_owner != repository_owner or
+                    record.get("public") is not True or
+                    record.get("user") is not None or
+                    record.get("truncated") is not False or
+                    not isinstance(roster_created_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(roster_created_at) is None or
+                    not isinstance(roster_updated_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(roster_updated_at) is None or
+                    timestamp_key(roster_created_at) >
+                    timestamp_key(roster_updated_at)):
+                raise SystemExit("GitHub returned unsafe semantic review roster gist")
+
+            history = record.get("history")
+            if (not isinstance(history, list) or not history or
+                    len(history) > 100 or not isinstance(history[0], dict)):
+                raise SystemExit("Semantic review roster history is malformed")
+            latest = history[0]
+            version = latest.get("version")
+            committed_at = latest.get("committed_at")
+            revision_owner = actor(latest.get("user"))
+            change_status = latest.get("change_status")
+            if (not isinstance(version, str) or
+                    re.fullmatch(r"[0-9a-f]{40}", version) is None or
+                    (expected_revision is not None and version != expected_revision) or
+                    latest.get("url") !=
+                    f"https://api.github.com/gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}/{version}" or
+                    revision_owner != repository_owner or
+                    not isinstance(committed_at, str) or
+                    GITHUB_TIMESTAMP_RE.fullmatch(committed_at) is None or
+                    timestamp_key(committed_at) > timestamp_key(roster_updated_at) or
+                    not isinstance(change_status, dict) or
+                    set(change_status) != {"total", "additions", "deletions"} or
+                    any(type(change_status[field]) is not int or
+                        change_status[field] < 0 for field in change_status) or
+                    change_status.get("total") !=
+                    change_status.get("additions") + change_status.get("deletions")):
+                raise SystemExit("Semantic review roster revision is not owner-authored")
+
+            files = record.get("files")
+            if (not isinstance(files, dict) or
+                    set(files) != {SEMANTIC_REVIEW_ROSTER_GIST_FILENAME}):
+                raise SystemExit("Semantic review gist must contain one roster file")
+            file_record = files[SEMANTIC_REVIEW_ROSTER_GIST_FILENAME]
+            expected_file_fields = {
+                "filename", "type", "language", "raw_url", "size",
+                "truncated", "content", "encoding",
+            }
+            if (not isinstance(file_record, dict) or
+                    set(file_record) != expected_file_fields):
+                raise SystemExit("Semantic review roster file metadata is malformed")
+            content = file_record.get("content")
+            raw_url = file_record.get("raw_url")
+            raw_pattern = (
+                r"https://gist\.githubusercontent\.com/yzm1/" +
+                re.escape(SEMANTIC_REVIEW_ROSTER_GIST_ID) +
+                r"/raw/[0-9a-f]{40}/" +
+                re.escape(SEMANTIC_REVIEW_ROSTER_GIST_FILENAME)
+            )
+            if (not isinstance(content, str) or len(content) > 4096 or
+                    file_record.get("filename") !=
+                    SEMANTIC_REVIEW_ROSTER_GIST_FILENAME or
+                    file_record.get("type") != "text/plain" or
+                    file_record.get("language") != "Text" or
+                    file_record.get("encoding") != "utf-8" or
+                    file_record.get("truncated") is not False or
+                    type(file_record.get("size")) is not int or
+                    file_record.get("size") != len(content.encode("utf-8")) or
+                    not isinstance(raw_url, str) or
+                    re.fullmatch(raw_pattern, raw_url) is None):
+                raise SystemExit("Semantic review roster file is incomplete")
+            configured = parse_semantic_review_roster(
+                content, repository_id, repository_owner["id"]
+            )
+            return ({
+                "id": roster_id,
+                "node_id": roster_node_id,
+                "description": SEMANTIC_REVIEW_ROSTER_GIST_DESCRIPTION,
+                "url": record.get("url"),
+                "html_url": record.get("html_url"),
+                "owner": roster_owner,
+                "public": True,
+                "created_at": roster_created_at,
+                "updated_at": roster_updated_at,
+                "latest_revision": {
+                    "version": version,
+                    "committed_at": committed_at,
+                    "owner": revision_owner,
+                    "url": latest.get("url"),
+                    "change_status": change_status,
+                },
+                "file": {
+                    "filename": SEMANTIC_REVIEW_ROSTER_GIST_FILENAME,
+                    "type": "text/plain",
+                    "language": "Text",
+                    "raw_url": raw_url,
+                    "size": file_record.get("size"),
+                    "truncated": False,
+                    "content": content,
+                    "encoding": "utf-8",
+                },
+            }, configured)
+
+        roster, configured_reviewers = normalize_semantic_roster_gist(
+            public_gist_json(f"gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}"),
+            f"https://api.github.com/gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}",
+        )
+        roster_revision = roster["latest_revision"]["version"]
+        immutable_roster, immutable_reviewers = normalize_semantic_roster_gist(
+            public_gist_json(
+                f"gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}/{roster_revision}"
+            ),
+            f"https://api.github.com/gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}/"
+            f"{roster_revision}",
+            roster_revision,
+        )
+        current_without_url = {key: value for key, value in roster.items()
+                               if key != "url"}
+        immutable_without_url = {key: value for key, value in immutable_roster.items()
+                                 if key != "url"}
+        if (current_without_url != immutable_without_url or
+                configured_reviewers != immutable_reviewers):
+            raise SystemExit("Semantic review roster gist changed during collection")
+        reviewers = {}
+        for role in ("product", "security"):
+            reviewer = configured_reviewers[role]
             if (reviewer["type"] != "User" or
                     reviewer["id"] == repository_owner["id"] or
                     reviewer["id"] in semantic_reviewer_ids):
-                raise SystemExit("Semantic review environments need distinct external humans")
+                raise SystemExit("Semantic review roster needs distinct external humans")
             encoded_reviewer = urllib.parse.quote(reviewer["login"], safe="")
             permission_record = rest(
                 f"repos/{repository}/collaborators/{encoded_reviewer}/permission"
@@ -395,32 +670,26 @@ env:
                     permission_actor != reviewer or
                     permission_record.get("permission") != "read" or
                     permission_record.get("role_name") != "read" or
-                    permission_flags != expected_permission_flags):
-                raise SystemExit("Semantic environment reviewer is not read-only")
+                    not isinstance(permission_flags, dict) or
+                    set(permission_flags) != set(expected_permission_flags) or
+                    any(type(permission_flags[field]) is not bool or
+                        permission_flags[field] is not expected
+                        for field, expected in expected_permission_flags.items())):
+                raise SystemExit("Semantic roster reviewer is not read-only")
             semantic_reviewer_ids.add(reviewer["id"])
-            environments[role] = {
-                "id": environment_id,
-                "name": returned_name,
-                "url": returned_url,
-                "created_at": created_at,
-                "updated_at": updated_at,
-                "can_admins_bypass": False,
-                "deployment_branch_policy": None,
-                "rule": {
-                    "id": rule_id,
-                    "type": "required_reviewers",
-                    "prevent_self_review": True,
-                    "reviewer": reviewer,
-                    "repository_permission": {
-                        "permission": "read",
-                        "role_name": "read",
-                        "permissions": expected_permission_flags,
-                    },
+            reviewers[role] = {
+                "reviewer": reviewer,
+                "repository_permission": {
+                    "permission": "read",
+                    "role_name": "read",
+                    "permissions": expected_permission_flags,
                 },
             }
         semantic_review_authority = {
-            "source": "github-environment-required-reviewers/v1",
-            "environments": environments,
+            "source": "github-account-owned-public-gist/v1",
+            "roster": roster,
+            "reviewers": reviewers,
+            "repository_mutation_authority": repository_mutation_authority,
         }
 
     thread_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewDecision reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}"""

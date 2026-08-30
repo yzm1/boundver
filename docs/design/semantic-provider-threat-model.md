@@ -431,8 +431,8 @@ binding alone does not make a years-old security judgment current.
 
 **Disposition:** closed for the proposal gate by SPC-033, SPC-040, and SPC-044.
 Counted reviewers must still be the two distinct external humans configured in
-the fixed security/product review environments and must retain exactly the
-read-only repository role. Their latest decisive review
+the pinned account-owned public gist and must retain exactly the public read-only
+repository permission. Their latest decisive review
 must postdate the unchanged roster, precede the merge, and not be future-dated;
 approvals expire after 90 days. Expiry requires a new acceptance PR and fresh
 review; old evidence cannot be refreshed by editing the immutable commit.
@@ -670,13 +670,13 @@ the documented prohibition could be bypassed by the ordinary release path.
 declares only immutable release-review requirements. The authoritative auditor
 accepts the v0.15.0 tag and release SHA externally, requires local `HEAD` and
 the GitHub release record to match, and proves a separate merged release PR's
-reviewed head tree equals the release commit tree. Two fresh approvals from the
-distinct external humans in the fixed security/product review environments,
+reviewed head tree equals the release commit tree. Two fresh, role-marked
+approvals from the distinct external humans in the pinned gist roster,
 resolved threads, no pending requests, and one exact six-assertion security
-review marker are required from two identical bounded GitHub snapshots. The
+attestation are required from two identical bounded GitHub snapshots. The
 local launcher, both read-only tag checks, and fresh or resumed publication
 invoke the audit fail closed. Those enforcement files are bootstrap-protected,
-and SPV-038 mutates every identity, review, environment, attestation, ordering,
+and SPV-038 mutates every identity, review, roster, attestation, ordering,
 and workflow-enforcement edge.
 
 ### RTF-048: release authority expires or is edited during the tag handoff - Critical
@@ -697,9 +697,9 @@ off the earlier of proposal and release authority expiry. The tag job strictly
 validates that value and rechecks it alongside the mutable-state digest before
 tag creation, authentication, and push. Missing IDs, same-text edits, changed
 roles/states/threads/requests, malformed timestamps, expiry, or a racing
-snapshot fails closed under SPV-038. The workflow snapshot also binds both
-admin-managed reviewer environments, so a roster or bypass-policy edit aborts
-the handoff. A five-minute minimum remaining-validity margin plus a 60-second
+snapshot fails closed under SPV-038. The workflow snapshot also binds the
+complete gist file, owner-authored revision, and both effective permissions, so
+a roster or permission edit aborts the handoff. A five-minute minimum remaining-validity margin plus a 60-second
 tag-push timeout bounds the final check/use interval.
 
 ### RTF-049: repository namespace reuse inherits old approval authority - High
@@ -730,22 +730,124 @@ Recruiting reviewers under that rule would grant repository and release-state
 mutation authority merely to obtain an opinion, turning the assurance gate
 itself into a supply-chain exposure.
 
+**Disposition:** closed by SPC-033, SPC-040, and SPC-044. Reviewer authority now
+comes from a public gist owned by account `22440724`, whose gist ID, node ID,
+owner, description, and sole filename are pinned. Its strict content names one
+security and one product reviewer by numeric account ID and login and records
+the owner's beneficial-owner-independence attestation. The designated
+identities must be external to the repository owner and PR author, and the gist
+update must strictly predate both counted exact-head approvals. Public-repository read access is sufficient,
+so reviewers receive no push, tag, release, secret, or settings authority. The
+auditor reads the gist, its immutable latest revision, and both effective permissions twice, and the release
+workflow includes their complete normalized state in every mutation-handoff
+digest. Gist replacement, owner or revision substitution, truncation, file or
+reviewer substitution, duplicate identities, bots, permission above read, post-approval edits, or
+malformed metadata fail closed under SPV-035 and SPV-038. Beneficial-owner
+independence remains a human governance assertion, not something GitHub account
+IDs can prove.
+
+### RTF-051: public read permission is not Environment reviewer eligibility - Critical
+
+The RTF-050 closure assumed a public user whose effective permission endpoint
+reported exact `read` could be selected as a GitHub Environment required
+reviewer. A live disposable-environment probe disproved that assumption:
+GitHub rejected an ordinary public reader with HTTP 422 while accepting the
+repository owner through the same request. GitHub documents that Environment
+reviewers need repository read access, but a personal-account repository has
+only owner and collaborator authority, and collaborators can push. The REST
+collaborator `permission` selector is explicitly limited to organization-owned
+repositories. The proposed pair of read-only Environment reviewers was
+therefore impossible here: the gate could never pass without granting the very
+write authority RTF-050 prohibited.
+
+**Disposition:** closed by SPC-033, SPC-040, and SPC-044. Environments are no
+longer reviewer authority. The account-owned public gist adds no repository
+permission to either reviewer, while its owner, numeric/node identities,
+canonical file, immutable revision, timestamps, and exact public-read
+permission records are independently observable and included in every bounded snapshot.
+Both designated humans must submit role-specific exact-head markers containing
+their own independence confirmation after the latest roster update. Any roster
+or permission mutation invalidates prior approvals. The disposable probe
+environment was deleted, no semantic-provider review environment exists, and
+the unconfigured roster fails closed until two external humans are named.
+
+### RTF-052: a locked issue does not provide owner-only attestation - Critical
+
+The first RTF-051 correction moved reviewer names into a locked issue authored
+by the repository owner. Locking controls conversation, not issue edits.
+GitHub permits collaborators on a personal-account repository to edit issue
+titles and descriptions, and this repository currently has a non-owner write
+collaborator. That collaborator could replace the roster while retaining a
+literal `Attested-by: 22440724:yzm1` line; issue author identity proves who
+created the issue, not who last edited its body. Timestamps would invalidate
+older reviews but could not prove the new attestation came from the owner.
+
 **Disposition:** closed by SPC-033, SPC-040, and SPC-044. Reviewer authority is
-now an admin-controlled pair of GitHub Environment required-reviewer rosters:
-`semantic-provider-security-review` and
-`semantic-provider-product-review`. Each environment must name exactly one
-distinct human, disable administrator bypass, enable self-review prevention,
-and have no branch policy. The designated identities must be external to the
-repository owner and PR author, and the roster update must strictly predate the
-counted exact-head approval. Public-repository read access is sufficient, so
-reviewers receive no push, tag, release, secret, or settings authority. The
-auditor reads both environment records and effective repository permissions
-twice, and the release workflow includes them in every mutation-handoff digest.
-Environment deletion, recreation,
-reviewer substitution, duplicate identities, bot reviewers, any permission
-above read, bypass toggles, post-approval edits, or malformed metadata fail
-closed under SPV-035 and SPV-038. Beneficial-owner independence remains a human governance assertion,
-not something GitHub account IDs can prove.
+held in public gist `0caedb798d168b974f9d9fb63c377f73`, owned by account
+`22440724`. Updating a gist requires separate user-level Gists write authority;
+repository collaboration does not confer it. The gate pins gist and owner
+identities, description and sole filename; requires a complete public UTF-8
+file; validates the latest history entry's owner, commit ID, timestamp and
+change counts; and fetches that immutable revision to prove it reproduces the
+current roster. Mutable timestamps and revision identity are bound into every
+double snapshot, so deletion, replacement, rollback, concurrent edit, or
+post-approval change fails closed. Compromise of the owner's GitHub account or
+Gists-authorized token remains an explicit root-of-trust risk.
+
+### RTF-053: repository-held user credentials collapse gist separation - Critical
+
+An account-owned gist is a separate authority only while its mutation
+credential remains outside repository-controlled execution. If an owner stores
+a Gists-write PAT, GitHub App user token, OAuth token, or equivalent credential
+in an Actions or Environment secret, a write collaborator who can influence a
+workflow may be able to exfiltrate or exercise it and forge the owner's roster
+attestation. Merely using a different GitHub object does not help if both trust
+roots share a credential channel.
+
+**Disposition:** closed by SPC-033, SPC-040, and SPC-044. GitHub permits
+anonymous reads of public gists, but requires separate user-level Gists write
+permission to mutate one. The tag workflow reads only the fixed current and
+immutable-revision gist paths anonymously over verified HTTPS with no redirect
+or authorization header. Its repository calls and all publication calls use
+only the repository-scoped `github.token`, whose workflow permission vocabulary
+contains no Gists authority; the proposal checker rejects secret expressions,
+alternate `GH_TOKEN` sources, or authenticated gist reads. At this review, every
+repository and Environment secret and variable inventory is empty. Operational
+policy forbids placing any Gists-write credential in repository workflows,
+secrets, variables, artifacts, caches, or runners. A future owner who violates
+that policy, or compromise of the owner's account or separately held token,
+remains a root-of-trust failure rather than a property the repository can prove
+away.
+
+### RTF-054: a write collaborator can bypass the audited release path - Critical
+
+The semantic audit can prove what the release workflows observed, but it cannot
+make those workflows exclusive mutation authority by itself. At discovery this
+personal repository had no `main` branch protection; its active SemVer tag
+ruleset blocked updates, non-fast-forwards, and deletion but deliberately
+permitted tag creation; and direct collaborator `horizonscanning` (account
+`259076988`) had `write`/`push` permission. That principal could have pushed
+unreviewed source, occupied `v0.15.0` with an immutable tag, or created a
+misleading GitHub Release without traversing the exact-tree audit. Publication
+registries might still have rejected the attempt, but release identity,
+availability, and user trust would already have been damaged.
+
+The collaborator was removed on 2026-08-30. A subsequent live census returned
+exactly repository owner `22440724:yzm1` with `admin` authority and no pending
+invitations, deploy keys, or repository webhooks. SPC-045 now repeats that exact
+collaborator census in both authoritative snapshots and the release workflow.
+GitHub does not expose every owner-delegated App, OAuth grant, or separately
+held credential to the repository workflow token, so roster format v2 also
+binds the owner's explicit
+`Owner-exclusive-mutation-authority-attested: true` declaration. A false
+declaration or owner-account compromise remains a root-of-trust failure.
+
+**Disposition:** open and release-blocking under
+[#85](https://github.com/yzm1/boundver/issues/85) until SPC-045 is merged, the
+v2 owner attestation is published in the immutable public-gist history, and
+both independent exact-tree reviewers approve that closure. External product
+and security reviewers need only public read access and must not be made
+collaborators.
 
 ## Threat catalog and traceability
 
@@ -793,10 +895,10 @@ table is the human review surface.
 | SPT-037 | Host policy is spoofed, raced, or locally replaced | Unauthorized execution | SPC-002, SPC-037, SPC-040 | SPV-004, SPV-011, SPV-031 |
 | SPT-038 | Provider option schema triggers host work or divergent defaults | DoS, network access, digest ambiguity | SPC-027, SPC-028, SPC-038 | SPV-007, SPV-008, SPV-032 |
 | SPT-039 | Provider output or metadata discloses selected source beyond the narrow contract | Information disclosure | SPC-012, SPC-015, SPC-039, SPC-041 | SPV-015, SPV-033, SPV-036 |
-| SPT-040 | Stale, mutable, misattributed, or over-privileged evidence satisfies approval | Governance, supply-chain, and release bypass | SPC-033, SPC-034, SPC-040, SPC-044 | SPV-021, SPV-024, SPV-035, SPV-038 |
+| SPT-040 | Stale, mutable, misattributed, or over-privileged evidence satisfies approval | Governance, supply-chain, and release bypass | SPC-033, SPC-034, SPC-040, SPC-044, SPC-045 | SPV-021, SPV-024, SPV-035, SPV-038 |
 | SPT-041 | Authorized sandboxed provider returns deterministic but false output | False stable or changed boundary | SPC-002, SPC-019, SPC-031, SPC-041 | SPV-016, SPV-026, SPV-036 |
 | SPT-042 | Host parses, compiles, or deserializes provider artifact/evidence before containment | Main-process compromise before sandbox | SPC-008, SPC-009, SPC-021, SPC-042 | SPV-006, SPV-011, SPV-037 |
-| SPT-043 | Self-attested, stale, or unenforced v0.15 release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043 | SPV-024, SPV-035, SPV-038 |
+| SPT-043 | Self-attested, stale, or unenforced v0.15 release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043, SPC-045 | SPV-024, SPV-035, SPV-038 |
 
 ## Abuse-case test corpus
 
@@ -901,10 +1003,10 @@ documented ignored and retained construct.
 | SPV-032 | Option-schema recursion, regex, reference, default, complexity, and host/guest differential tests pass |
 | SPV-033 | Output/metadata allowlist, minimization, retention, and private-source non-disclosure tests pass |
 | SPV-034 | Semantic/artifact/authorization/runtime identity-placement and cross-platform migration tests pass |
-| SPV-035 | Review self-reference, least-authority environment roster, canonical-manifest/tool/API-host/blob/mode binding, numeric-parser bounds, merge-mode-safe gate bootstrap, post-merge review edits, scan, expiry, role, canonical ancestry, exact-commit/tree/artifact, API-race/budget, TOCTOU, and evidence-tampering negative matrix passes |
+| SPV-035 | Review self-reference, owner-exclusive repository collaborators and v2 owner attestation, account-owned public-gist roster, immutable-revision binding, exact public-read authority, role markers, canonical-manifest/tool/API-host/blob/mode binding, numeric-parser bounds, merge-mode-safe gate bootstrap, post-merge review edits, scan, expiry, role, canonical ancestry, exact-commit/tree/artifact, API-race/budget, TOCTOU, and evidence-tampering negative matrix passes |
 | SPV-036 | Malicious-valid output, targeted logic-bomb, independent-oracle, differential, and provider-quorum tests pass |
 | SPV-037 | Pre-sandbox manifest/evidence/crypto/decoder/runtime/AOT corpus proves no provider-controlled structure is parsed outside containment |
-| SPV-038 | External exact-tree v0.15 attestation environment/identity/review/age/marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
+| SPV-038 | External exact-tree v0.15 attestation roster/identity/permission/repository-collaborator/owner-delegation/review/age/role-marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
 
 ## Residual risks
 

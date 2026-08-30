@@ -255,13 +255,30 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         self.assertIn("fullDatabaseId lastEditedAt", program)
         self.assertIn("GitHub REST and GraphQL review identities differ", program)
         self.assertIn('"repository_id": repository_id', program)
-        self.assertIn("SEMANTIC_REVIEW_ENVIRONMENTS", program)
-        self.assertIn("semantic-provider-security-review", program)
-        self.assertIn("semantic-provider-product-review", program)
-        self.assertIn('environment.get("can_admins_bypass") is not False', program)
-        self.assertIn('rule.get("prevent_self_review") is not True', program)
+        self.assertIn("SEMANTIC_REVIEW_ROSTER_GIST_ID", program)
+        self.assertIn("G_kwDOAVZrFNoAIDBjYWVkYjc5OGQxNjhiOTc0ZjlkOWZiNjNjMzc3Zjcz", program)
+        self.assertIn("parse_semantic_review_roster", program)
+        self.assertIn("def public_gist_json(endpoint):", program)
+        self.assertIn("http.client.HTTPSConnection", program)
+        self.assertIn('"api.github.com"', program)
+        self.assertNotIn('"Authorization"', program)
+        self.assertIn('GITHUB_REST_API_VERSION = "2022-11-28"', program)
+        self.assertIn("Independent-beneficial-owners-attested: true", program)
+        self.assertIn(
+            "Owner-exclusive-mutation-authority-attested: true", program
+        )
+        self.assertIn("normalize_semantic_roster_gist", program)
+        self.assertIn("Semantic review roster gist changed during collection", program)
+        self.assertIn('record.get("public") is not True', program)
+        self.assertIn('record.get("truncated") is not False', program)
         self.assertIn('permission_record.get("permission") != "read"', program)
-        self.assertIn("Semantic environment reviewer is not read-only", program)
+        self.assertIn("Semantic roster reviewer is not read-only", program)
+        self.assertIn('f"repos/{repository}/collaborators?per_page=100"', program)
+        self.assertIn("Repository mutation authority is not owner-exclusive", program)
+        self.assertIn('"repository_mutation_authority": repository_mutation_authority', program)
+        self.assertIn(
+            '"owner_attested_exclusive_mutation_authority": True', program
+        )
         self.assertIn('"semantic_review_authority": semantic_review_authority', program)
 
     def test_snapshot_normalizes_only_the_local_candidate_tag(self):
