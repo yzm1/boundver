@@ -576,6 +576,7 @@ def validate_config(
     # Validate top-level providers list (Phase 2)
     providers_list = config.get("providers")
     declared_custom_names: set = set()
+    declared_custom_names_complete = False
     if providers_list is not None:
         if not isinstance(providers_list, list):
             errors.append("Top-level 'providers' must be an array")
@@ -585,9 +586,15 @@ def validate_config(
                 f"{MAX_CUSTOM_PROVIDERS}-provider limit"
             )
         else:
+            # An explicit configured name constrains the provider's runtime
+            # name. The collected set is exhaustive only if every declaration
+            # supplies a valid explicit name; otherwise trusted loading must
+            # resolve anonymous declarations before references can be checked.
+            declared_custom_names_complete = True
             for i, entry in enumerate(providers_list):
                 if not isinstance(entry, dict):
                     errors.append(f"providers[{i}] must be an object")
+                    declared_custom_names_complete = False
                     continue
                 _reject_unknown_fields(errors, entry, PROVIDER_FIELDS, f"providers[{i}]")
                 for field_name in ("module", "class"):
@@ -602,25 +609,30 @@ def validate_config(
                     errors.append(
                         f"providers[{i}] class name '{cls_val.strip()}' is not a valid Python identifier"
                     )
-                # Track declared custom provider names for cross-reference.
-                # The registered provider name is: entry["name"] if provided,
-                # otherwise defaults to "custom.{class_name}".
+                # Track explicit expected names for static cross-reference.
+                # Without one, the provider instance determines its registered
+                # custom.* identifier after trusted loading.
                 raw_declared_name = entry.get("name")
                 declared_name = (
                     raw_declared_name.strip()
                     if isinstance(raw_declared_name, str)
                     else ""
                 )
-                if raw_declared_name is not None:
+                if raw_declared_name is None:
+                    declared_custom_names_complete = False
+                else:
                     if not isinstance(raw_declared_name, str) or not declared_name:
+                        declared_custom_names_complete = False
                         errors.append(
                             f"providers[{i}] field 'name' must be a non-empty string"
                         )
                     elif raw_declared_name != declared_name:
+                        declared_custom_names_complete = False
                         errors.append(
                             f"providers[{i}] field 'name' must not have surrounding whitespace"
                         )
                     elif not declared_name.startswith("custom.") or declared_name == "custom.":
+                        declared_custom_names_complete = False
                         errors.append(
                             f"providers[{i}] field 'name' must start with 'custom.' "
                             "and include a name after the prefix "
@@ -629,8 +641,6 @@ def validate_config(
                         )
                     else:
                         declared_custom_names.add(declared_name)
-                # Without an explicit name, the provider instance determines
-                # its registered custom.* identifier after trusted loading.
 
     all_external_consumers: Set[str] = set()
     for name, comp in components.items():
@@ -750,6 +760,11 @@ def validate_config(
                 f"Component '{name}' has unsupported boundary.provider '{boundary['provider']}' "
                 "(use a known provider or custom.* namespace)"
             )
+        elif boundary["provider"] == "custom.":
+            errors.append(
+                f"Component '{name}' boundary.provider must include a name after "
+                "the 'custom.' prefix"
+            )
         elif boundary["provider"].startswith("custom."):
             # Verify the custom provider is declared in the top-level providers list.
             provider_name = boundary["provider"]
@@ -758,10 +773,13 @@ def validate_config(
                     f"Component '{name}' uses '{provider_name}' but no 'providers' list is "
                     "declared in the config — add a top-level 'providers' array"
                 )
-            elif declared_custom_names and provider_name not in declared_custom_names:
+            elif (
+                declared_custom_names_complete
+                and provider_name not in declared_custom_names
+            ):
                 errors.append(
                     f"Component '{name}' uses '{provider_name}' which is not declared in the "
-                    f"'providers' list — add an entry with \"class\": \"{provider_name[7:]}\""
+                    f"'providers' list — add an entry with \"name\": \"{provider_name}\""
                 )
         if "options" in boundary and not isinstance(boundary["options"], dict):
             errors.append(f"Component '{name}' field 'boundary.options' must be an object")
