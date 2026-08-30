@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added a formal, machine-traceable semantic-provider RFC and adversarial
+  threat model. The review-ready proposal keeps implementation and v0.15 work
+  blocked until exact-commit proposal reviews pass, separates future capability-confined
+  WebAssembly providers from legacy trusted in-process Python, and records the
+  mandatory full-source bug, issue, and security gates for v0.15.0 promotion.
+
 ### Fixed
 
 - Reused the uniquely identified, digest-verified retained OCI artifact when a

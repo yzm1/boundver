@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/semantic-provider-proposal.schema.json",
+  "title": "boundver semantic provider proposal assurance record",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "proposal",
+    "status",
+    "implementation_allowed",
+    "v0_15_work_allowed",
+    "documents",
+    "threats",
+    "controls",
+    "verifications",
+    "red_team",
+    "review_requirements",
+    "open_findings",
+    "release_gates",
+    "references"
+  ],
+  "properties": {
+    "$schema": {"type": "string"},
+    "schema_version": {"const": 1},
+    "proposal": {"const": "boundver-semantic-provider-system/v1"},
+    "status": {
+      "enum": ["draft", "review-ready", "accepted", "rejected", "superseded"]
+    },
+    "implementation_allowed": {"type": "boolean"},
+    "v0_15_work_allowed": {"type": "boolean"},
+    "documents": {
+      "type": "object",
+      "required": ["rfc", "threat_model"],
+      "properties": {
+        "rfc": {"$ref": "#/$defs/repositoryPath"},
+        "threat_model": {"$ref": "#/$defs/repositoryPath"}
+      },
+      "additionalProperties": false
+    },
+    "threats": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/threat"}
+    },
+    "controls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/control"}
+    },
+    "verifications": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/verification"}
+    },
+    "red_team": {
+      "type": "object",
+      "required": ["status", "rounds", "residual_risks_accepted"],
+      "properties": {
+        "status": {"enum": ["pending", "passed", "failed"]},
+        "rounds": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/redTeamRound"}
+        },
+        "residual_risks_accepted": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "review_requirements": {
+      "$ref": "#/$defs/reviewRequirements"
+    },
+    "open_findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "release_gates": {
+      "type": "object",
+      "required": ["v0.15.0"],
+      "properties": {
+        "v0.15.0": {"$ref": "#/$defs/releaseGate"}
+      },
+      "additionalProperties": false
+    },
+    "references": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^https://"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$)).+$"
+    },
+    "threat": {
+      "type": "object",
+      "required": ["id", "title", "severity", "controls", "verifications"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^SPT-[0-9]{3}$"},
+        "title": {"type": "string", "minLength": 1},
+        "severity": {"enum": ["critical", "high", "medium", "low"]},
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^SPC-[0-9]{3}$"}
+        },
+        "verifications": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^SPV-[0-9]{3}$"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "control": {
+      "type": "object",
+      "required": ["id", "title", "kinds", "threats", "verifications"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^SPC-[0-9]{3}$"},
+        "title": {"type": "string", "minLength": 1},
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["preventive", "detective", "recovery"]}
+        },
+        "threats": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^SPT-[0-9]{3}$"}
+        },
+        "verifications": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^SPV-[0-9]{3}$"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "required": ["id", "title", "phase", "status", "evidence"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^SPV-[0-9]{3}$"},
+        "title": {"type": "string", "minLength": 1},
+        "phase": {"enum": ["proposal", "implementation", "provider", "release"]},
+        "status": {"enum": ["planned", "passed", "failed", "not-applicable"]},
+        "evidence": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    },
+    "redTeamRound": {
+      "type": "object",
+      "required": ["id", "scope", "status", "findings", "evidence"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^RTR-[0-9]{3}$"},
+        "scope": {"type": "string", "minLength": 1},
+        "status": {"enum": ["planned", "passed", "failed"]},
+        "findings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^RTF-[0-9]{3}$"}
+        },
+        "evidence": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    },
+    "reviewRequirements": {
+      "type": "object",
+      "required": [
+        "repository",
+        "base_branch",
+        "minimum_non_author_reviews",
+        "maximum_review_age_days",
+        "security_review_required",
+        "security_review_marker",
+        "exact_commit_required",
+        "resolved_threads_required",
+        "no_pending_review_requests",
+        "authoritative_audit"
+      ],
+      "properties": {
+        "repository": {"const": "yzm1/boundver"},
+        "base_branch": {"const": "main"},
+        "minimum_non_author_reviews": {"type": "integer", "minimum": 2},
+        "maximum_review_age_days": {"const": 90},
+        "security_review_required": {"const": true},
+        "security_review_marker": {"const": "semantic-provider-security-review/v1"},
+        "exact_commit_required": {"const": true},
+        "resolved_threads_required": {"const": true},
+        "no_pending_review_requests": {"const": true},
+        "authoritative_audit": {"const": "scripts/audit_semantic_provider_proposal.py"}
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "required": ["id", "severity", "title", "owner", "disposition"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^RTF-[0-9]{3}$"},
+        "severity": {"enum": ["critical", "high", "medium", "low"]},
+        "title": {"type": "string", "minLength": 1},
+        "owner": {"type": "string", "minLength": 1},
+        "disposition": {"enum": ["open", "accepted", "closed"]},
+        "rationale": {"type": "string"},
+        "expires": {"type": "string", "format": "date"},
+        "compensating_controls": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^SPC-[0-9]{3}$"}
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"disposition": {"const": "accepted"}}},
+          "then": {
+            "required": ["rationale", "expires", "compensating_controls", "evidence"]
+          }
+        },
+        {
+          "if": {"properties": {"disposition": {"const": "closed"}}},
+          "then": {"required": ["rationale", "evidence"]}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "releaseGate": {
+      "type": "object",
+      "required": [
+        "release_allowed",
+        "exact_candidate_commit",
+        "full_source_bug_scan",
+        "full_issue_audit",
+        "full_security_scan",
+        "all_blockers_closed",
+        "supported_platforms_passed",
+        "publication_gates_passed",
+        "evidence"
+      ],
+      "properties": {
+        "release_allowed": {"type": "boolean"},
+        "exact_candidate_commit": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+          ]
+        },
+        "full_source_bug_scan": {"type": "boolean"},
+        "full_issue_audit": {"type": "boolean"},
+        "full_security_scan": {"type": "boolean"},
+        "all_blockers_closed": {"type": "boolean"},
+        "supported_platforms_passed": {"type": "boolean"},
+        "publication_gates_passed": {"type": "boolean"},
+        "evidence": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
