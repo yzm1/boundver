@@ -1727,6 +1727,22 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             cwd=repo,
             env=audit_env,
         )
+        if tag == "v0.15.0":
+            _run(
+                (
+                    sys.executable,
+                    "-I",
+                    "scripts/audit_semantic_provider_proposal.py",
+                    "--gate",
+                    "v0.15-release",
+                    "--release-tag",
+                    tag,
+                    "--release-sha",
+                    sha,
+                ),
+                cwd=repo,
+                env=audit_env,
+            )
         tooling = Path(temporary) / "t"
         _run(
             (sys.executable, "-I", "-m", "venv", str(tooling)),

@@ -4,8 +4,9 @@
 The proposal manifest is a declaration, not its own trust root.  This program
 finds the latest commit that changed the governed proposal surface and proves
 that GitHub merged an identical reviewed tree into ``main``.  It then checks
-current, exact-head, non-author review evidence before allowing an acceptance,
-v0.15 work, or v0.15 release gate to pass.
+current, exact-head, non-author review evidence before allowing an acceptance or
+v0.15 work gate to pass.  The v0.15 release gate additionally proves that a
+separate release-candidate pull request reviewed the exact tree being released.
 
 Only bounded Git and ``gh api`` subprocesses are used.  Review bodies are never
 printed or persisted; the successful result contains only reviewer identities
@@ -50,6 +51,16 @@ COMMAND_TIMEOUT_SECONDS = 15
 AUDIT_TIMEOUT_SECONDS = 55
 STREAM_CHUNK_BYTES = 64 * 1024
 CANONICAL_MANIFEST = Path("spec/semantic-provider-proposal.json")
+V015_RELEASE_TAG = "v0.15.0"
+V015_RELEASE_MARKER = "semantic-provider-v0.15-release-review/v1"
+V015_RELEASE_ATTESTATIONS = (
+    "Full-source-bug-scan: passed",
+    "Full-issue-audit: passed",
+    "Full-security-scan: passed",
+    "All-blockers: closed",
+    "Supported-platforms: passed",
+    "Publication-gates: passed",
+)
 # This supported contract retains merge_commit_sha, which the 2026-03-10
 # response removed.  API-version migration is an explicit proposal re-review
 # trigger; GitHub currently documents support through 2028-03-10.
@@ -71,24 +82,35 @@ REVIEW_STATES = DECISIVE_REVIEW_STATES | {"COMMENTED", "PENDING"}
 # threat traceability, machine gate, and CI enforcement contract.
 GOVERNED_PATHS = (
     ".github/workflows/ci.yml",
+    ".github/workflows/create-release-tag.yml",
+    ".github/workflows/publish.yml",
     "docs/design/semantic-provider-rfc.md",
     "docs/design/semantic-provider-threat-model.md",
     "scripts/audit_semantic_provider_proposal.py",
     "scripts/check_semantic_provider_proposal.py",
+    "scripts/publish_release.py",
     "spec/semantic-provider-proposal.json",
     "spec/semantic-provider-proposal.schema.json",
+    "tests/test_create_release_tag_review_state.py",
+    "tests/test_distribution_contract.py",
     "tests/test_semantic_provider_proposal.py",
 )
 BOOTSTRAP_PATHS = (
     ".github/workflows/ci.yml",
+    ".github/workflows/create-release-tag.yml",
+    ".github/workflows/publish.yml",
     "scripts/audit_semantic_provider_proposal.py",
     "scripts/check_semantic_provider_proposal.py",
+    "scripts/publish_release.py",
 )
 VALIDATION_PATHS = (
     ".github/workflows/ci.yml",
+    ".github/workflows/create-release-tag.yml",
+    ".github/workflows/publish.yml",
     "docs/design/semantic-provider-rfc.md",
     "docs/design/semantic-provider-threat-model.md",
     "scripts/check_semantic_provider_proposal.py",
+    "scripts/publish_release.py",
     "spec/semantic-provider-proposal.json",
     "spec/semantic-provider-proposal.schema.json",
 )
@@ -746,6 +768,7 @@ def collect_snapshot(
     full_name = _bounded_string(
         repository_record.get("full_name"), "repository.full_name", maximum=128
     )
+    repository_id = _positive_id(repository_record.get("id"), "repository.id")
     repository_owner = _actor(repository_record.get("owner"), "repository.owner")
     if full_name.casefold() != repository.casefold() or repository_owner["login"].casefold() != owner.casefold():
         raise AuditError("GitHub repository identity does not match the proposal")
@@ -878,6 +901,7 @@ def collect_snapshot(
     )
     return {
         "repository": full_name,
+        "repository_id": repository_id,
         "repository_owner": repository_owner,
         "record_commit": record_commit,
         "record_parent": record_parent,
@@ -911,11 +935,23 @@ def collect_snapshot(
     }
 
 
-def _security_marker_matches(body: str, marker: str, reviewed_sha: str) -> bool:
-    meaningful = [line.strip() for line in body.splitlines() if line.strip()]
+def _security_marker_matches(
+    body: str,
+    marker: str,
+    reviewed_sha: str,
+    attestations: Sequence[str] = (),
+) -> bool:
+    meaningful: list[str] = []
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        if line != line.strip():
+            return False
+        meaningful.append(line)
     return meaningful == [
         marker,
         f"Reviewed-commit: {reviewed_sha}",
+        *attestations,
         "Verdict: approved",
     ]
 
@@ -925,10 +961,18 @@ def evaluate_snapshot(
     requirements: dict[str, Any],
     *,
     evaluated_at: datetime,
+    attestations: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Evaluate a normalized snapshot without performing network calls."""
     if snapshot["repository"].casefold() != requirements["repository"].casefold():
         raise AuditError("snapshot repository does not match review requirements")
+    if snapshot.get("repository_id") != requirements["repository_id"]:
+        raise AuditError("snapshot repository ID does not match review requirements")
+    repository_owner = _actor(
+        snapshot.get("repository_owner"), "snapshot.repository_owner"
+    )
+    if repository_owner["id"] != requirements["repository_owner_id"]:
+        raise AuditError("snapshot repository owner ID does not match review requirements")
     if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
         raise AuditError("proposal audit time must be timezone-aware")
     evaluated_at = evaluated_at.astimezone(timezone.utc)
@@ -987,6 +1031,12 @@ def evaluate_snapshot(
 
     decisive_by_reviewer: dict[int, list[dict[str, Any]]] = {}
     reviewer_identity: dict[int, tuple[str, str]] = {}
+    actor_id_by_login: dict[tuple[str, str], int] = {}
+    for actor in (repository_owner, author):
+        identity = (actor["login"].casefold(), actor["type"])
+        previous_id = actor_id_by_login.setdefault(identity, actor["id"])
+        if previous_id != actor["id"]:
+            raise AuditError("actor login is bound to multiple GitHub IDs")
     review_ids: set[int] = set()
     for index, review in enumerate(reviews):
         if type(review) is not dict:
@@ -1003,6 +1053,9 @@ def evaluate_snapshot(
         previous_identity = reviewer_identity.setdefault(reviewer["id"], identity)
         if previous_identity != identity:
             raise AuditError("reviewer identity changed within the snapshot")
+        previous_id = actor_id_by_login.setdefault(identity, reviewer["id"])
+        if previous_id != reviewer["id"]:
+            raise AuditError("actor login is bound to multiple GitHub IDs")
         if state in DECISIVE_REVIEW_STATES:
             _timestamp(review.get("submitted_at"), f"snapshot.reviews[{index}].submitted_at")
             decisive_by_reviewer.setdefault(reviewer["id"], []).append(review)
@@ -1011,6 +1064,7 @@ def evaluate_snapshot(
             _timestamp(last_edited_at, f"snapshot.reviews[{index}].last_edited_at")
 
     qualified: list[dict[str, Any]] = []
+    qualified_records: list[dict[str, Any]] = []
     security_reviewers: list[str] = []
     marker = requirements["security_review_marker"]
     maximum_age = timedelta(days=requirements["maximum_review_age_days"])
@@ -1038,9 +1092,22 @@ def evaluate_snapshot(
         permission = permissions.get(reviewer["login"])
         if permission not in QUALIFYING_PERMISSIONS:
             continue
-        qualified.append(reviewer)
         body = latest.get("body")
-        if type(body) is str and _security_marker_matches(body, marker, reviewed_sha):
+        is_security_review = type(body) is str and _security_marker_matches(
+            body,
+            marker,
+            reviewed_sha,
+            attestations,
+        )
+        qualified.append(reviewer)
+        qualified_records.append(
+            {
+                "reviewer": reviewer,
+                "valid_until": submitted_at + maximum_age,
+                "security": is_security_review,
+            }
+        )
+        if is_security_review:
             security_reviewers.append(reviewer["login"])
 
     qualified_ids = {item["id"] for item in qualified}
@@ -1052,6 +1119,21 @@ def evaluate_snapshot(
         )
     if requirements["security_review_required"] and not security_reviewers:
         raise AuditError("proposal has no qualifying exact-head security review marker")
+    validity_candidates = {
+        item["valid_until"] for item in qualified_records
+    }
+    valid_until = max(
+        candidate
+        for candidate in validity_candidates
+        if sum(
+            item["valid_until"] >= candidate for item in qualified_records
+        )
+        >= minimum
+        and any(
+            item["security"] and item["valid_until"] >= candidate
+            for item in qualified_records
+        )
+    )
 
     return {
         "pull_request": pull_request["number"],
@@ -1060,6 +1142,7 @@ def evaluate_snapshot(
         "tree": record_tree,
         "reviewers": sorted({item["login"] for item in qualified}, key=str.casefold),
         "security_reviewers": sorted(set(security_reviewers), key=str.casefold),
+        "valid_until": valid_until.isoformat().replace("+00:00", "Z"),
         "unresolved_threads": 0,
         "pending_review_requests": 0,
     }
@@ -1086,6 +1169,8 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal manifest has no review requirements")
     expected = {
         "repository",
+        "repository_id",
+        "repository_owner_id",
         "base_branch",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
@@ -1100,6 +1185,16 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal review requirements are malformed")
     if requirements.get("repository") != "yzm1/boundver":
         raise AuditError("proposal review repository is not authoritative")
+    if (
+        requirements.get("repository_id") != 1226008327
+        or type(requirements.get("repository_id")) is not int
+    ):
+        raise AuditError("proposal review repository ID is not authoritative")
+    if (
+        requirements.get("repository_owner_id") != 22440724
+        or type(requirements.get("repository_owner_id")) is not int
+    ):
+        raise AuditError("proposal review repository owner ID is not authoritative")
     if requirements.get("base_branch") != "main":
         raise AuditError("proposal review base branch is not authoritative")
     minimum = requirements.get("minimum_non_author_reviews")
@@ -1119,6 +1214,66 @@ def _load_requirements(manifest_path: Path) -> dict[str, Any]:
         raise AuditError("proposal security-review marker is not authoritative")
     if requirements.get("authoritative_audit") != "scripts/audit_semantic_provider_proposal.py":
         raise AuditError("proposal authoritative-audit path is not fixed")
+    return requirements
+
+
+def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
+    raw = _read_regular(manifest_path, MAX_JSON_BYTES, "proposal manifest")
+    value = _decode_json(raw, "proposal manifest")
+    release_gates = value.get("release_gates") if type(value) is dict else None
+    if type(release_gates) is not dict or set(release_gates) != {V015_RELEASE_TAG}:
+        raise AuditError("proposal manifest has malformed release gates")
+    requirements = release_gates.get(V015_RELEASE_TAG)
+    expected_fields = {
+        "repository",
+        "repository_id",
+        "repository_owner_id",
+        "base_branch",
+        "evidence_source",
+        "candidate_identity",
+        "minimum_non_author_reviews",
+        "maximum_review_age_days",
+        "security_review_required",
+        "security_review_marker",
+        "required_attestations",
+        "exact_commit_required",
+        "exact_tree_required",
+        "resolved_threads_required",
+        "no_pending_review_requests",
+        "authoritative_audit",
+    }
+    if type(requirements) is not dict or set(requirements) != expected_fields:
+        raise AuditError("v0.15 release-review requirements are malformed")
+    expected_values = {
+        "repository": "yzm1/boundver",
+        "repository_id": 1226008327,
+        "repository_owner_id": 22440724,
+        "base_branch": "main",
+        "evidence_source": "github-exact-tree-review/v1",
+        "candidate_identity": "reviewed-head-tree-equals-release-tree",
+        "minimum_non_author_reviews": 2,
+        "maximum_review_age_days": 14,
+        "security_review_required": True,
+        "security_review_marker": V015_RELEASE_MARKER,
+        "exact_commit_required": True,
+        "exact_tree_required": True,
+        "resolved_threads_required": True,
+        "no_pending_review_requests": True,
+        "authoritative_audit": "scripts/audit_semantic_provider_proposal.py",
+    }
+    for field, expected in expected_values.items():
+        actual = requirements.get(field)
+        if actual != expected or type(actual) is not type(expected):
+            raise AuditError(
+                f"v0.15 release-review requirement {field} is not authoritative"
+            )
+    attestations = requirements.get("required_attestations")
+    if (
+        type(attestations) is not list
+        or any(type(item) is not str for item in attestations)
+        or tuple(attestations) != V015_RELEASE_ATTESTATIONS
+    ):
+        raise AuditError("v0.15 release-review attestations are not authoritative")
     return requirements
 
 
@@ -1172,6 +1327,40 @@ def _local_record(repo: Path) -> tuple[str, str, str]:
     return record_commit, parent, local_tree
 
 
+def _local_release_record(repo: Path, release_sha: str) -> tuple[str, str, str]:
+    release_sha = _sha(release_sha, "release SHA")
+    dirty = _git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=no",
+    )
+    if dirty:
+        raise AuditError("release candidate has tracked uncommitted changes")
+    head = _sha(
+        _git(repo, "rev-parse", "--verify", "HEAD^{commit}")
+        .decode("ascii", "strict")
+        .strip(),
+        "local HEAD",
+    )
+    if head != release_sha:
+        raise AuditError("release SHA does not equal local HEAD")
+    parent = _sha(
+        _git(repo, "rev-parse", f"{release_sha}^1")
+        .decode("ascii", "strict")
+        .strip(),
+        "release record parent",
+    )
+    local_tree = _sha(
+        _git(repo, "rev-parse", f"{release_sha}^{{tree}}")
+        .decode("ascii", "strict")
+        .strip(),
+        "local release tree",
+    )
+    return release_sha, parent, local_tree
+
+
 def _stable_digest(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -1190,7 +1379,13 @@ def _parser() -> argparse.ArgumentParser:
         choices=("accepted", "v0.15-work", "v0.15-release"),
         default="accepted",
     )
-    parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument("--release-sha")
+    parser.add_argument("--release-tag")
+    parser.add_argument(
+        "--format",
+        choices=("text", "json", "expiry"),
+        default="text",
+    )
     return parser
 
 
@@ -1198,6 +1393,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     repo = args.repo.resolve()
     try:
+        release_gate = args.gate == "v0.15-release"
+        if args.format == "expiry" and not release_gate:
+            raise AuditError("expiry output is valid only for the v0.15-release gate")
+        if release_gate:
+            if args.release_tag != V015_RELEASE_TAG:
+                raise AuditError(
+                    f"v0.15 release audit requires --release-tag {V015_RELEASE_TAG}"
+                )
+            release_sha = _sha(args.release_sha, "release SHA")
+            release_record = _local_release_record(repo, release_sha)
+        else:
+            if args.release_sha is not None or args.release_tag is not None:
+                raise AuditError(
+                    "release identity arguments are valid only for the v0.15-release gate"
+                )
+            release_record = None
         record_commit, record_parent, local_tree = _local_record(repo)
         with tempfile.TemporaryDirectory(
             prefix="boundver-semantic-proposal-audit-"
@@ -1225,15 +1436,62 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             if first != second:
                 raise AuditError("GitHub proposal-review state changed during the audit")
+            release_first = None
+            release_review_result = None
+            if release_record is not None:
+                release_requirements = _load_release_requirements(manifest_path)
+                release_commit, release_parent, release_tree = release_record
+                release_first = collect_snapshot(
+                    client,
+                    release_requirements["repository"],
+                    release_requirements["base_branch"],
+                    release_commit,
+                    release_parent,
+                    release_tree,
+                )
+                release_second = collect_snapshot(
+                    client,
+                    release_requirements["repository"],
+                    release_requirements["base_branch"],
+                    release_commit,
+                    release_parent,
+                    release_tree,
+                )
+                if release_first != release_second:
+                    raise AuditError(
+                        "GitHub release-review state changed during the audit"
+                    )
             evaluated_at = datetime.now(timezone.utc)
             review_result = evaluate_snapshot(
                 first,
                 requirements,
                 evaluated_at=evaluated_at,
             )
+            if release_first is not None:
+                release_review_result = evaluate_snapshot(
+                    release_first,
+                    release_requirements,
+                    evaluated_at=evaluated_at,
+                    attestations=V015_RELEASE_ATTESTATIONS,
+                )
+                if (
+                    release_review_result["pull_request"]
+                    == review_result["pull_request"]
+                ):
+                    raise AuditError(
+                        "proposal acceptance and v0.15 release require separate pull requests"
+                    )
+            authority_valid_until = review_result["valid_until"]
+            if (
+                release_review_result is not None
+                and _timestamp_datetime(release_review_result["valid_until"])
+                < _timestamp_datetime(authority_valid_until)
+            ):
+                authority_valid_until = release_review_result["valid_until"]
             checker = _load_checker(validation_root)
             checker_arguments = {
                 "authoritative_review_passed": True,
+                "authoritative_release_passed": release_review_result is not None,
                 "require_accepted": args.gate == "accepted",
                 "require_v0_15_work": args.gate == "v0.15-work",
                 "require_v0_15_release": args.gate == "v0.15-release",
@@ -1248,7 +1506,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "proposal": proposal_result["proposal"],
             "gate": args.gate,
             **review_result,
-            "snapshot_sha256": _stable_digest(first),
+            "release_review": release_review_result,
+            "authority_valid_until": authority_valid_until,
+            "snapshot_sha256": _stable_digest(
+                {"proposal": first, "release": release_first}
+                if release_first is not None
+                else first
+            ),
             "verified_at": evaluated_at.isoformat().replace("+00:00", "Z"),
         }
     except (AuditError, OSError, UnicodeError, ValueError) as exc:
@@ -1259,12 +1523,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     if args.format == "json":
         print(json.dumps(result, sort_keys=True))
+    elif args.format == "expiry":
+        print(result["authority_valid_until"])
     else:
+        release_summary = ""
+        if result["release_review"] is not None:
+            release_summary = (
+                f" release-PR=#{result['release_review']['pull_request']}"
+                f" release={result['release_review']['record_commit']}"
+            )
         print(
             "Semantic-provider proposal audit passed: "
             f"gate={result['gate']} PR=#{result['pull_request']} "
             f"record={result['record_commit']} reviewers="
-            f"{','.join(result['reviewers'])} snapshot={result['snapshot_sha256']}"
+            f"{','.join(result['reviewers'])}{release_summary} "
+            f"snapshot={result['snapshot_sha256']}"
         )
     return 0
 

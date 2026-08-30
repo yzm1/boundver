@@ -183,6 +183,8 @@
       "type": "object",
       "required": [
         "repository",
+        "repository_id",
+        "repository_owner_id",
         "base_branch",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
@@ -195,8 +197,10 @@
       ],
       "properties": {
         "repository": {"const": "yzm1/boundver"},
+        "repository_id": {"const": 1226008327},
+        "repository_owner_id": {"const": 22440724},
         "base_branch": {"const": "main"},
-        "minimum_non_author_reviews": {"type": "integer", "minimum": 2},
+        "minimum_non_author_reviews": {"const": 2},
         "maximum_review_age_days": {"const": 90},
         "security_review_required": {"const": true},
         "security_review_marker": {"const": "semantic-provider-security-review/v1"},
@@ -247,34 +251,54 @@
     "releaseGate": {
       "type": "object",
       "required": [
-        "release_allowed",
-        "exact_candidate_commit",
-        "full_source_bug_scan",
-        "full_issue_audit",
-        "full_security_scan",
-        "all_blockers_closed",
-        "supported_platforms_passed",
-        "publication_gates_passed",
-        "evidence"
+        "repository",
+        "repository_id",
+        "repository_owner_id",
+        "base_branch",
+        "evidence_source",
+        "candidate_identity",
+        "minimum_non_author_reviews",
+        "maximum_review_age_days",
+        "security_review_required",
+        "security_review_marker",
+        "required_attestations",
+        "exact_commit_required",
+        "exact_tree_required",
+        "resolved_threads_required",
+        "no_pending_review_requests",
+        "authoritative_audit"
       ],
       "properties": {
-        "release_allowed": {"type": "boolean"},
-        "exact_candidate_commit": {
-          "oneOf": [
-            {"type": "null"},
-            {"type": "string", "pattern": "^[0-9a-f]{40}$"}
-          ]
-        },
-        "full_source_bug_scan": {"type": "boolean"},
-        "full_issue_audit": {"type": "boolean"},
-        "full_security_scan": {"type": "boolean"},
-        "all_blockers_closed": {"type": "boolean"},
-        "supported_platforms_passed": {"type": "boolean"},
-        "publication_gates_passed": {"type": "boolean"},
-        "evidence": {
+        "repository": {"const": "yzm1/boundver"},
+        "repository_id": {"const": 1226008327},
+        "repository_owner_id": {"const": 22440724},
+        "base_branch": {"const": "main"},
+        "evidence_source": {"const": "github-exact-tree-review/v1"},
+        "candidate_identity": {"const": "reviewed-head-tree-equals-release-tree"},
+        "minimum_non_author_reviews": {"type": "integer", "minimum": 2},
+        "maximum_review_age_days": {"const": 14},
+        "security_review_required": {"const": true},
+        "security_review_marker": {"const": "semantic-provider-v0.15-release-review/v1"},
+        "required_attestations": {
           "type": "array",
-          "items": {"type": "string", "minLength": 1}
-        }
+          "minItems": 6,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "prefixItems": [
+            {"const": "Full-source-bug-scan: passed"},
+            {"const": "Full-issue-audit: passed"},
+            {"const": "Full-security-scan: passed"},
+            {"const": "All-blockers: closed"},
+            {"const": "Supported-platforms: passed"},
+            {"const": "Publication-gates: passed"}
+          ],
+          "items": false
+        },
+        "exact_commit_required": {"const": true},
+        "exact_tree_required": {"const": true},
+        "resolved_threads_required": {"const": true},
+        "no_pending_review_requests": {"const": true},
+        "authoritative_audit": {"const": "scripts/audit_semantic_provider_proposal.py"}
       },
       "additionalProperties": false
     }

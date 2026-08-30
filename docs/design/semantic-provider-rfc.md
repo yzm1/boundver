@@ -247,8 +247,10 @@ in `spec/semantic-provider-proposal.json`.
   updated threat/evidence records.
 - **SPC-034 - Release gates consume exact evidence.** Proposal acceptance and
   full-source bug/issue/security audits are machine-checked against the exact
-  candidate commit before v0.15.0 can be promoted. An issue, paragraph, stale
-  report, or green test run for another commit is insufficient.
+  reviewed candidate tree before v0.15.0 can be promoted. The external release
+  SHA and its GitHub commit tree must match that reviewed tree. An issue,
+  paragraph, stale report, self-attestation, or green run for another tree is
+  insufficient.
 - **SPC-035 - Distribution is legally reviewable.** Every first-party/curated
   artifact and transitive dependency has machine-readable license inventory,
   required notices, source availability where required, and an explicit policy
@@ -298,6 +300,17 @@ in `spec/semantic-provider-proposal.json`.
   verifier/broker process after OS containment and hard limits are active.
   Runtime initialization may occur first only when it consumes no
   provider-controlled bytes or metadata.
+- **SPC-043 - v0.15 release authority is external and exact-tree bound.** The
+  proposal declares only immutable requirements. A separate release-candidate
+  PR supplies two fresh, non-author, write-equivalent human approvals; one
+  approval contains the exact required scan/platform/publication attestation.
+  The bounded auditor obtains that mutable state directly from GitHub twice,
+  proves the reviewed PR-head tree equals the externally supplied release
+  commit tree, and grants release authority only in memory. Local launch, tag
+  creation, pre-tag revalidation, fresh publication, and publication recovery
+  all fail closed if this evidence is absent or changes. Review-edit timestamps
+  are part of the workflow-owned mutation handoff, and the earliest proposal or
+  release-review expiry is rechecked at every tag mutation boundary.
 
 ## Architecture
 
@@ -846,7 +859,9 @@ commit touching the governed proposal surface,
 requires exactly one associated merged PR, and compares the complete reviewed
 head tree with the merge-result tree and the local tree. The record commit must
 also remain an ancestor of GitHub's current canonical `main`; a stale “merged”
-PR after history rewrite is insufficient. It queries the
+PR after history rewrite is insufficient. The textual repository owner/name,
+immutable GitHub repository ID, and immutable owner account ID must all match
+the accepted record; transfer or namespace recreation requires re-review. It queries the
 version-pinned GitHub APIs (REST `2022-11-28`, whose documented support ends
 2028-03-10) under hard per-response, aggregate-byte, request, record,
 pagination, reviewer, integer, command, and 55-second total limits; rejects
@@ -871,14 +886,15 @@ therefore cannot replace the checker, manifest, schema, CI hook, RFC, or threat
 model between identity proof and use.
 
 Gate code has a two-phase bootstrap rule. A PR may introduce or revise the
-auditor, checker, or CI hook only while implementation remains blocked. A later
-acceptance commit must preserve those three bootstrap blobs exactly from its
+auditor, checker, CI hook, local release launcher, release-tag workflow, or
+publication workflow only while implementation remains blocked. A later
+acceptance commit must preserve those six bootstrap blobs exactly from its
 first parent, and that parent must equal GitHub's recorded reviewed-PR base
 commit; otherwise the authoritative audit fails. This proves the comparison is
-against pre-PR gate code rather than an earlier commit hidden in a rebase. Any gate-code revision
-therefore requires a blocked gate-change PR followed by a separate reviewed
-acceptance PR. The acceptance review binds the resulting complete tree, not
-just the small declaration diff.
+against pre-PR gate code rather than an earlier commit hidden in a rebase. Any
+gate-code revision therefore requires a blocked gate-change PR followed by a
+separate reviewed acceptance PR. The acceptance review binds the resulting
+complete tree, not just the small declaration diff.
 
 The GitHub credential needs only repository Metadata, Contents, and Pull
 requests read access. The audit is a read-only observation and must run from a
@@ -932,8 +948,45 @@ entire then-current source, tests, scripts, workflows, Action, container,
 schemas, docs, packaging, and release automation must receive fresh bug, issue,
 and security scans. Every finding must be triaged, release blockers closed, and
 the exact candidate rerun through full supported-platform and publication
-gates. The release script must enforce exact-commit evidence rather than rely on
-this paragraph or an informal assertion.
+gates.
+
+The release candidate must be the merge result of a separate PR into `main`.
+Its reviewed head tree must be byte-identical to the release commit tree, and
+the release commit's first parent must be the PR's recorded base commit. Within
+14 days before promotion, at least two distinct non-author humans with current
+`write`, `maintain`, or `admin` permission must approve that exact PR head. All
+threads must be resolved, no review requests may remain, and the latest
+decisive review from each counted reviewer must still be an approval. At least
+one counted approval body must contain exactly these non-empty lines, in order:
+
+```text
+semantic-provider-v0.15-release-review/v1
+Reviewed-commit: <release PR head SHA>
+Full-source-bug-scan: passed
+Full-issue-audit: passed
+Full-security-scan: passed
+All-blockers: closed
+Supported-platforms: passed
+Publication-gates: passed
+Verdict: approved
+```
+
+`scripts/audit_semantic_provider_proposal.py --gate v0.15-release` accepts the
+release tag and SHA as external inputs, captures two identical bounded GitHub
+snapshots, and proves the tree/ancestry/review bindings. It never accepts scan
+booleans, reviewer names, or a candidate SHA embedded in the proposal manifest.
+The local release launcher enforces this gate, the tag workflow enforces it
+before candidate verification and again immediately before mutation authority,
+and the publish workflow enforces it for both fresh and resumed publication.
+Removing or weakening those calls is itself a governed bootstrap change that
+invalidates proposal acceptance. The read-only tag job hands the minimum of the
+proposal-review and release-review validity windows to the write-token job;
+that job also recomputes a workflow-owned digest containing review bodies,
+latest states, edit timestamps, roles, requests, and threads before each tag
+mutation boundary. An identical-text post-audit edit or a review crossing its
+freshness deadline therefore aborts promotion. The final check reserves a
+five-minute safety margin and the tag push has a 60-second hard timeout, so the
+approval cannot cross its deadline during an unbounded network operation.
 
 ## Rollout
 

@@ -30,8 +30,16 @@ CONTROL_RE = re.compile(r"^SPC-[0-9]{3}$")
 VERIFICATION_RE = re.compile(r"^SPV-[0-9]{3}$")
 ROUND_RE = re.compile(r"^RTR-[0-9]{3}$")
 FINDING_RE = re.compile(r"^RTF-[0-9]{3}$")
-SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 URL_RE = re.compile(r"^https://[^\s]+$")
+
+V015_RELEASE_ATTESTATIONS = (
+    "Full-source-bug-scan: passed",
+    "Full-issue-audit: passed",
+    "Full-security-scan: passed",
+    "All-blockers: closed",
+    "Supported-platforms: passed",
+    "Publication-gates: passed",
+)
 
 ROOT_FIELDS = {
     "$schema",
@@ -282,7 +290,21 @@ def validate_proposal(
     require_v0_15_work: bool = False,
     require_v0_15_release: bool = False,
     authoritative_review_passed: bool = False,
+    authoritative_release_passed: bool = False,
 ) -> dict[str, Any]:
+    for value, field in (
+        (require_accepted, "require_accepted"),
+        (require_v0_15_work, "require_v0_15_work"),
+        (require_v0_15_release, "require_v0_15_release"),
+        (authoritative_review_passed, "authoritative_review_passed"),
+        (authoritative_release_passed, "authoritative_release_passed"),
+    ):
+        if type(value) is not bool:
+            raise ProposalError(f"{field} must be a boolean")
+    if authoritative_release_passed and not authoritative_review_passed:
+        raise ProposalError(
+            "authoritative release evidence cannot bypass proposal review"
+        )
     manifest = _load_json(manifest_path)
     unknown = set(manifest) - ROOT_FIELDS
     missing = ROOT_FIELDS - set(manifest)
@@ -337,6 +359,124 @@ def validate_proposal(
     )
     if ci_text.count(coverage_gate) != 1:
         raise ProposalError("CI must enforce the semantic-provider gate coverage floor")
+    create_tag_text = _read_document(
+        repo,
+        ".github/workflows/create-release-tag.yml",
+        "semantic-provider release-tag gate",
+    )
+    publish_workflow_text = _read_document(
+        repo,
+        ".github/workflows/publish.yml",
+        "semantic-provider publication gate",
+    )
+    publish_launcher_text = _read_document(
+        repo,
+        "scripts/publish_release.py",
+        "semantic-provider local release gate",
+    )
+    release_audit_script = (
+        '"$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py"'
+    )
+    release_audit_arguments = (
+        "--gate v0.15-release",
+        '--release-tag "$RELEASE_TAG"',
+        '--release-sha "$RELEASE_SHA"',
+    )
+    release_condition = 'if [[ "$RELEASE_TAG" == v0.15.0 ]]; then'
+    regular_review_command = (
+        'bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"'
+    )
+    create_semantic_positions = [
+        match.start()
+        for match in re.finditer(re.escape(release_audit_script), create_tag_text)
+    ]
+    create_review_positions = [
+        match.start()
+        for match in re.finditer(re.escape(regular_review_command), create_tag_text)
+    ]
+    create_audit_invocations = [
+        create_tag_text[position : position + 512]
+        for position in create_semantic_positions
+    ]
+    tag_mutation_position = create_tag_text.find(
+        'git tag "$RELEASE_TAG" "$RELEASE_SHA"'
+    )
+    if (
+        len(create_semantic_positions) != 2
+        or any(
+            invocation.count(argument) != 1
+            for invocation in create_audit_invocations
+            for argument in release_audit_arguments
+        )
+        or create_tag_text.count(release_condition) != 3
+        or create_tag_text.count("clean_python_cwd=$(mktemp -d)") < 2
+        or create_tag_text.count("--format expiry") != 1
+        or create_tag_text.count(
+            "semantic-review-valid-until: "
+            "${{ steps.mutable-state.outputs.semantic-review-valid-until }}"
+        )
+        != 1
+        or "fullDatabaseId lastEditedAt" not in create_tag_text
+        or '"repository_id": repository_id' not in create_tag_text
+        or 'review["last_edited_at"] = review_edit_times[review["id"]]' not in create_tag_text
+        or create_tag_text.count("require_semantic_review_fresh") < 4
+        or create_tag_text.count("now_epoch + 300 >= expiry_epoch") != 1
+        or create_tag_text.count("timeout --signal=KILL 60s") != 1
+        or len(create_review_positions) != 2
+        or any(
+            semantic <= review
+            for semantic, review in zip(
+                create_semantic_positions, create_review_positions
+            )
+        )
+        or tag_mutation_position < 0
+        or create_semantic_positions[-1] >= tag_mutation_position
+    ):
+        raise ProposalError(
+            "release-tag workflow must enforce the v0.15 exact-tree audit twice before tagging"
+        )
+    publish_semantic_position = publish_workflow_text.find(release_audit_script)
+    publish_review_position = publish_workflow_text.find(regular_review_command)
+    publish_audit_invocation = publish_workflow_text[
+        publish_semantic_position : publish_semantic_position + 512
+    ]
+    if (
+        publish_workflow_text.count(release_audit_script) != 1
+        or any(
+            publish_audit_invocation.count(argument) != 1
+            for argument in release_audit_arguments
+        )
+        or publish_workflow_text.count(release_condition) != 1
+        or publish_workflow_text.count("clean_python_cwd=$(mktemp -d)") < 1
+        or publish_workflow_text.count(
+            "Require exact-tree semantic-provider release evidence"
+        )
+        != 1
+        or publish_review_position < 0
+        or publish_semantic_position <= publish_review_position
+    ):
+        raise ProposalError(
+            "publish workflow must enforce the v0.15 exact-tree audit before publication"
+        )
+    launcher_audit = '"scripts/audit_semantic_provider_proposal.py",'
+    launcher_semantic_position = publish_launcher_text.find(launcher_audit)
+    launcher_review_position = publish_launcher_text.find(
+        '"scripts/audit_release_reviews.sh"'
+    )
+    launcher_tooling_position = publish_launcher_text.find(
+        "tooling = Path(temporary)"
+    )
+    if (
+        publish_launcher_text.count('if tag == "v0.15.0":') != 1
+        or publish_launcher_text.count(launcher_audit) != 1
+        or launcher_review_position < 0
+        or launcher_tooling_position < 0
+        or launcher_semantic_position <= launcher_review_position
+        or launcher_semantic_position >= launcher_tooling_position
+    ):
+        raise ProposalError(
+            "local release launcher must enforce the v0.15 exact-tree audit before candidate checks"
+        )
 
     threats = _unique_ids(_list(manifest.get("threats"), "threats"), "threats", THREAT_RE)
     controls = _unique_ids(_list(manifest.get("controls"), "controls"), "controls", CONTROL_RE)
@@ -501,6 +641,8 @@ def validate_proposal(
     )
     expected_review_fields = {
         "repository",
+        "repository_id",
+        "repository_owner_id",
         "base_branch",
         "minimum_non_author_reviews",
         "maximum_review_age_days",
@@ -515,6 +657,16 @@ def validate_proposal(
         raise ProposalError("review_requirements has unknown or missing fields")
     if review_requirements.get("repository") != "yzm1/boundver":
         raise ProposalError("review_requirements.repository is invalid")
+    if (
+        review_requirements.get("repository_id") != 1226008327
+        or type(review_requirements.get("repository_id")) is not int
+    ):
+        raise ProposalError("review_requirements.repository_id is invalid")
+    if (
+        review_requirements.get("repository_owner_id") != 22440724
+        or type(review_requirements.get("repository_owner_id")) is not int
+    ):
+        raise ProposalError("review_requirements.repository_owner_id is invalid")
     if review_requirements.get("base_branch") != "main":
         raise ProposalError("review_requirements.base_branch is invalid")
     minimum_reviews = review_requirements.get("minimum_non_author_reviews")
@@ -623,49 +775,56 @@ def validate_proposal(
         raise ProposalError("release_gates must contain exactly v0.15.0")
     release = _object(release_gates["v0.15.0"], "release_gates.v0.15.0")
     release_fields = {
-        "release_allowed",
-        "exact_candidate_commit",
-        "full_source_bug_scan",
-        "full_issue_audit",
-        "full_security_scan",
-        "all_blockers_closed",
-        "supported_platforms_passed",
-        "publication_gates_passed",
-        "evidence",
+        "repository",
+        "repository_id",
+        "repository_owner_id",
+        "base_branch",
+        "evidence_source",
+        "candidate_identity",
+        "minimum_non_author_reviews",
+        "maximum_review_age_days",
+        "security_review_required",
+        "security_review_marker",
+        "required_attestations",
+        "exact_commit_required",
+        "exact_tree_required",
+        "resolved_threads_required",
+        "no_pending_review_requests",
+        "authoritative_audit",
     }
     if set(release) != release_fields:
         raise ProposalError("release_gates.v0.15.0 has unknown or missing fields")
-    release_allowed = _exact_bool(
-        release.get("release_allowed"), "release_gates.v0.15.0.release_allowed"
+    expected_release_values = {
+        "repository": "yzm1/boundver",
+        "repository_id": 1226008327,
+        "repository_owner_id": 22440724,
+        "base_branch": "main",
+        "evidence_source": "github-exact-tree-review/v1",
+        "candidate_identity": "reviewed-head-tree-equals-release-tree",
+        "minimum_non_author_reviews": 2,
+        "maximum_review_age_days": 14,
+        "security_review_required": True,
+        "security_review_marker": "semantic-provider-v0.15-release-review/v1",
+        "exact_commit_required": True,
+        "exact_tree_required": True,
+        "resolved_threads_required": True,
+        "no_pending_review_requests": True,
+        "authoritative_audit": "scripts/audit_semantic_provider_proposal.py",
+    }
+    for field, expected in expected_release_values.items():
+        if release.get(field) != expected or type(release.get(field)) is not type(expected):
+            raise ProposalError(
+                f"release_gates.v0.15.0.{field} is not authoritative"
+            )
+    attestations = _validate_evidence(
+        release.get("required_attestations"),
+        "release_gates.v0.15.0.required_attestations",
+        required=True,
     )
-    release_checks = [
-        _exact_bool(release.get(field), f"release_gates.v0.15.0.{field}")
-        for field in (
-            "full_source_bug_scan",
-            "full_issue_audit",
-            "full_security_scan",
-            "all_blockers_closed",
-            "supported_platforms_passed",
-            "publication_gates_passed",
+    if tuple(attestations) != V015_RELEASE_ATTESTATIONS:
+        raise ProposalError(
+            "release_gates.v0.15.0.required_attestations are not authoritative"
         )
-    ]
-    candidate = release.get("exact_candidate_commit")
-    if candidate is not None and (type(candidate) is not str or SHA_RE.fullmatch(candidate) is None):
-        raise ProposalError("release_gates.v0.15.0.exact_candidate_commit is invalid")
-    release_evidence = _validate_evidence(
-        release.get("evidence"),
-        "release_gates.v0.15.0.evidence",
-        required=release_allowed,
-    )
-    if release_allowed and (
-        status != "accepted"
-        or not implementation_allowed
-        or not v0_15_work_allowed
-        or candidate is None
-        or not all(release_checks)
-        or not release_evidence
-    ):
-        raise ProposalError("v0.15.0 release cannot be allowed before every exact gate passes")
 
     static_acceptance_blockers = []
     if status != "accepted":
@@ -701,6 +860,7 @@ def validate_proposal(
         accepted_requirements.append(
             "authoritative exact-commit GitHub review audit has not passed"
         )
+    release_allowed = authoritative_release_passed and not accepted_requirements
 
     if status == "accepted" and static_acceptance_blockers:
         raise ProposalError(
@@ -735,6 +895,7 @@ def validate_proposal(
         "v0_15_work_allowed": v0_15_work_allowed,
         "v0_15_release_allowed": release_allowed,
         "authoritative_review_passed": authoritative_review_passed,
+        "authoritative_release_passed": authoritative_release_passed,
         "threats": len(threats),
         "controls": len(controls),
         "verifications": len(verifications),

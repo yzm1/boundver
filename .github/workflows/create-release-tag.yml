@@ -50,7 +50,8 @@ env:
     READ_CHUNK_BYTES = 64 * 1024
     TRUSTED_CODEX_BOT_ID = 199175422
     GITHUB_TIMESTAMP_RE = re.compile(
-        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+        r"(?:\.[0-9]{1,9})?Z"
     )
     consumed_api_bytes = 0
 
@@ -312,11 +313,15 @@ env:
     repository_record = rest(f"repos/{repository}")
     if not isinstance(repository_record, dict):
         raise SystemExit("GitHub returned malformed repository metadata")
+    repository_id = repository_record.get("id")
+    if type(repository_id) is not int or repository_id <= 0:
+        raise SystemExit("GitHub returned malformed repository identity")
     repository_owner = actor(repository_record.get("owner"))
     if repository_owner["login"].casefold() != owner.casefold():
         raise SystemExit("GitHub repository ownership changed")
 
     thread_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviewDecision reviewThreads(first:100,after:$endCursor){nodes{id isResolved} pageInfo{hasNextPage endCursor}}}}}"""
+    review_edit_query = """query($owner:String!,$repository:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repository){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{fullDatabaseId lastEditedAt} pageInfo{hasNextPage endCursor}}}}}"""
     pull_requests = {}
     for number in sorted(release_prs):
         pr = rest(f"repos/{repository}/pulls/{number}")
@@ -387,6 +392,62 @@ env:
                 evidence_candidates.add(commit_id.lower())
             if state == "APPROVED" and reviewer["type"] == "User":
                 permission_logins.add(reviewer["login"])
+
+        review_edit_times = {}
+        cursor = None
+        for page_index in range(MAX_PAGES):
+            arguments = [
+                "graphql", "-f", f"query={review_edit_query}",
+                "-f", f"owner={owner}", "-f", f"repository={repository_name}",
+                "-F", f"number={number}",
+            ]
+            if cursor is not None:
+                arguments.extend(("-f", f"endCursor={cursor}"))
+            response = api_json(arguments)
+            try:
+                connection = response["data"]["repository"]["pullRequest"]["reviews"]
+                nodes = connection["nodes"]
+                page_info = connection["pageInfo"]
+            except (KeyError, TypeError) as exc:
+                raise SystemExit("GitHub returned malformed review-edit data") from exc
+            if not isinstance(nodes, list) or not isinstance(page_info, dict):
+                raise SystemExit("GitHub returned malformed review-edit pagination")
+            if len(nodes) > 100 or len(review_edit_times) + len(nodes) > MAX_RECORDS:
+                raise SystemExit("GitHub returned too many review-edit records")
+            for node in nodes:
+                if not isinstance(node, dict) or set(node) != {
+                    "fullDatabaseId", "lastEditedAt",
+                }:
+                    raise SystemExit("GitHub returned a malformed review-edit record")
+                raw_identifier = node.get("fullDatabaseId")
+                last_edited_at = node.get("lastEditedAt")
+                if (not isinstance(raw_identifier, str) or
+                        not raw_identifier.isascii() or
+                        not raw_identifier.isdecimal() or
+                        len(raw_identifier) > 19):
+                    raise SystemExit("GitHub returned an invalid review-edit database ID")
+                review_id = int(raw_identifier)
+                if (review_id <= 0 or review_id in review_edit_times or
+                        (last_edited_at is not None and
+                         (not isinstance(last_edited_at, str) or
+                          GITHUB_TIMESTAMP_RE.fullmatch(last_edited_at) is None))):
+                    raise SystemExit("GitHub returned a malformed review-edit record")
+                review_edit_times[review_id] = last_edited_at
+            has_next = page_info.get("hasNextPage")
+            next_cursor = page_info.get("endCursor")
+            if type(has_next) is not bool:
+                raise SystemExit("GitHub returned malformed review-edit pagination")
+            if not has_next:
+                break
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor == cursor:
+                raise SystemExit("GitHub returned a malformed review-edit cursor")
+            cursor = next_cursor
+        else:
+            raise SystemExit("GitHub returned too many review-edit pages")
+        if set(review_edit_times) != review_ids:
+            raise SystemExit("GitHub REST and GraphQL review identities differ")
+        for review in reviews:
+            review["last_edited_at"] = review_edit_times[review["id"]]
 
         comments = []
         comment_ids = set()
@@ -535,6 +596,7 @@ env:
         "previous_tag": previous_tag,
         "commits": commits,
         "associations": associations,
+        "repository_id": repository_id,
         "repository_owner": repository_owner,
         "pull_requests": pull_requests,
     }
@@ -1118,6 +1180,14 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
+          if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+            clean_python_cwd=$(mktemp -d)
+            (cd "$clean_python_cwd" && python3 -I \
+              "$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py" \
+              --gate v0.15-release \
+              --release-tag "$RELEASE_TAG" \
+              --release-sha "$RELEASE_SHA")
+          fi
 
       - name: Require exact release notes and public copy before tagging
         shell: bash
@@ -1164,6 +1234,7 @@ jobs:
       pull-requests: read
     outputs:
       review-state-digest: ${{ steps.mutable-state.outputs.review-state-digest }}
+      semantic-review-valid-until: ${{ steps.mutable-state.outputs.semantic-review-valid-until }}
     steps:
       - name: Checkout the exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1204,10 +1275,23 @@ jobs:
           fi
           git fetch --force --tags origin
           clean_python_cwd=$(mktemp -d)
+          semantic_review_valid_until=not-required
           review_state_before=$(cd "$clean_python_cwd" && python3 -I -c \
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
           bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
+          if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+            semantic_review_valid_until=$(cd "$clean_python_cwd" && python3 -I \
+              "$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py" \
+              --gate v0.15-release \
+              --release-tag "$RELEASE_TAG" \
+              --release-sha "$RELEASE_SHA" \
+              --format expiry)
+            if [[ ! "$semantic_review_valid_until" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$ ]]; then
+              echo "Semantic-provider review expiry is malformed" >&2
+              exit 1
+            fi
+          fi
           review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
@@ -1244,6 +1328,7 @@ jobs:
             exit 1
           fi
           echo "review-state-digest=$review_state_digest" >> "$GITHUB_OUTPUT"
+          echo "semantic-review-valid-until=$semantic_review_valid_until" >> "$GITHUB_OUTPUT"
 
   tag:
     name: Create the exact version tag
@@ -1266,11 +1351,33 @@ jobs:
         shell: bash
         env:
           EXPECTED_REVIEW_STATE_DIGEST: ${{ needs.revalidate-release-state.outputs.review-state-digest }}
+          SEMANTIC_REVIEW_VALID_UNTIL: ${{ needs.revalidate-release-state.outputs.semantic-review-valid-until }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.verify-candidate.outputs.release-sha }}
           RELEASE_TAG: ${{ needs.verify-candidate.outputs.release-tag }}
         run: |
           set -euo pipefail
+          require_semantic_review_fresh() {
+            if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+              if [[ ! "$SEMANTIC_REVIEW_VALID_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$ ]]; then
+                echo "Semantic-provider review expiry handoff is malformed" >&2
+                exit 1
+              fi
+              expiry_epoch=$(date -u -d "$SEMANTIC_REVIEW_VALID_UNTIL" +%s)
+              now_epoch=$(date -u +%s)
+              if [[ ! "$expiry_epoch" =~ ^[0-9]+$ || ! "$now_epoch" =~ ^[0-9]+$ ]]; then
+                echo "Semantic-provider review clock output is malformed" >&2
+                exit 1
+              fi
+              if (( now_epoch + 300 >= expiry_epoch )); then
+                echo "Semantic-provider release reviews expired before tag mutation" >&2
+                exit 1
+              fi
+            elif [[ "$SEMANTIC_REVIEW_VALID_UNTIL" != not-required ]]; then
+              echo "Unexpected semantic-provider review expiry handoff" >&2
+              exit 1
+            fi
+          }
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || \
                 ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Validated tag mutation inputs are malformed" >&2
@@ -1292,6 +1399,7 @@ jobs:
           current_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          require_semantic_review_fresh
           if [[ ! "$EXPECTED_REVIEW_STATE_DIGEST" =~ ^[0-9a-f]{64}$ || \
                 "$current_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
             echo "Release review state changed after the read-only audit; rerun the workflow" >&2
@@ -1318,6 +1426,7 @@ jobs:
           current_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          require_semantic_review_fresh
           if [[ "$current_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
             echo "Release review state changed at the tag push boundary; rerun the workflow" >&2
             exit 1
@@ -1342,12 +1451,14 @@ jobs:
           authenticated_review_state_digest=$(cd "$clean_python_cwd" && python3 -I -c \
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
+          require_semantic_review_fresh
           if [[ ! "$authenticated_review_state_digest" =~ ^[0-9a-f]{64}$ || \
                 "$authenticated_review_state_digest" != "$EXPECTED_REVIEW_STATE_DIGEST" ]]; then
             echo "Release review state changed after tag/auth setup; rerun the workflow" >&2
             exit 1
           fi
-          git -c core.hooksPath=/dev/null push origin "refs/tags/$RELEASE_TAG"
+          timeout --signal=KILL 60s \
+            git -c core.hooksPath=/dev/null push origin "refs/tags/$RELEASE_TAG"
 
   dispatch-publication:
     name: Dispatch publication exactly once

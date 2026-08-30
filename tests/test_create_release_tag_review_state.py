@@ -252,6 +252,9 @@ class CreateTagReviewStateContracts(unittest.TestCase):
             "base_repository.casefold() != repository.casefold()",
             program,
         )
+        self.assertIn("fullDatabaseId lastEditedAt", program)
+        self.assertIn("GitHub REST and GraphQL review identities differ", program)
+        self.assertIn('"repository_id": repository_id', program)
 
     def test_snapshot_normalizes_only_the_local_candidate_tag(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]

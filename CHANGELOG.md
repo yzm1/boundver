@@ -13,6 +13,12 @@ All notable changes to this project are documented here. The format follows
   blocked until exact-commit proposal reviews pass, separates future capability-confined
   WebAssembly providers from legacy trusted in-process Python, and records the
   mandatory full-source bug, issue, and security gates for v0.15.0 promotion.
+  The v0.15 gate is enforced by the local launcher and tag/publication
+  workflows using fresh external reviews bound to the exact release tree;
+  self-attested scan booleans or candidate identifiers cannot grant authority.
+  Review edits and the earliest proposal/release approval expiry remain bound
+  through the final tag-mutation handoff, and GitHub repository/owner numeric
+  identities prevent namespace transfer or recreation from inheriting evidence.
 
 ### Fixed
 
