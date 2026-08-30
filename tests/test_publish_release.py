@@ -73,6 +73,25 @@ def _main_ruleset_detail() -> dict:
     }
 
 
+def _main_branch_detail(sha: str = SHA) -> dict:
+    return {
+        "name": "main",
+        "commit": {"sha": sha},
+        "protected": True,
+        "protection": {
+            "enabled": False,
+            "required_status_checks": {
+                "enforcement_level": "off",
+                "contexts": [],
+                "checks": [],
+            },
+        },
+        "protection_url": (
+            "https://api.github.com/repos/yzm1/boundver/branches/main/protection"
+        ),
+    }
+
+
 def _load_script():
     spec = importlib.util.spec_from_file_location("publish_release", SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - import invariant
@@ -1621,6 +1640,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 }
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
+            if endpoint.endswith("/branches/main"):
+                return _main_branch_detail()
             if endpoint.endswith("/rulesets?includes_parents=true"):
                 return [
                     {"id": 7, "target": "tag", "enforcement": "active"},
@@ -2277,6 +2298,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 }
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
+            if endpoint.endswith("/branches/main"):
+                return _main_branch_detail()
             if endpoint.endswith("/rulesets?includes_parents=true"):
                 return [
                     {"id": 7, "target": "tag", "enforcement": "active"},
@@ -2570,6 +2593,27 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             },
         }
         publisher._validate_main_branch_rulesets([valid, unrelated], contract)
+
+    def test_classic_main_protection_must_be_absent(self):
+        publisher = _load_script()
+        valid = _main_branch_detail()
+        publisher._validate_no_classic_main_protection(valid, SHA)
+
+        classic = copy.deepcopy(valid)
+        classic["protection"]["enabled"] = True
+        classic["protection"]["required_status_checks"] = {
+            "enforcement_level": "everyone",
+            "contexts": ["stale"],
+            "checks": [{"context": "stale", "app_id": 15368}],
+        }
+        wrong_sha = copy.deepcopy(valid)
+        wrong_sha["commit"]["sha"] = "f" * 40
+        for name, value in (("classic", classic), ("wrong SHA", wrong_sha)):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                publisher.GateError,
+                "classic main branch protection",
+            ):
+                publisher._validate_no_classic_main_protection(value, SHA)
 
     def test_release_environments_require_real_reviewers(self):
         publisher = _load_script()

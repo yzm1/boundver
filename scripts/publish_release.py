@@ -72,6 +72,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
 
 REPOSITORY = "yzm1/boundver"
 HOMEBREW_REPOSITORY = "yzm1/homebrew-boundver"
+GITHUB_API_ROOT = "https://api.github.com"
 REVIEW_TOKEN_ENV = "BOUNDVER_RELEASE_REVIEW_TOKEN"
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
@@ -1002,6 +1003,38 @@ def _load_main_ruleset_contract(repo: Path) -> dict:
     return value
 
 
+def _validate_no_classic_main_protection(value: object, sha: str) -> None:
+    """Reject classic branch protection layered beside the canonical ruleset."""
+    if not isinstance(value, dict) or value.get("name") != "main":
+        raise GateError("GitHub returned malformed main branch protection state")
+    commit = value.get("commit")
+    protection = value.get("protection")
+    checks = (
+        protection.get("required_status_checks")
+        if isinstance(protection, dict)
+        else None
+    )
+    if (
+        not isinstance(commit, dict)
+        or commit.get("sha") != sha
+        or value.get("protected") is not True
+        or value.get("protection_url")
+        != f"{GITHUB_API_ROOT}/repos/{REPOSITORY}/branches/main/protection"
+        or not isinstance(protection, dict)
+        or protection.get("enabled") is not False
+        or checks
+        != {
+            "enforcement_level": "off",
+            "contexts": [],
+            "checks": [],
+        }
+    ):
+        raise GateError(
+            "classic main branch protection must be absent; the canonical ruleset "
+            "must be the complete effective policy"
+        )
+
+
 def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
     fields = _git(repo, "ls-remote", remote, ref).split()
     if not fields:
@@ -1468,6 +1501,10 @@ def _github_controls(
     immutable = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/immutable-releases")
     if not isinstance(immutable, dict) or immutable.get("enabled") is not True:
         raise GateError("immutable GitHub Releases are not enabled")
+    _validate_no_classic_main_protection(
+        _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/branches/main"),
+        sha,
+    )
     rulesets = _gh_paginated_list(
         repo,
         f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100",

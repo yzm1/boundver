@@ -65,8 +65,8 @@ All notable changes to this project are documented here. The format follows
   pull requests, squash-only merges, and resolved conversations while blocking
   deletion and force pushes. Release promotion compares the complete effective
   live policy with the checked-in contract and rejects overlapping active
-  rulesets, stale statuses, extra merge methods, review-policy drift, and bypass
-  changes.
+  rulesets, additive classic branch protection, stale statuses, extra merge
+  methods, review-policy drift, and bypass changes.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined
