@@ -73,6 +73,19 @@ class TerminalSafeOutputTests(unittest.TestCase):
         )
         return temporary, root
 
+    def test_argparse_error_escapes_caller_controlled_argument(self):
+        temporary, root = self._repository()
+        self.addCleanup(temporary.cleanup)
+        malicious = "--bad\x1b[2J\n::warning title=forged::not real\x9b31m"
+
+        code, stdout, stderr = _run_cli(root, "verify", malicious)
+
+        self.assertEqual(code, core.EXIT_USAGE)
+        self.assertEqual(stdout, "")
+        self.assert_no_forged_output(stderr)
+        self.assertIn("--bad\\x1b[2J\\n::warning", stderr)
+        self.assertIn("\\x9b31m", stderr)
+
     def test_generate_text_escapes_repository_identifiers_and_consumers(self):
         temporary, root = self._repository()
         self.addCleanup(temporary.cleanup)
