@@ -51,6 +51,8 @@ nav:
       - Why boundver?: WHY_BOUNDVER.md
       - Comparison and integrations: comparison.md
       - Public and custom providers: public-vs-custom-providers.md
+      - Semantic provider RFC: design/semantic-provider-rfc.md
+      - Semantic provider threat model: design/semantic-provider-threat-model.md
   - Operate it:
       - Reference: reference.md
       - CI cookbook: ci-cookbook.md

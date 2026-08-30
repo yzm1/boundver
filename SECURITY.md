@@ -30,6 +30,8 @@ amount of time for remediation before publishing details.
 
 ## Scope
 
-Reports about boundver's source, packaged CLI, GitHub Action, and release
-artifacts are in scope. Vulnerabilities in third-party services should be
-reported to the service owner unless boundver's integration is the cause.
+Reports about boundver's source, packaged CLI, GitHub Action, provider loading
+and isolation, maintained provider artifacts, and release artifacts are in
+scope. Vulnerabilities in third-party services or community providers should be
+reported to their owner unless boundver's integration, trust labels, sandbox,
+or curation process is the cause.

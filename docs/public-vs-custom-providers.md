@@ -28,6 +28,15 @@ its contract. For Python and TypeScript, either scope the selection narrowly
 and accept formatting noise, or supply a trusted custom provider that performs
 real export analysis.
 
+The current custom-provider interface executes explicitly trusted Python in the
+Boundver process; it is not a plugin sandbox. The proposed future semantic
+provider system deliberately uses a separate capability-confined worker and
+keeps legacy native extensions in a distinct trust tier. No implementation is
+authorized until the [semantic provider RFC](design/semantic-provider-rfc.md)
+passes its authoritative acceptance gate. Its accompanying
+[threat model](design/semantic-provider-threat-model.md) records the security
+and assurance gates.
+
 Use `path-hash` for a format-neutral raw boundary, including SQL migrations,
 protobuf definitions, or another artifact type without a named provider. It
 does not validate the selected format. The short format-specific raw names are
