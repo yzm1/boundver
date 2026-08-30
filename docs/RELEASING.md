@@ -40,11 +40,16 @@ The repository owner must configure these controls before starting a release:
   runs trusted code from the pull request's base commit after `CI` completes;
   it never executes pull-request code or consumes its artifacts. It also rejects
   any pull request that changes a workflow, the gate verifier, or the checked-in
-  ruleset contract. This keeps a pull request from weakening the policy that
-  judges it and still permits contributions from forks. Zero mandatory human
-  approvals keeps ordinary maintenance workable for the solo-owned repository;
+  ruleset contract. Those path checks use GitHub's immutable base-SHA/head-SHA
+  comparison rather than the mutable pull-request files endpoint. This keeps a
+  force-push race or pull request from weakening the policy that judges it and
+  still permits contributions from forks. Zero mandatory human approvals keeps
+  ordinary maintenance workable for the solo-owned repository;
   exact Codex and independent release review evidence is enforced separately by
-  the review auditors. The ruleset has no bypass actor.
+  the review auditors. The ruleset has no bypass actor. Release checks compare
+  its complete effective API policy with the checked-in contract, including
+  GitHub-added defaults, and reject any other active ruleset that also targets
+  `main`; an inherited or stale rule cannot be treated as harmless.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,

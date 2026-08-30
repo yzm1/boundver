@@ -108,16 +108,37 @@ def _pull(gate, *, head_repo: dict | None = None, changed_files: int = 1) -> dic
     }
 
 
+def _comparison(gate, *, files: list[dict] | None = None) -> dict:
+    files = (
+        [{"filename": "src/boundver/cli.py", "status": "modified"}]
+        if files is None
+        else files
+    )
+    path = f"{BASE_SHA}...{HEAD_SHA}"
+    return {
+        "url": f"https://api.github.com/repos/{gate.REPOSITORY}/compare/{path}",
+        "html_url": f"https://github.com/{gate.REPOSITORY}/compare/{path}",
+        "status": "identical" if not files else "ahead",
+        "ahead_by": 0 if not files else 1,
+        "behind_by": 0,
+        "total_commits": 0 if not files else 1,
+        "base_commit": {"sha": BASE_SHA},
+        "merge_base_commit": {"sha": BASE_SHA},
+        "files": files,
+    }
+
+
 def _fetcher(
     gate,
     *,
     jobs: dict | None = None,
     pull: dict | None = None,
     files: list[dict] | None = None,
+    comparison: dict | None = None,
 ):
     jobs = _jobs(gate) if jobs is None else jobs
     pull = _pull(gate) if pull is None else pull
-    files = [{"filename": "src/boundver/cli.py", "status": "modified"}] if files is None else files
+    comparison = _comparison(gate, files=files) if comparison is None else comparison
 
     def fetch(endpoint: str):
         if endpoint.startswith(
@@ -127,9 +148,10 @@ def _fetcher(
         if endpoint == f"/repos/{gate.REPOSITORY}/pulls/{PR_NUMBER}":
             return pull
         if endpoint == (
-            f"/repos/{gate.REPOSITORY}/pulls/{PR_NUMBER}/files?per_page=100&page=1"
+            f"/repos/{gate.REPOSITORY}/compare/"
+            f"{BASE_SHA}...{HEAD_SHA}?per_page=1"
         ):
-            return files
+            return comparison
         raise AssertionError(f"unexpected endpoint: {endpoint}")
 
     return fetch
@@ -230,8 +252,11 @@ class RequiredCiEvaluationTests(unittest.TestCase):
 
     def test_gate_control_changes_are_rejected_in_both_rename_directions(self) -> None:
         cases = (
+            {"filename": ".github"},
+            {"filename": ".github/workflows"},
             {"filename": ".github/workflows/ci.yml"},
             {"filename": ".github/workflows/new.yml"},
+            {"filename": "scripts"},
             {"filename": "scripts/check_required_ci_results.py"},
             {"filename": ".github/rulesets/protect-main.json"},
             {
@@ -267,6 +292,58 @@ class RequiredCiEvaluationTests(unittest.TestCase):
                         _event(self.gate), _fetcher(self.gate, pull=pull)
                     )
 
+    def test_file_policy_uses_the_immutable_validated_base_and_head(self) -> None:
+        endpoints: list[str] = []
+        delegate = _fetcher(self.gate)
+
+        def fetch(endpoint: str):
+            endpoints.append(endpoint)
+            return delegate(endpoint)
+
+        self.gate.evaluate(_event(self.gate), fetch)
+        self.assertIn(
+            f"/repos/{self.gate.REPOSITORY}/compare/"
+            f"{BASE_SHA}...{HEAD_SHA}?per_page=1",
+            endpoints,
+        )
+        self.assertFalse(any("/files?" in endpoint for endpoint in endpoints))
+
+        wrong_base = _comparison(self.gate)
+        wrong_base["merge_base_commit"] = {"sha": "c" * 40}
+        with self.assertRaisesRegex(
+            self.gate.RequiredCiGateError, "not anchored"
+        ):
+            self.gate.evaluate(
+                _event(self.gate),
+                _fetcher(self.gate, comparison=wrong_base),
+            )
+
+        wrong_pair = _comparison(self.gate)
+        wrong_pair["url"] = wrong_pair["url"].replace(HEAD_SHA, "d" * 40)
+        with self.assertRaisesRegex(
+            self.gate.RequiredCiGateError, "does not identify"
+        ):
+            self.gate.evaluate(
+                _event(self.gate),
+                _fetcher(self.gate, comparison=wrong_pair),
+            )
+
+    def test_pull_file_count_is_bounded_by_the_immutable_compare_api(self) -> None:
+        with self.assertRaisesRegex(
+            self.gate.RequiredCiGateError,
+            f"{self.gate.MAX_PULL_FILES}-file limit",
+        ):
+            self.gate.evaluate(
+                _event(self.gate),
+                _fetcher(
+                    self.gate,
+                    pull=_pull(
+                        self.gate,
+                        changed_files=self.gate.MAX_PULL_FILES + 1,
+                    ),
+                ),
+            )
+
     def test_repository_and_file_listing_fail_closed(self) -> None:
         event = _event(self.gate)
         event["repository"]["id"] = 99
@@ -275,11 +352,14 @@ class RequiredCiEvaluationTests(unittest.TestCase):
         ):
             self.gate.evaluate(event, _fetcher(self.gate))
 
+        incomplete = _comparison(self.gate)
+        incomplete["files"] = []
         with self.assertRaisesRegex(
             self.gate.RequiredCiGateError, "file listing is incomplete"
         ):
             self.gate.evaluate(
-                _event(self.gate), _fetcher(self.gate, files=[])
+                _event(self.gate),
+                _fetcher(self.gate, comparison=incomplete),
             )
 
 
