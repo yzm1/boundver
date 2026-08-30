@@ -408,25 +408,81 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
 
 
 def _ensure_lock_outside_components(
-    repo_root: Path, lock_path: Path, config: dict
+    repo_root: Path,
+    lock_path: Path,
+    config: dict,
+    *,
+    config_path: Path,
 ) -> None:
-    absolute_lock = lock_path if lock_path.is_absolute() else repo_root / lock_path
+    """Reject lock paths that can overwrite or fingerprint themselves.
+
+    Compare both lexical absolute paths and filesystem-resolved paths.  The
+    lexical comparison preserves the selected Git view when a working-tree
+    symlink differs from ``head`` or ``index``; the resolved comparison catches
+    aliases through symlinks, junctions, and other reparse points.
+    """
+
+    def normalized_paths(path: Path, label: str) -> tuple[Path, Path]:
+        absolute = path if path.is_absolute() else repo_root / path
+        lexical = Path(os.path.abspath(absolute))
+        try:
+            resolved = lexical.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ConfigError(
+                f"Cannot safely resolve {label} path {lexical}: {exc}"
+            ) from exc
+        return lexical, resolved
+
+    def is_within(candidate: tuple[Path, Path], root: tuple[Path, Path]) -> bool:
+        for candidate_path, root_path in zip(candidate, root):
+            try:
+                candidate_path.relative_to(root_path)
+            except (ValueError, OSError):
+                continue
+            return True
+        return False
+
+    lock_paths = normalized_paths(lock_path, "lockfile")
+    config_paths = normalized_paths(config_path, "selected config")
+    try:
+        same_existing_file = lock_paths[0].samefile(config_paths[0])
+    except OSError:
+        same_existing_file = False
+    if same_existing_file or any(
+        lock == selected for lock, selected in zip(lock_paths, config_paths)
+    ):
+        raise ConfigError(
+            f"Lockfile path {lock_paths[0]} aliases the selected config "
+            f"{config_paths[0]}; choose a different output path"
+        )
+
     for name, component in config.get("components", {}).items():
         if not isinstance(component, dict):
             continue
         component_path = component.get("path")
         if not isinstance(component_path, str):
             continue
-        component_root = repo_root / os.path.normpath(component_path.strip())
-        try:
-            absolute_lock.resolve().relative_to(component_root.resolve())
-        except (ValueError, OSError):
-            continue
-        raise ConfigError(
-            f"Lockfile path {absolute_lock} is inside component '{name}' "
-            f"({component_path}); choose an output outside every component to "
-            "avoid self-referential fingerprints"
-        )
+        protected_roots = [("component", component_path)]
+        vendored = component.get("vendored_copies", [])
+        if isinstance(vendored, list):
+            protected_roots.extend(
+                ("vendored copy", path)
+                for path in vendored
+                if isinstance(path, str)
+            )
+        for root_kind, root_path in protected_roots:
+            protected_paths = normalized_paths(
+                repo_root / os.path.normpath(root_path.strip()),
+                f"{root_kind} root",
+            )
+            if not is_within(lock_paths, protected_paths):
+                continue
+            raise ConfigError(
+                f"Lockfile path {lock_paths[0]} is inside {root_kind} root "
+                f"'{root_path}' declared by component '{name}'; choose an output "
+                "outside every component and vendored-copy root to avoid "
+                "self-referential fingerprints"
+            )
 
 
 def _ensure_json_mutation_path(path: Path, command: str) -> None:
@@ -763,7 +819,12 @@ def _cmd_generate(args, repo_root: Path) -> None:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        _ensure_lock_outside_components(repo_root, repo_root / args.out, config)
+        _ensure_lock_outside_components(
+            repo_root,
+            repo_root / args.out,
+            config,
+            config_path=config_path,
+        )
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -943,7 +1004,12 @@ def _cmd_verify(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     lock_path = repo_root / args.lock
     try:
-        _ensure_lock_outside_components(repo_root, lock_path, config)
+        _ensure_lock_outside_components(
+            repo_root,
+            lock_path,
+            config,
+            config_path=config_path,
+        )
     except ConfigError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
