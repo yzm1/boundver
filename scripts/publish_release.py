@@ -90,6 +90,8 @@ MAX_RELEASE_METADATA_BYTES = 1024 * 1024
 MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
 ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
+GITHUB_ACTIONS_APP_ID = 15368
+REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
 ALIAS_CONTROL_PATHS = (
     "scripts/publish_release.py",
     "scripts/release_alias.py",
@@ -886,6 +888,53 @@ def _validate_tag_rulesets(rulesets: Sequence[dict], tag: str) -> None:
         )
 
 
+def _validate_main_branch_rulesets(rulesets: Sequence[dict]) -> None:
+    """Require one no-bypass ruleset carrying the complete main contract."""
+    main_ref = "refs/heads/main"
+    for detail in rulesets:
+        conditions = detail.get("conditions")
+        ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+        if not _ruleset_targets_ref(ref_name, main_ref):
+            continue
+        if detail.get("bypass_actors") != []:
+            continue
+        rules = detail.get("rules")
+        if not isinstance(rules, list):
+            continue
+        by_type = {
+            rule.get("type"): rule for rule in rules if isinstance(rule, dict)
+        }
+        pull_parameters = by_type.get("pull_request", {}).get("parameters")
+        status_parameters = by_type.get("required_status_checks", {}).get(
+            "parameters"
+        )
+        if not isinstance(pull_parameters, dict) or not isinstance(
+            status_parameters, dict
+        ):
+            continue
+        checks = status_parameters.get("required_status_checks")
+        required_gate = any(
+            isinstance(check, dict)
+            and check.get("context") == REQUIRED_PR_GATE_CONTEXT
+            and check.get("integration_id") == GITHUB_ACTIONS_APP_ID
+            for check in checks or []
+        )
+        if (
+            "deletion" in by_type
+            and "non_fast_forward" in by_type
+            and pull_parameters.get("required_review_thread_resolution") is True
+            and "squash" in pull_parameters.get("allowed_merge_methods", [])
+            and status_parameters.get("strict_required_status_checks_policy") is True
+            and required_gate
+        ):
+            return
+    raise GateError(
+        "an active no-bypass main ruleset must require pull requests with "
+        "resolved conversations, squash merges, the strict GitHub Actions "
+        "required-pr-gate, and block deletion and force pushes"
+    )
+
+
 def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
     fields = _git(repo, "ls-remote", remote, ref).split()
     if not fields:
@@ -1357,8 +1406,12 @@ def _github_controls(
         f"repos/{REPOSITORY}/rulesets?includes_parents=true&per_page=100",
     )
     tag_rulesets: list[dict] = []
+    branch_rulesets: list[dict] = []
     for summary in rulesets:
-        if not isinstance(summary, dict) or summary.get("target") != "tag":
+        if not isinstance(summary, dict) or summary.get("target") not in {
+            "tag",
+            "branch",
+        }:
             continue
         if summary.get("enforcement") != "active":
             continue
@@ -1368,8 +1421,12 @@ def _github_controls(
         detail = _gh_json(repo, REPOSITORY, f"repos/{REPOSITORY}/rulesets/{ruleset_id}")
         if not isinstance(detail, dict):
             continue
-        tag_rulesets.append(detail)
+        if summary.get("target") == "tag":
+            tag_rulesets.append(detail)
+        else:
+            branch_rulesets.append(detail)
     _validate_tag_rulesets(tag_rulesets, tag)
+    _validate_main_branch_rulesets(branch_rulesets)
     workflow_runs = _gh_paginated_list(
         repo,
         f"repos/{REPOSITORY}/actions/workflows/ci.yml/runs"
