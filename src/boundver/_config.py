@@ -20,6 +20,7 @@ from ._utils import (
     _available_component_facets,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
+    _bounded_json_dumps,
     _bounded_sorted_paths,
     _is_glob,
     _is_within,
@@ -120,6 +121,25 @@ def load_config_file(
         repo_root=repo_root,
         snapshot=snapshot,
     )
+
+
+def dump_config(value: dict) -> str:
+    """Render one config under the same UTF-8 limit accepted by its loader."""
+    if MAX_CONFIG_BYTES < 1:  # pragma: no cover - production invariant
+        raise ConfigError("Config storage limit must leave room for a newline")
+    try:
+        body = _bounded_json_dumps(
+            value,
+            indent=2,
+            max_bytes=MAX_CONFIG_BYTES - 1,
+        )
+    except GuardrailError as exc:
+        raise ConfigError(
+            "Config output exceeds the "
+            f"{MAX_CONFIG_BYTES}-byte storage limit; no file was written. "
+            "Reduce component, slice, or provider declarations before retrying."
+        ) from exc
+    return body + "\n"
 
 
 

@@ -98,6 +98,25 @@ COMPONENT_METADATA_FIELDS = (
 )
 
 
+def dump_lockfile(value: dict) -> str:
+    """Render one lock under the same UTF-8 limit accepted by its loader."""
+    if MAX_LOCKFILE_BYTES < 1:  # pragma: no cover - production invariant
+        raise LockfileError("Lockfile storage limit must leave room for a newline")
+    try:
+        body = _bounded_json_dumps(
+            value,
+            indent=2,
+            max_bytes=MAX_LOCKFILE_BYTES - 1,
+        )
+    except GuardrailError as exc:
+        raise LockfileError(
+            "Lockfile output exceeds the "
+            f"{MAX_LOCKFILE_BYTES}-byte storage limit; no file was written. "
+            "Reduce generated component or provider metadata before retrying."
+        ) from exc
+    return body + "\n"
+
+
 def parse_lockfile_text(text: str, path_label: object = "lockfile") -> dict:
     """Parse lock JSON without silently accepting duplicate object keys."""
     try:

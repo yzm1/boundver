@@ -60,11 +60,10 @@ def generate(
     from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import generate_lockfile
     from ._git import git_root
-    from ._utils import _bounded_json_dumps
     from .core import (
         _capture_operation_snapshot,
         _ensure_lock_outside_components,
-        _write_text_atomic,
+        _write_lockfile_atomic,
     )
 
     repo_root = git_root()
@@ -99,7 +98,7 @@ def generate(
         snapshot=snapshot,
     )
     if out_path is not None:
-        _write_text_atomic(dest, _bounded_json_dumps(lockfile, indent=2) + "\n")
+        _write_lockfile_atomic(dest, lockfile)
     return lockfile
 
 
