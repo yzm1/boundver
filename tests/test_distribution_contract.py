@@ -984,6 +984,10 @@ class AutomationContractTests(unittest.TestCase):
         self.assertEqual(
             token_python_steps,
             [
+                (
+                    "verify-release",
+                    "Require exact-tree semantic-provider release evidence",
+                ),
                 ("verify-release", "Locate the exact source-run artifacts for recovery"),
                 ("verify-release", "Bind recovery policy to the source verification log"),
                 (
@@ -1640,12 +1644,24 @@ class AutomationContractTests(unittest.TestCase):
         snapshot_program = yaml.safe_load(workflow)["env"]["REVIEW_STATE_PROGRAM"]
         compile(snapshot_program, "<review-state-program>", "exec")
         self.assertIn("reviewThreads(first:100,after:$endCursor)", snapshot_program)
+        self.assertIn("fullDatabaseId lastEditedAt", snapshot_program)
+        self.assertIn('"repository_id": repository_id', snapshot_program)
+        self.assertIn(
+            'review["last_edited_at"] = review_edit_times[review["id"]]',
+            snapshot_program,
+        )
         self.assertIn("collaborators/{encoded_login}/permission", snapshot_program)
         self.assertIn('submitted_at = review.get("submitted_at")', snapshot_program)
         self.assertIn('created_at = comment.get("created_at")', snapshot_program)
         self.assertEqual(
             jobs["revalidate-release-state"]["outputs"]["review-state-digest"],
             "${{ steps.mutable-state.outputs.review-state-digest }}",
+        )
+        self.assertEqual(
+            jobs["revalidate-release-state"]["outputs"][
+                "semantic-review-valid-until"
+            ],
+            "${{ steps.mutable-state.outputs.semantic-review-valid-until }}",
         )
         mutable_state = next(
             step
@@ -1660,9 +1676,14 @@ class AutomationContractTests(unittest.TestCase):
         self.assertLess(semantic_audit, snapshot_after)
         self.assertLess(snapshot_after, idempotent_branch)
         self.assertIn("changed during the semantic audit", mutable_state)
+        self.assertIn("--format expiry", mutable_state)
+        self.assertIn("semantic-review-valid-until=", mutable_state)
         self.assertNotIn("scripts/", tag_script)
         self.assertNotIn("python3 scripts/", tag_script)
         self.assertGreaterEqual(tag_script.count('"$REVIEW_STATE_PROGRAM"'), 3)
+        self.assertGreaterEqual(tag_script.count("require_semantic_review_fresh"), 4)
+        self.assertIn("now_epoch + 300 >= expiry_epoch", tag_script)
+        self.assertIn("timeout --signal=KILL 60s", tag_script)
         self.assertGreaterEqual(
             tag_script.count('cd "$clean_python_cwd" && python3 -I -c'),
             3,
@@ -1725,7 +1746,16 @@ import sys
 endpoint = sys.argv[2]
 sha = os.environ["FAKE_RELEASE_SHA"]
 actor = {"id": 199175422, "login": "codex[bot]", "type": "Bot"}
-if endpoint == "graphql":
+if endpoint == "graphql" and any("fullDatabaseId" in item for item in sys.argv):
+    edited = os.environ["FAKE_REVIEW_EDIT"] or None
+    payload = {"data": {"repository": {"pullRequest": {
+        "reviews": {"nodes": [{
+            "fullDatabaseId": "301", "lastEditedAt": edited,
+        }], "pageInfo": {
+            "hasNextPage": False, "endCursor": None,
+        }},
+    }}}}
+elif endpoint == "graphql":
     payload = {"data": {"repository": {"pullRequest": {
         "reviewDecision": "REVIEW_REQUIRED",
         "reviewThreads": {"nodes": [], "pageInfo": {
@@ -1737,7 +1767,10 @@ elif endpoint.startswith("repos/owner/repository/commits/") and "/pulls?per_page
 elif endpoint.startswith("repos/owner/repository/commits/"):
     payload = {"sha": sha}
 elif endpoint == "repos/owner/repository":
-    payload = {"owner": {"id": 101, "login": "owner", "type": "User"}}
+    payload = {
+        "id": 501,
+        "owner": {"id": 101, "login": "owner", "type": "User"},
+    }
 elif endpoint == "repos/owner/repository/pulls/17":
     payload = {
         "number": 17,
@@ -1779,6 +1812,7 @@ print(json.dumps(payload, separators=(",", ":")))
                     "RUNNER_TEMP": str(root),
                     "FAKE_RELEASE_SHA": release_sha,
                     "FAKE_REVIEW_BODY": "Codex Review: Didn't find any major issues.",
+                    "FAKE_REVIEW_EDIT": "",
                     "FAKE_REVIEW_TIME": "2026-08-18T12:00:00Z",
                 }
             )
@@ -1835,6 +1869,18 @@ print(json.dumps(payload, separators=(",", ":")))
                 text=True,
             ).stdout.strip()
             self.assertNotEqual(retimed, first)
+
+            environment["FAKE_REVIEW_TIME"] = "2026-08-18T12:00:00Z"
+            environment["FAKE_REVIEW_EDIT"] = "2026-08-18T12:00:01.1Z"
+            edited = subprocess.run(
+                command,
+                cwd=root,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertNotEqual(edited, first)
 
     def test_action_and_container_install_complete_public_extras(self):
         action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")

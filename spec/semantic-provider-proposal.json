@@ -51,7 +51,8 @@
     {"id": "SPT-039", "title": "Selected-source disclosure through provider output or metadata", "severity": "high", "controls": ["SPC-012", "SPC-015", "SPC-039", "SPC-041"], "verifications": ["SPV-015", "SPV-033", "SPV-036"]},
     {"id": "SPT-040", "title": "Stale or mutable approval evidence", "severity": "high", "controls": ["SPC-033", "SPC-034", "SPC-040"], "verifications": ["SPV-021", "SPV-024", "SPV-035"]},
     {"id": "SPT-041", "title": "Deterministic but semantically false provider output", "severity": "high", "controls": ["SPC-002", "SPC-019", "SPC-031", "SPC-041"], "verifications": ["SPV-016", "SPV-026", "SPV-036"]},
-    {"id": "SPT-042", "title": "Pre-sandbox provider artifact or evidence decoding", "severity": "critical", "controls": ["SPC-008", "SPC-009", "SPC-021", "SPC-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]}
+    {"id": "SPT-042", "title": "Pre-sandbox provider artifact or evidence decoding", "severity": "critical", "controls": ["SPC-008", "SPC-009", "SPC-021", "SPC-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]},
+    {"id": "SPT-043", "title": "Self-attested, stale, or unenforced v0.15 release evidence", "severity": "critical", "controls": ["SPC-034", "SPC-040", "SPC-043"], "verifications": ["SPV-024", "SPV-035", "SPV-038"]}
   ],
   "controls": [
     {"id": "SPC-001", "title": "Configuration is never authority", "kinds": ["preventive"], "threats": ["SPT-001", "SPT-016"], "verifications": ["SPV-004", "SPV-017"]},
@@ -87,15 +88,16 @@
     {"id": "SPC-031", "title": "Narrow semantic and compatibility claims", "kinds": ["preventive", "detective"], "threats": ["SPT-021", "SPT-022", "SPT-029", "SPT-041"], "verifications": ["SPV-003", "SPV-016", "SPV-021", "SPV-026"]},
     {"id": "SPC-032", "title": "Legacy native mode is quarantined", "kinds": ["preventive", "detective"], "threats": ["SPT-026"], "verifications": ["SPV-018"]},
     {"id": "SPC-033", "title": "Independent review and governance", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-013", "SPT-022", "SPT-025", "SPT-028", "SPT-031", "SPT-040"], "verifications": ["SPV-001", "SPV-002", "SPV-021", "SPV-022", "SPV-023"]},
-    {"id": "SPC-034", "title": "Exact-evidence release gates", "kinds": ["preventive", "detective"], "threats": ["SPT-017", "SPT-028", "SPT-040"], "verifications": ["SPV-023", "SPV-024"]},
+    {"id": "SPC-034", "title": "Exact-evidence release gates", "kinds": ["preventive", "detective"], "threats": ["SPT-017", "SPT-028", "SPT-040", "SPT-043"], "verifications": ["SPV-023", "SPV-024", "SPV-038"]},
     {"id": "SPC-035", "title": "License and compliance review", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-035"], "verifications": ["SPV-020", "SPV-029"]},
     {"id": "SPC-036", "title": "Separate semantic, artifact, authorization, and runtime identity axes", "kinds": ["preventive", "detective"], "threats": ["SPT-036"], "verifications": ["SPV-009", "SPV-010", "SPV-034"]},
     {"id": "SPC-037", "title": "Stable unambiguous operator policy", "kinds": ["preventive", "detective"], "threats": ["SPT-037"], "verifications": ["SPV-004", "SPV-011", "SPV-031"]},
     {"id": "SPC-038", "title": "Bounded host option-schema subset", "kinds": ["preventive", "detective"], "threats": ["SPT-038"], "verifications": ["SPV-007", "SPV-008", "SPV-032"]},
     {"id": "SPC-039", "title": "Data-minimized allowlisted output metadata", "kinds": ["preventive", "detective"], "threats": ["SPT-039"], "verifications": ["SPV-015", "SPV-033"]},
-    {"id": "SPC-040", "title": "Tamper-evident exact approval evidence", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-037", "SPT-040"], "verifications": ["SPV-021", "SPV-024", "SPV-031", "SPV-035"]},
+    {"id": "SPC-040", "title": "Tamper-evident exact approval evidence", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-037", "SPT-040", "SPT-043"], "verifications": ["SPV-021", "SPV-024", "SPV-031", "SPV-035", "SPV-038"]},
     {"id": "SPC-041", "title": "Explicit semantic trust and independent validation", "kinds": ["preventive", "detective"], "threats": ["SPT-003", "SPT-039", "SPT-041"], "verifications": ["SPV-016", "SPV-026", "SPV-036"]},
-    {"id": "SPC-042", "title": "Containment before provider artifact decoding", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]}
+    {"id": "SPC-042", "title": "Containment before provider artifact decoding", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-042"], "verifications": ["SPV-006", "SPV-011", "SPV-037"]},
+    {"id": "SPC-043", "title": "External exact-tree v0.15 release attestation", "kinds": ["preventive", "detective", "recovery"], "threats": ["SPT-043"], "verifications": ["SPV-024", "SPV-035", "SPV-038"]}
   ],
   "verifications": [
     {"id": "SPV-001", "title": "Proposal schema and cross-reference validation", "phase": "proposal", "status": "passed", "evidence": ["python -I scripts/check_semantic_provider_proposal.py --format json", "python -I -m pytest -q tests/test_semantic_provider_proposal.py"]},
@@ -134,7 +136,8 @@
     {"id": "SPV-034", "title": "Identity-axis placement and portable migration tests", "phase": "implementation", "status": "planned", "evidence": []},
     {"id": "SPV-035", "title": "Review and scan evidence tampering negative matrix", "phase": "proposal", "status": "passed", "evidence": ["python -I -m pytest -q tests/test_semantic_provider_proposal.py", "python -I -m coverage report --include proposal gate scripts --fail-under=75", "scripts/audit_semantic_provider_proposal.py"]},
     {"id": "SPV-036", "title": "Malicious semantic output and independent-oracle tests", "phase": "provider", "status": "planned", "evidence": []},
-    {"id": "SPV-037", "title": "Pre-sandbox evidence, decoder, runtime, and AOT isolation tests", "phase": "implementation", "status": "planned", "evidence": []}
+    {"id": "SPV-037", "title": "Pre-sandbox evidence, decoder, runtime, and AOT isolation tests", "phase": "implementation", "status": "planned", "evidence": []},
+    {"id": "SPV-038", "title": "External exact-tree v0.15 attestation, expiry handoff, and workflow-enforcement negative matrix", "phase": "proposal", "status": "passed", "evidence": ["python -I -m pytest -q tests/test_semantic_provider_proposal.py", "python -I -m pytest -q tests/test_create_release_tag_review_state.py tests/test_distribution_contract.py", "scripts/audit_semantic_provider_proposal.py --gate v0.15-release", ".github/workflows/create-release-tag.yml", ".github/workflows/publish.yml", "scripts/publish_release.py"]}
   ],
   "red_team": {
     "status": "pending",
@@ -150,7 +153,7 @@
         "id": "RTR-002",
         "scope": "Proposed host-policy, artifact, broker, protocol, sandbox, semantic, supply-chain, cache, CI, and governance design",
         "status": "passed",
-        "findings": ["RTF-004", "RTF-005", "RTF-006", "RTF-007", "RTF-008", "RTF-009", "RTF-010", "RTF-011", "RTF-012", "RTF-013", "RTF-014", "RTF-015", "RTF-016", "RTF-017", "RTF-018", "RTF-019", "RTF-020", "RTF-021", "RTF-022", "RTF-023", "RTF-024", "RTF-025", "RTF-026", "RTF-027", "RTF-028", "RTF-029", "RTF-030", "RTF-031", "RTF-032", "RTF-033", "RTF-034", "RTF-035", "RTF-036", "RTF-037", "RTF-038", "RTF-039", "RTF-040", "RTF-041", "RTF-042", "RTF-043", "RTF-044", "RTF-045", "RTF-046"],
+        "findings": ["RTF-004", "RTF-005", "RTF-006", "RTF-007", "RTF-008", "RTF-009", "RTF-010", "RTF-011", "RTF-012", "RTF-013", "RTF-014", "RTF-015", "RTF-016", "RTF-017", "RTF-018", "RTF-019", "RTF-020", "RTF-021", "RTF-022", "RTF-023", "RTF-024", "RTF-025", "RTF-026", "RTF-027", "RTF-028", "RTF-029", "RTF-030", "RTF-031", "RTF-032", "RTF-033", "RTF-034", "RTF-035", "RTF-036", "RTF-037", "RTF-038", "RTF-039", "RTF-040", "RTF-041", "RTF-042", "RTF-043", "RTF-044", "RTF-045", "RTF-046", "RTF-047", "RTF-048", "RTF-049"],
         "evidence": ["docs/design/semantic-provider-threat-model.md#red-team-findings-and-dispositions"]
       },
       {
@@ -165,6 +168,8 @@
   },
   "review_requirements": {
     "repository": "yzm1/boundver",
+    "repository_id": 1226008327,
+    "repository_owner_id": 22440724,
     "base_branch": "main",
     "minimum_non_author_reviews": 2,
     "maximum_review_age_days": 90,
@@ -178,15 +183,29 @@
   "open_findings": [],
   "release_gates": {
     "v0.15.0": {
-      "release_allowed": false,
-      "exact_candidate_commit": null,
-      "full_source_bug_scan": false,
-      "full_issue_audit": false,
-      "full_security_scan": false,
-      "all_blockers_closed": false,
-      "supported_platforms_passed": false,
-      "publication_gates_passed": false,
-      "evidence": []
+      "repository": "yzm1/boundver",
+      "repository_id": 1226008327,
+      "repository_owner_id": 22440724,
+      "base_branch": "main",
+      "evidence_source": "github-exact-tree-review/v1",
+      "candidate_identity": "reviewed-head-tree-equals-release-tree",
+      "minimum_non_author_reviews": 2,
+      "maximum_review_age_days": 14,
+      "security_review_required": true,
+      "security_review_marker": "semantic-provider-v0.15-release-review/v1",
+      "required_attestations": [
+        "Full-source-bug-scan: passed",
+        "Full-issue-audit: passed",
+        "Full-security-scan: passed",
+        "All-blockers: closed",
+        "Supported-platforms: passed",
+        "Publication-gates: passed"
+      ],
+      "exact_commit_required": true,
+      "exact_tree_required": true,
+      "resolved_threads_required": true,
+      "no_pending_review_requests": true,
+      "authoritative_audit": "scripts/audit_semantic_provider_proposal.py"
     }
   },
   "references": [
