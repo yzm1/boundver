@@ -22,6 +22,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Rejected lock outputs that alias the selected config or sit inside component
+  and vendored-copy roots, including hard-link, symlink, junction, and parent-
+  traversal spellings, before generation or update can mutate repository data.
+- Allowed custom-provider declarations with a mix of explicit expected names
+  and names resolved from provider instances at trusted load time. Static
+  cross-reference checks now run only when the explicit-name set is complete;
+  authoritative runtime registration still fails closed on missing or
+  mismatched providers.
 - Reused the uniquely identified, digest-verified retained OCI artifact when a
   release resumes after container publication, instead of rebuilding an
   immutable image and treating wall-clock build drift as a registry conflict.
