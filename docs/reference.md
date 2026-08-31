@@ -188,11 +188,44 @@ silently erasing historical impact. Direct impact is the default;
 `--transitive` follows the complete, deterministic downstream closure and maps
 changed or impacted components into slices from either endpoint.
 
+For every boundary-facet transition, the machine result also contains one
+provider-bound structural report. Each report repeats the base and target
+requested ref/commit, effective commit/tree, component path, provider
+name/version, and boundary digest so its evidence cannot be detached from the
+reviewed artifacts. The provider capability and result identify
+`boundver-structural-diff/v1`. In v0.15,
+`openapi-canonical` is the first built-in that implements this optional
+interface. It compares the provider's canonical JSON trees and emits
+deterministic RFC 6901 paths classified as `added`, `removed`, or `changed`,
+with only the before/after JSON types. It does not copy contract values into
+the result. A newly added or removed subtree is represented once at its root;
+arrays are compared positionally.
+
+Raw providers remain raw: review reports `provider-unsupported` rather than
+parsing bytes under a new meaning. Component/provider additions, removals, or
+version transitions are similarly explicit instead of being compared across
+incompatible identities. Structural output is explanatory evidence only. It
+does not determine whether an OpenAPI change is backward compatible; use a
+format-specific compatibility checker and consumer tests for that decision.
+
+The top-level range `complete` flag describes the authoritative facet, graph,
+and slice comparison. `structural_changes.complete` separately describes the
+optional provider explanations. An unsupported provider therefore does not
+invalidate the range review. A structural budget failure sets that report to
+`complete: false` and `truncated: true`, records `limit-exceeded`, and emits an
+empty document list rather than presenting partial rows as complete.
+
 Graph traversal and slice mapping share one aggregate 250,000-step work budget
 and a 100,000-row construction ceiling. Complete JSON and text documents are
 capped at 64 MiB. Exceeding any limit
 fails with exit `2` before emitting a partial result; a truncated closure is
 never presented as an authoritative review.
+
+Supported structural explanations have independent aggregate ceilings across
+the review: 512 MiB of canonical provider input, 250,000 traversal steps,
+20,000 change rows, 16 MiB of retained structural output, 64 nesting levels,
+and 16 KiB per JSON pointer. The canonical provider's existing per-resolution
+source and output limits still apply before this diagnostic pass.
 
 The complete machine result uses `schema: boundver-review/v1` and is validated
 by

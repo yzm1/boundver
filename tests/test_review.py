@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import boundver._review as review_module
+import boundver._provider_diff as provider_diff_module
 from boundver._lockfile import (
     dump_lockfile,
     generate_lockfile,
@@ -43,13 +44,13 @@ def _component(path: str, **values: object) -> dict:
     }
 
 
-def _config() -> dict:
+def _config(provider: str = "openapi-canonical") -> dict:
     return {
         "project": "review-fixture",
         "components": {
             "layer": _component(
                 "layer",
-                boundary={"provider": "path-hash", "paths": ["api.json"]},
+                boundary={"provider": provider, "paths": ["api.json"]},
                 behavior={"paths": ["api.json", "behavior.txt"]},
                 version_source={"file": "package.json", "field": "version"},
                 consumers=["service", "legacy"],
@@ -78,7 +79,31 @@ def _write_components(root: Path) -> None:
         component.mkdir(parents=True, exist_ok=True)
         (component / "impl.txt").write_text(f"{name} implementation\n", encoding="utf-8")
     (root / "layer" / "api.json").write_text(
-        '{"contract": 1}\n', encoding="utf-8"
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "paths": {
+                    "/orders": {
+                        "get": {
+                            "parameters": [
+                                {
+                                    "name": "limit",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer"},
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "ok"},
+                                "404": {"description": "missing"},
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     (root / "layer" / "behavior.txt").write_text(
         "behavior 1\n", encoding="utf-8"
@@ -122,10 +147,15 @@ def _commit_endpoint(
     return _git(root, "rev-parse", "HEAD"), lockfile
 
 
-def _make_range(root: Path, *, partial_target: bool = False) -> tuple[str, str]:
+def _make_range(
+    root: Path,
+    *,
+    partial_target: bool = False,
+    provider: str = "openapi-canonical",
+) -> tuple[str, str]:
     init_git_repo(root, initial_branch="main")
     _write_components(root)
-    base_config = _config()
+    base_config = _config(provider)
     base, base_lock = _commit_endpoint(root, base_config, "base")
 
     target_config = copy.deepcopy(base_config)
@@ -138,7 +168,30 @@ def _make_range(root: Path, *, partial_target: bool = False) -> tuple[str, str]:
         "behavior 2\n", encoding="utf-8"
     )
     (root / "layer" / "api.json").write_text(
-        '{"contract": 2}\n', encoding="utf-8"
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "paths": {
+                    "/health": {"get": {"responses": {"204": {}}}},
+                    "/orders": {
+                        "get": {
+                            "parameters": [
+                                {
+                                    "name": "limit",
+                                    "in": "query",
+                                    "required": True,
+                                    "schema": {"type": "integer"},
+                                }
+                            ],
+                            "responses": {"200": {"description": "ok"}},
+                        },
+                        "post": {"responses": {"201": {}}},
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     (root / "layer" / "package.json").write_text(
         '{"version": "2.0.0"}\n', encoding="utf-8"
@@ -196,6 +249,135 @@ def test_review_json_result_matches_the_public_schema(tmp_path: Path) -> None:
     )
 
     jsonschema.validate(result, schema)
+
+
+def test_review_reports_source_bound_openapi_structural_changes(
+    tmp_path: Path,
+) -> None:
+    base, target = _make_range(tmp_path)
+
+    result = analyze_review_range(tmp_path, base, target)
+
+    structural = result["structural_changes"]
+    assert structural["complete"] is True
+    assert structural["truncated"] is False
+    assert structural["interface"] == "boundver-structural-diff/v1"
+    assert structural["claim"] == "structural-explanation-only"
+    assert len(structural["reports"]) == 1
+    report = structural["reports"][0]
+    assert report["component"] == "layer"
+    assert report["status"] == "complete"
+    assert report["complete"] is True
+    assert report["reason"] is None
+    assert report["inputs"]["base"]["endpoint"] == "base"
+    assert report["inputs"]["base"]["commit"] == base
+    assert report["inputs"]["base"]["present"] is True
+    assert report["inputs"]["base"]["provider"] == "openapi-canonical"
+    assert report["inputs"]["base"]["provider_version"] == "4"
+    assert report["inputs"]["target"]["endpoint"] == "target"
+    assert report["inputs"]["target"]["commit"] == target
+    assert report["inputs"]["target"]["present"] is True
+    assert report["inputs"]["target"]["provider"] == "openapi-canonical"
+    assert report["inputs"]["target"]["provider_version"] == "4"
+    assert report["inputs"]["base"]["boundary_digest"] != report["inputs"][
+        "target"
+    ]["boundary_digest"]
+    document = report["documents"][0]
+    assert document["label"] == "canonical:api.json"
+    assert document["status"] == "changed"
+    assert document["changes"] == [
+        {
+            "kind": "added",
+            "path": "/paths/~1health",
+            "before_type": None,
+            "after_type": "object",
+        },
+        {
+            "kind": "changed",
+            "path": "/paths/~1orders/get/parameters/0/required",
+            "before_type": "boolean",
+            "after_type": "boolean",
+        },
+        {
+            "kind": "removed",
+            "path": "/paths/~1orders/get/responses/404",
+            "before_type": "object",
+            "after_type": None,
+        },
+        {
+            "kind": "added",
+            "path": "/paths/~1orders/post",
+            "before_type": None,
+            "after_type": "object",
+        },
+    ]
+    assert report["summary"] == {"added": 2, "removed": 1, "changed": 1}
+
+
+def test_review_marks_raw_provider_structure_as_unavailable(tmp_path: Path) -> None:
+    jsonschema = pytest.importorskip("jsonschema")
+    base, target = _make_range(tmp_path, provider="path-hash")
+
+    result = analyze_review_range(tmp_path, base, target)
+
+    assert result["complete"] is True
+    assert result["structural_changes"]["complete"] is False
+    report = result["structural_changes"]["reports"][0]
+    assert report["status"] == "unavailable"
+    assert report["reason"] == "provider-unsupported"
+    assert report["truncated"] is False
+    assert report["documents"] == []
+    assert report["summary"] == {"added": 0, "removed": 0, "changed": 0}
+    schema = json.loads(
+        (ROOT / "spec" / "cli-output.review.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    jsonschema.validate(result, schema)
+
+
+def test_review_with_no_boundary_transition_needs_no_structural_report(
+    tmp_path: Path,
+) -> None:
+    _base, target = _make_range(tmp_path)
+    (tmp_path / "app" / "impl.txt").write_text(
+        "app implementation 2\n",
+        encoding="utf-8",
+    )
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    final_target, _ = _commit_endpoint(tmp_path, config, "implementation only")
+
+    result = analyze_review_range(tmp_path, target, final_target)
+
+    assert result["summary"]["changed_components"] == 1
+    assert result["components"]["changed"][0]["name"] == "app"
+    assert result["structural_changes"] == {
+        "complete": True,
+        "truncated": False,
+        "interface": "boundver-structural-diff/v1",
+        "claim": "structural-explanation-only",
+        "reports": [],
+    }
+
+
+def test_review_reports_structural_limit_without_partial_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base, target = _make_range(tmp_path)
+    monkeypatch.setattr(provider_diff_module, "MAX_PROVIDER_DIFF_ROWS", 1)
+
+    result = analyze_review_range(tmp_path, base, target)
+
+    assert result["complete"] is True
+    structural = result["structural_changes"]
+    assert structural["complete"] is False
+    assert structural["truncated"] is True
+    report = structural["reports"][0]
+    assert report["reason"] == "limit-exceeded"
+    assert report["truncated"] is True
+    assert report["documents"] == []
+    assert "No partial structural result was emitted" in report["detail"]
 
 
 def test_review_uses_conservative_graph_union_with_edge_provenance(tmp_path: Path) -> None:
@@ -315,7 +497,14 @@ def test_review_fails_closed_when_endpoint_content_outpaces_its_lock(
 ) -> None:
     base, _target = _make_range(tmp_path)
     (tmp_path / "layer" / "api.json").write_text(
-        '{"contract": 999}\n', encoding="utf-8"
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "paths": {"/stale": {"get": {"responses": {"200": {}}}}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     commit_all(tmp_path, "stale endpoint lock")
     stale_target = _git(tmp_path, "rev-parse", "HEAD")
@@ -338,7 +527,14 @@ def test_review_merge_base_uses_common_ancestor_not_requested_branch_tip(
     _git(tmp_path, "switch", "feature")
     config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
     (tmp_path / "layer" / "api.json").write_text(
-        '{"contract": 3}\n', encoding="utf-8"
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "paths": {"/feature": {"get": {"responses": {"200": {}}}}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
     )
     feature_tip, _ = _commit_endpoint(tmp_path, config, "feature target")
 
@@ -352,6 +548,10 @@ def test_review_merge_base_uses_common_ancestor_not_requested_branch_tip(
     assert result["endpoints"]["base"]["requested_commit"] == main_tip
     assert result["endpoints"]["base"]["commit"] == base
     assert result["request"]["merge_base"] is True
+    structural_base = result["structural_changes"]["reports"][0]["inputs"]["base"]
+    assert structural_base["requested_ref"] == main_tip
+    assert structural_base["requested_commit"] == main_tip
+    assert structural_base["commit"] == base
 
 
 def test_review_cli_supports_range_and_explicit_forms(tmp_path: Path) -> None:
@@ -399,7 +599,28 @@ def test_review_cli_changes_do_not_change_success_exit_status(tmp_path: Path) ->
 
     assert completed.returncode == 0, completed.stderr
     assert "CHANGED COMPONENTS (1)" in completed.stdout
+    assert "Structural explanation: complete" in completed.stdout
+    assert "/paths/~1orders/post" in completed.stdout
+    assert "not a compatibility verdict" in completed.stdout
     assert "run verify as the integrity gate" in completed.stdout
+
+
+def test_review_text_escapes_control_characters_in_structural_paths(
+    tmp_path: Path,
+) -> None:
+    _original, base = _make_range(tmp_path)
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    api_path = tmp_path / "layer" / "api.json"
+    api = json.loads(api_path.read_text(encoding="utf-8"))
+    api["paths"]["/\x1b[31madmin"] = {"get": {"responses": {"200": {}}}}
+    api_path.write_text(json.dumps(api) + "\n", encoding="utf-8")
+    target, _ = _commit_endpoint(tmp_path, config, "control-looking path")
+
+    completed = _run_cli(tmp_path, "review", f"{base}..{target}")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "\x1b" not in completed.stdout
+    assert "\\x1b[31madmin" in completed.stdout
 
 
 @pytest.mark.parametrize(

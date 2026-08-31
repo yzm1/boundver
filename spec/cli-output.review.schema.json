@@ -127,6 +127,141 @@
       },
       "additionalProperties": false
     },
+    "jsonType": {
+      "type": "string",
+      "enum": ["object", "array", "string", "integer", "number", "boolean", "null"]
+    },
+    "nullableJsonType": {
+      "oneOf": [
+        { "$ref": "#/$defs/jsonType" },
+        { "type": "null" }
+      ]
+    },
+    "structuralInput": {
+      "type": "object",
+      "required": ["endpoint", "requested_ref", "requested_commit", "commit", "tree", "source", "present", "component_path", "provider", "provider_version", "boundary_digest"],
+      "properties": {
+        "endpoint": { "type": "string", "enum": ["base", "target"] },
+        "requested_ref": { "type": "string", "minLength": 1 },
+        "requested_commit": { "$ref": "#/$defs/gitOid" },
+        "commit": { "$ref": "#/$defs/gitOid" },
+        "tree": { "$ref": "#/$defs/gitOid" },
+        "source": { "const": "git-commit" },
+        "present": { "type": "boolean" },
+        "component_path": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] },
+        "provider_version": { "type": ["string", "null"] },
+        "boundary_digest": { "$ref": "#/$defs/nullableSha256" }
+      },
+      "additionalProperties": false
+    },
+    "structuralChange": {
+      "type": "object",
+      "required": ["kind", "path", "before_type", "after_type"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["added", "removed", "changed"] },
+        "path": { "type": "string", "pattern": "^(?:|(?:/(?:[^~]|~[01])*)*)$" },
+        "before_type": { "$ref": "#/$defs/nullableJsonType" },
+        "after_type": { "$ref": "#/$defs/nullableJsonType" }
+      },
+      "additionalProperties": false
+    },
+    "structuralDocument": {
+      "type": "object",
+      "required": ["label", "status", "changes"],
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["added", "removed", "changed"] },
+        "changes": { "type": "array", "items": { "$ref": "#/$defs/structuralChange" }, "minItems": 1 }
+      },
+      "additionalProperties": false
+    },
+    "structuralSummary": {
+      "type": "object",
+      "required": ["added", "removed", "changed"],
+      "properties": {
+        "added": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "integer", "minimum": 0 },
+        "changed": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "structuralReport": {
+      "type": "object",
+      "required": ["component", "status", "complete", "truncated", "interface", "claim", "inputs", "reason", "detail", "documents", "summary"],
+      "properties": {
+        "component": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["complete", "unavailable"] },
+        "complete": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "interface": { "const": "boundver-structural-diff/v1" },
+        "claim": { "const": "structural-explanation-only" },
+        "inputs": {
+          "type": "object",
+          "required": ["base", "target"],
+          "properties": {
+            "base": {
+              "allOf": [
+                { "$ref": "#/$defs/structuralInput" },
+                { "properties": { "endpoint": { "const": "base" } } }
+              ]
+            },
+            "target": {
+              "allOf": [
+                { "$ref": "#/$defs/structuralInput" },
+                { "properties": { "endpoint": { "const": "target" } } }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "reason": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "enum": ["component-absent", "provider-changed", "provider-version-changed", "provider-implementation-changed", "provider-unsupported", "provider-interface-unsupported", "provider-unavailable", "limit-exceeded"] }
+          ]
+        },
+        "detail": { "type": ["string", "null"] },
+        "documents": { "type": "array", "items": { "$ref": "#/$defs/structuralDocument" } },
+        "summary": { "$ref": "#/$defs/structuralSummary" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "complete" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "complete": { "const": true },
+              "truncated": { "const": false },
+              "reason": { "type": "null" },
+              "detail": { "type": "null" },
+              "documents": { "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": {
+              "complete": { "const": false },
+              "reason": { "type": "string" },
+              "detail": { "type": "string", "minLength": 1 },
+              "documents": { "maxItems": 0 },
+              "summary": { "const": { "added": 0, "removed": 0, "changed": 0 } }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "structuralChanges": {
+      "type": "object",
+      "required": ["complete", "truncated", "interface", "claim", "reports"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "interface": { "const": "boundver-structural-diff/v1" },
+        "claim": { "const": "structural-explanation-only" },
+        "reports": { "type": "array", "items": { "$ref": "#/$defs/structuralReport" } }
+      },
+      "additionalProperties": false
+    },
     "sourcedName": {
       "type": "object",
       "required": ["name", "source"],
@@ -207,7 +342,7 @@
     }
   },
   "type": "object",
-  "required": ["schema", "complete", "request", "history", "endpoints", "policy", "metadata", "components", "consumer_impact", "slices", "slice_impact", "summary"],
+  "required": ["schema", "complete", "request", "history", "endpoints", "policy", "metadata", "components", "structural_changes", "consumer_impact", "slices", "slice_impact", "summary"],
   "properties": {
     "schema": { "const": "boundver-review/v1" },
     "complete": { "const": true },
@@ -276,6 +411,7 @@
       },
       "additionalProperties": false
     },
+    "structural_changes": { "$ref": "#/$defs/structuralChanges" },
     "consumer_impact": { "type": "array", "items": { "$ref": "#/$defs/consumerImpact" } },
     "slices": {
       "type": "object",

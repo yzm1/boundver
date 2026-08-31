@@ -25,6 +25,17 @@ All notable changes to this project are documented here. The format follows
   per-phase timing, Git-process and source-read attribution, first/repeated
   runs, and enforced Linux CI ceilings for clean HEAD and small staged-change
   verification.
+- Added bounded provider-aware structural explanations to historical range
+  review. An `openapi-canonical` boundary transition now reports deterministic
+  added, removed, and changed RFC 6901 paths from format-neutral canonical
+  JSON under the versioned `boundver-structural-diff/v1` provider interface,
+  bound to both immutable commit/tree identities, provider versions, and
+  boundary digests. Reports expose JSON types but never source values and are
+  explicitly structural evidence, not a backward-compatibility verdict. Raw
+  and unsupported providers remain byte-opaque. Input, nesting, work, path,
+  row, and output ceilings fail closed into a typed incomplete explanation
+  with no partial rows while leaving the independently complete facet/impact
+  review available.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined

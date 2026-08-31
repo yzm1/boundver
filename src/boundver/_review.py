@@ -29,6 +29,7 @@ from ._lockfile import (
     semantic_config_digest,
     verify_lockfile,
 )
+from ._structural_review import structural_boundary_changes
 from ._utils import (
     FACETS,
     FACET_SET,
@@ -742,6 +743,22 @@ def analyze_review_range(
             budget=budget,
         )
     )
+    structural_changes = structural_boundary_changes(
+        repo_root,
+        base_snapshot,
+        target_snapshot,
+        base_config,
+        target_config,
+        base_lock,
+        target_lock,
+        changed_components,
+        base_ref=base_ref,
+        target_ref=target_ref,
+        requested_base_commit=requested_base_commit,
+        requested_target_commit=target_commit,
+        allow_custom_providers=allow_custom_providers,
+        review_budget=budget,
+    )
     changed_slices, unchanged_slices = _slice_transitions(
         base_lock,
         target_lock,
@@ -806,6 +823,7 @@ def analyze_review_range(
             "changed": changed_components,
             "unchanged": unchanged_components,
         },
+        "structural_changes": structural_changes,
         "consumer_impact": consumer_impacts,
         "slices": {
             "changed": changed_slices,
@@ -851,6 +869,10 @@ def review_text_lines(result: dict) -> List[str]:
     policy = result["policy"]
     changed = result["components"]["changed"]
     impacts = {item["component"]: item for item in result["consumer_impact"]}
+    structural_reports = {
+        item["component"]: item
+        for item in result["structural_changes"]["reports"]
+    }
     lines = [
         "BOUNDVER RANGE REVIEW",
         f"Range: {request['base']}..{request['target']}",
@@ -899,6 +921,32 @@ def review_text_lines(result: dict) -> List[str]:
                 f"{_short_identity(transition['before'])} -> "
                 f"{_short_identity(transition['after'])} [{selected}]"
             )
+        structural = structural_reports.get(component["name"])
+        if structural is not None:
+            provider = structural["inputs"]["target"]["provider"]
+            provider_version = structural["inputs"]["target"]["provider_version"]
+            if structural["complete"]:
+                lines.append(
+                    "    Structural explanation: complete "
+                    f"({provider} v{provider_version}; not a compatibility verdict)"
+                )
+                for document in structural["documents"]:
+                    lines.append(
+                        f"      {document['label']} [{document['status']}]"
+                    )
+                    for change in document["changes"]:
+                        pointer = change["path"] or "<document>"
+                        lines.append(
+                            f"        {change['kind']} {pointer}: "
+                            f"{change['before_type']} -> {change['after_type']}"
+                        )
+            else:
+                suffix = "; no partial rows emitted" if structural["truncated"] else ""
+                lines.append(
+                    "    Structural explanation: unavailable "
+                    f"[{structural['reason']}]{suffix}"
+                )
+                lines.append(f"      {structural['detail']}")
         impact = impacts.get(component["name"])
         if impact is not None:
             internal = ", ".join(

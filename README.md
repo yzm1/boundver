@@ -222,7 +222,12 @@ git diff -- boundary.lock.json
 `review` compares the four recorded identities in two explicit, immutable Git
 commit trees. It reports changed facets, the conservative union of base and
 target consumer edges, and affected slices; `--transitive` walks the complete
-downstream closure. Use `--merge-base` for pull-request semantics. Both
+downstream closure. When an `openapi-canonical` boundary changes, it also lists
+added, removed, and changed structural JSON pointers. Those rows contain types,
+not source values, and explain the digest transition without claiming backward
+compatibility. Raw providers remain byte-opaque and are reported as structurally
+unsupported instead of being reinterpreted. Use `--merge-base` for pull-request
+semantics. Both
 endpoint configs and locks must be present, valid, and reconciled. A complete
 review exits `0` whether or not identities changed; an absent or ambiguous ref,
 missing shallow history, incompatible contract, or stale endpoint lock exits
@@ -231,6 +236,11 @@ missing shallow history, incompatible contract, or stale endpoint lock exits
 Each endpoint is fully recomputed before comparison. Custom Python providers
 remain disabled unless trusted automation explicitly adds
 `--allow-custom-providers`.
+
+Structural completeness is reported separately from range completeness. If an
+optional provider explanation is unsupported or crosses a safety limit, its
+typed report is `complete: false`, contains no partial rows, and does not make
+the already verified facet, consumer, and slice comparison incomplete.
 
 This historical query does not replace `verify`: run `verify` as the integrity
 gate for the current candidate. See the exact endpoint and history rules in the

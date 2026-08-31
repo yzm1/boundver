@@ -177,8 +177,14 @@ that reuse an existing lock reject semantic-config/v1 input.
 Historical range output uses the versioned `boundver-review/v1` contract. It
 binds two reconciled v3/v2 config-lock pairs to explicit immutable commit/tree
 identities, compares every facet, and records conservative base/target consumer
-edge provenance plus slice impact. It is read-only and returns success for any
-complete analysis; ordinary verification remains the integrity gate.
+edge provenance plus slice impact. Boundary transitions also carry a typed,
+provider/version/digest-bound structural report. The first supported report is
+canonical OpenAPI JSON-tree drift: value-free RFC 6901 paths classified as
+added, removed, or changed. Unsupported and over-budget explanations contain no
+partial rows and have their own completeness state; they do not weaken the
+complete facet/impact result. Structural evidence is not a compatibility
+verdict. The command is read-only and returns success for any complete range
+analysis; ordinary verification remains the integrity gate.
 
 ## Derived artifacts
 

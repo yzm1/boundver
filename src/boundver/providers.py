@@ -36,6 +36,15 @@ from ._canonical_providers import (
     _strip_openapi,
 )
 from ._hashing import HASH_DOMAIN_BOUNDARY, _ModeAwareBytes, _hash_framed_entries
+from ._provider_diff import (
+    STRUCTURAL_DIFF_INTERFACE as STRUCTURAL_DIFF_INTERFACE,
+    StructuralChange as StructuralChange,
+    StructuralDiffBudget as StructuralDiffBudget,
+    StructuralDiffProvider as StructuralDiffProvider,
+    StructuralDiffResult as StructuralDiffResult,
+    StructuralDocumentDiff as StructuralDocumentDiff,
+    diff_canonical_json_entries,
+)
 from ._utils import (
     GuardrailError,
     ProviderError,
@@ -1217,6 +1226,7 @@ class OpenApiCanonicalProvider:
     """
 
     name = "openapi-canonical"
+    structural_diff_interface = STRUCTURAL_DIFF_INTERFACE
     # v4 adds bounded parsing/canonicalization and rejects non-JSON integer
     # spellings, Unicode patch digits, and over-limit aggregate output.
     version = "4"
@@ -1299,6 +1309,25 @@ class OpenApiCanonicalProvider:
                 errors=["Declared boundary paths produced no digest"],
             )
         return ResolvedBoundary(entries=collector.entries)
+
+    def structural_diff(
+        self,
+        before_ctx: ProviderContext,
+        after_ctx: ProviderContext,
+        budget: StructuralDiffBudget,
+    ) -> StructuralDiffResult:
+        """Explain canonical OpenAPI drift without making compatibility claims."""
+        resolved = []
+        for label, ctx in (("base", before_ctx), ("target", after_ctx)):
+            boundary = self.resolve(ctx)
+            if boundary.status != "ok" or boundary.errors or not boundary.entries:
+                detail = "; ".join(boundary.errors[:3]) or boundary.status
+                raise ProviderError(
+                    f"Cannot resolve {label} OpenAPI structure: "
+                    f"{_bounded_diagnostic_text(detail)}"
+                )
+            resolved.append(boundary.entries)
+        return diff_canonical_json_entries(resolved[0], resolved[1], budget)
 
     def validate_config(
         self,
