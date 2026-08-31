@@ -37,6 +37,15 @@ All notable changes to this project are documented here. The format follows
   through the final tag-mutation handoff, and GitHub repository/owner numeric
   identities prevent namespace transfer or recreation from inheriting evidence.
 
+### Changed
+
+- Made source scope explicit in ordinary generate, verify, status, explain,
+  and why output, with adjacent-source commands when explain finds no changes.
+  Source flags remain per-invocation and command defaults and JSON provenance
+  are unchanged. Status now separates declared consumer edges from component
+  details, while verify and why render typed direct/transitive consumer impact
+  in a distinct section.
+
 ### Fixed
 
 - Made no-op `migrate-lock` runs genuinely non-mutating: current normalized

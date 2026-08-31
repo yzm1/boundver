@@ -15,19 +15,24 @@ your unstaged edits.
 | `index` | One captured index tree | Pre-commit verification |
 | `working-tree` | Disk bytes for a captured tracked path set | Local editing before you stage |
 
-Four rules follow from that model:
+Five rules follow from that model:
 
-1. **Generate and verify with the same source.** A lock generated from one
+1. **Source selection is per invocation.** `--source` is not shared shell
+   state. A bare command immediately after `--source working-tree` defaults to
+   `head` again. Pass the source explicitly to each adjacent `verify`,
+   `status`, `explain`, or `why` command when you want them to inspect the same
+   view.
+2. **Generate and verify with the same source.** A lock generated from one
    snapshot does not describe another.
-2. **Make files Git-known first.** After the first commit, untracked files are
+3. **Make files Git-known first.** After the first commit, untracked files are
    excluded from every source. Stage new files before `index`; make them
    Git-known before relying on working-tree glob expansion.
-3. **`head` and `index` bind the config and the lock too**, not just component
+4. **`head` and `index` bind the config and the lock too**, not just component
    content. Both are read from the same captured snapshot. This is stricter
    than 0.10, which could combine staged artifacts with unstaged config.
    `verify --format json` records the exact locations and captured object IDs
    under `inputs`; text output names the selected config and lock explicitly.
-4. **Fetch history** before using `--changed-from` or a `git_tag_prefix`
+5. **Fetch history** before using `--changed-from` or a `git_tag_prefix`
    version source. Shallow clones break both.
 
 A complete staged refresh therefore looks like this:
@@ -94,6 +99,25 @@ Use `--base-ref REF` to override the inference. `index` and `working-tree`
 default to `HEAD`, because their staged or on-disk source does not yet have a
 commit identity. Inference is diagnostic evidence, not lock integrity: verify
 still recomputes every selected fingerprint from the requested source.
+
+When `explain` finds no changes in the selected source, text output names the
+other exact `--source` forms without silently reading those additional views.
+This keeps the result bound to one snapshot while making an adjacent source
+switch visible.
+
+### Text and JSON presentation
+
+Human diagnostics name their selected source. Consumer edges recorded in the
+lock have a separate declared-edge section in `status`, while actual
+direct/transitive routing caused by boundary or compatibility drift appears
+under `Consumer impact` in `verify` and `why`. The corresponding typed arrays
+remain available in JSON.
+
+Actionable selections and routing shown in JSON have a text equivalent.
+Machine-oriented details such as the complete lockfile object, facet-policy
+maps, full object identities, and stable field names remain JSON-only where the
+text command already provides a bounded summary. JSON source/provenance fields
+and command defaults are unchanged.
 
 ## Selector work limits
 

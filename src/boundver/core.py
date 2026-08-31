@@ -129,6 +129,7 @@ from ._output import (
     analyze_explain_changes as analyze_explain_changes,
     configure_cli_streams,
     explain_component_changes,
+    print_consumer_impact,
     print_diff,
     print_status,
     safe_print as _safe_print,
@@ -968,7 +969,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
     if args.format == "json":
         _print_json(lockfile)
     elif not args.quiet:
-        print_status(lockfile)
+        print_status(lockfile, source=args.source)
     # First-run hint: if source=head and all components have exact_errors,
     # the user likely hasn't committed yet.
     if args.source == "head" and not args.quiet and args.format != "json":
@@ -1130,7 +1131,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
         config_path=config_path,
         lock_path=lock_path,
     )
-    input_line = f"Inputs: config={inputs['config']} lock={inputs['lock']}"
+    input_line = (
+        f"Source: {args.source} | "
+        f"Inputs: config={inputs['config']} lock={inputs['lock']}"
+    )
     components_filter = _parse_components_arg(args.components)
     requested_components_filter = list(components_filter)
     unknown = [
@@ -1422,7 +1426,9 @@ def _cmd_verify(args, repo_root: Path) -> None:
             print(_red(f"LOCKFILE OUT OF DATE ({len(issues)} issues):"))
             print()
             for issue in issues:
-                print(f"  {issue}")
+                if not issue.startswith("AFFECTED CONSUMERS"):
+                    print(f"  {issue}")
+            print_consumer_impact(consumer_impact)
             if observations:
                 print()
                 print(_yellow("NON-GATING DRIFT:"))
@@ -1970,11 +1976,12 @@ def _cmd_status(args, repo_root: Path) -> None:
         }
         if args.format != "json" and not args.quiet:
             if structure_issues:
+                print(f"Source: {args.source}")
                 print(_red("LOCKFILE INVALID:"))
                 for issue in structure_issues:
                     print(f"  {issue}")
             else:
-                print_status(lockfile)
+                print_status(lockfile, source=args.source)
         # Collect component warnings
         has_warnings = False
         components = lockfile.get("components", {})

@@ -457,13 +457,15 @@ def print_diff(diff: dict) -> None:
         print(f"  SLICES UNCHANGED: {', '.join(slices['unchanged'])}")
 
 
-def print_status(lockfile: dict) -> None:
+def print_status(lockfile: dict, *, source: Optional[str] = None) -> None:
     """Print a summary of the current lockfile state."""
     comps = lockfile.get("components", {})
     slices = lockfile.get("slices", {})
 
     print()
     print(f"  Project: {lockfile.get('project', '?')}")
+    if source is not None:
+        print(f"  Source: {source}")
     print(f"  Components: {len(comps)}")
     print(f"  Slices: {len(slices)}")
 
@@ -485,12 +487,23 @@ def print_status(lockfile: dict) -> None:
             f"{provider}/{state}  exact={_short(fps.get('exact'))}  "
             f"boundary={_short(fps.get('boundary'))}"
         )
+    print()
+    print("  Declared consumer edges (recorded in lock):")
+    consumer_edge_count = 0
+    for name, component in sorted(comps.items()):
         consumers = component.get("consumers", [])
         if consumers:
-            print(f"      consumers: {', '.join(consumers)}")
+            consumer_edge_count += len(consumers)
+            print(f"    {name} -> components: {', '.join(consumers)}")
         external_consumers = component.get("external_consumers", [])
         if external_consumers:
-            print(f"      external consumers: {', '.join(external_consumers)}")
+            consumer_edge_count += len(external_consumers)
+            print(
+                f"    {name} -> external consumers: "
+                f"{', '.join(external_consumers)}"
+            )
+    if not consumer_edge_count:
+        print("    none")
 
     # Boundary coverage
     boundary_kinds: Dict[str, int] = {}
@@ -774,6 +787,33 @@ def explain_component_changes(
     if not changed:
         print()
         print("No tracked file changes detected for this component path.")
+        print(
+            "Source scope: `--source` applies only to this invocation; "
+            "it is not shared shell state."
+        )
+        if source == "head":
+            print(
+                "  Inspect staged changes: "
+                "`boundver explain COMPONENT --source index`."
+            )
+            print(
+                "  Inspect staged and unstaged tracked changes: "
+                "`boundver explain COMPONENT --source working-tree`."
+            )
+        elif source == "index":
+            print(
+                "  Inspect staged and unstaged tracked changes: "
+                "`boundver explain COMPONENT --source working-tree`."
+            )
+        else:
+            print(
+                "  Inspect committed state: "
+                "`boundver explain COMPONENT --source head`."
+            )
+            print(
+                "  Inspect staged state: "
+                "`boundver explain COMPONENT --source index`."
+            )
         return 0
 
     print()
@@ -835,6 +875,30 @@ def _parse_components_arg(raw: Optional[str]) -> List[str]:
         return []
     names = [n.strip() for n in raw.split(",") if n.strip()]
     return sorted(set(names))
+
+
+def print_consumer_impact(consumer_impact: List[dict]) -> None:
+    """Render typed direct/transitive consumer impact as a distinct section."""
+    if not consumer_impact:
+        return
+    print()
+    print("Consumer impact:")
+    for row in sorted(
+        consumer_impact,
+        key=lambda item: str(item.get("component", "")),
+    ):
+        component = row.get("component", "?")
+        facets = ", ".join(sorted(row.get("facets", []))) or "unknown facet"
+        reach = "transitive" if row.get("transitive") else "direct"
+        print(f"  {component} [{facets}; {reach}]")
+        components = row.get("components", [])
+        external = row.get("external_consumers", [])
+        if components:
+            print(f"    Components: {', '.join(components)}")
+        if external:
+            print(f"    External consumers: {', '.join(external)}")
+        if not components and not external:
+            print("    none declared")
 
 
 def why_component(
@@ -1067,10 +1131,20 @@ def why_component(
             f"({result.get('diagnostic_base_origin') or 'resolved'})"
         )
 
-    if consumers and ({"boundary", "compat"} & set(changes)):
-        qualifier = " (transitive)" if transitive_consumers else ""
-        print()
-        print(f"Affected consumers{qualifier}: {', '.join(consumers)}")
+    if {"boundary", "compat"} & set(changes):
+        print_consumer_impact(
+            [
+                {
+                    "component": component_name,
+                    "facets": sorted({"boundary", "compat"} & set(changes)),
+                    "components": consumer_groups["components"],
+                    "external_consumers": consumer_groups[
+                        "external_consumers"
+                    ],
+                    "transitive": transitive_consumers,
+                }
+            ]
+        )
 
     if has_gated_drift:
         print()

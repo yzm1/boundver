@@ -293,7 +293,9 @@ before verifying; see
 The default source is `head`: committed state, not unstaged local edits. Use
 `head` for committed CI state, `index` for staged pre-commit state, and
 `working-tree` while reviewing local edits. Generate and verify from the same
-source. The normative snapshot and tracked-file rules live in the
+source. Source flags apply to one invocation only: a following bare command
+defaults to `head` again, so repeat `--source` across adjacent diagnostics. The
+normative snapshot and tracked-file rules live in the
 [specification](spec/spec.md#source-modes); practical staging examples live in
 the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 
