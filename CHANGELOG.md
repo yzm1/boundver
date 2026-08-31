@@ -36,6 +36,16 @@ All notable changes to this project are documented here. The format follows
   row, and output ceilings fail closed into a typed incomplete explanation
   with no partial rows while leaving the independently complete facet/impact
   review available.
+- Added a deterministic public range-review demonstration and sanitized field
+  case study modeled on a 17-component, six-slice monorepo. One command now
+  proves implementation-only, behavioral, and OpenAPI-boundary transitions
+  before lock reconciliation, then commits the reconciled target and asserts
+  equivalent historical text/JSON results, exact endpoint provenance,
+  direct/transitive consumers, changed slices, and structural paths. CI binds
+  the checked-in terminal capture to fixed fixture commits. Reported field and
+  per-run timings are labeled as observations rather than benchmark claims,
+  and the case study separates product facts from build-graph,
+  schema-compatibility, generated-artifact, and declared-graph limitations.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined

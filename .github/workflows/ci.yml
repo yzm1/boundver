@@ -256,6 +256,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: python -I scripts/demo_consumer_impact.py
 
+      - name: Run the public historical range-review demo
+        if: matrix.os == 'ubuntu-latest'
+        run: python -I scripts/demo_range_review.py
+
       - name: Build and exercise the public Dockerfile
         if: matrix.os == 'ubuntu-latest'
         shell: bash

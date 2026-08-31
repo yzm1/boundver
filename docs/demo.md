@@ -51,3 +51,8 @@ That is where a tool such as oasdiff belongs. Boundver established that the
 declared boundary changed and identified which consumers may need work.
 
 Continue with [getting started](getting-started.md) to model your own repository.
+
+For the branch-review version of this workflow, including a reproducible
+17-component/six-slice field scenario before and after lock reconciliation, run
+`python scripts/demo_range_review.py` and read the
+[historical range-review case study](case-study-range-review.md).

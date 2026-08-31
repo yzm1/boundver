@@ -188,11 +188,12 @@ diff; it is never accepted implicitly by an install.
    and install each Python distribution in a clean environment. In a separate
    environment with no installed PyYAML, exercise the archive with a YAML
    config, YAML version source, and YAML OpenAPI boundary.
-8. Run the public consumer-impact demo, build MkDocs with `--strict`, validate
-   the GitLab component source, and render a Homebrew formula from a known
-   release digest. Confirm `action.yml`, the Dockerfile, and all three
-   pre-commit hooks execute the public installed form. Test the supported
-   Python/OS and container architecture matrices.
+8. Run both public demos (`demo_consumer_impact.py` and
+   `demo_range_review.py`), build MkDocs with `--strict`, validate the GitLab
+   component source, and render a Homebrew formula from a known release digest.
+   Confirm `action.yml`, the Dockerfile, and all three pre-commit hooks execute
+   the public installed form. Test the supported Python/OS and container
+   architecture matrices.
 9. Confirm the Homebrew tap and GitLab Catalog project are writable by their
    reviewed promotion paths, and that all six release environments still
    require a reviewer.

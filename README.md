@@ -34,6 +34,12 @@ guide](https://yzm1.github.io/boundver/comparison/).
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
+The [reproducible 17-component range-review case
+study](https://yzm1.github.io/boundver/case-study-range-review/) shows an
+implementation-only edit, behavioral drift, and an OpenAPI boundary change
+before and after lock reconciliation, with direct/transitive consumers and
+source-bound structural evidence.
+
 The install and Action examples below target the exact v0.14.1 release so local
 writers and CI verifiers use the same contract implementation.
 
@@ -420,6 +426,7 @@ Exact-version and digest-pinned examples are in the
 - [Documentation](https://yzm1.github.io/boundver/)
 - [Getting started](https://yzm1.github.io/boundver/getting-started/)
 - [Runnable demo](https://yzm1.github.io/boundver/demo/)
+- [17-component range-review case study](https://yzm1.github.io/boundver/case-study-range-review/)
 - [Examples](https://yzm1.github.io/boundver/examples/)
 - [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/)
 - [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)

@@ -44,6 +44,7 @@ nav:
   - Home: index.md
   - Start here:
       - One-minute demo: demo.md
+      - Range-review case study: case-study-range-review.md
       - Getting started: getting-started.md
       - Gradual adoption: gradual-adoption.md
       - Examples: examples.md

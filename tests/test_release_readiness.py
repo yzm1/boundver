@@ -103,6 +103,7 @@ docs/RELEASING.md
     for name in (
         "index.md",
         "demo.md",
+        "case-study-range-review.md",
         "getting-started.md",
         "ci-cookbook.md",
         "comparison.md",

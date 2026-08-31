@@ -68,6 +68,7 @@ RELEASE_DOCS = (
     "README.md",
     "docs/index.md",
     "docs/demo.md",
+    "docs/case-study-range-review.md",
     "docs/getting-started.md",
     "docs/ci-cookbook.md",
     "docs/comparison.md",

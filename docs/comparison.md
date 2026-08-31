@@ -54,3 +54,11 @@ or publish a package version by itself.
 | classify heterogeneous declared artifacts and route consumer verification | boundver |
 
 Most mature pipelines use more than one row.
+
+## Reproducible field scenario
+
+The [17-component range-review case study](case-study-range-review.md) shows
+that composition in a sanitized non-Boundver fixture: boundver classifies three
+different facets and emits direct/transitive consumers, while compatibility
+judgment remains explicitly assigned to ecosystem-specific tools and consumer
+tests.

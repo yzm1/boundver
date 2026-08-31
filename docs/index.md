@@ -6,6 +6,7 @@ generated artifacts, configuration, and package surfaces cross compiler or
 build-system boundaries.
 
 [Start the one-minute demo](demo.md){ .md-button .md-button--primary }
+[Review the 17-component case study](case-study-range-review.md){ .md-button }
 [Install boundver](getting-started.md){ .md-button }
 
 ![A boundver verification reports boundary drift and affected consumers](assets/verify-demo.svg)
@@ -49,6 +50,7 @@ the consumer suites reachable from that API in the declared graph. See
 - New repository: follow [getting started](getting-started.md).
 - Existing monorepo: use [gradual adoption](gradual-adoption.md).
 - Reviewing a branch: use [historical range review](reference.md#historical-range-review).
+- Evaluating a real branch workflow: run the [17-component case study](case-study-range-review.md).
 - CI integration: copy a recipe from the [CI cookbook](ci-cookbook.md).
 - Runtime expectations: see the reproducible [performance contract](performance.md).
 - Containers, Homebrew, or GitLab: see [distribution](distribution.md).

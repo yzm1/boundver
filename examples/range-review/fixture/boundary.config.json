@@ -1,0 +1,114 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.0/boundary.config.schema.json",
+  "project": "sanitized-commerce-platform",
+  "components": {
+    "gateway-api": {
+      "path": "components/gateway-api",
+      "boundary": {"provider": "openapi-canonical", "paths": ["api.json"]},
+      "behavior": {"paths": ["api.json", "defaults.json"]},
+      "consumers": ["analytics-contracts", "platform-client"],
+      "external_consumers": ["partner-audit"]
+    },
+    "analytics-api": {
+      "path": "components/analytics-api",
+      "boundary": {"provider": "json-canonical", "paths": ["contract.json"]},
+      "behavior": {"paths": ["contract.json", "defaults.json"]},
+      "consumers": ["analytics-contracts", "reporting-worker"]
+    },
+    "identity-api": {
+      "path": "components/identity-api",
+      "boundary": {"provider": "openapi-canonical", "paths": ["api.json"]},
+      "consumers": ["gateway-api"]
+    },
+    "insights-api": {
+      "path": "components/insights-api",
+      "boundary": {"provider": "openapi-canonical", "paths": ["api.json"]},
+      "consumers": ["insights-contracts"]
+    },
+    "shared-runtime": {
+      "path": "components/shared-runtime",
+      "boundary": {"provider": "python-exports", "paths": ["exports.py"]},
+      "consumers": ["analytics-api", "gateway-api", "identity-api", "insights-api"]
+    },
+    "recovery-lib": {
+      "path": "components/recovery-lib",
+      "boundary": {"provider": "python-exports", "paths": ["exports.py"]},
+      "consumers": ["analytics-api"]
+    },
+    "analytics-contracts": {
+      "path": "components/analytics-contracts",
+      "boundary": {"provider": "json-canonical", "paths": ["service-definition.json"]},
+      "consumers": ["scheduler"]
+    },
+    "insights-contracts": {
+      "path": "components/insights-contracts",
+      "boundary": {"provider": "json-canonical", "paths": ["service-definition.json"]},
+      "consumers": ["scheduler"]
+    },
+    "platform-client": {
+      "path": "components/platform-client",
+      "boundary": {"provider": "typescript-exports", "paths": ["client.d.ts"]},
+      "consumers": ["admin-portal", "checkout-web", "insights-web"]
+    },
+    "design-tokens": {
+      "path": "components/design-tokens",
+      "boundary": {"provider": "typescript-exports", "paths": ["tokens.ts"]},
+      "consumers": ["admin-portal", "checkout-web", "docs-site", "insights-web", "public-site"]
+    },
+    "checkout-web": {
+      "path": "components/checkout-web",
+      "boundary": {"provider": "leaf", "paths": []},
+      "external_consumers": ["mobile-app"]
+    },
+    "admin-portal": {
+      "path": "components/admin-portal",
+      "boundary": {"provider": "leaf", "paths": []}
+    },
+    "insights-web": {
+      "path": "components/insights-web",
+      "boundary": {"provider": "leaf", "paths": []}
+    },
+    "public-site": {
+      "path": "components/public-site",
+      "boundary": {"provider": "leaf", "paths": []}
+    },
+    "scheduler": {
+      "path": "components/scheduler",
+      "boundary": {"provider": "leaf", "paths": []}
+    },
+    "reporting-worker": {
+      "path": "components/reporting-worker",
+      "boundary": {"provider": "path-hash", "paths": ["worker.txt"]}
+    },
+    "docs-site": {
+      "path": "components/docs-site",
+      "boundary": {"provider": "leaf", "paths": []}
+    }
+  },
+  "slices": {
+    "gateway-contract": {
+      "mode": "boundary",
+      "components": ["gateway-api"]
+    },
+    "analytics-behavior": {
+      "mode": "behavior",
+      "components": ["analytics-api"]
+    },
+    "frontend-impact": {
+      "mode": "exact",
+      "closure_of": "gateway-api"
+    },
+    "shared-runtime-impact": {
+      "mode": "exact",
+      "closure_of": "shared-runtime"
+    },
+    "service-definitions": {
+      "mode": "boundary",
+      "components": ["analytics-contracts", "insights-contracts"]
+    },
+    "release-surface": {
+      "mode": "exact",
+      "components": ["admin-portal", "analytics-api", "gateway-api"]
+    }
+  }
+}
