@@ -28,7 +28,7 @@ inputs:
     required: false
     default: ""
   components:
-    description: Optional comma-separated component subset.
+    description: Optional comma-separated component subset; configured names cannot contain commas or surrounding whitespace.
     required: false
     default: ""
   changed-from:

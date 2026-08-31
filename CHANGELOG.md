@@ -47,6 +47,14 @@ All notable changes to this project are documented here. The format follows
   verification APIs, and config mutation commands. Existing empty slices now
   receive guidance to add a configured component or remove the vacuous gate;
   valid explicit and `closure_of` fingerprints are unchanged.
+- Rejected configured component names containing commas or surrounding
+  whitespace so every valid name remains addressable through scoped CLI,
+  GitHub Action, and GitLab Catalog filters. Validation now gives an actionable
+  rename diagnostic across component keys, consumer edges, and slices;
+  discovery refuses to emit an unaddressable derived name. `boundver add`
+  retains its comma-separated `--paths` input and adds repeatable
+  `--boundary-path` values for losslessly declaring filenames that contain a
+  comma.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

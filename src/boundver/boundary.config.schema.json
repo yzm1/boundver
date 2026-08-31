@@ -13,6 +13,12 @@
       "minLength": 1,
       "maxLength": 16384
     },
+    "componentIdentifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^(?![\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])(?![\\s\\S]*[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]$)[^,]+$"
+    },
     "gitTagPrefix": {
       "type": "string",
       "minLength": 1,
@@ -64,7 +70,7 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 10000,
-      "propertyNames": {"$ref": "#/$defs/consumerGraphIdentifier"},
+      "propertyNames": {"$ref": "#/$defs/componentIdentifier"},
       "additionalProperties": {
         "type": "object",
         "required": ["path", "boundary"],
@@ -136,7 +142,7 @@
             "type": "array",
             "description": "Configured component names directly downstream of this component.",
             "maxItems": 10000,
-            "items": {"$ref": "#/$defs/consumerGraphIdentifier"},
+            "items": {"$ref": "#/$defs/componentIdentifier"},
             "uniqueItems": true
           },
           "external_consumers": {
@@ -169,11 +175,11 @@
             "type": "array",
             "minItems": 1,
             "maxItems": 10000,
-            "items": {"$ref": "#/$defs/consumerGraphIdentifier"},
+            "items": {"$ref": "#/$defs/componentIdentifier"},
             "uniqueItems": true
           },
           "closure_of": {
-            "$ref": "#/$defs/consumerGraphIdentifier",
+            "$ref": "#/$defs/componentIdentifier",
             "description": "Include this component and its transitive downstream consumers."
           }
         },

@@ -60,6 +60,7 @@ from ._config_contract import (
     VERSION_FILE_FIELDS,
     VERSION_SOURCE_FIELDS,
     VERSION_TAG_FIELDS,
+    component_identifier_problem,
 )
 from ._config_io import (
     find_config_file as _find_config_file_impl,
@@ -701,6 +702,10 @@ def validate_config(
     for name, comp in components.items():
         if errors.truncated:
             break
+        name_problem = component_identifier_problem(
+            name,
+            max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+        )
         if not isinstance(name, str) or not name.strip():
             errors.append("Component names must be non-empty strings")
             continue
@@ -709,6 +714,13 @@ def validate_config(
                 "Component name exceeds the "
                 f"{MAX_CONSUMER_IDENTIFIER_CHARS}-character consumer-graph "
                 f"limit: {_bounded_diagnostic_repr(name)}"
+            )
+            continue
+        if name_problem is not None:
+            errors.append(
+                f"Component name {_bounded_diagnostic_repr(name)} is not "
+                f"addressable: {name_problem}. Rename it and update every "
+                "consumer edge, slice reference, and lockfile entry."
             )
             continue
         raw_component_name = name
@@ -973,6 +985,10 @@ def validate_config(
                 for consumer in consumers:
                     if errors.truncated:
                         break
+                    consumer_problem = component_identifier_problem(
+                        consumer,
+                        max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+                    )
                     if len(consumer) > MAX_CONSUMER_IDENTIFIER_CHARS:
                         errors.append(
                             f"Component '{name}' consumer identifier exceeds the "
@@ -985,6 +1001,14 @@ def validate_config(
                             f"Component '{name}' consumer identifiers must be non-empty "
                             "and have no surrounding whitespace: "
                             f"{_bounded_diagnostic_repr(consumer)}"
+                        )
+                        continue
+                    if consumer_problem is not None:
+                        errors.append(
+                            f"Component '{name}' consumer identifier "
+                            f"{_bounded_diagnostic_repr(consumer)} is not "
+                            f"addressable: {consumer_problem}. Rename the "
+                            "referenced component and update this edge."
                         )
                         continue
                     if consumer == raw_component_name:
@@ -1378,21 +1402,36 @@ def validate_config(
                 )
                 slice_components = []
             else:
-                slice_components = raw_slice_components
-                if len(slice_components) != len(set(slice_components)):
+                slice_components = []
+                if len(raw_slice_components) != len(set(raw_slice_components)):
                     errors.append(
                         f"Slice '{sname}' field 'components' contains duplicates"
                     )
+                for cname in raw_slice_components:
+                    cname_problem = component_identifier_problem(
+                        cname,
+                        max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+                    )
+                    if cname_problem is not None:
+                        errors.append(
+                            f"Slice '{sname}' component identifier "
+                            f"{_bounded_diagnostic_repr(cname)} is not "
+                            f"addressable: {cname_problem}. Rename the "
+                            "component and update this slice."
+                        )
+                        continue
+                    slice_components.append(cname)
         else:
             closure_seed = sdef.get("closure_of")
-            if (
-                not isinstance(closure_seed, str)
-                or not closure_seed.strip()
-                or closure_seed != closure_seed.strip()
-            ):
+            closure_problem = component_identifier_problem(
+                closure_seed,
+                max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+            )
+            if closure_problem is not None:
                 errors.append(
-                    f"Slice '{sname}' field 'closure_of' must be a non-empty "
-                    "component name with no surrounding whitespace"
+                    f"Slice '{sname}' field 'closure_of' is not an addressable "
+                    f"component identifier: {closure_problem}. Rename the "
+                    "component and update this slice."
                 )
                 slice_components = []
             elif closure_seed not in components:
@@ -1462,8 +1501,10 @@ def validate_config(
     for name, comp in components.items():
         if errors.truncated:
             break
-        if not isinstance(name, str) or not name.strip():
-            errors.append("Component names must be non-empty strings")
+        if component_identifier_problem(
+            name,
+            max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+        ) is not None:
             continue
         name = _bounded_diagnostic_text(name)
         if not isinstance(comp, dict):

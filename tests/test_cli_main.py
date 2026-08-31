@@ -653,6 +653,87 @@ class MainRemoveIntegrityTests(unittest.TestCase):
             self.assertIn("components", err)
             self.assertNotIn("Traceback", err)
 
+    def test_add_rejects_unaddressable_component_names_without_writing(self):
+        for invalid_name in ("svc,prod", " svc", "svc "):
+            with self.subTest(name=invalid_name), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self._repo(root)
+                (root / "existing").mkdir()
+                (root / "existing" / "main.py").write_text("value = 1\n")
+                (root / "new").mkdir()
+                config_path = root / "boundary.config.json"
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "project": "p",
+                            "components": {
+                                "existing": {
+                                    "path": "existing",
+                                    "boundary": {"provider": "implicit"},
+                                }
+                            },
+                            "slices": {},
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                before = config_path.read_bytes()
+
+                code, _out, err = _run_main(
+                    "add", invalid_name, "new", repo_root=root
+                )
+
+                self.assertEqual(code, core.EXIT_USAGE, err)
+                self.assertIn("not addressable", err)
+                self.assertIn("--components", err)
+                self.assertEqual(config_path.read_bytes(), before)
+
+    def test_add_repeatable_boundary_path_preserves_commas(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            (root / "existing").mkdir()
+            (root / "existing" / "main.py").write_text("value = 1\n")
+            (root / "new").mkdir()
+            (root / "new" / "schema,legacy.json").write_text("{}\n")
+            (root / "new" / "other.json").write_text("{}\n")
+            config_path = root / "boundary.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "project": "p",
+                        "components": {
+                            "existing": {
+                                "path": "existing",
+                                "boundary": {"provider": "implicit"},
+                            }
+                        },
+                        "slices": {},
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+
+            code, _out, err = _run_main(
+                "add",
+                "new",
+                "new",
+                "--boundary-path",
+                "schema,legacy.json",
+                "--boundary-path",
+                "other.json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            written = json.loads(config_path.read_text())
+            self.assertEqual(
+                written["components"]["new"]["boundary"]["paths"],
+                ["schema,legacy.json", "other.json"],
+            )
+
     def test_remove_reports_schema_invalid_slices_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1905,6 +1986,24 @@ class MainDiscoverTests(unittest.TestCase):
             self.assertEqual(code, core.EXIT_USAGE)
             self.assertEqual(out, "")
             self.assertIn("component discovery failed", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_discover_refuses_an_unaddressable_derived_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            component = root / "svc,prod"
+            component.mkdir()
+            (component / "package.json").write_text(
+                '{"version":"1.0"}', encoding="utf-8"
+            )
+
+            code, out, err = _run_main("discover", repo_root=root)
+
+            self.assertEqual(code, core.EXIT_USAGE)
+            self.assertEqual(out, "")
+            self.assertIn("not addressable", err)
+            self.assertIn("configure it manually", err)
             self.assertNotIn("Traceback", err)
 
 

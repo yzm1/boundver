@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from ._config_contract import component_identifier_problem
 from ._git import _git_run, _iter_bounded_git_paths, _to_posix
 from ._utils import (
     ConfigError,
@@ -69,14 +70,14 @@ def compare_discovery_to_config(discovered: dict, config: dict) -> dict:
     configured_by_path: Dict[str, list] = {}
     configured_rows = []
     for name, component in sorted(components.items(), key=lambda item: str(item[0])):
-        if (
-            not isinstance(name, str)
-            or not name
-            or len(name) > MAX_DISCOVERY_DIFF_TEXT
-        ):
+        name_problem = component_identifier_problem(
+            name,
+            max_chars=MAX_DISCOVERY_DIFF_TEXT,
+        )
+        if name_problem is not None:
             raise ConfigError(
-                "Configured component names must be non-empty strings within "
-                f"the {MAX_DISCOVERY_DIFF_TEXT}-character limit"
+                f"Configured component name {name!r} is not addressable: "
+                f"{name_problem}"
             )
         if not isinstance(component, dict) or not isinstance(component.get("path"), str):
             raise ConfigError(f"Configured component '{name}' must define a string path")
@@ -91,8 +92,15 @@ def compare_discovery_to_config(discovered: dict, config: dict) -> dict:
     unregistered = []
     discovered_paths = set()
     for name, component in sorted(discovered.items()):
-        if not isinstance(name, str) or len(name) > MAX_DISCOVERY_DIFF_TEXT:
-            raise ConfigError("Discovered component names exceed the text limit")
+        name_problem = component_identifier_problem(
+            name,
+            max_chars=MAX_DISCOVERY_DIFF_TEXT,
+        )
+        if name_problem is not None:
+            raise ConfigError(
+                f"Discovered component name {name!r} is not addressable: "
+                f"{name_problem}"
+            )
         if not isinstance(component, dict) or not isinstance(component.get("path"), str):
             raise ConfigError(f"Discovered component '{name}' has no string path")
         try:
@@ -288,6 +296,14 @@ def discover_components(
             while comp_name in found:
                 comp_name = f"{base_name}-{idx}"
                 idx += 1
+            name_problem = component_identifier_problem(comp_name)
+            if name_problem is not None:
+                raise ConfigError(
+                    f"Discovered component name {comp_name!r} from path "
+                    f"{rel_path!r} is not addressable: {name_problem}. Rename "
+                    "the directory or configure it manually under an "
+                    "addressable component name."
+                )
             component_dir = repo_root / rel_path
             component_prefix = rel_path.rstrip("/") + "/"
             available_paths = (

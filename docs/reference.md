@@ -169,6 +169,13 @@ labels repository-wide, and each component name or external label may contain
 at most 16,384 characters. `validate-config` rejects larger graphs before
 generation or verification; boundver never emits a partial transitive closure.
 
+Configured component names and internal references to them cannot contain a
+comma or leading/trailing whitespace. `--components`, the GitHub Action, and
+the GitLab Catalog all use a comma-separated filter and trim tokens, so allowing
+those spellings would create components that no scoped command could address.
+Opaque `external_consumers` labels are not component selectors and retain their
+broader string contract.
+
 ## What each facet needs
 
 A facet is *available* for a component only when its declaration can produce a

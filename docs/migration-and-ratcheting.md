@@ -12,6 +12,17 @@ state, not unstaged local edits. Use `index` for a staged review and
 `working-tree` for tracked files on disk; use the same source when generating
 and verifying a lock.
 
+## Rename delimiter-ambiguous component identifiers
+
+Current configuration rejects component names containing a comma or
+leading/trailing whitespace. Earlier releases accepted those names even though
+`--components`, the GitHub Action, and the GitLab Catalog could not select them
+losslessly: commas split the filter and surrounding whitespace was discarded.
+Rename each affected key, update matching `consumers`, slice `components`, and
+`closure_of` references, then regenerate the lock. Opaque
+`external_consumers` labels do not need renaming. `validate-config` reports the
+specific incompatible spelling and the migration targets.
+
 ## Interpret a 0.12 lock regeneration
 
 This subsection documents released v0.12 migration semantics; it does not make

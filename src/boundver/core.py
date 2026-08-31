@@ -142,6 +142,7 @@ from ._completions import (
     _ZSH_COMPLETION as _ZSH_COMPLETION,
 )
 from ._cli_parser import build_parser
+from ._config_contract import component_identifier_problem
 from ._consumer_graph import resolve_slice_components
 from ._discovery import compare_discovery_to_config, normalize_discovery_exclusions
 from ._migration_analysis import analyze_selector_migration
@@ -1792,6 +1793,15 @@ def _cmd_add(args, repo_root: Path) -> None:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     components = config.get("components", {})
+    name_problem = component_identifier_problem(args.name)
+    if name_problem is not None:
+        print(
+            f"ERROR: Component name {args.name!r} is not addressable: "
+            f"{name_problem}. Rename it so --components and CI filters can "
+            "select it unambiguously.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
     if args.name in components:
         print(
             f"ERROR: Component '{args.name}' already exists in config.", file=sys.stderr
@@ -1801,8 +1811,11 @@ def _cmd_add(args, repo_root: Path) -> None:
     if not add_path or ".." in Path(add_path).parts or Path(add_path).is_absolute():
         print(f"ERROR: Invalid component path: {args.path!r}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    boundary_paths = (
+    legacy_boundary_paths = (
         [p.strip() for p in args.paths.split(",") if p.strip()] if args.paths else []
+    )
+    boundary_paths = legacy_boundary_paths + list(
+        getattr(args, "boundary_path", [])
     )
     components[args.name] = {
         "path": add_path,

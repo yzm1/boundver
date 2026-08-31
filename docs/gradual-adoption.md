@@ -218,6 +218,17 @@ boundver validate-config
 boundver generate --components billing-service --source working-tree
 ```
 
+Component names cannot contain commas or leading/trailing whitespace because
+scoped CLI and CI filters are comma-separated. The older `add --paths` option
+still accepts an ordinary comma-separated path list. If one boundary filename
+itself contains a comma, use the repeatable lossless form instead:
+
+```bash
+boundver add billing-service services/billing --provider path-hash \
+  --boundary-path 'contracts/schema,legacy.json' \
+  --boundary-path contracts/current.json
+```
+
 Component-scoped generation is safe only with an existing valid v3 lock. It
 recomputes the complete candidate state, refuses to preserve any stale
 unselected component, replaces the selected entry as one unit, reconciles

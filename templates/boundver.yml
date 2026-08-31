@@ -22,7 +22,7 @@ spec:
       description: Optional comma-separated facet override; empty uses config policy.
       default: ""
     components:
-      description: Optional comma-separated component subset.
+      description: Optional comma-separated component subset; configured names cannot contain commas or surrounding whitespace.
       default: ""
     changed-from:
       description: Optional Git ref used only to report changed components.

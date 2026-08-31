@@ -49,7 +49,8 @@ The Action inputs are:
 - `source`: `head`, `index`, or `working-tree`.
 - `facets`: optional comma-separated CLI-wide override. Leave it blank to honor
   component/default policy.
-- `components`: optional comma-separated component names.
+- `components`: optional comma-separated component names. Configured names
+  cannot contain commas or surrounding whitespace.
 - `changed-from`: optional Git ref for changed-path reporting.
 - `transitive`: set to `true` to include the downstream consumer closure in
   impact output.

@@ -171,6 +171,10 @@ shrink impact. `external_consumers` contains unique opaque terminal labels for
 systems outside this config. Boundary and compatibility drift reports direct
 impact by default; add `--transitive` to `verify` or `why` to walk internal
 edges and include external terminals found along that downstream closure.
+Configured component names cannot contain commas or leading/trailing
+whitespace: the CLI, GitHub Action, and GitLab Catalog use comma-separated
+component filters and trim each token. Existing configs with such a name must
+rename it and update its consumer edges, slice references, and lockfile.
 The machine-output bounds are documented in the
 [reference](docs/reference.md#consumer-graph-limits); validation rejects an
 oversized graph rather than emitting a partial impact closure.

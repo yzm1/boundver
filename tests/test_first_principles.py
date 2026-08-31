@@ -703,6 +703,43 @@ class ConfigWithoutJsonschemaTests(unittest.TestCase):
                         any("field 'name'" in error for error in errors), errors
                     )
 
+    def test_component_identifiers_are_addressable_without_jsonschema(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for invalid_name in ("svc,prod", " svc", "svc "):
+                with self.subTest(name=invalid_name):
+                    config = self._minimal_config()
+                    component = config["components"].pop("svc")
+                    config["components"][invalid_name] = component
+
+                    errors = self._validate_without_jsonschema(config, root)
+
+                    self.assertTrue(
+                        any("not addressable" in error for error in errors),
+                        errors,
+                    )
+
+            config = self._minimal_config()
+            config["components"]["target"] = {
+                "path": "target",
+                "boundary": {"provider": "implicit"},
+            }
+            config["components"]["svc"]["consumers"] = ["target,prod"]
+            config["slices"] = {
+                "selected": {"mode": "exact", "components": [" target"]}
+            }
+
+            errors = self._validate_without_jsonschema(config, root)
+
+            self.assertTrue(
+                any("consumer identifier" in error and "not addressable" in error for error in errors),
+                errors,
+            )
+            self.assertTrue(
+                any("Slice 'selected'" in error and "not addressable" in error for error in errors),
+                errors,
+            )
+
     def test_component_path_must_be_a_tracked_directory_in_head_and_index(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

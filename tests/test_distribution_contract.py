@@ -2184,6 +2184,9 @@ print(json.dumps(payload, separators=(",", ":")))
         import yaml
 
         action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        component_description = action["inputs"]["components"]["description"]
+        self.assertIn("cannot contain commas", component_description)
+        self.assertIn("surrounding whitespace", component_description)
         self.assertEqual(action["inputs"]["facets"]["default"], "")
         self.assertEqual(action["inputs"]["transitive"]["default"], "false")
         self.assertEqual(
@@ -2210,6 +2213,16 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         self.assertNotIn("boundver-result.XXXXXX.json", script)
         self.assertNotIn('echo "consumer-impact=', script)
+
+    def test_gitlab_component_filter_documents_addressable_names(self):
+        template = yaml.safe_load(
+            (REPO_ROOT / "templates" / "boundver.yml").read_text(
+                encoding="utf-8"
+            ).split("---", 1)[0]
+        )
+        description = template["spec"]["inputs"]["components"]["description"]
+        self.assertIn("cannot contain commas", description)
+        self.assertIn("surrounding whitespace", description)
 
     def test_action_baseline_input_is_read_only_and_opt_in(self):
         import yaml

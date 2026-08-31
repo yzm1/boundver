@@ -67,7 +67,9 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--allow-custom-providers",
     ),
     "init": ("-h", "--help", "--out", "--force", "--discover"),
-    "add": ("-h", "--help", "--provider", "--paths", "--config"),
+    "add": (
+        "-h", "--help", "--provider", "--paths", "--boundary-path", "--config",
+    ),
     "remove": ("-h", "--help", "--config"),
     "status": (
         "-h", "--help", "--config", "--lock", "--source", "--format",
@@ -118,6 +120,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--discover": "Auto-discover components",
     "--provider": "Boundary provider",
     "--paths": "Comma-separated boundary paths",
+    "--boundary-path": "One repeatable boundary path (commas preserved)",
     "--strict": "Exit non-zero on warnings or drift",
     "--base-ref": "Git base ref",
     "--diff-config": "Compare discovery with configured roots",
@@ -139,6 +142,7 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--facets": ("facets", ""),
     "--provider": ("provider", ""),
     "--paths": ("paths", ""),
+    "--boundary-path": ("path", "_files"),
     "--base-ref": ("Git ref", ""),
     "--exclude": ("path", "_files -/"),
     "--baseline": ("file", "_files"),
@@ -155,7 +159,7 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
 
 _FILE_OPTIONS = (
     "--config", "--lock", "--out", "--baseline", "--write-baseline",
-    "--update-baseline",
+    "--update-baseline", "--boundary-path",
 )
 
 # zsh can describe positional arguments without custom parsing functions.

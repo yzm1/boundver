@@ -259,7 +259,21 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     add.add_argument(
         "--provider", default="implicit", help="Boundary provider (default: implicit)"
     )
-    add.add_argument("--paths", default="", help="Comma-separated boundary paths")
+    add.add_argument(
+        "--paths",
+        default="",
+        help=(
+            "Comma-separated boundary paths; use repeatable --boundary-path "
+            "when a path contains a comma"
+        ),
+    )
+    add.add_argument(
+        "--boundary-path",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="One boundary path; repeat for multiple paths (commas are preserved)",
+    )
     add.add_argument(
         "--config", default="boundary.config.json", help="Config file path"
     )
