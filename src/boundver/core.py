@@ -71,9 +71,12 @@ from ._hashing import (
     source_tree_digest as source_tree_digest,
 )
 from ._utils import (
+    BoundedDiagnosticList,
     FACETS,
     FACET_SET,
     SOURCE_MODE_SET,
+    _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
     _effective_component_facets,
     _is_windows_reparse_point,
     BoundverError as BoundverError,
@@ -259,6 +262,7 @@ def _drift_exit_code(issues: List[str]) -> int:
         "CURRENT DIGEST ERROR",
         "LOCKED DIGEST ERROR",
         "UNAVAILABLE FACET",
+        "DIAGNOSTICS TRUNCATED",
     )
     if any(issue.startswith(safety_prefixes) for issue in issues):
         return EXIT_USAGE
@@ -363,19 +367,29 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
     skipped merely because a caller requested a subset of component
     fingerprints.
     """
-    structural_issues = [
-        *_lockfile_schema_issues(lockfile),
-        *_lockfile_structure_issues(lockfile, running_version=_get_version()),
-    ]
-    issues = list(structural_issues)
+    structural_issues = BoundedDiagnosticList(_lockfile_schema_issues(lockfile))
+    structural_issues.extend(
+        _lockfile_structure_issues(lockfile, running_version=_get_version())
+    )
+    issues = BoundedDiagnosticList(structural_issues)
     if structural_issues:
-        return issues
+        return list(issues)
+
+    def name_preview(names: Set[str]) -> str:
+        ordered = sorted(names)
+        rendered = ", ".join(
+            _bounded_diagnostic_repr(name) for name in ordered[:8]
+        )
+        if len(ordered) > 8:
+            rendered += f", +{len(ordered) - 8} more"
+        return f"[{rendered}]"
 
     configured_project = config.get("project", "unknown")
     if lockfile.get("project") != configured_project:
         issues.append(
-            f"METADATA MISMATCH project: lockfile={lockfile.get('project')!r} "
-            f"current={configured_project!r}"
+            "METADATA MISMATCH project: lockfile="
+            f"{_bounded_diagnostic_repr(lockfile.get('project'))} current="
+            f"{_bounded_diagnostic_repr(configured_project)}"
         )
 
     locked_names = (
@@ -387,7 +401,8 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
     if locked_names != configured_names:
         issues.append(
             "LOCKFILE component set differs from config: "
-            f"locked={sorted(locked_names)} configured={sorted(configured_names)}"
+            f"locked={name_preview(locked_names)} "
+            f"configured={name_preview(configured_names)}"
         )
 
     locked_slices = (
@@ -399,13 +414,15 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
     if locked_slices != configured_slices:
         issues.append(
             "LOCKFILE slice set differs from config: "
-            f"locked={sorted(locked_slices)} configured={sorted(configured_slices)}"
+            f"locked={name_preview(locked_slices)} "
+            f"configured={name_preview(configured_slices)}"
         )
 
     issues.extend(
-        f"LOCKED DIGEST ERROR {message}" for message in _generation_errors(lockfile)
+        f"LOCKED DIGEST ERROR {_bounded_diagnostic_text(message)}"
+        for message in _generation_errors(lockfile)
     )
-    return issues
+    return list(issues)
 
 
 def _ensure_lock_outside_components(
@@ -1049,11 +1066,38 @@ def _cmd_verify(args, repo_root: Path) -> None:
         snapshot=snapshot,
     )
     if config_errors:
-        print(
-            f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr
-        )
-        for error in config_errors:
-            print(f"  - {error}", file=sys.stderr)
+        if args.format == "json":
+            _print_verify_json(
+                ok=False,
+                updated=False,
+                issues=config_errors,
+                resolved_issues=[],
+                observations=[],
+                facets=None,
+                facet_policy={
+                    "explicit": None,
+                    "defaults": None,
+                    "components": {},
+                    "slices": {},
+                },
+                components_filter=[],
+                changed_components=[],
+                inputs=_operation_input_provenance(
+                    repo_root,
+                    args.source,
+                    snapshot,
+                    config_path=config_path,
+                    lock_path=repo_root / args.lock,
+                ),
+                consumer_impact=[],
+            )
+        else:
+            print(
+                f"ERROR: Config is invalid ({len(config_errors)} issues):",
+                file=sys.stderr,
+            )
+            for error in config_errors:
+                print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     lock_path = repo_root / args.lock
     try:
@@ -1170,11 +1214,13 @@ def _cmd_verify(args, repo_root: Path) -> None:
         and not args.changed_from
     )
     if scoped_preflight_update:
-        preflight_issues.append(
+        bounded_preflight = BoundedDiagnosticList(preflight_issues)
+        bounded_preflight.append(
             "LOCKFILE scoped --update cannot repair global component or slice "
             "preflight issues; rerun without --components after reviewing the "
             "full lock"
         )
+        preflight_issues = list(bounded_preflight)
     if (
         preflight_issues
         and args.update
@@ -1662,12 +1708,12 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         allow_custom_providers=allow_custom,
         require_slice_facets=not args.allow_partial,
     )
-    warnings = config_warnings(config, repo_root)
     if errors:
         print(_red(f"CONFIG INVALID ({len(errors)} issues):"))
         for err in errors:
             print(f"  - {err}")
         sys.exit(EXIT_USAGE)
+    warnings = config_warnings(config, repo_root)
     if warnings:
         print(_yellow(f"CONFIG WARNINGS ({len(warnings)}):"))
         for warning in warnings:

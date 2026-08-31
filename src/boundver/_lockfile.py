@@ -45,10 +45,13 @@ from ._lockfile_validation import (
     lockfile_structure_issues as _lockfile_structure_issues_impl,
 )
 from ._utils import (
+    BoundedDiagnosticList,
+    DIAGNOSTIC_TRUNCATION_SENTINEL,
     FACETS,
     FACET_SET,
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
     _bounded_json_dumps,
     _bounded_json_int,
     _available_component_facets,
@@ -423,15 +426,21 @@ def generate_lockfile(
     accessor.prime_latest_tags(tag_prefixes)
 
     # --- Components ---
+    generation_errors = BoundedDiagnosticList()
     for name, comp in components_config.items():
-        lockfile["components"][name] = _compute_component_entry(
+        component_entry = _compute_component_entry(
             name, comp, repo_root, source, defaults, accessor, registry,
         )
+        lockfile["components"][name] = component_entry
+        generation_errors.extend(
+            _generation_errors({"components": {name: component_entry}})
+        )
+        if generation_errors.truncated:
+            break
 
     # ``strict=False`` (the CLI's ``--allow-partial``) relaxes only slice
     # requirements for intentional null facets.  It must never bless a
     # provider/computation failure into a lockfile that verify will reject.
-    generation_errors = _generation_errors(lockfile)
     if generation_errors:
         raise ConfigError(
             "Lockfile generation failed:\n" + "\n".join(generation_errors)
@@ -620,8 +629,12 @@ def _compute_component_entry(
     """Compute the lockfile entry for a single component."""
     raw_path = comp.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
-        raise ConfigError(f"Component '{name}' has invalid or missing 'path'")
+        raise ConfigError(
+            f"Component '{_bounded_diagnostic_text(name)}' has invalid or "
+            "missing 'path'"
+        )
     comp_path = _to_posix(os.path.normpath(raw_path.strip()))
+    comp_path_display = _bounded_diagnostic_text(comp_path)
     version = extract_version(
         repo_root, comp_path, comp.get("version_source"), accessor.latest_tag,
         read_file_fn=accessor.version_read_file,
@@ -646,16 +659,20 @@ def _compute_component_entry(
         )
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         exact_digest = None
-        exact_errors.append(f"Exact digest failed: {exc}")
+        exact_errors.append(
+            f"Exact digest failed: {_bounded_diagnostic_text(str(exc))}"
+        )
 
     if exact_digest is None and not exact_errors:
         if source in ("head", "index"):
             exact_errors.append(
-                f"No files found for '{comp_path}' at {source.upper()}. "
+                f"No files found for '{comp_path_display}' at {source.upper()}. "
                 f"Have you committed this path? Try --source working-tree"
             )
         else:
-            exact_errors.append(f"No files found for '{comp_path}' on disk")
+            exact_errors.append(
+                f"No files found for '{comp_path_display}' on disk"
+            )
 
     # API fingerprint: resolve via registered provider
     boundary = comp.get("boundary", {})
@@ -698,8 +715,12 @@ def _compute_component_entry(
         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
             api_digest = None
             boundary_status = "error"
-            boundary_errors = [f"Boundary digest failed: {exc}"]
+            boundary_errors = [
+                "Boundary digest failed: "
+                f"{_bounded_diagnostic_text(str(exc))}"
+            ]
             provider_metadata = None
+    boundary_errors = list(BoundedDiagnosticList(boundary_errors))
 
     # Behavior fingerprint: broader contract files (superset of boundary)
     behavior_cfg = comp.get("behavior")
@@ -721,9 +742,13 @@ def _compute_component_entry(
             behavior_errors = list(_berrs) if _bstatus == "error" else []
         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
             behavior_digest = None
-            behavior_errors = [f"Behavior digest failed: {exc}"]
+            behavior_errors = [
+                "Behavior digest failed: "
+                f"{_bounded_diagnostic_text(str(exc))}"
+            ]
     else:
         behavior_errors = []
+    behavior_errors = list(BoundedDiagnosticList(behavior_errors))
 
     # A behavior contract is a cryptographic superset of the boundary contract.
     # It cannot remain unchanged when its boundary changes, even when the two
@@ -785,14 +810,18 @@ def _compute_component_entry(
     # Flag vendored copies
     if "vendored_copies" in comp:
         entry["vendored_copies"] = comp["vendored_copies"]
+        vendored_errors = BoundedDiagnosticList()
         source_content_hash = _content_only_digest(
             repo_root, comp_path, source=source, snapshot=accessor.snapshot
         )
         if source_content_hash is None:
-            entry.setdefault("vendored_errors", []).append(
-                f"Vendored source path '{comp_path}' has no files at {source}"
+            vendored_errors.append(
+                "Vendored source path "
+                f"'{comp_path_display}' has no files at {source}"
             )
         for vc in comp["vendored_copies"]:
+            if vendored_errors.truncated:
+                break
             vc_content_hash = _content_only_digest(
                 repo_root,
                 vc.rstrip("/"),
@@ -800,38 +829,52 @@ def _compute_component_entry(
                 snapshot=accessor.snapshot,
             )
             if vc_content_hash is None:
-                entry.setdefault("vendored_errors", []).append(
-                    f"Vendored copy at '{vc}' has no files at {source}"
+                vendored_errors.append(
+                    "Vendored copy at "
+                    f"'{_bounded_diagnostic_text(vc)}' has no files at {source}"
                 )
                 continue
             entry.setdefault("vendored_digests", {})[vc] = vc_content_hash
             if source_content_hash is not None and vc_content_hash != source_content_hash:
-                entry.setdefault("vendored_errors", []).append(
-                    f"Vendored copy at '{vc}' differs from source "
+                vendored_errors.append(
+                    "Vendored copy at "
+                    f"'{_bounded_diagnostic_text(vc)}' differs from source "
                     f"(source={source_content_hash}, copy={vc_content_hash})"
                 )
+        if vendored_errors:
+            entry["vendored_errors"] = list(vendored_errors)
 
     return entry
 
 
 def _generation_errors(lockfile: dict) -> List[str]:
     """Return fingerprint computation failures that make a lock unsafe to bless."""
-    errors: List[str] = []
+    errors = BoundedDiagnosticList()
+
+    def append_messages(name: str, messages: List[str]) -> None:
+        for message in messages:
+            if message == DIAGNOSTIC_TRUNCATION_SENTINEL:
+                errors.append(DIAGNOSTIC_TRUNCATION_SENTINEL)
+            else:
+                errors.append(
+                    f"{name}: {_bounded_diagnostic_text(message)}"
+                )
+            if errors.truncated:
+                break
+
     for name, entry in lockfile.get("components", {}).items():
-        for message in entry.get("version_errors", []):
-            errors.append(f"{name}: {message}")
-        for message in entry.get("exact_errors", []):
-            errors.append(f"{name}: {message}")
-        for message in entry.get("behavior_errors", []):
-            errors.append(f"{name}: {message}")
-        for message in entry.get("vendored_errors", []):
-            errors.append(f"{name}: {message}")
+        if errors.truncated:
+            break
+        name = _bounded_diagnostic_text(name)
+        append_messages(name, entry.get("version_errors", []))
+        append_messages(name, entry.get("exact_errors", []))
+        append_messages(name, entry.get("behavior_errors", []))
+        append_messages(name, entry.get("vendored_errors", []))
         boundary_status = entry.get("boundary_status")
         boundary_provider = entry.get("boundary_provider")
         if boundary_status == "error":
             messages = entry.get("boundary_errors", []) or ["Boundary computation failed"]
-            for message in messages:
-                errors.append(f"{name}: {message}")
+            append_messages(name, messages)
         elif boundary_status == "partial" and boundary_provider != "implicit":
             # ``partial`` is an intentional built-in state only for the
             # implicit provider, which publishes no separate boundary.  A
@@ -841,9 +884,18 @@ def _generation_errors(lockfile: dict) -> List[str]:
             messages = entry.get("boundary_errors", []) or [
                 "Boundary provider returned an incomplete partial result"
             ]
-            for message in messages:
-                errors.append(f"{name}: {message}")
-    return errors
+            append_messages(name, messages)
+    return list(errors)
+
+
+def _diagnostic_list_preview(values: List[str], *, limit: int = 8) -> str:
+    """Render a deterministic bounded preview of a pre-ordered string list."""
+    rendered = ", ".join(
+        _bounded_diagnostic_text(value) for value in values[:limit]
+    )
+    if len(values) > limit:
+        rendered += f", +{len(values) - limit} more"
+    return rendered
 
 
 def _recompute_slice_entry(
@@ -1008,7 +1060,7 @@ def generate_lockfile_for_components(
     if missing_entries:
         raise ConfigError(
             "Cannot partially generate because the existing lockfile has no entry for: "
-            + ", ".join(missing_entries)
+            + _diagnostic_list_preview(missing_entries)
             + ". Run a full `boundver generate`."
         )
 
@@ -1099,12 +1151,18 @@ def verify_lockfile(
         registry=registry,
     )
     if provider_errors:
-        return [f"Custom provider loading failed: {e}" for e in provider_errors]
+        return list(
+            BoundedDiagnosticList(
+                f"Custom provider loading failed: "
+                f"{_bounded_diagnostic_text(error)}"
+                for error in provider_errors
+            )
+        )
 
-    issues = _lockfile_schema_issues(lockfile)
+    issues = BoundedDiagnosticList(_lockfile_schema_issues(lockfile))
     issues.extend(_lockfile_structure_issues(lockfile))
     if issues:
-        return issues
+        return list(issues)
     current_config_digest = semantic_config_digest(config)
     if lockfile.get("config_digest") != current_config_digest:
         issues.append(
@@ -1149,16 +1207,27 @@ def verify_lockfile(
         configured_gated_facets = explicit_gated_facets
     unknown_facets = configured_gated_facets - supported_facets
     if unknown_facets:
-        return [f"Unknown verification facet(s): {', '.join(sorted(unknown_facets))}"]
-    non_gating = observations if observations is not None else []
+        return [
+            "Unknown verification facet(s): "
+            + _diagnostic_list_preview(sorted(unknown_facets))
+        ]
+    non_gating = BoundedDiagnosticList(observations or [])
+
+    def truncated_issue_result() -> List[str]:
+        if observations is not None:
+            observations[:] = list(non_gating)
+        if limit_report:
+            return [DIAGNOSTIC_TRUNCATION_SENTINEL]
+        return list(issues)
 
     # Determine which components to check.
     all_components = config.get("components", {})
     unknown_components = selected - set(all_components)
     if unknown_components:
+        unknown_component_names = sorted(unknown_components)
         return [
             "Unknown verification component(s): "
-            + ", ".join(sorted(unknown_components))
+            + _diagnostic_list_preview(unknown_component_names)
         ]
     if use_filter:
         check_components = {n: all_components[n] for n in components_filter if n in all_components}
@@ -1169,11 +1238,16 @@ def verify_lockfile(
     try:
         accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
     except ValueError as exc:
-        return [f"Cannot capture {source} source: {exc}"]
+        return [
+            f"Cannot capture {source} source: {_bounded_diagnostic_text(str(exc))}"
+        ]
 
     # Per-component verification with optional early exit.
     computed_entries: Dict[str, dict] = {}
     for name, comp_cfg in check_components.items():
+        if issues.truncated:
+            return truncated_issue_result()
+        display_name = _bounded_diagnostic_text(name)
         component_gated_facets = explicit_gated_facets
         configured_component_facets = comp_cfg.get("verify_facets")
         if component_gated_facets is None:
@@ -1194,18 +1268,26 @@ def verify_lockfile(
         computed_entries[name] = current_comp
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
-            issues.append(f"NEW component not in lockfile: {name}")
+            issues.append(f"NEW component not in lockfile: {display_name}")
             if fail_fast:
                 return issues
             continue
         current_errors = _generation_errors({"components": {name: current_comp}})
         locked_errors = _generation_errors({"components": {name: locked_comp}})
         for message in current_errors:
-            issues.append(f"CURRENT DIGEST ERROR {message}")
+            issues.append(
+                f"CURRENT DIGEST ERROR {_bounded_diagnostic_text(message)}"
+            )
+            if issues.truncated:
+                break
             if fail_fast:
                 return issues
         for message in locked_errors:
-            issues.append(f"LOCKED DIGEST ERROR {message}")
+            issues.append(
+                f"LOCKED DIGEST ERROR {_bounded_diagnostic_text(message)}"
+            )
+            if issues.truncated:
+                break
             if fail_fast:
                 return issues
         # Highest policy severity first keeps --fail-fast compatible with the
@@ -1220,7 +1302,7 @@ def verify_lockfile(
                 and (cv is None or lv is None)
             ):
                 issues.append(
-                    f"UNAVAILABLE FACET {name}.{facet}: selected gate requires "
+                    f"UNAVAILABLE FACET {display_name}.{facet}: selected gate requires "
                     "both locked and current digests"
                 )
                 if fail_fast:
@@ -1229,7 +1311,10 @@ def verify_lockfile(
                 # policy error; do not also classify it as ordinary drift.
                 continue
             if cv != lv:
-                message = f"MISMATCH {name}.{facet}: lockfile={_short(lv)} current={_short(cv)}"
+                message = (
+                    f"MISMATCH {display_name}.{facet}: "
+                    f"lockfile={_short(lv)} current={_short(cv)}"
+                )
                 if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
@@ -1268,9 +1353,10 @@ def verify_lockfile(
                         )
                         if consumers:
                             qualifier = " (TRANSITIVE)" if transitive_consumers else ""
+                            consumer_preview = _diagnostic_list_preview(consumers)
                             issues.append(
-                                f"AFFECTED CONSUMERS{qualifier} {name}: "
-                                f"{', '.join(consumers)}"
+                                f"AFFECTED CONSUMERS{qualifier} {display_name}: "
+                                f"{consumer_preview}"
                             )
                     if fail_fast:
                         return issues
@@ -1279,18 +1365,10 @@ def verify_lockfile(
 
         for field in COMPONENT_METADATA_FIELDS:
             if locked_comp.get(field) != current_comp.get(field):
-                locked_value = _bounded_json_dumps(
-                    locked_comp.get(field),
-                    ensure_ascii=True,
-                    sort_keys=True,
-                )
-                current_value = _bounded_json_dumps(
-                    current_comp.get(field),
-                    ensure_ascii=True,
-                    sort_keys=True,
-                )
+                locked_value = _bounded_diagnostic_repr(locked_comp.get(field))
+                current_value = _bounded_diagnostic_repr(current_comp.get(field))
                 issues.append(
-                    f"METADATA MISMATCH {name}.{field}: "
+                    f"METADATA MISMATCH {display_name}.{field}: "
                     f"lockfile={locked_value} current={current_value}"
                 )
                 if fail_fast:
@@ -1298,15 +1376,25 @@ def verify_lockfile(
 
         # Check for vendored copy drift
         for warning in current_comp.get("warnings", []):
-            issues.append(f"VENDORED DRIFT {name}: {warning}")
+            issues.append(
+                f"VENDORED DRIFT {display_name}: "
+                f"{_bounded_diagnostic_text(warning)}"
+            )
+            if issues.truncated:
+                break
             if fail_fast:
                 return issues
 
     for name in lockfile.get("components", {}):
+        if issues.truncated:
+            return truncated_issue_result()
         if name not in check_components:
             if name in all_components:
                 continue
-            issues.append(f"REMOVED component still in lockfile: {name}")
+            issues.append(
+                "REMOVED component still in lockfile: "
+                f"{_bounded_diagnostic_text(name)}"
+            )
             if fail_fast:
                 return issues
 
@@ -1325,6 +1413,8 @@ def verify_lockfile(
                     cname, all_components[cname], repo_root, source, defaults, accessor, registry
                 )
         for sname, sdef in slices_config.items():
+            if issues.truncated:
+                return truncated_issue_result()
             resolved_slice_components = set(
                 resolve_slice_components(sdef, all_components)
             )
@@ -1339,7 +1429,10 @@ def verify_lockfile(
             )
             locked_slice = lockfile.get("slices", {}).get(sname)
             if locked_slice is None:
-                issues.append(f"NEW slice not in lockfile: {sname}")
+                issues.append(
+                    "NEW slice not in lockfile: "
+                    f"{_bounded_diagnostic_text(sname)}"
+                )
                 if fail_fast:
                     return issues
             else:
@@ -1396,16 +1489,18 @@ def verify_lockfile(
                     and unavailable_members
                 ):
                     issues.append(
-                        f"UNAVAILABLE FACET {sname}.{slice_mode}: slice members "
+                        f"UNAVAILABLE FACET {_bounded_diagnostic_text(sname)}."
+                        f"{slice_mode}: slice members "
                         "lack locked or current digests: "
-                        + ", ".join(unavailable_members)
+                        + _diagnostic_list_preview(unavailable_members)
                     )
                     if fail_fast:
                         return issues
                     continue
             if locked_slice is not None and locked_slice != current_slice:
                 message = (
-                    f"SLICE MISMATCH {sname}.{sdef.get('mode', 'exact')}: "
+                    f"SLICE MISMATCH {_bounded_diagnostic_text(sname)}."
+                    f"{sdef.get('mode', 'exact')}: "
                     f"lockfile={_short(locked_slice.get('fingerprint'))} "
                     f"current={_short(current_slice.get('fingerprint'))}"
                 )
@@ -1416,12 +1511,21 @@ def verify_lockfile(
                 else:
                     non_gating.append(message)
     for sname in lockfile.get("slices", {}):
+        if issues.truncated:
+            return truncated_issue_result()
         if sname not in slices_config:
-            issues.append(f"REMOVED slice still in lockfile: {sname}")
+            issues.append(
+                f"REMOVED slice still in lockfile: "
+                f"{_bounded_diagnostic_text(sname)}"
+            )
             if fail_fast:
                 return issues
 
+    if observations is not None:
+        observations[:] = list(non_gating)
     if limit_report and issues:
+        if DIAGNOSTIC_TRUNCATION_SENTINEL in issues:
+            return [DIAGNOSTIC_TRUNCATION_SENTINEL]
         safety_prefixes = (
             "Config root",
             "LOCKFILE",
@@ -1451,7 +1555,7 @@ def verify_lockfile(
             }.get(_issue_facet(message), 1)
 
         return [max(issues, key=_severity)]
-    return issues
+    return list(issues)
 
 
 # ---------------------------------------------------------------------------

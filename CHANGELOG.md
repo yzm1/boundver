@@ -36,6 +36,12 @@ All notable changes to this project are documented here. The format follows
   missing files, parse/source failures, and semantic invalidity to exported
   `ConfigError`; and statically checks custom-provider declarations without
   importing or instantiating repository code.
+- Bounded configuration, generation, and verification diagnostics before
+  rendering to 256 entries and 256 KiB of UTF-8 text, with an 8 KiB per-item
+  ceiling. Long repository identifiers are shortened before interpolation,
+  diagnostic production stops at the budget, and one deterministic
+  `DIAGNOSTICS TRUNCATED` sentinel keeps human, JSON, and GitHub Action results
+  explicitly failed instead of exhausting memory or silently omitting errors.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

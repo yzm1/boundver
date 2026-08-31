@@ -150,6 +150,17 @@ readable. The composite Action applies the same rule to each `issues` and
 `observations` item before joining items with newlines. Structured JSON output,
 including `consumer_impact`, preserves the exact machine data instead.
 
+### Diagnostic limits
+
+Configuration, lock-generation, and verification failures retain at most 256
+diagnostic entries and 256 KiB of UTF-8 text in total; each entry is capped at
+8 KiB. When either aggregate limit is reached, boundver stops collecting and
+adds one `DIAGNOSTICS TRUNCATED` sentinel. The operation remains failed and
+`verify --format json` carries the sentinel in `issues`, so the composite
+Action exposes the same condition rather than turning omitted failures into a
+successful result. Exit code `2` is used when truncation prevents a reliable
+classification.
+
 ### Consumer graph limits
 
 Machine-readable impact remains complete and schema-valid: a config may contain

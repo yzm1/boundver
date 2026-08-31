@@ -15,8 +15,10 @@ from ._git import (
     _validated_git_object_id,
 )
 from ._utils import (
+    BoundedDiagnosticList,
     FACETS,
     SOURCE_MODE_SET,
+    _bounded_diagnostic_text,
     _bounded_json_dumps,
     _effective_component_facets,
     _is_glob,
@@ -1191,14 +1193,20 @@ def analyze_component_drift(
                 "locked": locked_value,
                 "current": current_value,
             }
-    digest_errors = [
-        *(f"current {message}" for message in _generation_errors(
+    bounded_digest_errors = BoundedDiagnosticList()
+    bounded_digest_errors.extend(
+        f"current {_bounded_diagnostic_text(message)}"
+        for message in _generation_errors(
             {"components": {component_name: current_comp}}
-        )),
-        *(f"locked {message}" for message in _generation_errors(
+        )
+    )
+    bounded_digest_errors.extend(
+        f"locked {_bounded_diagnostic_text(message)}"
+        for message in _generation_errors(
             {"components": {component_name: locked_comp}}
-        )),
-    ]
+        )
+    )
+    digest_errors = list(bounded_digest_errors)
 
     if changes:
         summary = _summarize_change(changes)

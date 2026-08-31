@@ -8,7 +8,18 @@ import re
 import stat
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from ._bounded_io import FileSizeLimitError, read_bounded_file
 
@@ -37,6 +48,21 @@ MAX_JSON_TREE_ISSUES = 100
 MAX_JSON_DIAGNOSTIC_PATH_BYTES = 4 * 1024
 MAX_DIAGNOSTIC_VALUE_CHARS = 500
 _JSON_PATH_TRUNCATION = "...[path truncated]"
+
+# Validation and verification can amplify one invalid declaration into many
+# messages before any CLI or Action renderer sees them. Keep the in-memory
+# issue list bounded independently of the input-file limit. The count includes
+# the explicit truncation sentinel and the byte budget includes every message
+# as UTF-8.
+MAX_DIAGNOSTIC_ITEMS = 256
+MAX_DIAGNOSTIC_BYTES = 256 * 1024
+MAX_DIAGNOSTIC_ITEM_CHARS = 4 * 1024
+MAX_DIAGNOSTIC_ITEM_BYTES = 8 * 1024
+DIAGNOSTIC_TRUNCATION_SENTINEL = (
+    "DIAGNOSTICS TRUNCATED: additional diagnostics were omitted after the "
+    "bounded count or UTF-8 byte budget was reached; truncation never changes "
+    "the operation's pass/fail result."
+)
 
 # Declared paths and glob matching are reachable through both built-in and
 # extension-provider flows.  Keep the primitive itself bounded rather than
@@ -225,6 +251,90 @@ def _bounded_diagnostic_text(
     if max_chars <= 3:
         return "." * max_chars
     return rendered[: max_chars - 3] + "..."
+
+
+def _bounded_diagnostic_utf8(value: Any) -> str:
+    """Render one diagnostic under both character and UTF-8 byte limits."""
+    text = _bounded_diagnostic_text(
+        value,
+        max_chars=MAX_DIAGNOSTIC_ITEM_CHARS,
+    )
+    encoded = text.encode("utf-8", errors="backslashreplace")
+    if len(encoded) <= MAX_DIAGNOSTIC_ITEM_BYTES:
+        return encoded.decode("utf-8")
+    suffix = b"...[diagnostic truncated]"
+    available = max(0, MAX_DIAGNOSTIC_ITEM_BYTES - len(suffix))
+    prefix = encoded[:available].decode("utf-8", errors="ignore")
+    return prefix + suffix.decode("ascii")
+
+
+def _bounded_diagnostic_list_preview(
+    values: Sequence[Any],
+    *,
+    limit: int = 8,
+) -> str:
+    """Render a bounded prefix and explicit omitted count for a sequence."""
+    if limit < 0:
+        raise ValueError("Diagnostic preview limit must be non-negative")
+    rendered = ", ".join(
+        _bounded_diagnostic_text(value) for value in values[:limit]
+    )
+    if len(values) > limit:
+        rendered += f", +{len(values) - limit} more"
+    return rendered
+
+
+class BoundedDiagnosticList(list):
+    """A list-compatible, fail-closed aggregate diagnostic collector."""
+
+    def __init__(self, values: Iterable[Any] = ()) -> None:
+        super().__init__()
+        self.utf8_bytes = 0
+        self.truncated = False
+        self.extend(values)
+
+    def _mark_truncated(self) -> None:
+        if self.truncated:
+            return
+        self.truncated = True
+        sentinel_bytes = len(DIAGNOSTIC_TRUNCATION_SENTINEL.encode("utf-8"))
+        if len(self) >= MAX_DIAGNOSTIC_ITEMS:
+            removed = super().pop()
+            self.utf8_bytes -= len(removed.encode("utf-8"))
+        while self and self.utf8_bytes + sentinel_bytes > MAX_DIAGNOSTIC_BYTES:
+            removed = super().pop()
+            self.utf8_bytes -= len(removed.encode("utf-8"))
+        super().append(DIAGNOSTIC_TRUNCATION_SENTINEL)
+        self.utf8_bytes += sentinel_bytes
+
+    def append(self, value: Any) -> None:
+        if self.truncated:
+            return
+        if type(value) is str and value == DIAGNOSTIC_TRUNCATION_SENTINEL:
+            self._mark_truncated()
+            return
+        rendered = _bounded_diagnostic_utf8(value)
+        rendered_bytes = len(rendered.encode("utf-8"))
+        sentinel_bytes = len(DIAGNOSTIC_TRUNCATION_SENTINEL.encode("utf-8"))
+        if (
+            len(self) >= MAX_DIAGNOSTIC_ITEMS - 1
+            or self.utf8_bytes + rendered_bytes + sentinel_bytes
+            > MAX_DIAGNOSTIC_BYTES
+        ):
+            self._mark_truncated()
+            return
+        super().append(rendered)
+        self.utf8_bytes += rendered_bytes
+
+    def extend(self, values: Iterable[Any]) -> None:
+        for value in values:
+            self.append(value)
+            if self.truncated:
+                break
+
+    def __iadd__(self, values: Iterable[Any]):
+        self.extend(values)
+        return self
 
 
 def _bounded_json_dumps(

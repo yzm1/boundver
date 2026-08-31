@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from boundver._utils import DIAGNOSTIC_TRUNCATION_SENTINEL
+
 
 REPO_ROOT = Path(__file__).parents[1]
 
@@ -45,6 +47,33 @@ def _parse_github_output(path: Path) -> dict[str, str]:
 
 
 class ActionOutputTests(unittest.TestCase):
+    def test_exports_validation_truncation_sentinel_as_a_failed_issue(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "issues": [
+                            "first validation failure",
+                            DIAGNOSTIC_TRUNCATION_SENTINEL,
+                        ],
+                        "observations": [],
+                        "consumer_impact": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+
+        self.assertEqual(truncated, ())
+        self.assertIn(DIAGNOSTIC_TRUNCATION_SENTINEL, values["issues"])
+
     def test_exports_complete_values_and_result_path(self):
         exporter = _load_script()
         with tempfile.TemporaryDirectory() as temporary:

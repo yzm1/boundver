@@ -2,7 +2,11 @@
 
 from typing import List, Optional, Sequence, Set
 
-from ._utils import _bounded_diagnostic_repr, _bounded_diagnostic_text
+from ._utils import (
+    BoundedDiagnosticList,
+    _bounded_diagnostic_repr,
+    _bounded_diagnostic_text,
+)
 
 
 def is_sha256_digest(value: object) -> bool:
@@ -39,10 +43,16 @@ def append_unknown_field_issues(
     if not isinstance(value, dict):
         return
     for field in value:
+        if isinstance(issues, BoundedDiagnosticList) and issues.truncated:
+            break
         if not isinstance(field, str):
             issues.append(f"LOCKFILE malformed: {context} field names must be strings")
         elif field not in allowed:
-            issues.append(f"LOCKFILE malformed: unknown field in {context}: {field}")
+            issues.append(
+                f"LOCKFILE malformed: unknown field in "
+                f"{_bounded_diagnostic_text(context)}: "
+                f"{_bounded_diagnostic_text(field)}"
+            )
 
 
 def lockfile_structure_issues(
@@ -56,7 +66,7 @@ def lockfile_structure_issues(
     running_version: Optional[str] = None,
 ) -> List[str]:
     """Validate the complete non-schema-engine lockfile structure."""
-    issues: List[str] = []
+    issues = BoundedDiagnosticList()
     if not isinstance(lockfile, dict):
         return ["LOCKFILE malformed: root must be an object"]
     facet_set = frozenset(facets)
@@ -174,12 +184,15 @@ def lockfile_structure_issues(
         )
     if not isinstance(lockfile.get("components"), dict):
         issues.append("LOCKFILE malformed: components must be an object")
-        return issues
+        return list(issues)
     if not isinstance(lockfile.get("slices"), dict):
         issues.append("LOCKFILE malformed: slices must be an object")
     for name, component in lockfile.get("components", {}).items():
+        if issues.truncated:
+            break
         if not isinstance(name, str) or not name:
             issues.append("LOCKFILE malformed: component names must be non-empty strings")
+        name = _bounded_diagnostic_text(name)
         if not isinstance(component, dict):
             issues.append(f"LOCKFILE malformed: component '{name}' must be an object")
             continue
@@ -233,6 +246,8 @@ def lockfile_structure_issues(
                 f"component '{name}' fingerprints",
             )
             for required in facets:
+                if issues.truncated:
+                    break
                 if required not in fingerprints:
                     issues.append(
                         f"LOCKFILE malformed: component '{name}' "
@@ -306,8 +321,11 @@ def lockfile_structure_issues(
     slices = lockfile.get("slices")
     if isinstance(slices, dict):
         for name, slice_entry in slices.items():
+            if issues.truncated:
+                break
             if not isinstance(name, str) or not name:
                 issues.append("LOCKFILE malformed: slice names must be non-empty strings")
+            name = _bounded_diagnostic_text(name)
             if not isinstance(slice_entry, dict):
                 issues.append(f"LOCKFILE malformed: slice '{name}' must be an object")
                 continue
@@ -358,4 +376,4 @@ def lockfile_structure_issues(
                     f"LOCKFILE malformed: slice '{name}' component_digests must "
                     "be an object with lowercase SHA-256 digest or null values"
                 )
-    return issues
+    return list(issues)
