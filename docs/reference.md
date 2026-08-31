@@ -47,6 +47,36 @@ Ordinary text output always names the resolved changed-component paths and
 prints an explicit zero result; structured output carries the same selection in
 `changed_components`.
 
+### Python `load_config` contract
+
+`boundver.load_config(config_path="boundary.config.json", source="working-tree")`
+loads and validates a config relative to the current Git repository. Use
+`source="head"` or `source="index"` to read and validate the config and its
+declared files from one immutable Git snapshot. The default preserves the
+working-tree behavior of the original API.
+
+The function returns only a semantically valid config. A lockfile, malformed
+document, empty component map, unknown field/provider, unsafe or missing path,
+missing config file, unreadable Git source, or unsupported source mode raises
+the exported `boundver.ConfigError` (also a `ValueError`). A `$schema` field is
+optional: the packaged schema is authoritative, so a repository cannot weaken
+validation by replacing a local schema file.
+
+Custom-provider declarations receive dependency-free structural and reference
+validation, but `load_config` never imports or instantiates their Python code.
+Use the explicit trusted opt-in on `generate` or `verify` when runtime provider
+validation and execution are intended. The internal `load_config_file` helper
+is parse-only and is not part of this validated public contract.
+
+```python
+import boundver
+
+try:
+    config = boundver.load_config(source="index")
+except boundver.ConfigError as error:
+    raise SystemExit(f"invalid Boundver config: {error}")
+```
+
 ### Diagnostic bases
 
 Fingerprint drift accumulates from the source represented by the lock, not

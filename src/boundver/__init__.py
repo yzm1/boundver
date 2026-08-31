@@ -33,17 +33,72 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+local"
 
 
-def load_config(config_path: str = "boundary.config.json") -> dict:
-    """Load and return the parsed config dict from a boundary.config.json file.
+def _load_validated_config_inputs(
+    config_path: str,
+    source: str,
+    *,
+    allow_custom_providers: bool,
+    require_slice_facets: bool = False,
+):
+    """Return one shared, validated config view for the public API."""
+    import subprocess
 
-    Raises ValueError if the config is invalid or the file is not found.
-    """
-    from ._config import load_config_file, find_config_file
+    from ._config import find_config_file, load_config_file, validate_config
     from ._git import git_root
+    from .core import _capture_operation_snapshot
 
-    repo_root = git_root()
-    path = find_config_file(repo_root, config_path)
-    return load_config_file(path)
+    try:
+        repo_root = git_root()
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        raise ConfigError(
+            "Cannot load config: the current directory is not inside a readable "
+            "Git repository"
+        ) from exc
+    try:
+        snapshot = _capture_operation_snapshot(repo_root, source)
+        path = find_config_file(repo_root, config_path, snapshot=snapshot)
+        config = load_config_file(
+            path,
+            repo_root=repo_root,
+            snapshot=snapshot,
+        )
+    except ConfigError:
+        raise
+    except FileNotFoundError as exc:
+        raise ConfigError(str(exc)) from exc
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+        raise ConfigError(f"Cannot load config: {exc}") from exc
+
+    config_errors = validate_config(
+        config,
+        repo_root,
+        allow_custom_providers=allow_custom_providers,
+        source=source,
+        snapshot=snapshot,
+        require_slice_facets=require_slice_facets,
+    )
+    if config_errors:
+        raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
+    return repo_root, snapshot, path, config
+
+
+def load_config(
+    config_path: str = "boundary.config.json",
+    source: str = "working-tree",
+) -> dict:
+    """Load and validate one repository config without executing custom providers.
+
+    ``source`` selects working-tree bytes by default or one immutable ``head``
+    or ``index`` snapshot. ``ConfigError`` is raised for repository, source,
+    missing-file, parse, and validation failures. A valid config does not need
+    a ``$schema`` field because the packaged schema remains authoritative.
+    """
+    _, _, _, config = _load_validated_config_inputs(
+        config_path,
+        source,
+        allow_custom_providers=False,
+    )
+    return config
 
 
 def generate(
@@ -57,33 +112,18 @@ def generate(
     Also writes to *out_path* (relative to repo root). Pass ``out_path=None``
     to skip writing.
     """
-    from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import generate_lockfile
-    from ._git import git_root
     from .core import (
-        _capture_operation_snapshot,
         _ensure_lock_outside_components,
         _write_lockfile_atomic,
     )
 
-    repo_root = git_root()
-    snapshot = _capture_operation_snapshot(repo_root, source)
-    resolved_config_path = find_config_file(
-        repo_root, config_path, snapshot=snapshot
-    )
-    config = load_config_file(
-        resolved_config_path, repo_root=repo_root, snapshot=snapshot
-    )
-    config_errors = validate_config(
-        config,
-        repo_root,
+    repo_root, snapshot, resolved_config_path, config = _load_validated_config_inputs(
+        config_path,
+        source,
         allow_custom_providers=allow_custom_providers,
-        source=source,
-        snapshot=snapshot,
         require_slice_facets=True,
     )
-    if config_errors:
-        raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     if out_path is not None:
         dest = repo_root / out_path
         _ensure_lock_outside_components(
@@ -119,33 +159,18 @@ def verify(
     When *facets* is omitted, ``defaults.verify_facets`` is honored just like
     the CLI. Pass a list as *observations* to collect drift outside that gate.
     """
-    from ._config import load_config_file, find_config_file, validate_config
     from ._lockfile import verify_lockfile
-    from ._git import git_root
     from .core import (
-        _capture_operation_snapshot,
         _ensure_lock_outside_components,
         _load_lockfile,
         _verify_lock_preflight_issues,
     )
 
-    repo_root = git_root()
-    snapshot = _capture_operation_snapshot(repo_root, source)
-    resolved_config_path = find_config_file(
-        repo_root, config_path, snapshot=snapshot
-    )
-    config = load_config_file(
-        resolved_config_path, repo_root=repo_root, snapshot=snapshot
-    )
-    config_errors = validate_config(
-        config,
-        repo_root,
+    repo_root, snapshot, resolved_config_path, config = _load_validated_config_inputs(
+        config_path,
+        source,
         allow_custom_providers=allow_custom_providers,
-        source=source,
-        snapshot=snapshot,
     )
-    if config_errors:
-        raise ConfigError("Config is invalid:\n" + "\n".join(config_errors))
     resolved_lock_path = repo_root / lock_path
     _ensure_lock_outside_components(
         repo_root,

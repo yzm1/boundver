@@ -31,6 +31,11 @@ All notable changes to this project are documented here. The format follows
   now documents a bounded literal Git-ref grammar while retaining valid
   Unicode and slash-separated prefixes; valid prefixes with no reachable tag
   remain a distinct source-history diagnostic.
+- Made the exported `boundver.load_config` API honor its validation contract.
+  It now validates working-tree, head, or index input before returning; maps
+  missing files, parse/source failures, and semantic invalidity to exported
+  `ConfigError`; and statically checks custom-provider declarations without
+  importing or instantiating repository code.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an
