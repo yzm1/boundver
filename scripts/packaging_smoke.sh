@@ -840,6 +840,8 @@ try:
         f"{prefix}/SUPPORT.md",
         f"{prefix}/docs/getting-started.md",
         f"{prefix}/spec/HASHING.md",
+        f"{prefix}/spec/cli-output.plan.schema.json",
+        f"{prefix}/spec/cli-output.review.schema.json",
         f"{prefix}/spec/cli-output.slice.schema.json",
         f"{prefix}/spec/cli-output.why.schema.json",
     }

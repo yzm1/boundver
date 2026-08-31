@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,7 +58,34 @@ def test_gitlab_component_is_version_bound_and_validated():
     safe_directory = 'git config --global --add safe.directory "$CI_PROJECT_DIR"'
     assert safe_directory in component
     assert component.index(safe_directory) < component.index("set -- boundver verify")
+    assert "set -- boundver review" in component
+    assert "--format plan" in component
+    assert 'GIT_DEPTH: "$[[ inputs.history-depth ]]"' in component
+    assert "GitLab remediation: set GIT_DEPTH: 0" in component
+    assert "boundver-result.json" in component
+    assert "boundver-summary.md" in component
+    assert "when: always" in component
+    assert "trap ensure_boundver_artifacts EXIT" in component
     assert re.search(r"(?m)^\s+type: boolean$", component)
+
+    documents = list(yaml.safe_load_all(component))
+    inputs = documents[0]["spec"]["inputs"]
+    assert inputs["operation"] == {
+        "description": "Operation to run (verify or review).",
+        "default": "verify",
+        "options": ["verify", "review"],
+    }
+    assert inputs["base"]["default"] == ""
+    assert inputs["target"]["default"] == ""
+    assert inputs["merge-base"]["default"] is False
+    assert inputs["history-depth"]["default"] == "20"
+    job = next(iter(documents[1].values()))
+    assert job["artifacts"] == {
+        "name": "boundver-$CI_JOB_NAME-$CI_COMMIT_SHORT_SHA",
+        "when": "always",
+        "expire_in": "1 week",
+        "paths": ["boundver-result.json", "boundver-summary.md"],
+    }
 
 
 def test_docs_and_container_publish_from_pinned_dependencies():

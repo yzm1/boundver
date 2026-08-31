@@ -216,6 +216,10 @@ when its boundary changes.
 # Review the committed branch range even after both endpoint locks were reconciled.
 boundver review origin/main..HEAD --merge-base --transitive
 
+# Emit the versioned CI routing plan and a bounded human summary from the same capture.
+boundver review origin/main..HEAD --merge-base --transitive \
+  --format plan --summary-file boundver-summary.md > boundver-plan.json
+
 # Inspect the matching local snapshot.
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
@@ -239,6 +243,10 @@ review exits `0` whether or not identities changed; an absent or ambiguous ref,
 missing shallow history, incompatible contract, or stale endpoint lock exits
 `2`. The versioned JSON contract is
 [`boundver-review/v1`](spec/cli-output.review.schema.json).
+CI routing uses the smaller
+[`boundver-plan/v1`](spec/cli-output.plan.schema.json) projection, whose
+changed/impacted/test component and slice arrays remain bound to those same
+captured endpoints.
 Each endpoint is fully recomputed before comparison. Custom Python providers
 remain disabled unless trusted automation explicitly adds
 `--allow-custom-providers`.

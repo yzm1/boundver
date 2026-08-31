@@ -230,6 +230,31 @@ source and output limits still apply before this diagnostic pass.
 The complete machine result uses `schema: boundver-review/v1` and is validated
 by
 [`spec/cli-output.review.schema.json`](https://github.com/yzm1/boundver/blob/main/spec/cli-output.review.schema.json).
+For CI routing, `--format plan` projects that same in-memory result into
+`boundver-plan/v1`; it does not resolve either ref again:
+
+```bash
+boundver review \
+  --base origin/main \
+  --target HEAD \
+  --merge-base \
+  --transitive \
+  --format plan \
+  --summary-file boundver-summary.md \
+  > boundver-plan.json
+```
+
+The plan keeps exact endpoint provenance and effective policy, changed
+components/facets, conservative consumer and slice impact, structural evidence,
+and deterministic `selection` arrays for changed, impacted, and combined test
+components/slices. Its `claim` is `routing-evidence-only`. The contract is
+validated by
+[`spec/cli-output.plan.schema.json`](https://github.com/yzm1/boundver/blob/main/spec/cli-output.plan.schema.json).
+The optional Markdown summary is capped at 50 routing rows and 64 KiB. It says
+whether its presentation is complete or truncated and always points back to the
+complete JSON as the machine-authoritative result. Structural incompleteness is
+reported separately and never disguised as plan incompleteness.
+
 Successful analysis exits `0` even when identities changed because `review` is
 a read-only query. Unreliable analysis exits `2`. Run ordinary `verify`
 separately as the current-candidate integrity gate.
@@ -242,7 +267,7 @@ fetch complete history before retrying:
 
 ```yaml
 # GitHub Actions
-- uses: actions/checkout@v6
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
 ```

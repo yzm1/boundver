@@ -160,6 +160,103 @@ The affected slices are checked as well. A component filter narrows ordinary
 verification, so use an unfiltered gate somewhere in the repository unless the
 remaining components have an independent owner.
 
+## Route pull-request work from an immutable range plan
+
+From v0.15, the maintained Action can compare two reconciled commits and emit
+the smaller `boundver-plan/v1` routing contract. This is a historical query;
+keep an ordinary `verify` job as the current-tree integrity gate.
+
+```yaml
+jobs:
+  contract-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      selection-complete: ${{ steps.review.outputs.selection-complete }}
+      test-components: ${{ steps.review.outputs.test-components }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: review
+        uses: yzm1/boundver@v0.15.0
+        with:
+          operation: review
+          base: ${{ github.event.pull_request.base.sha }}
+          target: HEAD
+          merge-base: true
+          transitive: true
+          upload-artifact: true
+          artifact-name: boundver-review-${{ github.run_id }}
+      - name: Refuse a partial output projection
+        if: steps.review.outputs.selection-complete != 'true'
+        run: exit 1
+
+  affected-consumers:
+    needs: contract-plan
+    if: >-
+      needs.contract-plan.outputs.selection-complete == 'true' &&
+      needs.contract-plan.outputs.test-components != '[]'
+    strategy:
+      matrix:
+        component: ${{ fromJSON(needs.contract-plan.outputs.test-components) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - env:
+          BOUNDVER_TEST_COMPONENT: ${{ matrix.component }}
+        run: ./ci/test-component "$BOUNDVER_TEST_COMPONENT"
+```
+
+On success, `result-file` is the complete runner-local plan. An unreliable
+review instead sets `transport-complete` and `selection-complete` to `false`
+and preserves a diagnostic result; it never substitutes a partial plan. The
+name-array outputs are separately bounded for GitHub's job-output limit; a
+bounded array becomes `[]`, is named in `truncated-outputs`, and sets
+`selection-complete` to `false` instead of returning a partial closure. The
+optional uploaded artifact contains the full JSON or failure diagnostic and
+the bounded Markdown summary. The Step Summary always labels presentation
+truncation. File annotations are emitted only for exact structural target
+files when the reviewed target is the checked-out `HEAD`.
+Repository-controlled component names are passed through the environment in
+the example instead of being interpolated into shell source. Platform matrix
+job-count limits still apply; batch a very large selection or route from the
+complete artifact rather than treating `selection-complete` as a waiver of
+those limits.
+
+The GitLab Catalog component exposes the same endpoint and policy inputs. Set
+depth `0` at component expansion time so the runner fetches history before the
+script starts:
+
+```yaml
+include:
+  - component: gitlab.com/boundver-project/boundver/boundver@0.15.0
+    inputs:
+      job-name: boundver-review
+      operation: review
+      base: $CI_MERGE_REQUEST_DIFF_BASE_SHA
+      target: $CI_COMMIT_SHA
+      merge-base: true
+      transitive: true
+      history-depth: "0"
+
+consumer-tests:
+  stage: test
+  needs:
+    - job: boundver-review
+      artifacts: true
+  script:
+    - python -c 'import json; print(json.load(open("boundver-result.json"))["selection"]["test_components"])'
+```
+
+The generated job retains `boundver-result.json` and `boundver-summary.md` even
+on failure. Missing refs in a shallow checkout fail before endpoint content is
+read and print the exact `fetch-depth: 0` / `GIT_DEPTH: 0` remediation.
+
 ## Pin a package instead of the Action
 
 Pin the writer/verifier version that matches the committed lock schema:

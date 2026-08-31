@@ -46,6 +46,15 @@ All notable changes to this project are documented here. The format follows
   per-run timings are labeled as observations rather than benchmark claims,
   and the case study separates product facts from build-graph,
   schema-compatibility, generated-artifact, and declared-graph limitations.
+- Added `boundver review --format plan`, a versioned `boundver-plan/v1`
+  downstream-test projection generated from the same immutable endpoint
+  capture as the full review. The maintained GitHub Action and GitLab Catalog
+  component now accept explicit base/target, merge-base, facet-policy, and
+  direct/transitive controls; publish complete result files plus bounded,
+  explicitly truncated summaries; expose fail-closed component/slice selection
+  arrays; diagnose shallow history with platform-specific remediation; and
+  retain exact review artifacts. GitHub source annotations are limited to
+  precise target files whose commit matches the checked-out `HEAD`.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined

@@ -22,6 +22,39 @@ not intended for production installation.
 Pin the exact patch release used to write the lockfile. The compatibility alias
 is convenient for controlled updates but is intentionally mutable.
 
+From v0.15, the same Action can emit a source-bound historical test plan. Use
+the exact immutable patch tag, check out full history, and request artifact
+upload when another job or a reviewer needs the complete result:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+- id: review
+  uses: yzm1/boundver@v0.15.0
+  with:
+    operation: review
+    base: ${{ github.event.pull_request.base.sha }}
+    target: HEAD
+    merge-base: true
+    transitive: true
+    upload-artifact: true
+    artifact-name: boundver-review-${{ github.run_id }}
+- if: steps.review.outputs.selection-complete != 'true'
+  run: |
+    echo "Boundver routing outputs are incomplete; use the uploaded plan artifact." >&2
+    exit 1
+```
+
+The Action publishes the bounded Markdown to the GitHub Step Summary. Its
+`result-file` is the complete `boundver-plan/v1` JSON; the optional artifact
+contains that file and the summary. Bounded name-array outputs are convenient
+for same-job routing, but consumers must require `selection-complete: true`.
+`transport-complete` describes the result file itself. File annotations are
+emitted only for provider documents with an exact target path and only when
+the reviewed target commit is the checked-out `HEAD`.
+
 ## Container
 
 ```bash
@@ -61,16 +94,25 @@ an exact semantic version:
 
 ```yaml
 include:
-  - component: gitlab.com/boundver-project/boundver/boundver@<version>
+  - component: gitlab.com/boundver-project/boundver/boundver@0.15.0
     inputs:
       stage: test
-      source: head
+      operation: review
+      base: $CI_MERGE_REQUEST_DIFF_BASE_SHA
+      target: $CI_COMMIT_SHA
+      merge-base: true
       transitive: true
+      history-depth: "0"
 ```
 
-The component runs the matching GHCR image and exposes the same source, facet,
-component, changed-ref, transitive, and fail-fast controls as the GitHub Action.
-Do not use `~latest` in a protected pipeline.
+The component runs the matching GHCR image and exposes verification plus the
+same explicit base/target, merge-base, facet-policy, and direct/transitive
+review controls as the GitHub Action. Every run retains
+`boundver-result.json` and `boundver-summary.md` for one week, including failed
+jobs. The review JSON is the complete machine plan; the Markdown is the bounded
+job-log/artifact presentation. GitLab has no line mapping for canonical
+structural pointers, so the summary names exact source files without inventing
+line annotations. Do not use `~latest` in a protected pipeline.
 
 ## Standalone zipapp
 

@@ -153,6 +153,11 @@ from ._review import (
     parse_review_facets,
     review_text_lines,
 )
+from ._review_plan import (
+    MAX_PLAN_RESULT_BYTES,
+    build_review_plan,
+    render_review_plan_markdown,
+)
 from ._baseline import (
     BaselineError,
     apply_baseline,
@@ -833,6 +838,8 @@ def _cmd_diff(args) -> None:
 
 
 def _cmd_review(args, repo_root: Path) -> None:
+    if args.summary_file and args.format != "plan":
+        raise ConfigError("--summary-file requires --format plan")
     base_ref, target_ref = parse_review_endpoints(
         args.range,
         args.base,
@@ -850,7 +857,15 @@ def _cmd_review(args, repo_root: Path) -> None:
         lock_hint=args.lock,
         allow_custom_providers=args.allow_custom_providers,
     )
-    if args.format == "json":
+    if args.format == "plan":
+        plan = build_review_plan(result)
+        if args.summary_file:
+            _write_text_atomic(
+                Path(args.summary_file),
+                render_review_plan_markdown(plan),
+            )
+        _print_json(plan, max_bytes=MAX_PLAN_RESULT_BYTES)
+    elif args.format == "json":
         _print_json(result, max_bytes=MAX_REVIEW_RESULT_BYTES)
     else:
         for line in review_text_lines(result):

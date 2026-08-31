@@ -175,6 +175,56 @@ jobs:
           assert json.loads(result.read_text(encoding="utf-8"))["ok"] is True
           PY
 
+      - name: Review an immutable range with the public interface
+        id: boundver-review
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: ./
+        with:
+          operation: review
+          base: HEAD^
+          target: HEAD
+          transitive: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Check CI-native review outputs
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        shell: bash
+        env:
+          BOUNDVER_RESULT_SCHEMA: ${{ steps.boundver-review.outputs.result-schema }}
+          BOUNDVER_TRANSPORT_COMPLETE: ${{ steps.boundver-review.outputs.transport-complete }}
+          BOUNDVER_SELECTION_COMPLETE: ${{ steps.boundver-review.outputs.selection-complete }}
+          BOUNDVER_CHANGED_COMPONENTS: ${{ steps.boundver-review.outputs.changed-components }}
+          BOUNDVER_TEST_COMPONENTS: ${{ steps.boundver-review.outputs.test-components }}
+          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver-review.outputs.truncated-outputs }}
+          BOUNDVER_RESULT_FILE: ${{ steps.boundver-review.outputs.result-file }}
+          BOUNDVER_SUMMARY_FILE: ${{ steps.boundver-review.outputs.summary-file }}
+        run: |
+          python -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          assert os.environ["BOUNDVER_RESULT_SCHEMA"] == "boundver-plan/v1"
+          assert os.environ["BOUNDVER_TRANSPORT_COMPLETE"] == "true"
+          assert os.environ["BOUNDVER_SELECTION_COMPLETE"] == "true"
+          changed = json.loads(os.environ["BOUNDVER_CHANGED_COMPONENTS"])
+          selected = json.loads(os.environ["BOUNDVER_TEST_COMPONENTS"])
+          assert changed
+          assert set(changed) <= set(selected)
+          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == []
+          plan = json.loads(
+              Path(os.environ["BOUNDVER_RESULT_FILE"]).read_text(encoding="utf-8")
+          )
+          assert plan["schema"] == "boundver-plan/v1"
+          assert plan["complete"] is True
+          assert plan["selection"]["changed_components"] == changed
+          summary = Path(os.environ["BOUNDVER_SUMMARY_FILE"]).read_text(
+              encoding="utf-8"
+          )
+          assert "Routing evidence only" in summary
+          assert "Presentation complete" in summary
+          PY
+
       - name: Exercise pre-JSON Action failure
         id: boundver-pre-json-failure
         continue-on-error: true

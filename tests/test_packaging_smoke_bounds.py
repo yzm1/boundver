@@ -113,6 +113,8 @@ def _artifacts(directory: Path) -> tuple[Path, Path, Path, Path, Path]:
             (f"{prefix}/SUPPORT.md", b""),
             (f"{prefix}/docs/getting-started.md", b""),
             (f"{prefix}/spec/HASHING.md", b""),
+            (f"{prefix}/spec/cli-output.plan.schema.json", b"{}"),
+            (f"{prefix}/spec/cli-output.review.schema.json", b"{}"),
             (f"{prefix}/spec/cli-output.slice.schema.json", b"{}"),
             (f"{prefix}/spec/cli-output.why.schema.json", b"{}"),
         ],

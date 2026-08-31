@@ -2201,7 +2201,10 @@ print(json.dumps(payload, separators=(",", ":")))
             action["outputs"]["result-file"]["value"],
             "${{ steps.verify.outputs.result-file }}",
         )
-        script = action["runs"]["steps"][-1]["run"]
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
+        script = verify_step["run"]
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
@@ -2238,14 +2241,16 @@ print(json.dumps(payload, separators=(",", ":")))
                 "default": "",
             },
         )
-        verify_step = action["runs"]["steps"][-1]
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
         self.assertEqual(
             verify_step["env"]["BOUNDVER_BASELINE"], "${{ inputs.baseline }}"
         )
         script = verify_step["run"]
-        baseline_block = """if [[ -n "$BOUNDVER_BASELINE" ]]; then
-  command+=(--baseline "$BOUNDVER_BASELINE")
-fi"""
+        baseline_block = """  if [[ -n "$BOUNDVER_BASELINE" ]]; then
+    command+=(--baseline "$BOUNDVER_BASELINE")
+  fi"""
         self.assertEqual(script.count(baseline_block), 1)
         self.assertNotIn("--write-baseline", script)
         self.assertNotIn("--update-baseline", script)
@@ -2267,15 +2272,21 @@ fi"""
         probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
         base_environment = {
             **os.environ,
+            "BOUNDVER_OPERATION": "verify",
             "BOUNDVER_CONFIG": "boundary.config.json",
             "BOUNDVER_LOCK": "boundary.lock.json",
             "BOUNDVER_SOURCE": "head",
             "BOUNDVER_FACETS": "",
             "BOUNDVER_COMPONENTS": "",
             "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_BASE": "",
+            "BOUNDVER_TARGET": "",
+            "BOUNDVER_MERGE_BASE": "false",
             "BOUNDVER_TRANSITIVE": "false",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_UPLOAD_ARTIFACT": "false",
+            "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         }
         expected = [
             "python",
@@ -2307,6 +2318,124 @@ fi"""
                     text=True,
                 )
                 self.assertEqual(result.stdout.splitlines(), expected + suffix)
+
+    def test_action_review_operation_is_explicit_source_bound_and_artifact_ready(self):
+        import yaml
+
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertEqual(action["inputs"]["operation"]["default"], "verify")
+        self.assertEqual(action["inputs"]["base"]["default"], "")
+        self.assertEqual(action["inputs"]["target"]["default"], "")
+        self.assertEqual(action["inputs"]["merge-base"]["default"], "false")
+        self.assertEqual(action["inputs"]["upload-artifact"]["default"], "false")
+        for output in (
+            "result-schema",
+            "transport-complete",
+            "selection-complete",
+            "changed-components",
+            "impacted-components",
+            "external-consumers",
+            "test-components",
+            "changed-slices",
+            "impacted-slices",
+            "test-slices",
+            "summary-file",
+            "artifact-id",
+            "artifact-url",
+        ):
+            self.assertIn(output, action["outputs"])
+
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
+        script = verify_step["run"]
+        self.assertIn('command+=(--summary-file "$summary_file")', script)
+        self.assertIn('cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"', script)
+        self.assertIn("actions/checkout with fetch-depth: 0", script)
+        self.assertIn("GitLab remediation: set GIT_DEPTH: 0", script)
+        self.assertNotIn('echo "$BOUNDVER_BASE"', script)
+        self.assertNotIn('echo "$BOUNDVER_TARGET"', script)
+
+        upload = next(
+            step
+            for step in action["runs"]["steps"]
+            if step.get("id") == "upload-review"
+        )
+        self.assertEqual(
+            upload["uses"],
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        )
+        self.assertEqual(
+            upload["if"],
+            "${{ always() && inputs.operation == 'review' && inputs.upload-artifact == 'true' }}",
+        )
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            git_bash = (
+                Path(git).resolve().parent.parent / "bin" / "bash.exe"
+                if git is not None
+                else None
+            )
+            if git_bash is not None and git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:  # pragma: no cover
+            self.skipTest("Bash is required to exercise the composite Action script")
+        assembly = script.split("result_file=$(mktemp", 1)[0]
+        probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
+        environment = {
+            **os.environ,
+            "BOUNDVER_OPERATION": "review",
+            "BOUNDVER_CONFIG": "boundary.config.json",
+            "BOUNDVER_LOCK": "boundary.lock.json",
+            "BOUNDVER_BASELINE": "",
+            "BOUNDVER_SOURCE": "head",
+            "BOUNDVER_FACETS": "boundary",
+            "BOUNDVER_COMPONENTS": "",
+            "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_BASE": "refs/remotes/origin/main",
+            "BOUNDVER_TARGET": "HEAD",
+            "BOUNDVER_MERGE_BASE": "true",
+            "BOUNDVER_TRANSITIVE": "true",
+            "BOUNDVER_FAIL_FAST": "false",
+            "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_UPLOAD_ARTIFACT": "true",
+            "BOUNDVER_ARTIFACT_NAME": "review-plan",
+        }
+        result = subprocess.run(
+            [bash, "-c", probe],
+            cwd=REPO_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "python",
+                "-I",
+                "-m",
+                "boundver",
+                "review",
+                "--base",
+                "refs/remotes/origin/main",
+                "--target",
+                "HEAD",
+                "--config",
+                "boundary.config.json",
+                "--lock",
+                "boundary.lock.json",
+                "--format",
+                "plan",
+                "--merge-base",
+                "--facets",
+                "boundary",
+                "--transitive",
+            ],
+        )
 
     def test_pre_commit_and_pre_push_use_matching_snapshots_and_portable_exact_gate(self):
         import yaml

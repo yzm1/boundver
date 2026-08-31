@@ -192,6 +192,7 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
             "  boundver review origin/main..HEAD\n"
             "  boundver review --base origin/main --target HEAD --merge-base\n"
             "  boundver review main..feature --transitive --format json\n"
+            "  boundver review main..feature --format plan --summary-file plan.md\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -233,9 +234,15 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     review.add_argument(
         "--format",
-        choices=["json", "text"],
+        choices=["json", "text", "plan"],
         default="text",
-        help="Output format",
+        help="Output format; plan is the versioned CI routing projection",
+    )
+    review.add_argument(
+        "--summary-file",
+        default="",
+        metavar="PATH",
+        help="Write a bounded Markdown summary of --format plan",
     )
     review.add_argument(
         "--allow-custom-providers",

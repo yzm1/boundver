@@ -186,6 +186,14 @@ complete facet/impact result. Structural evidence is not a compatibility
 verdict. The command is read-only and returns success for any complete range
 analysis; ordinary verification remains the integrity gate.
 
+`review --format plan` projects that same captured result into the versioned
+`boundver-plan/v1` CI contract. It preserves endpoint provenance, policy,
+changed facets, conservative consumer/slice impact, structural completeness,
+and deterministic changed/impacted/test selections while omitting historical
+fingerprint pairs that a scheduler does not need. Its claim is routing evidence
+only. Bounded human summaries and Action outputs may truncate explicitly; the
+complete plan file never contains a partial closure.
+
 ## Derived artifacts
 
 The v3 contract fingerprints declared artifacts but has no first-class

@@ -18,6 +18,13 @@ REQUIRED_SNIPPETS = (
     'entrypoint: [""]',
     'git config --global --add safe.directory "$CI_PROJECT_DIR"',
     "set -- boundver verify",
+    "set -- boundver review",
+    "--format plan",
+    '--summary-file "$summary_file"',
+    'GIT_DEPTH: "$[[ inputs.history-depth ]]"',
+    "boundver-result.json",
+    "boundver-summary.md",
+    "when: always",
     '--format json',
     '"$@"',
 )

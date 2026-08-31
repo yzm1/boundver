@@ -1863,7 +1863,13 @@ def _surface_inventory(repo: Path) -> str:
             "examples/range-review/fixture/boundary.config.json",
         ),
         "changelog and release notes": ("CHANGELOG.md", "scripts/release_changelog.py"),
-        "schema URLs, configs, and locks": ("boundary.config.schema.json", "spec/boundary.lock.schema.json", "boundary.lock.json"),
+        "schema URLs, configs, and locks": (
+            "boundary.config.schema.json",
+            "spec/boundary.lock.schema.json",
+            "spec/cli-output.review.schema.json",
+            "spec/cli-output.plan.schema.json",
+            "boundary.lock.json",
+        ),
         "CI and review state": (".github/workflows/ci.yml", "scripts/audit_release_reviews.sh"),
         "reproducible wheel, sdist, and standalone archive": (
             "scripts/verify_release_candidate.py",
