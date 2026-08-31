@@ -163,6 +163,19 @@ declaring a validated constant is tracked in
 [GitHub issue #40](https://github.com/yzm1/boundver/issues/40); neither spelling
 is accepted by the v2 semantic-config contract.
 
+`git_tag_prefix` is a literal prefix, not a glob. It is limited to 4,096
+characters and must be able to form a valid `refs/tags/<prefix><semver>` name.
+Git-forbidden whitespace and controls, `~`, `^`, `:`, `?`, `*`, `[`, `\`,
+`..`, `@{`, empty path components, dot-prefixed components, and completed
+components ending in `.lock` are rejected during config validation. Unicode
+and slash-separated namespaces are supported; a final `/`, `.`, or `.lock`
+is valid only when appending the version completes a valid tag component.
+
+A valid prefix can still have no reachable tag, especially in a shallow
+clone. That is a source-history error reported during generation, distinct
+from an invalid declaration. Fetch the required tags and commit history; do
+not replace the literal prefix with wildcard syntax.
+
 ### `--allow-partial`
 
 `--allow-partial` permits *intentional* null slice inputs — a boundary slice

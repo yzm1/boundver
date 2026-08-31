@@ -19,6 +19,7 @@ from typing import (
     Tuple,
 )
 
+from ._config_contract import git_tag_prefix_error
 from ._utils import (
     GuardrailError,
     SOURCE_MODE_SET,
@@ -1277,6 +1278,9 @@ def git_latest_tag(
     ID captured at operation start rather than allowing each lookup to resolve
     a potentially different moving ``HEAD``.
     """
+    prefix_error = git_tag_prefix_error(prefix)
+    if prefix_error is not None:
+        raise ValueError(f"Invalid literal Git tag prefix: {prefix_error}")
     try:
         # Prefer reachable tags from the selected commit to avoid unrelated
         # branch tags.

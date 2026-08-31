@@ -48,6 +48,7 @@ from ._config_contract import (
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     DEFAULT_FIELDS,
+    git_tag_prefix_error,
     MAX_CONSUMER_GRAPH_ITEMS,
     MAX_CONSUMER_IDENTIFIER_CHARS,
     PROVIDER_FIELDS,
@@ -1053,8 +1054,14 @@ def validate_config(
                     VERSION_TAG_FIELDS,
                     f"component '{name}' version_source",
                 )
-                if not isinstance(version_source["git_tag_prefix"], str) or not version_source["git_tag_prefix"].strip():
-                    errors.append(f"Component '{name}' version_source.git_tag_prefix must be a non-empty string")
+                prefix_error = git_tag_prefix_error(
+                    version_source["git_tag_prefix"]
+                )
+                if prefix_error is not None:
+                    errors.append(
+                        f"Component '{name}' version_source.git_tag_prefix "
+                        f"{prefix_error}"
+                    )
             elif "file" in version_source:
                 _reject_unknown_fields(
                     errors,

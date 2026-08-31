@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format follows
   locks retain their exact bytes, mode, modification time, and file identity.
   Actual current-schema cleanup is reported truthfully, dry-run follows the
   same decision, and output limits are enforced before any real write.
+- Rejected impossible `git_tag_prefix` declarations during dependency-free
+  config validation and direct generation, before any Git lookup. The schema
+  now documents a bounded literal Git-ref grammar while retaining valid
+  Unicode and slash-separated prefixes; valid prefixes with no reachable tag
+  remain a distinct source-history diagnostic.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

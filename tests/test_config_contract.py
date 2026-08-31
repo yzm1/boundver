@@ -10,8 +10,10 @@ from boundver._config_contract import (
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     DEFAULT_FIELDS,
+    GIT_TAG_PREFIX_PATTERN,
     MAX_CONSUMER_GRAPH_ITEMS,
     MAX_CONSUMER_IDENTIFIER_CHARS,
+    MAX_GIT_TAG_PREFIX_CHARS,
     PROVIDER_FIELDS,
     ROOT_FIELDS,
     SLICE_FIELDS,
@@ -41,6 +43,9 @@ class ConfigContractParityTests(unittest.TestCase):
             properties["components"]["maxProperties"],
             MAX_CONSUMER_GRAPH_ITEMS,
         )
+        tag_prefix = schema["$defs"]["gitTagPrefix"]
+        self.assertEqual(tag_prefix["maxLength"], MAX_GIT_TAG_PREFIX_CHARS)
+        self.assertEqual(tag_prefix["pattern"], GIT_TAG_PREFIX_PATTERN)
         for field in ("consumers", "external_consumers"):
             self.assertEqual(
                 component["properties"][field]["maxItems"],

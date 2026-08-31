@@ -169,7 +169,10 @@ version identities remain possible future extensions; boundver does not invent
 one for an unversioned component.
 
 Tag lookup is evaluated against the commit captured for the operation. A tag on
-an unreachable orphan history cannot become the component version.
+an unreachable orphan history cannot become the component version. Prefixes
+are literal Git tag prefixes rather than wildcard patterns; the exact grammar
+and shallow-clone behavior are documented in
+[reference](reference.md#what-each-facet-needs).
 
 ## Stage 5: declare the consumer graph
 

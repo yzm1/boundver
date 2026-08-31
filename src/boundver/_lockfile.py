@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
 from ._config import _json_value_issues, _snapshot_relative_path
+from ._config_contract import git_tag_prefix_error
 from ._consumer_graph import (
     affected_consumer_groups,
     affected_consumers,
@@ -380,6 +381,21 @@ def generate_lockfile(
     components_config = config.get("components")
     if not isinstance(components_config, dict) or not components_config:
         raise ConfigError("Config must define at least one component")
+    tag_prefixes = []
+    for component_name, component in components_config.items():
+        if not isinstance(component, dict):
+            continue
+        version_source = component.get("version_source")
+        if not isinstance(version_source, dict) or "git_tag_prefix" not in version_source:
+            continue
+        prefix = version_source.get("git_tag_prefix")
+        prefix_error = git_tag_prefix_error(prefix)
+        if prefix_error is not None:
+            raise ConfigError(
+                f"Component '{component_name}' version_source.git_tag_prefix "
+                f"{prefix_error}"
+            )
+        tag_prefixes.append(prefix)
     registry = create_registry()
     provider_errors = load_custom_providers(
         config.get("providers", []), allow_custom=allow_custom_providers,
@@ -404,15 +420,6 @@ def generate_lockfile(
         accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
     except ValueError as exc:
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
-    tag_prefixes = [
-        version_source["git_tag_prefix"]
-        for component in components_config.values()
-        if isinstance(component, dict)
-        for version_source in [component.get("version_source")]
-        if isinstance(version_source, dict)
-        and isinstance(version_source.get("git_tag_prefix"), str)
-        and version_source["git_tag_prefix"]
-    ]
     accessor.prime_latest_tags(tag_prefixes)
 
     # --- Components ---

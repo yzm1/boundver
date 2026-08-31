@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
+from ._config_contract import git_tag_prefix_error
 from ._utils import (
     GuardrailError,
     MAX_TOML_INTEGER_DIGITS as MAX_TOML_INTEGER_DIGITS,
@@ -132,7 +133,7 @@ def extract_version(
         return None
     if "git_tag_prefix" in version_source:
         prefix = version_source.get("git_tag_prefix")
-        if type(prefix) is not str or not prefix:
+        if git_tag_prefix_error(prefix) is not None:
             return None
         if git_latest_tag_fn is None:
             return None

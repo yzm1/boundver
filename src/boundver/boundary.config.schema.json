@@ -12,6 +12,13 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 16384
+    },
+    "gitTagPrefix": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*//)(?!.*\\.\\.)(?!.*@\\{)(?!.*[\\u0000-\\u0020\\u007f~^:?*\\[\\\\])(?!\\.)(?!.*/\\.)(?![^/]*\\.lock/)(?!.*/[^/]*\\.lock/).+$",
+      "description": "A bounded literal prefix for refs/tags/<prefix><semver>. The final partial component may end with '/', '.', or '.lock' only when appending the version makes the completed tag valid."
     }
   },
   "type": "object",
@@ -84,7 +91,7 @@
                 "type": "object",
                 "required": ["git_tag_prefix"],
                 "properties": {
-                  "git_tag_prefix": {"type": "string", "minLength": 1}
+                  "git_tag_prefix": {"$ref": "#/$defs/gitTagPrefix"}
                 },
                 "additionalProperties": false
               }
