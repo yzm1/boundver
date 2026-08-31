@@ -1116,6 +1116,44 @@ def list_head_files(repo_root: Path, path: str) -> List[str]:
     return [_to_posix(path)] if result.stdout.strip() == "blob" else []
 
 
+def _list_unborn_working_tree_paths(
+    repo_root: Path,
+    repo_rel_path: str,
+) -> List[str]:
+    """Return Git's bounded, non-ignored bootstrap corpus for an unborn tree."""
+    bootstrap_args = [
+        "--literal-pathspecs",
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        repo_rel_path,
+    ]
+    result_files = list(_iter_bounded_git_paths(repo_root, bootstrap_args))
+    bootstrap_files: List[str] = []
+    for path in result_files:
+        full_path = repo_root / path
+        try:
+            path_stat = full_path.lstat()
+        except FileNotFoundError:
+            continue
+        # Git represents an untracked embedded repository as one opaque
+        # directory row (for example, ``svc/nested/``). Match superproject
+        # semantics by excluding that row and never traversing the nested
+        # repository. Ordinary files and symlinks remain hashable;
+        # unsupported special files fail closed through the mode classifier.
+        if stat.S_ISDIR(path_stat.st_mode):
+            continue
+        _working_tree_mode(
+            repo_root,
+            path,
+            path_stat=path_stat,
+        )
+        bootstrap_files.append(path)
+    return bootstrap_files
+
+
 def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> List[str]:
     if source == "head":
         return list_head_files(repo_root, repo_rel_path)
@@ -1159,40 +1197,7 @@ def _list_files_for_source(repo_root: Path, repo_rel_path: str, source: str) -> 
     if not result_files and source == "working-tree" and not git_failed:
         head_oid = _resolve_head_oid(repo_root)
         if head_oid is None:
-            bootstrap_args = [
-                "--literal-pathspecs",
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--",
-                repo_rel_path,
-            ]
-            result_files = list(
-                _iter_bounded_git_paths(repo_root, bootstrap_args)
-            )
-            bootstrap_files: List[str] = []
-            for path in result_files:
-                full_path = repo_root / path
-                try:
-                    path_stat = full_path.lstat()
-                except FileNotFoundError:
-                    continue
-                # Git represents an untracked embedded repository as one
-                # opaque directory row (for example, ``svc/nested/``). Match
-                # superproject semantics by excluding that row and never
-                # traversing the nested repository. Ordinary files and
-                # symlinks remain hashable; unsupported special files still
-                # fail closed through the canonical mode classifier.
-                if stat.S_ISDIR(path_stat.st_mode):
-                    continue
-                _working_tree_mode(
-                    repo_root,
-                    path,
-                    path_stat=path_stat,
-                )
-                bootstrap_files.append(path)
-            return bootstrap_files
+            return _list_unborn_working_tree_paths(repo_root, repo_rel_path)
     if not git_failed:
         return result_files
 

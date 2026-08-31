@@ -55,6 +55,12 @@ All notable changes to this project are documented here. The format follows
   retains its comma-separated `--paths` input and adds repeatable
   `--boundary-path` values for losslessly declaring filenames that contain a
   comma.
+- Made discovery in an unborn repository with an empty index ask Git for its
+  bounded non-ignored bootstrap corpus. Root and nested ignore files, negation,
+  global excludes, ignored directories, and embedded repositories now follow
+  the installed Git exactly; provider inference uses that same filtered set.
+  Operational Git failures inside a real repository fail closed, while the
+  separate bounded non-Git filesystem approximation is explicitly warned.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

@@ -196,7 +196,9 @@ class FilesystemEnumerationBoundTests(unittest.TestCase):
                     "boundver._discovery._iter_bounded_git_paths",
                     side_effect=git_failure,
                 ),
-                patch.object(discovery, "_git_run", side_effect=git_failure),
+                patch.object(
+                    discovery, "_is_git_repository", return_value=False
+                ),
                 patch("boundver._config.MAX_FILESYSTEM_TRAVERSAL_ENTRIES", 1),
             ):
                 with self.assertRaisesRegex(
@@ -221,7 +223,9 @@ class FilesystemEnumerationBoundTests(unittest.TestCase):
                     "boundver._discovery._iter_bounded_git_paths",
                     side_effect=git_failure,
                 ),
-                patch.object(discovery, "_git_run", side_effect=git_failure),
+                patch.object(
+                    discovery, "_is_git_repository", return_value=False
+                ),
                 patch("boundver._config.MAX_DISCOVERED_COMPONENTS", 1),
             ):
                 with self.assertRaisesRegex(GuardrailError, ">1 components"):

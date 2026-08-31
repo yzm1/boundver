@@ -1,11 +1,18 @@
 """Tracked component discovery and deterministic config comparison."""
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from ._config_contract import component_identifier_problem
-from ._git import _git_run, _iter_bounded_git_paths, _to_posix
+from ._git import (
+    _is_git_repository,
+    _iter_bounded_git_paths,
+    _list_unborn_working_tree_paths,
+    _resolve_head_oid,
+    _to_posix,
+)
 from ._utils import (
     ConfigError,
     GuardrailError,
@@ -200,6 +207,24 @@ def discover_components(
             ),
         )
 
+    def enforce_manifest_limit(paths: List[Path]) -> None:
+        manifest_names = {manifest for manifest, _field in manifest_specs}
+        manifest_count = sum(path.name in manifest_names for path in paths)
+        if manifest_count > max_discovery_manifests:
+            raise GuardrailError(
+                "Component discovery guardrail exceeded: "
+                f">{max_discovery_manifests} manifests"
+            )
+
+    def non_git_fallback() -> List[Path]:
+        print(
+            "WARNING: component discovery is using a bounded filesystem "
+            "approximation because Git repository semantics are unavailable; "
+            ".gitignore, nested ignore, and global-exclude behavior may differ.",
+            file=sys.stderr,
+        )
+        return filesystem_manifest_candidates()
+
     try:
         listed_paths = [
             repo_root / path
@@ -208,28 +233,64 @@ def discover_components(
                 ["ls-files", "--cached", "-z", "--"],
             )
         ]
-        listed_paths = [path for path in listed_paths if not is_excluded(path)]
-        # Manifests are discovered from the index name set so an unstaged
-        # deletion does not erase an otherwise configured component. Provider
-        # evidence, however, must be readable from the working tree selected by
-        # the generated declaration; filter that separate view below.
-        candidate_paths = listed_paths
-        provider_candidate_paths = [
-            path
-            for path in listed_paths
-            if path.exists() or path.is_symlink()
-        ]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        if _is_git_repository(repo_root):
+            raise ConfigError(
+                "Component discovery could not read the Git index in a real "
+                f"repository; refusing a filesystem approximation: {exc}"
+            ) from exc
+        candidate_paths = non_git_fallback()
+    else:
         if listed_paths:
+            candidate_paths = listed_paths
             tracked_detection = True
         else:
             try:
-                _git_run(repo_root, ["rev-parse", "--verify", "HEAD"])
-            except subprocess.CalledProcessError:
-                candidate_paths = filesystem_manifest_candidates()
-            else:
+                head_oid = _resolve_head_oid(repo_root)
+            except ValueError as exc:
+                raise ConfigError(
+                    "Component discovery could not classify the repository's "
+                    f"HEAD safely: {exc}"
+                ) from exc
+            if head_oid is None:
+                # Before the first commit, an empty index has no tracked-name
+                # corpus. Ask Git itself for the bootstrap view so root and
+                # nested ignore files, negation, global excludes, and embedded
+                # repositories follow the installed Git's exact semantics.
+                try:
+                    bootstrap_paths = [
+                        repo_root / name
+                        for name in _list_unborn_working_tree_paths(
+                            repo_root,
+                            ".",
+                        )
+                    ]
+                except (OSError, subprocess.CalledProcessError) as exc:
+                    raise ConfigError(
+                        "Component discovery could not enumerate non-ignored "
+                        f"bootstrap files with Git: {exc}"
+                    ) from exc
+                candidate_paths = bootstrap_paths
                 tracked_detection = True
-    except (OSError, subprocess.CalledProcessError):
-        candidate_paths = filesystem_manifest_candidates()
+            else:
+                # A successful empty index in an established repository is
+                # authoritative, including after ``git read-tree --empty``.
+                candidate_paths = []
+                tracked_detection = True
+
+    candidate_paths = [
+        path for path in candidate_paths if not is_excluded(path)
+    ]
+    enforce_manifest_limit(candidate_paths)
+    # Manifests are discovered from the selected Git name set so an unstaged
+    # deletion does not erase an indexed component. Provider evidence must also
+    # be readable, and in bootstrap mode comes from the exact same non-ignored
+    # set rather than a second filesystem crawl.
+    provider_candidate_paths = [
+        path
+        for path in candidate_paths
+        if path.exists() or path.is_symlink()
+    ]
 
     # A repository-root manifest is common for single-package projects, but a
     # root component would hash its own lockfile.  Map it to a conventional,

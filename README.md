@@ -55,6 +55,9 @@ you prefer a best-effort scaffold for a manifest-based repository, use
 `boundver init --discover`; it exits without writing when no safe component
 root can be inferred. Either way, review the component path and boundary
 declaration before generation.
+In an unborn repository with an empty index, discovery asks Git for its
+non-ignored bootstrap files; a non-Git directory uses a bounded approximation
+and prints a warning.
 The initial scaffold uses an implicit boundary and no version source, so only
 `exact` is available. Declare a real boundary and version source before gating
 `boundary` or `compat`.

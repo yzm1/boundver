@@ -1909,6 +1909,28 @@ class MainInitTests(unittest.TestCase):
             cfg = json.loads((root / "boundary.config.json").read_text())
             self.assertIn("svc", cfg["components"])
 
+    def test_init_discover_honors_gitignore_before_first_commit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+            for relative in ("generated/fake", "packages/real"):
+                component = root / relative
+                component.mkdir(parents=True)
+                (component / "package.json").write_text(
+                    '{"version":"1.0"}', encoding="utf-8"
+                )
+
+            code, _out, err = _run_main(
+                "init", "--discover", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            config = json.loads(
+                (root / "boundary.config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(config["components"]), {"real"})
+
     def test_init_discovery_failure_is_controlled(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1972,6 +1994,26 @@ class MainDiscoverTests(unittest.TestCase):
             self.assertEqual(code, 0)
             payload = json.loads(out)
             self.assertIn("svc", payload["components"])
+
+    def test_discover_honors_gitignore_before_first_commit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+            for relative in ("generated/fake", "packages/real"):
+                component = root / relative
+                component.mkdir(parents=True)
+                (component / "package.json").write_text(
+                    '{"version":"1.0"}', encoding="utf-8"
+                )
+
+            code, out, err = _run_main(
+                "discover", "--format", "json", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            payload = json.loads(out)
+            self.assertEqual(set(payload["components"]), {"real"})
 
     def test_discover_git_failure_is_controlled(self):
         with tempfile.TemporaryDirectory() as td:

@@ -205,9 +205,14 @@ Preview manifest-based suggestions:
 boundver discover
 ```
 
-Root manifests need one unambiguous tracked package directory or conventional
-`src`, `lib`, or `app` directory. If none exists, discovery leaves the project
-for manual configuration instead of inventing a root component.
+Established repositories discover indexed manifests. Before the first commit,
+an empty index uses Git's non-ignored bootstrap view, including nested ignore
+files, negation, global excludes, and embedded-repository boundaries. Non-Git
+directories use a bounded approximation and say so on stderr.
+
+Root manifests need one unambiguous Git-selected package directory or
+conventional `src`, `lib`, or `app` directory. If none exists, discovery leaves
+the project for manual configuration instead of inventing a root component.
 
 Add a component manually or with `boundver add`, then update an existing v3
 lock with a focused command:

@@ -40,15 +40,23 @@ interpreter so an older `boundver` executable on `PATH` cannot be selected.
 
 ## 2. Discover a starting point
 
-Preview tracked manifests before writing anything:
+Preview the Git-selected manifest corpus before writing anything:
 
 ```bash
 boundver discover
 boundver init --discover
 ```
 
-Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. It
-uses Git-tracked paths rather than crawling ignored dependency or build trees.
+Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. In
+an established repository it uses indexed paths rather than crawling ignored
+dependency or build trees. Before the first commit, when the index is still
+empty, it asks Git for non-ignored bootstrap files; root and nested ignore
+files, negation, global excludes, and embedded repositories therefore retain
+Git's installed-version semantics. A directory that is not a Git repository
+uses a bounded filesystem approximation and prints a warning that ignore
+semantics may differ. If a `.git` marker exists but Git cannot read the
+repository, discovery fails closed instead of treating repository metadata as
+ordinary files.
 Use repeatable repository-relative `--exclude PATH` prefixes when tracked
 legacy, fixture, or vendored manifests are intentionally outside the component
 corpus:
@@ -62,9 +70,9 @@ artifacts truly form your contract, so review every result.
 
 A repository-root manifest is not itself a safe component root because the
 repository lockfile would become part of that component's exact fingerprint.
-For a root manifest, discovery uses one unambiguous tracked Python package or a
-conventional tracked `src`, `lib`, or `app` directory. The root manifest is
-outside that component, so its version source is left unset for manual review.
+For a root manifest, discovery uses one unambiguous Git-selected Python package
+or a conventional selected `src`, `lib`, or `app` directory. The root manifest
+is outside that component, so its version source is left unset for manual review.
 If no safe directory can be inferred, `init --discover` exits without writing
 an invalid config.
 

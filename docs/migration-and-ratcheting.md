@@ -104,9 +104,11 @@ boundver discover --diff-config --config boundary.config.yaml --format json
 ```
 
 `--exclude` is repeatable and removes an exact repository-relative prefix plus
-everything below it. Git repositories already use tracked manifests only; the
-option is for tracked trees that are deliberately outside the maintained
-component corpus. The exclusion option is available in v0.14 and later; the
+everything below it. Established Git repositories use indexed manifests; an
+unborn repository with an empty index uses Git's non-ignored bootstrap view.
+The option is for selected trees that are deliberately outside the maintained
+component corpus. A non-Git directory uses a visibly warned bounded filesystem
+approximation. The exclusion option is available in v0.14 and later; the
 comparison itself remains available from v0.13.
 
 The comparison separates:
