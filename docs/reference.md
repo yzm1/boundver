@@ -225,9 +225,15 @@ local tooling, and automation in the same change.
 Hash-bearing locks are never relabelled. `boundver migrate-lock` rejects
 `boundary-lock/v1` and `v2`, and rejects v3 locks carrying
 `boundver-semantic-config/v1`, directing you to regenerate from repository
-content instead. For what a regeneration diff *should* look like on each
-upgrade path — and how to inspect 0.10 selector changes before you commit to
-one — see [migration and ratcheting](migration-and-ratcheting.md).
+content instead. For a current v3 lock, the command only removes supported
+legacy metadata or fills supported missing maps. An already-normalized lock is
+a true no-op: its representation and file metadata are left untouched.
+`--dry-run` prints prospective normalized JSON only when data would change and
+otherwise reports the no-op without rewriting or reformatting the lock.
+
+For what a regeneration diff *should* look like on each upgrade path — and how
+to inspect 0.10 selector changes before you commit to one — see
+[migration and ratcheting](migration-and-ratcheting.md).
 
 ## Related
 

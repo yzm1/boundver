@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Made no-op `migrate-lock` runs genuinely non-mutating: current normalized
+  locks retain their exact bytes, mode, modification time, and file identity.
+  Actual current-schema cleanup is reported truthfully, dry-run follows the
+  same decision, and output limits are enforced before any real write.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

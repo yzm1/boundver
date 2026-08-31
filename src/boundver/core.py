@@ -796,15 +796,33 @@ def _cmd_migrate_lock(args) -> None:
                     )
         return
     assert migrated is not None
+    if migrated == old_lock:
+        message = f"Lockfile is already normalized: {lock_path}; no changes"
+        if args.dry_run:
+            print(f"{message} would be written.", file=sys.stderr)
+        else:
+            _log(f"{message} written.")
+        return
+
+    normalized = []
+    if "generated_at" in old_lock and "generated_at" not in migrated:
+        normalized.append("removed legacy generated_at metadata")
+    if "components" not in old_lock and "components" in migrated:
+        normalized.append("added missing components map")
+    if "slices" not in old_lock and "slices" in migrated:
+        normalized.append("added missing slices map")
+    if old_lock.get("schema") != migrated.get("schema"):
+        normalized.append(f"set schema to {migrated.get('schema')}")
+    detail = ", ".join(normalized) or "normalized supported lock metadata"
+
+    # Render and enforce the persisted-size contract before the first write.
     out = dump_lockfile(migrated)
     if args.dry_run:
         sys.stdout.write(out)
+        print(f"Would normalize {lock_path}: {detail}.", file=sys.stderr)
     else:
         _write_text_atomic(lock_path, out)
-        if migrated.get("schema") == old_lock.get("schema"):
-            _log("Already at current schema, no changes written.")
-        else:
-            _log(f"Migrated {lock_path} -> schema {migrated['schema']}")
+        _log(f"Normalized {lock_path}: {detail}.")
 
 
 def _cmd_diff(args) -> None:

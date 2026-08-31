@@ -275,7 +275,7 @@ class LockMutationOverflowTests(unittest.TestCase):
             _assert_controlled_overflow(self, result)
             self.assertEqual((root / "boundary.lock.json").read_bytes(), original)
 
-    def test_migrate_lock_preserves_compact_existing_target(self) -> None:
+    def test_noop_migrate_bypasses_irrelevant_pretty_print_limit(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _versioned_repo(root)
@@ -285,6 +285,32 @@ class LockMutationOverflowTests(unittest.TestCase):
             original = _write_json(target, value, compact=True)
             pretty_size = len(
                 (_bounded_json_dumps(value, indent=2) + "\n").encode("utf-8")
+            )
+            self.assertLess(len(original), pretty_size)
+
+            with patch.object(
+                lockfile_module, "MAX_LOCKFILE_BYTES", pretty_size - 1
+            ):
+                result = _run_main("migrate-lock", "--lock", str(target))
+
+            code, output, error = result
+            self.assertEqual(code, 0, error)
+            self.assertIn("already normalized", output)
+            self.assertEqual(target.read_bytes(), original)
+
+    def test_migrate_cleanup_checks_output_limit_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _versioned_repo(root)
+            _generate_initial_lock(root)
+            target = root / "boundary.lock.json"
+            value = json.loads(target.read_text(encoding="utf-8"))
+            value["generated_at"] = "legacy"
+            original = _write_json(target, value, compact=True)
+            normalized = dict(value)
+            normalized.pop("generated_at")
+            pretty_size = len(
+                (_bounded_json_dumps(normalized, indent=2) + "\n").encode("utf-8")
             )
             self.assertLess(len(original), pretty_size)
 

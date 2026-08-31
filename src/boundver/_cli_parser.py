@@ -410,8 +410,9 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
             "Normalize a supported current-schema boundary.lock.json in place. "
             "Hash-contract v1/v2 locks and v3 locks carrying semantic-config/v1 "
             "cannot be upgraded safely and are rejected with instructions to "
-            "regenerate from repository content. Use --dry-run "
-            "to print the normalized current lock without writing it."
+            "regenerate from repository content. Use --dry-run to preview "
+            "normalization as JSON, or report that the lock is already "
+            "normalized, without writing it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -424,7 +425,10 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     migrate_mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print normalized JSON to stdout without writing the file",
+        help=(
+            "Print prospective normalized JSON, or report a no-op, without "
+            "writing the file"
+        ),
     )
     migrate_mode.add_argument(
         "--explain",
