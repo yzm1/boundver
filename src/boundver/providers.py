@@ -43,8 +43,8 @@ from ._utils import (
     _bounded_diagnostic_text,
     _is_glob,
     _json_integer_is_bounded,
-    _match_path_glob,
     _normalize_declared_path,
+    _PathGlobOperation,
 )
 
 
@@ -103,6 +103,7 @@ def _resolve_declared_files(
     selected: List[tuple[str, str]] = []
     errors: List[str] = []
     all_component_files: Optional[List[str]] = None
+    glob_operation = _PathGlobOperation("Boundary file selection")
 
     def component_files() -> List[str]:
         nonlocal all_component_files
@@ -124,18 +125,22 @@ def _resolve_declared_files(
 
         if _is_glob(rel):
             matches = []
-            for repo_rel in component_files():
-                child_rel = _component_relative_path(ctx.component_path, repo_rel)
-                try:
-                    if _match_path_glob(child_rel, rel):
+            try:
+                glob_operation.prepare(rel)
+                for repo_rel in component_files():
+                    child_rel = _component_relative_path(
+                        ctx.component_path,
+                        repo_rel,
+                    )
+                    if glob_operation.matches(child_rel, rel):
                         matches.append((repo_rel, child_rel))
-                except GuardrailError as exc:
-                    return [], [
-                        _bounded_provider_error_text(
-                            "Boundary glob matching failed closed for "
-                            f"{_bounded_diagnostic_repr(rel)}: {exc}"
-                        )
-                    ]
+            except GuardrailError as exc:
+                return [], [
+                    _bounded_provider_error_text(
+                        "Boundary glob matching failed closed for "
+                        f"{_bounded_diagnostic_repr(rel)}: {exc}"
+                    )
+                ]
         else:
             matches = [
                 (repo_rel, _component_relative_path(ctx.component_path, repo_rel))

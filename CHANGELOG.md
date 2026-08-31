@@ -61,6 +61,13 @@ All notable changes to this project are documented here. The format follows
   the installed Git exactly; provider inference uses that same filtered set.
   Operational Git failures inside a real repository fail closed, while the
   separate bounded non-Git filesystem approximation is explicitly warned.
+- Added a 10-million-step operation-wide glob work budget across built-in
+  provider resolution, boundary/behavior validation expansion, and change
+  diagnostics. Normalized patterns compile once per operation, every candidate
+  transition is charged, matching and non-matching declaration/file
+  cross-products fail closed with one actionable error, and literal paths keep
+  their direct fast path. The existing per-match limit and accepted selector
+  semantics/digests are unchanged.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

@@ -95,6 +95,21 @@ default to `HEAD`, because their staged or on-disk source does not yet have a
 commit identity. Inference is diagnostic evidence, not lock integrity: verify
 still recomputes every selected fingerprint from the requested source.
 
+## Selector work limits
+
+Path-glob matching is case-sensitive and segment-aware. A wildcard-bearing
+segment is limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters. One
+compile-and-match invocation may consume at most 100,000 matcher steps.
+
+That primitive ceiling is not reset into an unbounded declaration/file
+cross-product. Each built-in provider selection, component validation
+expansion (shared by boundary and behavior), and boundary change-analysis
+operation gets one 10,000,000-step aggregate budget. Every normalized pattern
+is compiled once in that operation, and its compilation plus every candidate
+transition consumes the shared budget. Exceeding it fails closed and asks the
+user to reduce wildcard declarations or split the component. Literal paths do
+not enter the glob matcher.
+
 ## Exit codes
 
 | Code | Highest selected result |

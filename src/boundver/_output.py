@@ -17,13 +17,14 @@ from ._git import (
 from ._utils import (
     BoundedDiagnosticList,
     FACETS,
+    GuardrailError,
     SOURCE_MODE_SET,
     _bounded_diagnostic_text,
     _bounded_json_dumps,
     _effective_component_facets,
     _is_glob,
-    _match_path_glob,
     _normalize_declared_path,
+    _PathGlobOperation,
     _short,
     boundary_provider_name,
 )
@@ -691,18 +692,27 @@ def analyze_explain_changes(
             continue
 
     boundary_changed: List[Tuple[str, str]] = []
-    for status, rel in changed:
-        component_relative = rel
-        if component_relative.startswith(component_prefix):
-            component_relative = component_relative[len(component_prefix):]
-        for bp in normalized_boundary_paths:
-            if _is_glob(bp):
-                if _match_path_glob(component_relative, bp):
+    glob_operation = _PathGlobOperation("Boundary change analysis")
+    try:
+        for boundary_path in normalized_boundary_paths:
+            if _is_glob(boundary_path):
+                glob_operation.prepare(boundary_path)
+        for status, rel in changed:
+            component_relative = rel
+            if component_relative.startswith(component_prefix):
+                component_relative = component_relative[len(component_prefix):]
+            for bp in normalized_boundary_paths:
+                if _is_glob(bp):
+                    if glob_operation.matches(component_relative, bp):
+                        boundary_changed.append((status, rel))
+                        break
+                elif component_relative == bp or component_relative.startswith(
+                    f"{bp}/"
+                ):
                     boundary_changed.append((status, rel))
                     break
-            elif component_relative == bp or component_relative.startswith(f"{bp}/"):
-                boundary_changed.append((status, rel))
-                break
+    except GuardrailError as exc:
+        return {"error": f"boundary glob analysis failed closed: {exc}"}
 
     return {
         "error": None,

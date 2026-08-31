@@ -29,8 +29,8 @@ from ._utils import (
     _is_within,
     _iter_bounded_filesystem_paths,
     _iter_bounded_json_values,
-    _match_path_glob,
     _normalize_declared_path,
+    _PathGlobOperation,
     boundary_provider_name,
     ConfigError as ConfigError,
     GuardrailError,
@@ -275,6 +275,7 @@ def _expand_component_paths(
     paths: List[str],
     source: Optional[str] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
+    _glob_operation: Optional[_PathGlobOperation] = None,
 ) -> Set[str]:
     if component_path is None:
         return set()
@@ -337,6 +338,9 @@ def _expand_component_paths(
             for path in filesystem_files
         ]
     matched: Set[str] = set()
+    glob_operation = _glob_operation or _PathGlobOperation(
+        "Component path expansion"
+    )
 
     for rel in paths:
         try:
@@ -345,8 +349,9 @@ def _expand_component_paths(
             continue
         is_dir_like = rel.endswith("/")
         if _is_glob(rel_norm):
+            glob_operation.prepare(rel_norm)
             for file_rel in all_files:
-                if _match_path_glob(file_rel, rel_norm):
+                if glob_operation.matches(file_rel, rel_norm):
                     matched.add(file_rel)
             continue
 
@@ -1329,6 +1334,7 @@ def validate_config(
         behavior_paths = behavior.get("paths", [])
         if not _is_str_list(boundary_paths) or not _is_str_list(behavior_paths):
             continue
+        glob_operation = _PathGlobOperation("Component path expansion")
         try:
             boundary_files = _expand_component_paths(
                 repo_root,
@@ -1336,6 +1342,7 @@ def validate_config(
                 boundary_paths,
                 source=source,
                 snapshot=snapshot,
+                _glob_operation=glob_operation,
             )
             behavior_files = _expand_component_paths(
                 repo_root,
@@ -1343,6 +1350,7 @@ def validate_config(
                 behavior_paths,
                 source=source,
                 snapshot=snapshot,
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             errors.append(
@@ -1585,9 +1593,14 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
         if not boundary_paths:
             continue
 
+        glob_operation = _PathGlobOperation("Component path expansion")
         try:
             boundary_files = _expand_component_paths(
-                repo_root, component_path, boundary_paths, source="working-tree"
+                repo_root,
+                component_path,
+                boundary_paths,
+                source="working-tree",
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             warnings.append(
@@ -1599,7 +1612,11 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
             continue
         try:
             behavior_files = _expand_component_paths(
-                repo_root, component_path, behavior_paths, source="working-tree"
+                repo_root,
+                component_path,
+                behavior_paths,
+                source="working-tree",
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             warnings.append(

@@ -162,7 +162,13 @@ Within one segment, `*`, `?`, and character classes such as `[ab]` use
 case-sensitive character matching; wildcards may match a leading `.`. A complete
 `**` segment matches zero or more directories. A wildcard-bearing segment is
 limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters; matching is
-budgeted and fails closed if the work limit is exceeded. Every
+budgeted and fails closed if the work limit is exceeded. In addition to the
+100,000-step ceiling on one match, each provider selection, component
+validation expansion, or change-analysis operation has one 10,000,000-step
+aggregate compilation/matching budget. Patterns compile once per operation;
+an aggregate-budget error asks you to reduce wildcard declarations or split
+the component. The complete ceilings are recorded in the
+[reference](docs/reference.md#selector-work-limits). Every
 declared literal or pattern must select at least one file; otherwise strict
 generation fails instead of hashing an empty contract.
 

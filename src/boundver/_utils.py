@@ -71,6 +71,7 @@ MAX_DECLARED_PATH_BYTES = 16 * 1024
 MAX_GLOB_PATH_BYTES = 64 * 1024
 MAX_GLOB_SEGMENTS = 1024
 MAX_GLOB_MATCH_STEPS = 100_000
+MAX_GLOB_OPERATION_STEPS = 10_000_000
 MAX_GLOB_PATTERN_SEGMENT_BYTES = 4 * 1024
 MAX_GLOB_METACHARACTERS_PER_SEGMENT = 256
 
@@ -1439,52 +1440,77 @@ def _match_text_glob(
     return _match_compiled_text_glob(candidate, tokens, spend_step)
 
 
-def _match_path_glob(
-    path: str,
-    pattern: str,
-    *,
-    _step_consumer: Optional[Callable[[int], None]] = None,
-    _allow_descendants: bool = False,
-) -> bool:
-    """Match a POSIX path with deterministic, segment-aware glob semantics.
+class _CompiledPathGlob:
+    """One immutable segment-aware path-glob program."""
 
-    Ordinary wildcard segments use a bounded NFA, so ``*``, ``?``, and
-    character classes never cross ``/``.  A segment that is exactly ``**``
-    consumes zero or more complete path segments.  Matching is always
-    case-sensitive and includes leading-dot names.
+    __slots__ = ("parts", "pattern")
 
-    Internal bounded-analysis callers may supply ``_step_consumer`` to charge
-    every NFA state/epsilon transition to an aggregate work budget.  The
-    ordinary two-argument API and boolean result remain unchanged.
-    """
-    if not isinstance(path, str) or not isinstance(pattern, str):
-        return False
-    if path.startswith("/") or pattern.startswith("/"):
-        return False
+    def __init__(self, pattern: str, parts: Tuple[tuple, ...]) -> None:
+        self.pattern = pattern
+        self.parts = parts
+
+
+def _glob_step_spender(
+    step_consumer: Optional[Callable[[int], None]],
+) -> Callable[[], None]:
+    """Create one per-compile or per-match primitive work counter."""
+    steps = 0
+
+    def spend_step() -> None:
+        nonlocal steps
+        steps += 1
+        if steps > MAX_GLOB_MATCH_STEPS:
+            raise GuardrailError(
+                "Glob match guardrail exceeded: more than "
+                f"{MAX_GLOB_MATCH_STEPS} matcher steps"
+            )
+        if step_consumer is not None:
+            step_consumer(1)
+
+    return spend_step
+
+
+def _validated_path_glob_candidate(path: object) -> Optional[Tuple[str, ...]]:
+    if not isinstance(path, str) or path.startswith("/"):
+        return None
     try:
         path_bytes = len(path.encode("utf-8", errors="surrogateescape"))
-        pattern_bytes = len(pattern.encode("utf-8"))
     except UnicodeEncodeError:
-        return False
+        return None
     if path_bytes > MAX_GLOB_PATH_BYTES:
         raise GuardrailError(
             "Glob match guardrail exceeded: candidate path exceeds "
             f"{MAX_GLOB_PATH_BYTES} UTF-8 bytes"
         )
-    if pattern_bytes > MAX_DECLARED_PATH_BYTES:
-        raise GuardrailError(
-            "Glob match guardrail exceeded: pattern exceeds "
-            f"{MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
-        )
     path_parts = tuple(path.split("/")) if path else tuple()
-    pattern_parts = tuple(pattern.split("/")) if pattern else tuple()
-    if any(part == "" for part in path_parts + pattern_parts):
-        return False
+    if any(part == "" for part in path_parts):
+        return None
     if len(path_parts) > MAX_GLOB_SEGMENTS:
         raise GuardrailError(
             "Glob match guardrail exceeded: candidate path exceeds "
             f"{MAX_GLOB_SEGMENTS} segments"
         )
+    return path_parts
+
+
+def _compile_path_glob_with_spender(
+    pattern: object,
+    spend_step: Callable[[], None],
+) -> Optional[_CompiledPathGlob]:
+    if not isinstance(pattern, str) or pattern.startswith("/"):
+        return None
+    try:
+        pattern_bytes = len(pattern.encode("utf-8"))
+    except UnicodeEncodeError:
+        return None
+    if pattern_bytes > MAX_DECLARED_PATH_BYTES:
+        raise GuardrailError(
+            "Glob match guardrail exceeded: pattern exceeds "
+            f"{MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
+        )
+    pattern_parts = tuple(pattern.split("/")) if pattern else tuple()
+    if any(part == "" for part in pattern_parts):
+        return None
     if len(pattern_parts) > MAX_GLOB_SEGMENTS:
         raise GuardrailError(
             "Glob match guardrail exceeded: pattern exceeds "
@@ -1496,34 +1522,46 @@ def _match_path_glob(
         raise GuardrailError(f"Glob match guardrail exceeded: {exc}") from exc
 
     # Consecutive recursive wildcards are equivalent to one and needlessly
-    # multiply the state space.
+    # multiply the state space. Charge every source segment so compiling long
+    # mostly-literal patterns remains visible to an operation-wide budget.
     collapsed: List[str] = []
     for token in pattern_parts:
+        spend_step()
         if token != "**" or not collapsed or collapsed[-1] != "**":
             collapsed.append(token)
-    pattern_parts = tuple(collapsed)
-    steps = 0
-
-    def spend_step() -> None:
-        nonlocal steps
-        steps += 1
-        if steps > MAX_GLOB_MATCH_STEPS:
-            raise GuardrailError(
-                "Glob match guardrail exceeded: more than "
-                f"{MAX_GLOB_MATCH_STEPS} matcher steps"
-            )
-        if _step_consumer is not None:
-            _step_consumer(1)
 
     compiled_parts = []
-    for token in pattern_parts:
+    for token in collapsed:
+        spend_step()
         if token == "**":
             compiled_parts.append(("recursive", None))
         elif _is_glob(token):
             compiled_parts.append(("glob", _compile_text_glob(token, spend_step)))
         else:
             compiled_parts.append(("literal", token))
-    compiled_parts = tuple(compiled_parts)
+    return _CompiledPathGlob(pattern, tuple(compiled_parts))
+
+
+def _compile_path_glob(
+    pattern: object,
+    *,
+    _step_consumer: Optional[Callable[[int], None]] = None,
+) -> Optional[_CompiledPathGlob]:
+    """Compile one bounded path glob for reuse across candidate paths."""
+    return _compile_path_glob_with_spender(
+        pattern,
+        _glob_step_spender(_step_consumer),
+    )
+
+
+def _match_compiled_path_glob_with_spender(
+    path_parts: Tuple[str, ...],
+    compiled: _CompiledPathGlob,
+    spend_step: Callable[[], None],
+    *,
+    allow_descendants: bool,
+) -> bool:
+    compiled_parts = compiled.parts
     pattern_count = len(compiled_parts)
 
     def epsilon_closure(states: Set[int]) -> Set[int]:
@@ -1560,12 +1598,132 @@ def _match_path_glob(
             ):
                 next_states.add(index + 1)
         states = epsilon_closure(next_states)
-        if _allow_descendants and pattern_count in states:
+        if allow_descendants and pattern_count in states:
             return True
         if not states:
             return False
     states = epsilon_closure(states)
     return pattern_count in states
+
+
+def _match_compiled_path_glob(
+    path: object,
+    compiled: object,
+    *,
+    _step_consumer: Optional[Callable[[int], None]] = None,
+    _allow_descendants: bool = False,
+) -> bool:
+    """Match one candidate against an already-compiled path glob."""
+    if not isinstance(compiled, _CompiledPathGlob):
+        return False
+    path_parts = _validated_path_glob_candidate(path)
+    if path_parts is None:
+        return False
+    return _match_compiled_path_glob_with_spender(
+        path_parts,
+        compiled,
+        _glob_step_spender(_step_consumer),
+        allow_descendants=_allow_descendants,
+    )
+
+
+class _PathGlobOperation:
+    """Compile-once matcher with one aggregate work budget per operation."""
+
+    def __init__(
+        self,
+        context: str,
+        *,
+        max_steps: Optional[int] = None,
+    ) -> None:
+        self.context = context
+        self.max_steps = (
+            MAX_GLOB_OPERATION_STEPS if max_steps is None else max_steps
+        )
+        if self.max_steps < 0:
+            raise ValueError("glob operation work limit must be non-negative")
+        self.steps = 0
+        self._compiled: dict[str, _CompiledPathGlob] = {}
+
+    @property
+    def compiled_patterns(self) -> int:
+        return len(self._compiled)
+
+    def _spend(self, amount: int) -> None:
+        if amount < 0 or amount > self.max_steps - self.steps:
+            raise GuardrailError(
+                f"{self.context} guardrail exceeded: more than "
+                f"{self.max_steps} aggregate glob compile/match steps; "
+                "reduce wildcard declarations or split the component"
+            )
+        self.steps += amount
+
+    def prepare(self, pattern: str) -> _CompiledPathGlob:
+        compiled = self._compiled.get(pattern)
+        if compiled is not None:
+            return compiled
+        self._spend(1)
+        compiled = _compile_path_glob(
+            pattern,
+            _step_consumer=self._spend,
+        )
+        if compiled is None:
+            raise GuardrailError(
+                f"{self.context} failed closed: invalid path glob "
+                f"{_bounded_diagnostic_repr(pattern)}"
+            )
+        self._compiled[pattern] = compiled
+        return compiled
+
+    def matches(
+        self,
+        path: str,
+        pattern: str,
+        *,
+        allow_descendants: bool = False,
+    ) -> bool:
+        compiled = self.prepare(pattern)
+        return _match_compiled_path_glob(
+            path,
+            compiled,
+            _step_consumer=self._spend,
+            _allow_descendants=allow_descendants,
+        )
+
+
+def _match_path_glob(
+    path: str,
+    pattern: str,
+    *,
+    _step_consumer: Optional[Callable[[int], None]] = None,
+    _allow_descendants: bool = False,
+) -> bool:
+    """Match a POSIX path with deterministic, segment-aware glob semantics.
+
+    Ordinary wildcard segments use a bounded NFA, so ``*``, ``?``, and
+    character classes never cross ``/``.  A segment that is exactly ``**``
+    consumes zero or more complete path segments.  Matching is always
+    case-sensitive and includes leading-dot names.
+
+    Internal bounded-analysis callers may supply ``_step_consumer`` to charge
+    every compile/state/epsilon transition to an aggregate work budget.  The
+    ordinary two-argument API and boolean result remain unchanged.
+    """
+    if not isinstance(path, str) or not isinstance(pattern, str):
+        return False
+    path_parts = _validated_path_glob_candidate(path)
+    if path_parts is None:
+        return False
+    spend_step = _glob_step_spender(_step_consumer)
+    compiled = _compile_path_glob_with_spender(pattern, spend_step)
+    if compiled is None:
+        return False
+    return _match_compiled_path_glob_with_spender(
+        path_parts,
+        compiled,
+        spend_step,
+        allow_descendants=_allow_descendants,
+    )
 
 
 _FACET_ISSUE_RE = re.compile(

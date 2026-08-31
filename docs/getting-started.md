@@ -145,8 +145,14 @@ Path selectors are case-sensitive:
 `*`, `?`, and character classes stay within one segment and may match a leading
 `.`. A complete `**` segment matches zero or more directories. A
 wildcard-bearing segment is limited to 4,096 UTF-8 bytes and 256 wildcard
-metacharacters; matching is budgeted and fails closed if that work limit is
-exceeded. Raw providers,
+metacharacters. One match is limited to 100,000 compile/match steps, and each
+provider selection, component validation expansion, or change-analysis
+operation has a 10,000,000-step aggregate budget across every pattern and
+candidate. Patterns compile once per operation. Exceeding either limit fails
+closed with guidance to reduce wildcard declarations or split the component.
+See [selector work limits](reference.md#selector-work-limits) for the normative
+contract.
+Raw providers,
 canonical providers, behavior paths, validation, and explain output share this
 grammar. Every
 declaration must match at least one selected file during strict generation.
