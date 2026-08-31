@@ -7,10 +7,12 @@ import sys
 import tempfile
 import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from boundver._git import (
+    _GitBlobSession,
     _capture_git_source_snapshot,
     _git_batch_cat,
     _git_cat_blob,
@@ -307,6 +309,136 @@ class FailClosedGitBlobTests(unittest.TestCase):
             with patch("boundver._git.subprocess.Popen", return_value=proc):
                 with self.assertRaises(GuardrailError):
                     _git_cat_blob(Path("."), "HEAD:file.txt")
+
+    def test_blob_session_reuses_one_process_for_multiple_objects(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "a.txt").write_bytes(b"alpha")
+            (root / "b.txt").write_bytes(b"beta")
+            commit_all(root)
+            oid_a = subprocess.run(
+                ["git", "rev-parse", "HEAD:a.txt"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            oid_b = subprocess.run(
+                ["git", "rev-parse", "HEAD:b.txt"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            real_popen = subprocess.Popen
+            with patch(
+                "boundver._git.subprocess.Popen", wraps=real_popen
+            ) as popen:
+                with _GitBlobSession(root) as session:
+                    self.assertEqual(session.read_blob(oid_a), b"alpha")
+                    self.assertEqual(session.read_blob(oid_b), b"beta")
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(
+                popen.call_args.args[0][-2:], ["cat-file", "--batch"]
+            )
+
+    def test_blob_session_serializes_concurrent_provider_reads(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "a.txt").write_bytes(b"alpha")
+            (root / "b.txt").write_bytes(b"beta")
+            commit_all(root)
+            refs = [
+                subprocess.run(
+                    ["git", "rev-parse", f"HEAD:{name}.txt"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                for name in ("a", "b")
+            ]
+            expected = {refs[0]: b"alpha", refs[1]: b"beta"}
+            real_popen = subprocess.Popen
+            with patch(
+                "boundver._git.subprocess.Popen", wraps=real_popen
+            ) as popen:
+                with _GitBlobSession(root) as session:
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        contents = list(
+                            executor.map(
+                                session.read_blob,
+                                [refs[index % 2] for index in range(20)],
+                            )
+                        )
+            self.assertEqual(
+                contents,
+                [expected[refs[index % 2]] for index in range(20)],
+            )
+            self.assertEqual(popen.call_count, 1)
+
+    def test_blob_session_rejects_non_object_id_before_start(self):
+        with patch("boundver._git.subprocess.Popen") as popen:
+            session = _GitBlobSession(Path("."))
+            with self.assertRaisesRegex(ValueError, "malformed object ID"):
+                session.read_blob("HEAD:file.txt")
+            session.close()
+        popen.assert_not_called()
+
+    def test_blob_session_rejects_missing_object(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / "present.txt").write_bytes(b"present")
+            commit_all(root)
+            with _GitBlobSession(root) as session:
+                with self.assertRaisesRegex(ValueError, "not found"):
+                    session.read_blob("f" * 40)
+
+    def test_blob_session_rejects_truncated_header_and_reaps_process(self):
+        oid = "c" * 40
+        proc = self._popen_with_stdout(b"unterminated header")
+        with patch("boundver._git.subprocess.Popen", return_value=proc):
+            with _GitBlobSession(Path(".")) as session:
+                with self.assertRaisesRegex(ValueError, "Truncated"):
+                    session.read_blob(oid)
+        self.assertTrue(proc.stdout.closed)
+        self.assertTrue(proc.stdin.closed)
+
+    def test_blob_session_restarts_after_oversized_response(self):
+        oid = "a" * 40
+        oversized = self._popen_with_stdout(
+            f"{oid} blob 5\n12345\n".encode("ascii")
+        )
+        valid = self._popen_with_stdout(
+            f"{oid} blob 4\n1234\n".encode("ascii")
+        )
+        with patch(
+            "boundver._git.subprocess.Popen",
+            side_effect=[oversized, valid],
+        ) as popen:
+            with _GitBlobSession(Path(".")) as session:
+                with self.assertRaisesRegex(
+                    GuardrailError, "Git blob too large"
+                ):
+                    session.read_blob(oid, max_bytes=4)
+                self.assertEqual(session.read_blob(oid, max_bytes=4), b"1234")
+        self.assertEqual(popen.call_count, 2)
+
+    def test_blob_session_close_surfaces_nonzero_exit(self):
+        oid = "b" * 40
+        proc = self._popen_with_stdout(
+            f"{oid} blob 1\nx\n".encode("ascii"),
+            returncode=7,
+        )
+        with patch("boundver._git.subprocess.Popen", return_value=proc):
+            session = _GitBlobSession(Path("."))
+            self.assertEqual(session.read_blob(oid), b"x")
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                session.close()
+        self.assertEqual(raised.exception.returncode, 7)
 
     def test_filesystem_read_race_raises_instead_of_hashing_empty_bytes(self):
         with tempfile.TemporaryDirectory() as td:

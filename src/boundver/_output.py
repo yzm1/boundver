@@ -1247,22 +1247,24 @@ def analyze_component_drift(
         provider_name = boundary_provider_name(comp_cfg.get("boundary", {}))
         provider = get_provider(provider_name, registry=registry)
         if provider is not None and not load_errors:
-            accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
-            ctx = ProviderContext(
-                repo_root=repo_root,
-                component_path=comp_cfg.get("path", "").rstrip("/"),
-                boundary_cfg=comp_cfg.get("boundary", {}),
-                source=source,
-                read_file=accessor.read_file,
-                read_file_limited=accessor.read_file_limited,
-                list_files=accessor.list_files,
-            )
-            provider_explanation = explain_provider_diff(
-                provider,
-                locked_comp.get("boundary_metadata"),
-                current_comp.get("boundary_metadata"),
-                ctx,
-            )
+            with _SourceAccessor(
+                repo_root, source, snapshot=snapshot
+            ) as accessor:
+                ctx = ProviderContext(
+                    repo_root=repo_root,
+                    component_path=comp_cfg.get("path", "").rstrip("/"),
+                    boundary_cfg=comp_cfg.get("boundary", {}),
+                    source=source,
+                    read_file=accessor.read_file,
+                    read_file_limited=accessor.read_file_limited,
+                    list_files=accessor.list_files,
+                )
+                provider_explanation = explain_provider_diff(
+                    provider,
+                    locked_comp.get("boundary_metadata"),
+                    current_comp.get("boundary_metadata"),
+                    ctx,
+                )
 
     # Get changed files via git diff
     comp_path = comp_cfg.get("path", "?").rstrip("/")

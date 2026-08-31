@@ -58,6 +58,12 @@ jobs:
           python -I -m coverage run --branch -m pytest -q tests/test_semantic_provider_proposal.py
           python -I -m coverage report --include="scripts/audit_semantic_provider_proposal.py,scripts/check_semantic_provider_proposal.py" --fail-under=75
 
+      - name: Enforce intrinsic runtime contract
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: >-
+          python -I scripts/benchmark_runtime.py --runs 3 --enforce
+          --output runtime_benchmark.json
+
       - name: Print failures
         if: failure()
         shell: python -I {0}
@@ -88,7 +94,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: pytest_results.xml
+          path: |
+            pytest_results.xml
+            runtime_benchmark.json
 
   build:
     runs-on: ubuntu-latest

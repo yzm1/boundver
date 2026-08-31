@@ -931,6 +931,217 @@ def _parse_batch_header(header_bytes: bytes, ref: str) -> int:
     return size
 
 
+class _GitBlobSession:
+    """Read immutable Git blobs through one bounded ``cat-file`` process.
+
+    The session is deliberately operation-scoped: it shares subprocess
+    transport, not content or authority, between reads from one captured Git
+    snapshot.  Every request remains caller-bounded and accepts only a full
+    object ID, so neither paths nor revision expressions enter the line-based
+    batch protocol.
+    """
+
+    def __init__(self, repo_root: Path):
+        self.repo_root = repo_root
+        self.command = [
+            "git",
+            "-C",
+            str(repo_root),
+            "cat-file",
+            "--batch",
+        ]
+        self._proc: Optional[subprocess.Popen] = None
+        self._stderr_file: Optional[BinaryIO] = None
+        self._closed = False
+        self._lock = threading.RLock()
+
+    def _start(self) -> subprocess.Popen:
+        if self._closed:
+            raise ValueError("Git blob session is closed")
+        if self._proc is not None:
+            return self._proc
+        stderr_file = tempfile.TemporaryFile()
+        try:
+            proc = subprocess.Popen(
+                self.command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+            )
+        except BaseException:
+            stderr_file.close()
+            raise
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        self._proc = proc
+        self._stderr_file = stderr_file
+        return proc
+
+    def _process_error(self, returncode: int) -> subprocess.CalledProcessError:
+        stderr = (
+            _read_bounded_git_diagnostic(self._stderr_file)
+            if self._stderr_file is not None
+            else b""
+        )
+        return subprocess.CalledProcessError(
+            returncode,
+            self.command,
+            stderr=stderr,
+        )
+
+    def _release_transport(self, *, kill: bool) -> Optional[int]:
+        proc = self._proc
+        stderr_file = self._stderr_file
+        self._proc = None
+        self._stderr_file = None
+        if proc is None:
+            if stderr_file is not None:
+                stderr_file.close()
+            return None
+        try:
+            if kill and proc.poll() is None:
+                proc.kill()
+            try:
+                returncode = proc.wait()
+            except BaseException:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+                raise
+            return returncode
+        finally:
+            if proc.stdin is not None and not proc.stdin.closed:
+                try:
+                    proc.stdin.close()
+                except (BrokenPipeError, OSError):
+                    pass
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if stderr_file is not None:
+                stderr_file.close()
+
+    def _abort_transport(self) -> None:
+        self._release_transport(kill=True)
+
+    def read_blob(
+        self,
+        oid: str,
+        *,
+        max_bytes: int = MAX_GIT_BLOB_BYTES,
+    ) -> bytes:
+        """Return one blob while enforcing the caller's pre-read byte limit."""
+        with self._lock:
+            return self._read_blob_locked(oid, max_bytes=max_bytes)
+
+    def _read_blob_locked(self, oid: str, *, max_bytes: int) -> bytes:
+        if max_bytes < 0:
+            raise ValueError("Git blob byte limit must be non-negative")
+        object_id = _validated_git_object_id(oid, "Git blob request")
+        effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
+        proc = self._start()
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            try:
+                proc.stdin.write(object_id.encode("ascii") + b"\n")
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                returncode = proc.poll()
+                if returncode is None:
+                    returncode = 1
+                raise self._process_error(returncode) from exc
+
+            header = proc.stdout.readline(MAX_GIT_BATCH_HEADER_BYTES + 1)
+            if not header.endswith(b"\n"):
+                if len(header) > MAX_GIT_BATCH_HEADER_BYTES:
+                    raise ValueError(
+                        f"Oversized git cat-file header for {object_id!r}"
+                    )
+                if not header:
+                    returncode = proc.poll()
+                    if returncode is None:
+                        returncode = proc.wait()
+                    if returncode != 0:
+                        raise self._process_error(returncode)
+                raise ValueError(
+                    "Truncated git cat-file response before header for "
+                    f"{object_id!r}"
+                )
+            size = _parse_batch_header(header[:-1], object_id)
+            if size > effective_limit:
+                raise GuardrailError(
+                    f"Hash guardrail exceeded: Git blob too large "
+                    f"({size} bytes) for ref {object_id!r}"
+                )
+            content = proc.stdout.read(size)
+            if len(content) != size:
+                raise ValueError(
+                    f"Truncated git cat-file content for {object_id!r}: "
+                    f"expected {size} bytes"
+                )
+            if proc.stdout.read(1) != b"\n":
+                raise ValueError(
+                    f"Malformed git cat-file terminator for {object_id!r}"
+                )
+            return content
+        except BaseException:
+            # Any failed response leaves the line protocol potentially out of
+            # sync. Reap it immediately; a later independent read may lazily
+            # start a fresh bounded session.
+            self._abort_transport()
+            raise
+
+    def close(self) -> None:
+        """Finish the current batch and surface a late Git process failure."""
+        with self._lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        proc = self._proc
+        if proc is None:
+            self._release_transport(kill=False)
+            return
+        assert proc.stdin is not None
+        close_error: Optional[BaseException] = None
+        try:
+            proc.stdin.close()
+        except (BrokenPipeError, OSError) as exc:
+            close_error = exc
+        try:
+            returncode = proc.wait()
+        except BaseException:
+            self._abort_transport()
+            raise
+        process_error = self._process_error(returncode) if returncode != 0 else None
+        self._release_transport(kill=False)
+        if process_error is not None:
+            raise process_error
+        if close_error is not None:
+            raise OSError("Could not close Git blob session input") from close_error
+
+    def __enter__(self) -> "_GitBlobSession":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is None:
+            self.close()
+        else:
+            with self._lock:
+                self._closed = True
+                self._abort_transport()
+
+    def __del__(self) -> None:
+        try:
+            with self._lock:
+                self._closed = True
+                self._abort_transport()
+        except Exception:
+            pass
+
+
 def _iter_git_blobs(
     repo_root: Path,
     refs: List[str],

@@ -21,6 +21,10 @@ All notable changes to this project are documented here. The format follows
   custom Python providers retain their explicit trusted-code opt-in.
   Successful review is a read-only query and leaves `verify` as the integrity
   gate.
+- Added a reproducible 20-component intrinsic-runtime benchmark with
+  per-phase timing, Git-process and source-read attribution, first/repeated
+  runs, and enforced Linux CI ceilings for clean HEAD and small staged-change
+  verification.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined
@@ -81,6 +85,11 @@ All notable changes to this project are documented here. The format follows
   cross-products fail closed with one actionable error, and literal paths keep
   their direct fast path. The existing per-match limit and accepted selector
   semantics/digests are unchanged.
+- Reused one bounded, operation-scoped `git cat-file --batch` transport for
+  immutable component hashing, provider extraction, behavior, versions, and
+  vendored-copy checks. Full verification no longer starts Git once per
+  component or file; snapshot identity, per-read and aggregate byte budgets,
+  deterministic digests, and fail-closed protocol validation are unchanged.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

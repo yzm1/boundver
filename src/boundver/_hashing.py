@@ -6,7 +6,7 @@ import stat
 import struct
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple
 
 from ._git import (
     GitSourceSnapshot,
@@ -492,6 +492,7 @@ def _stream_tree_digest(
     captured: Optional[GitSourceSnapshot],
     *,
     domain: str,
+    read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
 ) -> str:
     """Hash a sorted tree while retaining at most duplicated blob content."""
     digest = _new_framed_digest(domain, len(descriptors))
@@ -508,6 +509,34 @@ def _stream_tree_digest(
                 )
 
         oid_counts = Counter(entry.oid for entry in git_entries)
+        if read_blob_fn is not None:
+            duplicate_cache: dict[str, bytes] = {}
+            for (label_bytes, repo_rel), entry in zip(
+                descriptors, git_entries
+            ):
+                if entry.oid in duplicate_cache:
+                    content = duplicate_cache[entry.oid]
+                else:
+                    raw_content = read_blob_fn(
+                        entry.oid,
+                        MAX_HASH_TOTAL_BYTES - total_content_bytes,
+                    )
+                    content = _normalize_hash_content(raw_content)
+                    if oid_counts[entry.oid] > 1:
+                        duplicate_cache[entry.oid] = content
+                _enforce_content_size(content, repo_rel)
+                total_content_bytes = _enforce_total_content_size(
+                    total_content_bytes, len(content)
+                )
+                _update_framed_digest(
+                    digest,
+                    label_bytes,
+                    entry.mode.encode("ascii"),
+                    entry.object_type.encode("ascii"),
+                    content,
+                )
+            return digest.hexdigest()
+
         blob_iter = _iter_git_blobs(
             repo_root,
             [entry.oid for entry in git_entries],
@@ -595,6 +624,7 @@ def source_tree_digest(
     path: str,
     source: str = "head",
     snapshot: Optional[GitSourceSnapshot] = None,
+    read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
 ) -> Optional[str]:
     """Canonical SHA-256 digest for a path from HEAD, index, or working tree."""
     if source not in SOURCE_MODE_SET:
@@ -609,6 +639,7 @@ def source_tree_digest(
         source,
         captured,
         domain=HASH_DOMAIN_EXACT,
+        read_blob_fn=read_blob_fn,
     )
 
 
@@ -617,6 +648,7 @@ def _content_only_digest(
     path: str,
     source: str = "head",
     snapshot: Optional[GitSourceSnapshot] = None,
+    read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
 ) -> Optional[str]:
     """SHA-256 of sorted file contents rooted at `path`, without path prefixes.
 
@@ -636,4 +668,5 @@ def _content_only_digest(
         source,
         captured,
         domain=HASH_DOMAIN_CONTENT_ONLY,
+        read_blob_fn=read_blob_fn,
     )

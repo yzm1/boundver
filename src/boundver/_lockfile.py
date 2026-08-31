@@ -18,6 +18,7 @@ from ._consumer_graph import (
 from ._structured_data import strict_json_loads
 
 from ._git import (
+    _GitBlobSession,
     GitSourceSnapshot,
     _capture_git_source_snapshot,
     _git_cat_blob,
@@ -433,20 +434,21 @@ def generate_lockfile(
         accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
     except ValueError as exc:
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
-    accessor.prime_latest_tags(tag_prefixes)
-
-    # --- Components ---
     generation_errors = BoundedDiagnosticList()
-    for name, comp in components_config.items():
-        component_entry = _compute_component_entry(
-            name, comp, repo_root, source, defaults, accessor, registry,
-        )
-        lockfile["components"][name] = component_entry
-        generation_errors.extend(
-            _generation_errors({"components": {name: component_entry}})
-        )
-        if generation_errors.truncated:
-            break
+    with accessor:
+        accessor.prime_latest_tags(tag_prefixes)
+
+        # --- Components ---
+        for name, comp in components_config.items():
+            component_entry = _compute_component_entry(
+                name, comp, repo_root, source, defaults, accessor, registry,
+            )
+            lockfile["components"][name] = component_entry
+            generation_errors.extend(
+                _generation_errors({"components": {name: component_entry}})
+            )
+            if generation_errors.truncated:
+                break
 
     # ``strict=False`` (the CLI's ``--allow-partial``) relaxes only slice
     # requirements for intentional null facets.  It must never bless a
@@ -481,6 +483,8 @@ class _SourceAccessor:
         self.repo_root = repo_root
         self.source = _normalize_source(source)
         self._latest_tags: Dict[str, Optional[str]] = {}
+        self._blob_session: Optional[_GitBlobSession] = None
+        self._closed = False
         if snapshot is not None and snapshot.source != self.source:
             raise ValueError(
                 f"Captured source mismatch: snapshot={snapshot.source!r}, "
@@ -543,11 +547,7 @@ class _SourceAccessor:
         src = self.source
         if src in {"head", "index"}:
             entry = self._captured_entry(repo_rel)
-            data = _git_cat_blob(
-                self.repo_root,
-                entry.oid,
-                max_bytes=effective_limit,
-            )
+            data = self.read_blob_limited(entry.oid, effective_limit)
             mode, object_type = entry.mode, entry.object_type
         else:
             full = self.repo_root / repo_rel
@@ -571,6 +571,18 @@ class _SourceAccessor:
             object_type = data.git_object_type
         _enforce_content_size(data, repo_rel)
         return _ModeAwareBytes(data, mode, object_type)
+
+    def read_blob_limited(self, oid: str, max_bytes: int) -> bytes:
+        """Read one captured blob through this operation's shared transport."""
+        if self.source not in {"head", "index"}:
+            raise ValueError(
+                "Immutable Git blob reads require head or index source"
+            )
+        if self._closed:
+            raise ValueError("Source accessor is closed")
+        if self._blob_session is None:
+            self._blob_session = _GitBlobSession(self.repo_root)
+        return self._blob_session.read_blob(oid, max_bytes=max_bytes)
 
     def list_files(self, prefix: str) -> List[str]:
         """List files under a prefix."""
@@ -622,6 +634,47 @@ class _SourceAccessor:
             raise ConfigError(f"Version source must not be a symlink: {repo_rel}")
         return data
 
+    def close(self) -> None:
+        """Close the operation-scoped Git transport, if one was needed."""
+        if self._closed:
+            return
+        self._closed = True
+        session = self._blob_session
+        self._blob_session = None
+        if session is not None:
+            try:
+                session.close()
+            except subprocess.CalledProcessError as exc:
+                raise ValueError(
+                    "Git blob session failed with return code "
+                    f"{exc.returncode}"
+                ) from exc
+            except OSError as exc:
+                raise ValueError("Git blob session could not be closed") from exc
+
+    def __enter__(self) -> "_SourceAccessor":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if exc_type is None:
+            self.close()
+            return
+        self._closed = True
+        session = self._blob_session
+        self._blob_session = None
+        if session is not None:
+            session.__exit__(exc_type, exc, traceback)
+
+    def __del__(self) -> None:
+        try:
+            self._closed = True
+            session = self._blob_session
+            self._blob_session = None
+            if session is not None:
+                session.__exit__(Exception, None, None)
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Per-component fingerprint computation
@@ -665,7 +718,11 @@ def _compute_component_entry(
     exact_errors: List[str] = []
     try:
         exact_digest = source_tree_digest(
-            repo_root, comp_path, source=source, snapshot=accessor.snapshot
+            repo_root,
+            comp_path,
+            source=source,
+            snapshot=accessor.snapshot,
+            read_blob_fn=accessor.read_blob_limited,
         )
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         exact_digest = None
@@ -822,7 +879,11 @@ def _compute_component_entry(
         entry["vendored_copies"] = comp["vendored_copies"]
         vendored_errors = BoundedDiagnosticList()
         source_content_hash = _content_only_digest(
-            repo_root, comp_path, source=source, snapshot=accessor.snapshot
+            repo_root,
+            comp_path,
+            source=source,
+            snapshot=accessor.snapshot,
+            read_blob_fn=accessor.read_blob_limited,
         )
         if source_content_hash is None:
             vendored_errors.append(
@@ -837,6 +898,7 @@ def _compute_component_entry(
                 vc.rstrip("/"),
                 source=source,
                 snapshot=accessor.snapshot,
+                read_blob_fn=accessor.read_blob_limited,
             )
             if vc_content_hash is None:
                 vendored_errors.append(
@@ -1262,8 +1324,41 @@ def verify_lockfile(
             f"Cannot capture {source} source: {_bounded_diagnostic_text(str(exc))}"
         ]
 
-    # Per-component verification with optional early exit.
+    # Compute every component needed by direct verification or an affected
+    # slice while one immutable Git batch transport is open. Comparisons and
+    # rendering below operate only on the resulting in-memory entries.
     computed_entries: Dict[str, dict] = {}
+    slices_config = config.get("slices", {})
+    with accessor:
+        for name, comp_cfg in check_components.items():
+            computed_entries[name] = _compute_component_entry(
+                name,
+                comp_cfg,
+                repo_root,
+                source,
+                defaults,
+                accessor,
+                registry,
+            )
+        if slices_config:
+            slice_component_names = set()
+            for sdef in slices_config.values():
+                slice_component_names.update(
+                    resolve_slice_components(sdef, all_components)
+                )
+            for name in sorted(slice_component_names):
+                if name not in computed_entries and name in all_components:
+                    computed_entries[name] = _compute_component_entry(
+                        name,
+                        all_components[name],
+                        repo_root,
+                        source,
+                        defaults,
+                        accessor,
+                        registry,
+                    )
+
+    # Per-component verification with optional early exit.
     for name, comp_cfg in check_components.items():
         if issues.truncated:
             return truncated_issue_result()
@@ -1282,10 +1377,7 @@ def verify_lockfile(
             or isinstance(configured_component_facets, list)
             or has_explicit_default_facets
         )
-        current_comp = _compute_component_entry(
-            name, comp_cfg, repo_root, source, defaults, accessor, registry
-        )
-        computed_entries[name] = current_comp
+        current_comp = computed_entries[name]
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
             issues.append(f"NEW component not in lockfile: {display_name}")
@@ -1420,18 +1512,7 @@ def verify_lockfile(
 
     # Check every slice affected by the selected components. This prevents a
     # component-filtered verify from silently ignoring its aggregate contract.
-    slices_config = config.get("slices", {})
     if slices_config:
-        slice_component_names = set()
-        for sdef in slices_config.values():
-            slice_component_names.update(
-                resolve_slice_components(sdef, all_components)
-            )
-        for cname in sorted(slice_component_names):
-            if cname not in computed_entries and cname in all_components:
-                computed_entries[cname] = _compute_component_entry(
-                    cname, all_components[cname], repo_root, source, defaults, accessor, registry
-                )
         for sname, sdef in slices_config.items():
             if issues.truncated:
                 return truncated_issue_result()

@@ -219,12 +219,13 @@ class SourceSnapshotTests(unittest.TestCase):
             target.parent.mkdir()
             target.write_bytes(b"before")
             _commit(root, "before")
-            accessor = _SourceAccessor(root, "head")
+            with _SourceAccessor(root, "head") as accessor:
+                target.write_bytes(b"after")
+                _commit(root, "after")
 
-            target.write_bytes(b"after")
-            _commit(root, "after")
-
-            self.assertEqual(bytes(accessor.read_file("svc/value.txt")), b"before")
+                self.assertEqual(
+                    bytes(accessor.read_file("svc/value.txt")), b"before"
+                )
 
     def test_full_generation_captures_one_index_tree(self):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
