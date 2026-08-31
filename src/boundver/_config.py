@@ -496,12 +496,18 @@ def validate_config(
     source: str = "working-tree",
     snapshot: Optional[GitSourceSnapshot] = None,
     require_slice_facets: bool = False,
+    validate_provider_runtime: bool = True,
 ) -> List[str]:
     """Validate a configuration without performing digest computation.
 
     ``require_slice_facets`` applies strict-generation slice availability
     rules.  Its backward-compatible default permits intentional null slice
     inputs for callers that will generate with ``strict=False``.
+
+    ``validate_provider_runtime=False`` is reserved for read-only historical
+    analysis: declarations, paths, graph edges, and slices remain validated,
+    but no custom provider is imported and no host dependency probe can make a
+    committed endpoint depend on the review machine.
     """
     errors = BoundedDiagnosticList()
     if not isinstance(config, dict):
@@ -1497,15 +1503,16 @@ def validate_config(
     if errors.truncated:
         return list(errors)
 
-    provider_load_errors = load_custom_providers(
-        config.get("providers", []),
-        allow_custom=allow_custom_providers,
-        registry=registry,
-    )
-    if allow_custom_providers:
-        errors.extend(provider_load_errors)
-    if errors.truncated:
-        return list(errors)
+    if validate_provider_runtime:
+        provider_load_errors = load_custom_providers(
+            config.get("providers", []),
+            allow_custom=allow_custom_providers,
+            registry=registry,
+        )
+        if allow_custom_providers:
+            errors.extend(provider_load_errors)
+        if errors.truncated:
+            return list(errors)
     for name, comp in components.items():
         if errors.truncated:
             break
@@ -1543,13 +1550,15 @@ def validate_config(
                 "explicit boundary provider"
             )
             continue
-        for provider_error in validate_provider_environment(provider, boundary):
-            errors.append(
-                f"Component '{name}': {_bounded_diagnostic_text(provider_error)}"
-            )
-            if errors.truncated:
-                break
-        if source == "working-tree":
+        if validate_provider_runtime:
+            for provider_error in validate_provider_environment(provider, boundary):
+                errors.append(
+                    f"Component '{name}': "
+                    f"{_bounded_diagnostic_text(provider_error)}"
+                )
+                if errors.truncated:
+                    break
+        if validate_provider_runtime and source == "working-tree":
             for provider_error in validate_provider_config(
                 provider, boundary, component_path, repo_root
             ):

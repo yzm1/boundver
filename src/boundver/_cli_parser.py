@@ -177,6 +177,75 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
+    review = sub.add_parser(
+        "review",
+        help="Compare reconciled facet identities across a Git range",
+        description=(
+            "Compare two immutable Git endpoints and report historical facet, "
+            "consumer, and slice impact.\n\n"
+            "A complete review exits 0 whether or not identities changed. "
+            "Missing history, invalid endpoints, or unreconciled config/lock "
+            "state exit 2. Use verify separately as the integrity gate."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  boundver review origin/main..HEAD\n"
+            "  boundver review --base origin/main --target HEAD --merge-base\n"
+            "  boundver review main..feature --transitive --format json\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    review.add_argument(
+        "range",
+        nargs="?",
+        metavar="BASE..TARGET",
+        help="Explicit Git endpoint range",
+    )
+    review.add_argument("--base", default=None, help="Explicit base Git ref")
+    review.add_argument("--target", default=None, help="Explicit target Git ref")
+    review.add_argument(
+        "--merge-base",
+        action="store_true",
+        help="Compare the unique merge base of BASE and TARGET to TARGET",
+    )
+    review.add_argument(
+        "--config",
+        default="boundary.config.json",
+        help="Config path at both endpoints",
+    )
+    review.add_argument(
+        "--lock",
+        default="boundary.lock.json",
+        help="Lock path at both endpoints",
+    )
+    review.add_argument(
+        "--facets",
+        default="",
+        help=(
+            "Comma-separated policy override; all four identities are always "
+            "compared"
+        ),
+    )
+    review.add_argument(
+        "--transitive",
+        action="store_true",
+        help="Report the transitive downstream consumer closure",
+    )
+    review.add_argument(
+        "--format",
+        choices=["json", "text"],
+        default="text",
+        help="Output format",
+    )
+    review.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
+        help=(
+            "Allow trusted custom provider modules while recomputing both "
+            "historical endpoints"
+        ),
+    )
+
     # diff
     dif = sub.add_parser("diff", help="Diff two lockfiles")
     dif.add_argument("old", help="Old lockfile")

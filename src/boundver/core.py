@@ -77,7 +77,6 @@ from ._utils import (
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
-    _effective_component_facets,
     _is_windows_reparse_point,
     BoundverError as BoundverError,
     ConfigError,
@@ -143,9 +142,16 @@ from ._completions import (
 )
 from ._cli_parser import build_parser
 from ._config_contract import component_identifier_problem
-from ._consumer_graph import resolve_slice_components
+from ._facet_policy import facet_policy_payload as _facet_policy_payload
 from ._discovery import compare_discovery_to_config, normalize_discovery_exclusions
 from ._migration_analysis import analyze_selector_migration
+from ._review import (
+    MAX_REVIEW_RESULT_BYTES,
+    analyze_review_range,
+    parse_review_endpoints,
+    parse_review_facets,
+    review_text_lines,
+)
 from ._baseline import (
     BaselineError,
     apply_baseline,
@@ -208,45 +214,6 @@ def _parse_facets_arg(raw: str, config: dict) -> List[str]:
     configured = config.get("defaults", {}).get("verify_facets", [])
     facets = [p.strip() for p in value.split(",") if p.strip()] if value else configured
     return sorted(set(facets or FACETS))
-
-
-def _facet_policy_payload(config: dict, explicit_facets: Optional[List[str]]) -> dict:
-    """Describe effective component and slice gating without hiding overrides."""
-    raw_defaults = config.get("defaults", {})
-    configured_defaults = (
-        raw_defaults.get("verify_facets")
-        if isinstance(raw_defaults, dict) and "verify_facets" in raw_defaults
-        else None
-    )
-    default_facets = (
-        sorted(set(configured_defaults))
-        if isinstance(configured_defaults, list)
-        else None
-    )
-    components = config.get("components", {})
-    effective_components = {
-        name: sorted(_effective_component_facets(config, name, explicit_facets))
-        for name, component in sorted(components.items())
-        if isinstance(component, dict)
-    }
-    effective_slices = {}
-    for name, definition in sorted(config.get("slices", {}).items()):
-        if not isinstance(definition, dict):
-            continue
-        mode = definition.get("mode", "exact")
-        members = resolve_slice_components(definition, components)
-        gated = (
-            mode in explicit_facets
-            if explicit_facets is not None
-            else any(mode in effective_components.get(member, []) for member in members)
-        )
-        effective_slices[name] = {"mode": mode, "gated": gated}
-    return {
-        "explicit": explicit_facets,
-        "defaults": default_facets,
-        "components": effective_components,
-        "slices": effective_slices,
-    }
 
 
 def _drift_exit_code(issues: List[str]) -> int:
@@ -862,6 +829,31 @@ def _cmd_diff(args) -> None:
         _print_json(result)
     else:
         print_diff(result)
+
+
+def _cmd_review(args, repo_root: Path) -> None:
+    base_ref, target_ref = parse_review_endpoints(
+        args.range,
+        args.base,
+        args.target,
+    )
+    explicit_facets = parse_review_facets(args.facets)
+    result = analyze_review_range(
+        repo_root,
+        base_ref,
+        target_ref,
+        use_merge_base=args.merge_base,
+        transitive=args.transitive,
+        explicit_facets=explicit_facets,
+        config_hint=args.config,
+        lock_hint=args.lock,
+        allow_custom_providers=args.allow_custom_providers,
+    )
+    if args.format == "json":
+        _print_json(result, max_bytes=MAX_REVIEW_RESULT_BYTES)
+    else:
+        for line in review_text_lines(result):
+            print(line)
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
@@ -2252,6 +2244,7 @@ def main():
     _COMMANDS = {
         "generate": _cmd_generate,
         "verify": _cmd_verify,
+        "review": _cmd_review,
         "slice": _cmd_slice,
         "validate-config": _cmd_validate_config,
         "check-config": _cmd_validate_config,

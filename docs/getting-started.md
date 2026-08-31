@@ -287,11 +287,19 @@ change gates through its exact-only override.
 ## Daily review and update
 
 ```bash
+boundver review origin/main..HEAD --merge-base --transitive
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
+
+The first command answers the branch-history question from reconciled lock
+state at both committed endpoints. It is a query and returns `0` for a complete
+analysis even when facets moved. The following `verify` command remains the
+integrity gate for the source snapshot you are about to accept. See
+[historical range review](reference.md#historical-range-review) for endpoint,
+merge-base, and shallow-history rules.
 
 Facets select the gate and report classification. They are not an update mask:
 an update replaces the complete entry, including all fingerprints and metadata.

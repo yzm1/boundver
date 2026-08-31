@@ -156,7 +156,8 @@ verification.
 ## Machine-readable CLI output
 
 Canonical schemas live in `spec/cli-output.*.schema.json`. `verify`, `status`,
-`diff`, `discover`, `why`, and `slice` support `--format json`;
+`diff`, `discover`, `why`, `slice`, and historical `review` support
+`--format json`;
 `migrate-lock --explain` also supports a bounded JSON selector audit.
 `discover --diff-config` adds a deterministic registered/unregistered path
 comparison to the discovery payload. Baseline-aware verification adds its
@@ -172,6 +173,12 @@ by the diff output contract are rejected before comparison. Generation and
 verification outputs continue to use semantic-config/v2: full generation
 recomputes it from repository content, while verification and generation paths
 that reuse an existing lock reject semantic-config/v1 input.
+
+Historical range output uses the versioned `boundver-review/v1` contract. It
+binds two reconciled v3/v2 config-lock pairs to explicit immutable commit/tree
+identities, compares every facet, and records conservative base/target consumer
+edge provenance plus slice impact. It is read-only and returns success for any
+complete analysis; ordinary verification remains the integrity gate.
 
 ## Derived artifacts
 

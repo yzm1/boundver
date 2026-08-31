@@ -804,11 +804,20 @@ def explain_component_changes(
     return 0
 
 
-def _print_json(data: Any) -> None:
+def _print_json(data: Any, *, max_bytes: Optional[int] = None) -> None:
     # JSON quoting already escapes repository-controlled controls. Write the
     # serialized document directly so trusted pretty-print line breaks retain
     # their machine-readable meaning instead of passing through human output.
-    text = _bounded_json_dumps(data, indent=2, sort_keys=True) + "\n"
+    body_limit = None if max_bytes is None else max(0, max_bytes - 1)
+    text = (
+        _bounded_json_dumps(
+            data,
+            indent=2,
+            sort_keys=True,
+            max_bytes=body_limit,
+        )
+        + "\n"
+    )
     safe = _encoding_safe_text(text, sys.stdout)
     try:
         sys.stdout.write(safe)

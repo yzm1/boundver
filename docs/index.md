@@ -48,6 +48,7 @@ the consumer suites reachable from that API in the declared graph. See
 
 - New repository: follow [getting started](getting-started.md).
 - Existing monorepo: use [gradual adoption](gradual-adoption.md).
+- Reviewing a branch: use [historical range review](reference.md#historical-range-review).
 - CI integration: copy a recipe from the [CI cookbook](ci-cookbook.md).
 - Containers, Homebrew, or GitLab: see [distribution](distribution.md).
 - Evaluating the model: read [why boundver](WHY_BOUNDVER.md).

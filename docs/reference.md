@@ -110,6 +110,92 @@ transition consumes the shared budget. Exceeding it fails closed and asks the
 user to reduce wildcard declarations or split the component. Literal paths do
 not enter the glob matcher.
 
+## Historical range review
+
+`verify --changed-from` maps changed paths while proving current lock
+integrity. It does not compare historical identities. Use `review` when the
+question is which recorded facets moved across a branch and which consumers or
+slices need re-verification, including after the target lock has already been
+reconciled:
+
+```bash
+boundver review origin/main..HEAD --merge-base --transitive
+boundver review \
+  --base origin/main \
+  --target HEAD \
+  --merge-base \
+  --format json
+```
+
+The positional and explicit forms are equivalent. `BASE..TARGET` always means
+the two named endpoints; three-dot syntax is rejected. Add `--merge-base` to
+replace the effective base with the unique common ancestor of the resolved
+base and target commits. Output records both the requested base commit and the
+effective base commit so that choice cannot be hidden.
+
+Before reading content, Boundver resolves each caller-supplied ref exactly once
+to an unambiguous commit ID. It then reads the config and lock from immutable
+trees reached by those IDs. A ref moving concurrently cannot create a hybrid
+result. Text and JSON output identify the requested refs, resolved commits,
+tree IDs, and exact `COMMIT:path` config and lock inputs for both endpoints.
+
+Both endpoints must contain a valid `boundary-lock/v3` /
+`boundver-semantic-config/v2` pair whose `config_digest`, component set,
+consumer graph, slice membership, and project agree. This deliberately rejects
+an unreconciled partial update, legacy or incompatible contracts, malformed
+digests, and a graph that cannot be reconstructed reliably. Boundver also
+recomputes every component and slice from each immutable endpoint and rejects a
+stored lock that lags its source tree, even when its config digest is current.
+A component-scoped
+generation produced by Boundver is accepted because that operation proves all
+unselected entries current before writing its coherent result.
+
+Historical recomputation does not import repository-declared Python by
+default. A config using custom providers therefore fails closed unless trusted
+automation explicitly adds `--allow-custom-providers`; checking out a branch
+never grants that authority.
+
+All four identities are compared. `--facets` changes only the recorded
+effective policy selection; it never hides an identity transition. Consumer
+impact is triggered by boundary/compat transitions or a consumer-graph edit.
+For every affected edge, output says whether it exists at the base endpoint,
+target endpoint, or both. This conservative union prevents a removed edge from
+silently erasing historical impact. Direct impact is the default;
+`--transitive` follows the complete, deterministic downstream closure and maps
+changed or impacted components into slices from either endpoint.
+
+Graph traversal and slice mapping share one aggregate 250,000-step work budget
+and a 100,000-row construction ceiling. Complete JSON and text documents are
+capped at 64 MiB. Exceeding any limit
+fails with exit `2` before emitting a partial result; a truncated closure is
+never presented as an authoritative review.
+
+The complete machine result uses `schema: boundver-review/v1` and is validated
+by
+[`spec/cli-output.review.schema.json`](https://github.com/yzm1/boundver/blob/main/spec/cli-output.review.schema.json).
+Successful analysis exits `0` even when identities changed because `review` is
+a read-only query. Unreliable analysis exits `2`. Run ordinary `verify`
+separately as the current-candidate integrity gate.
+
+Direct endpoint comparison needs both endpoint commits and trees, not every
+intervening commit. Merge-base mode additionally needs a unique common
+ancestor. Output always states whether Git reports a shallow repository and
+the effective history requirement. If an endpoint or merge base is absent,
+fetch complete history before retrying:
+
+```yaml
+# GitHub Actions
+- uses: actions/checkout@v6
+  with:
+    fetch-depth: 0
+```
+
+```yaml
+# GitLab CI/CD
+variables:
+  GIT_DEPTH: 0
+```
+
 ## Exit codes
 
 | Code | Highest selected result |
@@ -120,6 +206,11 @@ not enter the glob matcher.
 | `3` | Behavior drift |
 | `4` | Boundary drift |
 | `5` | Compatibility-family drift |
+
+Those are `verify` and verification-derived exit meanings. A complete
+historical `review` returns `0` regardless of whether transitions are present;
+it returns `2` when an endpoint, history, config, lock, or graph cannot be
+reconstructed reliably.
 
 When several selected facets drift, the highest severity wins. `--fail-fast`
 limits the returned report to one issue; it does not stop boundver from
@@ -152,8 +243,8 @@ esac
 
 `--format json` exposes issues, non-gating observations, selected facets,
 component selection, update status, exact input provenance, and typed
-`consumer_impact`. `status`, `why`, `diff`, `slice`, and `discover` also have
-`--format json`. `why` distinguishes `observed_drift` from policy-gated
+`consumer_impact`. `review`, `status`, `why`, `diff`, `slice`, and `discover`
+also have `--format json`. `why` distinguishes `observed_drift` from policy-gated
 `drifted`; an exact-only observation does not recommend regeneration when
 `exact` is not gated.
 

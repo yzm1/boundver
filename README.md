@@ -207,6 +207,9 @@ when its boundary changes.
 ## Review and accept intentional drift
 
 ```bash
+# Review the committed branch range even after both endpoint locks were reconciled.
+boundver review origin/main..HEAD --merge-base --transitive
+
 # Inspect the matching local snapshot.
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
@@ -215,6 +218,23 @@ boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
+
+`review` compares the four recorded identities in two explicit, immutable Git
+commit trees. It reports changed facets, the conservative union of base and
+target consumer edges, and affected slices; `--transitive` walks the complete
+downstream closure. Use `--merge-base` for pull-request semantics. Both
+endpoint configs and locks must be present, valid, and reconciled. A complete
+review exits `0` whether or not identities changed; an absent or ambiguous ref,
+missing shallow history, incompatible contract, or stale endpoint lock exits
+`2`. The versioned JSON contract is
+[`boundver-review/v1`](spec/cli-output.review.schema.json).
+Each endpoint is fully recomputed before comparison. Custom Python providers
+remain disabled unless trusted automation explicitly adds
+`--allow-custom-providers`.
+
+This historical query does not replace `verify`: run `verify` as the integrity
+gate for the current candidate. See the exact endpoint and history rules in the
+[reference](docs/reference.md#historical-range-review).
 
 `--facets` decides which fingerprint mismatches fail and which are reported as
 observations. It does **not** limit which fields are regenerated. `--update`
@@ -342,6 +362,7 @@ analysis, verification baselines, and repeatable discovery exclusions.
 boundver discover
 boundver discover --diff-config --exclude legacy/vendor
 boundver status --format json
+boundver review origin/main..HEAD --merge-base --transitive --format json
 boundver verify --changed-from origin/main --transitive
 boundver verify --components payment-api --update
 boundver diff old.lock.json boundary.lock.json

@@ -653,6 +653,158 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
     )
 
 
+def _validated_revision(value: str, label: str) -> str:
+    """Return one caller-supplied Git revision expression safe for argv use."""
+    if not isinstance(value, str):
+        raise ValueError(f"{label} Git ref must be text")
+    if (
+        not value
+        or value != value.strip()
+        or value.startswith("-")
+        or len(value) > MAX_GIT_FAILURE_DETAIL_CHARS
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(
+            f"Invalid {label} Git ref: "
+            f"{_bounded_diagnostic_repr(value, max_chars=256)}"
+        )
+    return value
+
+
+def _resolve_git_commit(repo_root: Path, ref: str, *, label: str = "endpoint") -> str:
+    """Resolve an unambiguous revision expression to exactly one commit ID."""
+    revision = _validated_revision(ref, label)
+    try:
+        result = _git_run(
+            repo_root,
+            [
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                f"{revision}^{{commit}}",
+            ],
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            f"Cannot resolve {label} Git ref {revision!r} to one commit "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    if result.stderr.strip():
+        raise ValueError(
+            f"Cannot resolve {label} Git ref {revision!r} unambiguously: "
+            f"git rev-parse emitted {_bounded_diagnostic_repr(result.stderr.strip())}"
+        )
+    return _validated_git_object_id(result.stdout, f"git rev-parse for {label}")
+
+
+def _capture_git_ref_snapshot(
+    repo_root: Path,
+    ref: str,
+    *,
+    label: str = "endpoint",
+) -> GitSourceSnapshot:
+    """Capture the immutable tree reached by an arbitrary explicit Git ref.
+
+    The returned snapshot uses the existing ``head`` reader contract because
+    its entries are commit-backed, but ``head_oid`` records the resolved
+    endpoint rather than consulting the moving ``HEAD`` ref.
+    """
+    commit_oid = _resolve_git_commit(repo_root, ref, label=label)
+    try:
+        tree_result = _git_run(
+            repo_root,
+            [
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                f"{commit_oid}^{{tree}}",
+            ],
+        )
+        tree_oid = _validated_git_object_id(
+            tree_result.stdout,
+            f"git rev-parse tree for {label}",
+        )
+        entries = _collect_ls_tree_entries(
+            _iter_git_nul_records(
+                repo_root,
+                ["ls-tree", "-r", "-z", "--full-tree", tree_oid],
+            )
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            f"Cannot capture {label} Git tree for {ref!r} "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+
+    try:
+        filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
+    except subprocess.CalledProcessError as exc:
+        if (
+            exc.returncode == 1
+            and _git_error_stream_is_empty(exc.stdout)
+            and _git_error_stream_is_empty(exc.stderr)
+        ):
+            core_filemode = True
+        else:
+            raise ValueError(
+                "Cannot read Git core.filemode: git config failed "
+                f"({_git_failure_detail(exc)})"
+            ) from exc
+    except OSError as exc:
+        raise ValueError(
+            "Cannot read Git core.filemode: git config failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    else:
+        core_filemode = filemode_result.stdout.strip().lower() != "false"
+
+    return GitSourceSnapshot(
+        source="head",
+        tree_oid=tree_oid,
+        entries=entries,
+        head_oid=commit_oid,
+        filemode=core_filemode,
+    )
+
+
+def _git_merge_base(repo_root: Path, left_oid: str, right_oid: str) -> str:
+    """Return the unique merge base of two already validated commit IDs."""
+    left = _validated_git_object_id(left_oid, "left merge-base endpoint")
+    right = _validated_git_object_id(right_oid, "right merge-base endpoint")
+    try:
+        result = _git_run(repo_root, ["merge-base", "--all", left, right])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "Cannot determine a merge base from the available Git history "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    candidates = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(candidates) != 1:
+        raise ValueError(
+            "Range review requires exactly one merge base; Git returned "
+            f"{len(candidates)} candidates"
+        )
+    return _validated_git_object_id(candidates[0], "git merge-base")
+
+
+def _git_repository_is_shallow(repo_root: Path) -> bool:
+    """Return Git's explicit shallow-repository state or fail closed."""
+    try:
+        result = _git_run(repo_root, ["rev-parse", "--is-shallow-repository"])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "Cannot determine whether Git history is shallow "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    value = result.stdout.strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError(
+            "git rev-parse --is-shallow-repository returned an invalid value: "
+            f"{_bounded_diagnostic_repr(value, max_chars=64)}"
+        )
+    return value == "true"
+
+
 def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
     """List files at/below one literal repo path in a captured tree."""
     normalized = Path(path).as_posix().strip("/")

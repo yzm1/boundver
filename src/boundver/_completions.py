@@ -15,6 +15,7 @@ _SOURCE_CHOICES = " ".join(SOURCE_MODES)
 _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "generate": "Generate or update the lockfile",
     "verify": "Check selected facets against the lockfile",
+    "review": "Compare facets and impact across a Git range",
     "diff": "Diff two lockfiles",
     "slice": "Show a slice fingerprint",
     "validate-config": "Validate configuration",
@@ -55,6 +56,11 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--changed-from", "--fail-fast", "--facets", "--transitive",
         "--update", "--baseline", "--write-baseline", "--update-baseline",
         "--format", "--allow-custom-providers",
+    ),
+    "review": (
+        "-h", "--help", "--base", "--target", "--merge-base", "--config",
+        "--lock", "--facets", "--transitive", "--format",
+        "--allow-custom-providers",
     ),
     "diff": ("-h", "--help", "--format"),
     "slice": ("-h", "--help", "--lock", "--format"),
@@ -109,6 +115,9 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--allow-custom-providers": "Allow external provider modules",
     "--lock": "Lockfile",
     "--changed-from": "Git base ref",
+    "--base": "Review base Git ref",
+    "--target": "Review target Git ref",
+    "--merge-base": "Use the unique merge base",
     "--fail-fast": "Report only the highest-severity mismatch",
     "--facets": "Comma-separated gate facets",
     "--transitive": "Include transitive downstream consumers",
@@ -139,6 +148,8 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--format": ("format", "(text json)"),
     "--lock": ("file", "_files"),
     "--changed-from": ("Git ref", ""),
+    "--base": ("Git ref", ""),
+    "--target": ("Git ref", ""),
     "--facets": ("facets", ""),
     "--provider": ("provider", ""),
     "--paths": ("paths", ""),
@@ -165,6 +176,7 @@ _FILE_OPTIONS = (
 # zsh can describe positional arguments without custom parsing functions.
 _COMMAND_POSITIONALS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "diff": (("old lock", "_files"), ("new lock", "_files")),
+    "review": (("BASE..TARGET", ""),),
     "slice": (("slice", ""),),
     "add": (("name", ""), ("path", "_files")),
     "remove": (("name", ""),),

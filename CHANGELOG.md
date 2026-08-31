@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added `boundver review BASE..TARGET`, with equivalent explicit
+  `--base`/`--target` inputs and opt-in merge-base semantics, for historical
+  exact/behavior/boundary/compat transitions after endpoint locks have been
+  reconciled. The versioned `boundver-review/v1` JSON result binds both
+  immutable commit trees and config/lock inputs, records effective facet
+  policy, reports conservative base/target consumer-edge provenance, supports
+  direct or transitive closure, and maps changed or affected components into
+  slices. Absent or ambiguous refs, missing shallow history, incompatible
+  contracts, incomplete digests, and unreconciled config/lock graphs fail
+  closed. Both immutable endpoints are fully recomputed before comparison;
+  custom Python providers retain their explicit trusted-code opt-in.
+  Successful review is a read-only query and leaves `verify` as the integrity
+  gate.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined
