@@ -325,9 +325,11 @@ downstream configured-component closure:
 ```
 
 The resolved, sorted, cycle-safe component set is stored in the lock. A slice
-must define exactly one of `components` or `closure_of`. The selected mode must
-be available for every member during strict generation; `exact` is the portable
-choice for heterogeneous closures.
+must define exactly one of `components` or `closure_of`, and an explicit
+`components` array must name at least one configured component. Empty slices
+are rejected because their stable fingerprint would observe no repository
+change. The selected mode must be available for every member during strict
+generation; `exact` is the portable choice for heterogeneous closures.
 
 ## Upgrading
 

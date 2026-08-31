@@ -44,7 +44,7 @@ from .providers import (
     validate_provider_config,
     validate_provider_environment,
 )
-from ._consumer_graph import resolve_slice_components
+from ._consumer_graph import empty_explicit_slice_error, resolve_slice_components
 from ._structured_data import strict_json_loads
 from ._config_contract import (
     BEHAVIOR_FIELDS,
@@ -1348,6 +1348,9 @@ def validate_config(
         if not isinstance(sdef, dict):
             errors.append(f"Slice '{sname}' must be an object")
             continue
+        empty_slice_error = empty_explicit_slice_error(sname, sdef)
+        if empty_slice_error is not None:
+            errors.append(empty_slice_error)
         _reject_unknown_fields(
             errors,
             sdef,

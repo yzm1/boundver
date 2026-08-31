@@ -42,6 +42,11 @@ All notable changes to this project are documented here. The format follows
   diagnostic production stops at the budget, and one deterministic
   `DIAGNOSTICS TRUNCATED` sentinel keeps human, JSON, and GitHub Action results
   explicitly failed instead of exhausting memory or silently omitting errors.
+- Rejected explicit slices with an empty `components` array in the public and
+  packaged schemas, dependency-free validation, direct generation and
+  verification APIs, and config mutation commands. Existing empty slices now
+  receive guidance to add a configured component or remove the vacuous gate;
+  valid explicit and `closure_of` fingerprints are unchanged.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

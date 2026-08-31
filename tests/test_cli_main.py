@@ -593,6 +593,22 @@ class MainRemoveIntegrityTests(unittest.TestCase):
         }
         self.assertIn("at least one component", self._assert_remove_refuses_without_writing(config, "a"))
 
+    def test_remove_refuses_to_leave_an_explicit_slice_empty(self):
+        config = {
+            "project": "p",
+            "components": {
+                "a": {"path": "a", "boundary": {"provider": "implicit"}},
+                "b": {"path": "b", "boundary": {"provider": "implicit"}},
+            },
+            "slices": {
+                "only-a": {"mode": "exact", "components": ["a"]},
+            },
+        }
+
+        error = self._assert_remove_refuses_without_writing(config, "a")
+
+        self.assertIn("add a component name or remove the empty slice", error)
+
     def test_add_refuses_invalid_component_without_writing(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

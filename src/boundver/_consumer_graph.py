@@ -5,7 +5,25 @@ graph traversal follows the direction in which a boundary change propagates.
 """
 
 from collections import deque
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+
+def empty_explicit_slice_error(
+    slice_name: object,
+    slice_definition: object,
+) -> Optional[str]:
+    """Return the actionable error for an explicit slice with no members."""
+    if not isinstance(slice_definition, dict):
+        return None
+    members = slice_definition.get("components")
+    if "components" not in slice_definition or not isinstance(members, list):
+        return None
+    if members:
+        return None
+    return (
+        f"Slice '{slice_name}' field 'components' must contain at least one "
+        "configured component; add a component name or remove the empty slice"
+    )
 
 
 def consumer_closure(

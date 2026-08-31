@@ -12,6 +12,7 @@ from ._config_contract import git_tag_prefix_error
 from ._consumer_graph import (
     affected_consumer_groups,
     affected_consumers,
+    empty_explicit_slice_error,
     resolve_slice_components,
 )
 from ._structured_data import strict_json_loads
@@ -399,6 +400,16 @@ def generate_lockfile(
                 f"{prefix_error}"
             )
         tag_prefixes.append(prefix)
+    slices_config = config.get("slices", {})
+    if not isinstance(slices_config, dict):
+        raise ConfigError("Config field 'slices' must be an object")
+    for slice_name in sorted(slices_config):
+        empty_slice_error = empty_explicit_slice_error(
+            slice_name,
+            slices_config[slice_name],
+        )
+        if empty_slice_error is not None:
+            raise ConfigError(empty_slice_error)
     registry = create_registry()
     provider_errors = load_custom_providers(
         config.get("providers", []), allow_custom=allow_custom_providers,
@@ -406,7 +417,6 @@ def generate_lockfile(
     )
     if provider_errors:
         raise ProviderError("Custom provider loading failed:\n" + "\n".join(provider_errors))
-    slices_config = config.get("slices", {})
     defaults = config.get("defaults", {})
 
     lockfile: dict = {
@@ -905,6 +915,9 @@ def _recompute_slice_entry(
     strict: bool = True,
     graph_components: Optional[Dict[str, dict]] = None,
 ) -> dict:
+    empty_slice_error = empty_explicit_slice_error(slice_name, slice_def)
+    if empty_slice_error is not None:
+        raise ConfigError(empty_slice_error)
     mode = slice_def.get("mode", "exact")
     component_names = resolve_slice_components(
         slice_def,
@@ -1145,6 +1158,13 @@ def verify_lockfile(
         return ["Config malformed: components must be a non-empty object"]
     if not isinstance(config.get("slices", {}), dict):
         return ["Config malformed: slices must be an object"]
+    for slice_name in sorted(config.get("slices", {})):
+        empty_slice_error = empty_explicit_slice_error(
+            slice_name,
+            config["slices"][slice_name],
+        )
+        if empty_slice_error is not None:
+            return [f"Config invalid: {empty_slice_error}"]
     registry = create_registry()
     provider_errors = load_custom_providers(
         config.get("providers", []), allow_custom=allow_custom_providers,

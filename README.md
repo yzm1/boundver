@@ -179,9 +179,11 @@ A slice may use an explicit `components` array or
 `"closure_of": "payment-api"`. The latter resolves to the seed plus all configured components
 reachable through `consumers`, and stores the resolved membership in the lock.
 The traversal is deterministic and cycle-safe. Exactly one membership form is
-allowed. Choose a slice mode supplied by every resolved member (often `exact`
-for a heterogeneous closure), or use `--allow-partial` only when null member
-inputs are intentional.
+allowed, and an explicit `components` array must contain at least one configured
+component; an empty slice would be a permanent fingerprint over nothing. Choose
+a slice mode supplied by every resolved member (often `exact` for a
+heterogeneous closure), or use `--allow-partial` only when null member inputs
+are intentional.
 
 `behavior.paths` should list the runtime-relevant contract files reviewers want
 to see, normally including the boundary selectors plus configuration, defaults,
