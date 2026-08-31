@@ -11,7 +11,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, List, Optional, Protocol, Sequence, Tuple, runtime_checkable
+from typing import (
+    Any,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    runtime_checkable,
+)
 
 from ._structured_data import StrictJSONError, strict_json_loads
 from ._utils import GuardrailError, ProviderError
@@ -244,15 +253,23 @@ def _parse_canonical_entry(content: bytes, label: str) -> Any:
 
 
 def _validate_tree(value: Any, budget: StructuralDiffBudget) -> None:
-    pending: List[Tuple[Any, int]] = [(value, 0)]
+    # Keep only one iterator per nesting level. Queuing every child up front
+    # would let a wide document allocate work-proportional memory before the
+    # aggregate work budget has a chance to reject it.
+    pending: List[Tuple[Iterator[Any], int]] = [(iter((value,)), 0)]
     while pending:
-        item, depth = pending.pop()
+        children, depth = pending[-1]
+        try:
+            item = next(children)
+        except StopIteration:
+            pending.pop()
+            continue
         budget.spend(depth=depth)
         value_type = _json_type(item)
         if value_type == "object":
-            pending.extend((child, depth + 1) for child in item.values())
+            pending.append((map(item.__getitem__, reversed(item)), depth + 1))
         elif value_type == "array":
-            pending.extend((child, depth + 1) for child in item)
+            pending.append((reversed(item), depth + 1))
 
 
 def _diff_json(

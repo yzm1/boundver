@@ -16,7 +16,10 @@ The important result is:
 
 ```text
 MISMATCH payments-api.boundary: lockfile=9cf4bb1be668... current=d734da4251c8...
-AFFECTED CONSUMERS (TRANSITIVE) payments-api: checkout-web, mobile-app, payments-sdk
+Consumer impact:
+  payments-api [boundary; transitive]
+    Components: checkout-web, payments-sdk
+    External consumers: mobile-app
 ```
 
 The process exits successfully only when boundver itself returns boundary-drift

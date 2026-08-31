@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,90 @@ def test_summary_file_is_rejected_for_non_plan_output(tmp_path: Path) -> None:
     assert completed.returncode == 2
     assert "--summary-file requires --format plan" in completed.stderr
     assert not summary_path.exists()
+
+
+@pytest.mark.parametrize("input_name", ["boundary.config.json", "boundary.lock.json"])
+def test_summary_file_cannot_overwrite_an_endpoint_input(
+    tmp_path: Path,
+    input_name: str,
+) -> None:
+    base, target = _make_range(tmp_path)
+    protected = tmp_path / input_name
+    expected = protected.read_bytes()
+
+    completed = _run_cli(
+        tmp_path,
+        "review",
+        f"{base}..{target}",
+        "--format",
+        "plan",
+        "--summary-file",
+        input_name,
+    )
+
+    assert completed.returncode == 2
+    assert "aliases the" in completed.stderr
+    assert (
+        f"endpoint {'config' if 'config' in input_name else 'lock'}" in completed.stderr
+    )
+    assert protected.read_bytes() == expected
+
+
+@pytest.mark.parametrize("absolute", [False, True])
+def test_summary_file_rejects_normalized_and_absolute_input_aliases(
+    tmp_path: Path,
+    absolute: bool,
+) -> None:
+    base, target = _make_range(tmp_path)
+    protected = tmp_path / "boundary.config.json"
+    expected = protected.read_bytes()
+    alias = (
+        str(protected.resolve())
+        if absolute
+        else (Path("unused") / ".." / protected.name).as_posix()
+    )
+
+    completed = _run_cli(
+        tmp_path,
+        "review",
+        f"{base}..{target}",
+        "--format",
+        "plan",
+        "--summary-file",
+        alias,
+    )
+
+    assert completed.returncode == 2
+    assert "aliases the" in completed.stderr
+    assert protected.read_bytes() == expected
+
+
+def test_summary_file_rejects_an_existing_hardlink_to_an_input(
+    tmp_path: Path,
+) -> None:
+    base, target = _make_range(tmp_path)
+    protected = tmp_path / "boundary.config.json"
+    alias = tmp_path / "summary-hardlink.md"
+    try:
+        os.link(protected, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable: {exc}")
+    expected = protected.read_bytes()
+
+    completed = _run_cli(
+        tmp_path,
+        "review",
+        f"{base}..{target}",
+        "--format",
+        "plan",
+        "--summary-file",
+        alias.name,
+    )
+
+    assert completed.returncode == 2
+    assert "aliases the" in completed.stderr
+    assert protected.read_bytes() == expected
+    assert alias.read_bytes() == expected
 
 
 def test_bounded_summary_never_presents_partial_rows_as_the_complete_plan(

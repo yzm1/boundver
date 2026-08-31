@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tracemalloc
 
 import pytest
 
 from boundver._provider_diff import (
     StructuralDiffBudget,
+    _validate_tree,
     structural_diff_payload,
 )
 from boundver._utils import GuardrailError
@@ -224,3 +226,16 @@ def test_structural_diff_bounds_nesting_independently_of_provider() -> None:
             _context(_json_bytes(_after())),
             StructuralDiffBudget(max_depth=1),
         )
+
+
+def test_tree_work_budget_does_not_queue_unbudgeted_wide_input() -> None:
+    value = [None] * 100_000
+    tracemalloc.start()
+    try:
+        with pytest.raises(GuardrailError, match="aggregate work limit"):
+            _validate_tree(value, StructuralDiffBudget(max_work_steps=1))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 2 * 1024 * 1024

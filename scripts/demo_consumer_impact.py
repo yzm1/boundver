@@ -15,9 +15,11 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "consumer-impact"
-EXPECTED_CONSUMERS = (
-    "AFFECTED CONSUMERS (TRANSITIVE) payments-api: "
-    "checkout-web, mobile-app, payments-sdk"
+EXPECTED_HUMAN_IMPACT = (
+    "Consumer impact:",
+    "payments-api [boundary; transitive]",
+    "Components: checkout-web, payments-sdk",
+    "External consumers: mobile-app",
 )
 EXPECTED_CONSUMER_IMPACT = [
     {
@@ -153,7 +155,7 @@ def main() -> int:
                     "expected boundary-drift exit code 4, got "
                     f"{result.returncode}"
                 )
-            if EXPECTED_CONSUMERS not in combined:
+            if any(marker not in combined for marker in EXPECTED_HUMAN_IMPACT):
                 raise RuntimeError("expected transitive consumer closure was not reported")
 
             structured = _run(

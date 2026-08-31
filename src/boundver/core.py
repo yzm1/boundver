@@ -399,6 +399,73 @@ def _verify_lock_preflight_issues(config: dict, lockfile: dict) -> List[str]:
     return list(issues)
 
 
+def _normalized_filesystem_paths(
+    path: Path,
+    label: str,
+    *,
+    relative_to: Path,
+) -> tuple[Path, Path]:
+    """Return lexical and resolved identities for a path used by a writer."""
+
+    absolute = path if path.is_absolute() else relative_to / path
+
+    def resolve_before_parents(candidate: Path) -> Path:
+        """Resolve each prefix before interpreting a following ``..``."""
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        parts = candidate.parts
+        if not parts or not candidate.anchor:
+            raise ConfigError(
+                f"Cannot safely resolve {label} path {candidate}: "
+                "path has no absolute filesystem anchor"
+            )
+        current = Path(candidate.anchor)
+        for part in parts[1:]:
+            if part == "..":
+                current = current.resolve(strict=False).parent
+            else:
+                current = current / part
+        return current.resolve(strict=False)
+
+    try:
+        # Filesystems may follow a symlink before interpreting a later ``..``
+        # segment. Path.resolve() and abspath() can collapse the parent first
+        # on some platforms, validating a different destination from the one
+        # opened by the writer.
+        resolved = resolve_before_parents(absolute)
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(
+            f"Cannot safely resolve {label} path {absolute}: {exc}"
+        ) from exc
+    lexical = Path(os.path.abspath(absolute))
+    return lexical, resolved
+
+
+def _filesystem_paths_alias(
+    first: tuple[Path, Path],
+    second: tuple[Path, Path],
+) -> bool:
+    try:
+        if first[1].samefile(second[1]):
+            return True
+    except OSError:
+        pass
+    return any(left == right for left, right in zip(first, second))
+
+
+def _filesystem_path_is_within(
+    candidate: tuple[Path, Path],
+    root: tuple[Path, Path],
+) -> bool:
+    for candidate_path, root_path in zip(candidate, root):
+        try:
+            candidate_path.relative_to(root_path)
+        except (ValueError, OSError):
+            continue
+        return True
+    return False
+
+
 def _ensure_lock_outside_components(
     repo_root: Path,
     lock_path: Path,
@@ -414,58 +481,13 @@ def _ensure_lock_outside_components(
     aliases through symlinks, junctions, and other reparse points.
     """
 
-    def normalized_paths(path: Path, label: str) -> tuple[Path, Path]:
-        absolute = path if path.is_absolute() else repo_root / path
-
-        def resolve_before_parents(candidate: Path) -> Path:
-            """Resolve each prefix before interpreting a following ``..``."""
-            if not candidate.is_absolute():
-                candidate = Path.cwd() / candidate
-            parts = candidate.parts
-            if not parts or not candidate.anchor:
-                raise ConfigError(
-                    f"Cannot safely resolve {label} path {candidate}: "
-                    "path has no absolute filesystem anchor"
-                )
-            current = Path(candidate.anchor)
-            for part in parts[1:]:
-                if part == "..":
-                    current = current.resolve(strict=False).parent
-                else:
-                    current = current / part
-            return current.resolve(strict=False)
-
-        try:
-            # Filesystems may follow a symlink before interpreting a later
-            # ``..`` segment.  Path.resolve() and abspath() can collapse the
-            # parent first on some platforms, validating a different
-            # destination from the one opened by the writer.
-            resolved = resolve_before_parents(absolute)
-        except (OSError, RuntimeError) as exc:
-            raise ConfigError(
-                f"Cannot safely resolve {label} path {absolute}: {exc}"
-            ) from exc
-        lexical = Path(os.path.abspath(absolute))
-        return lexical, resolved
-
-    def is_within(candidate: tuple[Path, Path], root: tuple[Path, Path]) -> bool:
-        for candidate_path, root_path in zip(candidate, root):
-            try:
-                candidate_path.relative_to(root_path)
-            except (ValueError, OSError):
-                continue
-            return True
-        return False
-
-    lock_paths = normalized_paths(lock_path, "lockfile")
-    config_paths = normalized_paths(config_path, "selected config")
-    try:
-        same_existing_file = lock_paths[1].samefile(config_paths[1])
-    except OSError:
-        same_existing_file = False
-    if same_existing_file or any(
-        lock == selected for lock, selected in zip(lock_paths, config_paths)
-    ):
+    lock_paths = _normalized_filesystem_paths(
+        lock_path, "lockfile", relative_to=repo_root
+    )
+    config_paths = _normalized_filesystem_paths(
+        config_path, "selected config", relative_to=repo_root
+    )
+    if _filesystem_paths_alias(lock_paths, config_paths):
         raise ConfigError(
             f"Lockfile path {lock_paths[0]} aliases the selected config "
             f"{config_paths[0]}; choose a different output path"
@@ -486,11 +508,12 @@ def _ensure_lock_outside_components(
                 if isinstance(path, str)
             )
         for root_kind, root_path in protected_roots:
-            protected_paths = normalized_paths(
+            protected_paths = _normalized_filesystem_paths(
                 repo_root / os.path.normpath(root_path.strip()),
                 f"{root_kind} root",
+                relative_to=repo_root,
             )
-            if not is_within(lock_paths, protected_paths):
+            if not _filesystem_path_is_within(lock_paths, protected_paths):
                 continue
             raise ConfigError(
                 f"Lockfile path {lock_paths[0]} is inside {root_kind} root "
@@ -498,6 +521,54 @@ def _ensure_lock_outside_components(
                 "outside every component and vendored-copy root to avoid "
                 "self-referential fingerprints"
             )
+
+
+def _ensure_review_summary_outside_inputs(
+    repo_root: Path,
+    summary_path: Path,
+    review: dict,
+) -> None:
+    """Reject a review summary path that aliases an endpoint config or lock."""
+
+    summary_paths = _normalized_filesystem_paths(
+        summary_path,
+        "review summary",
+        relative_to=Path.cwd(),
+    )
+    endpoints = review.get("endpoints")
+    if not isinstance(endpoints, dict):
+        raise ConfigError("Internal review result has no endpoint inputs")
+    for endpoint_label in ("base", "target"):
+        endpoint = endpoints.get(endpoint_label)
+        if not isinstance(endpoint, dict):
+            raise ConfigError(
+                f"Internal review result has no {endpoint_label} endpoint inputs"
+            )
+        commit = endpoint.get("commit")
+        if not isinstance(commit, str):
+            raise ConfigError(
+                f"Internal review result has no {endpoint_label} endpoint commit"
+            )
+        prefix = f"{commit}:"
+        for input_kind in ("config", "lock"):
+            locator = endpoint.get(input_kind)
+            if not isinstance(locator, str) or not locator.startswith(prefix):
+                raise ConfigError(
+                    f"Internal review result has an invalid {endpoint_label} "
+                    f"endpoint {input_kind} locator"
+                )
+            input_label = f"{endpoint_label} endpoint {input_kind}"
+            input_paths = _normalized_filesystem_paths(
+                repo_root / Path(locator[len(prefix) :]),
+                input_label,
+                relative_to=repo_root,
+            )
+            if _filesystem_paths_alias(summary_paths, input_paths):
+                raise ConfigError(
+                    f"Review summary path {summary_paths[0]} aliases the "
+                    f"{input_label} {input_paths[0]}; choose a different "
+                    "output path"
+                )
 
 
 def _ensure_json_mutation_path(path: Path, command: str) -> None:
@@ -860,8 +931,10 @@ def _cmd_review(args, repo_root: Path) -> None:
     if args.format == "plan":
         plan = build_review_plan(result)
         if args.summary_file:
+            summary_path = Path(args.summary_file)
+            _ensure_review_summary_outside_inputs(repo_root, summary_path, result)
             _write_text_atomic(
-                Path(args.summary_file),
+                summary_path,
                 render_review_plan_markdown(plan),
             )
         _print_json(plan, max_bytes=MAX_PLAN_RESULT_BYTES)

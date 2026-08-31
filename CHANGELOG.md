@@ -90,6 +90,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Prevented `review --format plan --summary-file` from overwriting either
+  endpoint's config or lock through relative, absolute, normalized, resolved,
+  or existing-file aliases. Structural tree validation now also keeps only
+  nesting-proportional traversal state, so a wide canonical document cannot
+  allocate unbudgeted sibling work before the aggregate work limit rejects it.
+  The executable consumer-impact demo and its documentation now assert the
+  typed component/external rendering introduced by the source-context UX.
 - Made no-op `migrate-lock` runs genuinely non-mutating: current normalized
   locks retain their exact bytes, mode, modification time, and file identity.
   Actual current-schema cleanup is reported truthfully, dry-run follows the
