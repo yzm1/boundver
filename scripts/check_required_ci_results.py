@@ -349,9 +349,11 @@ class GitHubClient:
         description: str,
         target_url: str,
     ) -> None:
+        sha = _require_sha(sha, "commit status SHA")
+        endpoint = f"/repos/{REPOSITORY}/statuses/{sha}"
         value = self._request(
             "POST",
-            f"/repos/{REPOSITORY}/statuses/{sha}",
+            endpoint,
             {
                 "state": state,
                 "context": STATUS_CONTEXT,
@@ -363,7 +365,9 @@ class GitHubClient:
         if (
             record.get("state") != state
             or record.get("context") != STATUS_CONTEXT
-            or record.get("sha") != sha
+            or record.get("description") != description
+            or record.get("target_url") != target_url
+            or record.get("url") != API_ROOT + endpoint
         ):
             raise RequiredCiGateError("GitHub returned a mismatched commit status")
 
