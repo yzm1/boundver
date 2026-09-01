@@ -285,6 +285,10 @@ All notable changes to this project are documented here. The format follows
   which GitHub Actions rejects even though ordinary YAML parsers accept them.
   Workflow maintenance tests now enforce GitHub's case-insensitive `env` key
   uniqueness before a workflow reaches hosted validation.
+- Made safe release-output preparation canonicalize only the existing working-
+  directory or Python temporary-directory prefix. This permits macOS's stable
+  `/var` to `/private/var` system alias while continuing to reject every
+  symlink, junction, or reparse point in the output-specific suffix.
 
 ## [0.14.1] - 2026-08-26
 

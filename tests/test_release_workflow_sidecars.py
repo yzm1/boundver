@@ -217,8 +217,53 @@ class ReleasePlatformOutputSafetyTests(unittest.TestCase):
                 prepared, identities, "test directory"
             )
 
-            self.assertEqual(prepared, output)
+            self.assertEqual(prepared, output.resolve(strict=True))
             self.assertTrue(output.is_dir())
+
+    def test_runtime_temp_alias_is_resolved_without_trusting_child_links(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_temp = root / "real-temp"
+            real_temp.mkdir()
+            temp_alias = root / "temp-alias"
+            self._symlink_or_skip(
+                self,
+                temp_alias,
+                real_temp,
+                target_is_directory=True,
+            )
+
+            with mock.patch.object(
+                release_platform.tempfile, "tempdir", str(temp_alias)
+            ):
+                lexical_output = temp_alias / "job" / "artifact.txt"
+                prepared, identities = release_platform.prepare_plain_output_file(
+                    lexical_output, "test output"
+                )
+                self.assertEqual(
+                    prepared,
+                    real_temp.resolve(strict=True) / "job" / "artifact.txt",
+                )
+                release_platform.revalidate_plain_output_file(
+                    prepared, identities, "test output"
+                )
+
+                outside = root / "outside"
+                outside.mkdir()
+                linked_child = real_temp / "linked-child"
+                self._symlink_or_skip(
+                    self,
+                    linked_child,
+                    outside,
+                    target_is_directory=True,
+                )
+                with self.assertRaisesRegex(ValueError, "must not traverse"):
+                    release_platform.prepare_plain_output_file(
+                        temp_alias / "linked-child" / "artifact.txt",
+                        "test output",
+                    )
+
+            self.assertEqual(list(outside.iterdir()), [])
 
 
 class GitHubReleaseProbeTests(unittest.TestCase):

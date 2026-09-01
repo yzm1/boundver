@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
 
@@ -84,21 +85,61 @@ def _directory_identity(identity: os.stat_result) -> tuple[int, int, int, bool]:
     )
 
 
+def _canonicalize_trusted_output_prefix(path: Path, label: str) -> Path:
+    """Resolve only the runtime-selected prefix of an output path.
+
+    macOS exposes its system temporary directory below the stable ``/var``
+    alias for ``/private/var``. Rejecting that alias makes ordinary temporary
+    outputs impossible, while resolving an arbitrary output parent would let a
+    repository-owned symlink redirect publication. Canonicalize only an
+    existing root already selected by the process (the working directory or
+    Python's temporary directory), then validate every output-specific
+    component without following links.
+    """
+    candidates: list[tuple[int, Path, Path]] = []
+    for selected in (Path.cwd(), Path(tempfile.gettempdir())):
+        lexical_root = Path(os.path.abspath(selected))
+        try:
+            relative = path.relative_to(lexical_root)
+        except ValueError:
+            continue
+        candidates.append((len(lexical_root.parts), lexical_root, relative))
+    if not candidates:
+        return path
+
+    _depth, lexical_root, relative = max(candidates, key=lambda item: item[0])
+    try:
+        resolved_root = lexical_root.resolve(strict=True)
+        identity = resolved_root.lstat()
+    except OSError as error:
+        raise ValueError(
+            f"{label} runtime-selected root is unavailable: {lexical_root}"
+        ) from error
+    if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+        raise ValueError(
+            f"{label} runtime-selected root is not a plain directory: "
+            f"{lexical_root}"
+        )
+    return resolved_root.joinpath(*relative.parts)
+
+
 def prepare_plain_output_file(
     path: Path,
     label: str,
 ) -> tuple[Path, tuple[tuple[Path, tuple[int, int, int, bool]], ...]]:
     """Prepare a lexical output path without following repository symlinks.
 
-    Every existing ancestor must be a real directory rather than a symlink,
-    junction, or other Windows reparse point. Missing ancestors are created one
-    at a time and checked immediately. An existing leaf must be a regular file.
-    The caller must revalidate the returned parent identity immediately before
-    replacing the leaf.
+    The process-selected working or temporary-directory prefix is resolved once
+    to tolerate stable platform aliases. Every output-specific ancestor must be
+    a real directory rather than a symlink, junction, or other Windows reparse
+    point. Missing ancestors are created one at a time and checked immediately.
+    An existing leaf must be a regular file. The caller must revalidate the
+    returned parent identity immediately before replacing the leaf.
     """
     absolute = Path(os.path.abspath(path))
     if not absolute.anchor or not absolute.name:
         raise ValueError(f"{label} must name a file: {path}")
+    absolute = _canonicalize_trusted_output_prefix(absolute, label)
 
     current = Path(absolute.anchor)
     ancestors = [current]
@@ -174,13 +215,13 @@ def prepare_plain_output_directory(
     label: str,
 ) -> tuple[Path, tuple[tuple[Path, tuple[int, int, int, bool]], ...]]:
     """Create and validate an output directory without following symlinks."""
-    absolute = Path(os.path.abspath(path))
-    if not absolute.anchor or not absolute.name:
+    lexical = Path(os.path.abspath(path))
+    if not lexical.anchor or not lexical.name:
         raise ValueError(f"{label} must name a directory: {path}")
-    _unused_probe, identities = prepare_plain_output_file(
-        absolute / ".boundver-output-probe", label
+    prepared_probe, identities = prepare_plain_output_file(
+        lexical / ".boundver-output-probe", label
     )
-    return absolute, identities
+    return prepared_probe.parent, identities
 
 
 def revalidate_plain_output_directory(
