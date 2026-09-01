@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import ssl
 import sys
 import unittest
 from pathlib import Path
@@ -160,6 +161,110 @@ def _fetcher(
 class RequiredCiEvaluationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.gate = _load_script()
+
+    def test_json_structure_is_bounded_before_parser_allocation(self) -> None:
+        with (
+            mock.patch.object(self.gate, "MAX_JSON_TOKENS", 2),
+            mock.patch.object(
+                self.gate.json,
+                "loads",
+                side_effect=AssertionError("parser must not be called"),
+            ) as loads,
+            self.assertRaisesRegex(
+                self.gate.RequiredCiGateError,
+                "JSON structural limit",
+            ),
+        ):
+            self.gate._decode_json(
+                b"[0,0,0]",
+                label="test payload",
+                limit=1024,
+            )
+        loads.assert_not_called()
+
+    def test_json_numeric_tokens_are_bounded_and_finite(self) -> None:
+        payloads = (
+            b'{"n":' + (b"9" * (self.gate.MAX_JSON_INTEGER_DIGITS + 1)) + b"}",
+            b'{"n":1.' + (b"0" * (self.gate.MAX_JSON_NUMBER_CHARS + 1)) + b"}",
+            b'{"n":1e9999}',
+            b'{"n":NaN}',
+        )
+        for payload in payloads:
+            with self.subTest(size=len(payload)), self.assertRaisesRegex(
+                self.gate.RequiredCiGateError,
+                "not valid JSON",
+            ):
+                self.gate._decode_json(
+                    payload,
+                    label="test payload",
+                    limit=self.gate.MAX_EVENT_BYTES,
+                )
+
+    def test_authenticated_github_client_rejects_redirects(self) -> None:
+        request = self.gate.urllib.request.Request(
+            f"{self.gate.API_ROOT}/repos/{self.gate.REPOSITORY}/pulls/1",
+            headers={"Authorization": "Bearer secret"},
+        )
+        handler = self.gate._RejectRedirects()
+        with self.assertRaisesRegex(
+            self.gate.RequiredCiGateError,
+            "redirects are not permitted",
+        ):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "https://attacker.invalid/collect",
+            )
+
+    def test_authenticated_client_ignores_proxy_custom_ca_and_keylog_environment(
+        self,
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeContext:
+            minimum_version = None
+
+        def create_default_context(*, purpose):
+            captured["purpose"] = purpose
+            captured["environment"] = {
+                name: os.environ.get(name)
+                for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE")
+            }
+            return FakeContext()
+
+        hostile = {
+            "SSL_CERT_FILE": "repo/attacker-ca.pem",
+            "SSL_CERT_DIR": "repo/attacker-certs",
+            "SSLKEYLOGFILE": "repo/tls-keys.log",
+        }
+        with mock.patch.dict(os.environ, hostile, clear=False), mock.patch.object(
+            self.gate.ssl,
+            "create_default_context",
+            side_effect=create_default_context,
+        ):
+            context = self.gate._public_tls_context()
+            self.assertEqual(
+                {name: os.environ[name] for name in hostile},
+                hostile,
+            )
+
+        self.assertEqual(captured["purpose"], ssl.Purpose.SERVER_AUTH)
+        self.assertEqual(
+            captured["environment"],
+            {"SSL_CERT_FILE": None, "SSL_CERT_DIR": None, "SSLKEYLOGFILE": None},
+        )
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+        proxy_handlers = [
+            handler
+            for handler in self.gate._GITHUB_OPENER.handlers
+            if isinstance(handler, self.gate.urllib.request.ProxyHandler)
+        ]
+        # ``build_opener`` omits an empty ProxyHandler entirely; the important
+        # contract is that no environment-populated proxy handler is present.
+        self.assertEqual(proxy_handlers, [])
 
     def test_exact_success_topology_passes(self) -> None:
         result = self.gate.evaluate(_event(self.gate), _fetcher(self.gate))
@@ -421,8 +526,10 @@ class RequiredCiWorkflowTests(unittest.TestCase):
         trigger = workflow[True]["workflow_run"]
         self.assertEqual(trigger["workflows"], ["CI"])
         self.assertEqual(trigger["types"], ["completed"])
+        self.assertEqual(workflow["permissions"], {})
+        gate = workflow["jobs"]["publish-required-status"]
         self.assertEqual(
-            workflow["permissions"],
+            gate["permissions"],
             {
                 "actions": "read",
                 "contents": "read",
@@ -430,7 +537,6 @@ class RequiredCiWorkflowTests(unittest.TestCase):
                 "statuses": "write",
             },
         )
-        gate = workflow["jobs"]["publish-required-status"]
         self.assertEqual(
             gate["if"], "${{ github.event.workflow_run.event == 'pull_request' }}"
         )

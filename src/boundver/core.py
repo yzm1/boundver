@@ -25,7 +25,7 @@ Common commands:
     boundver validate-config [--config boundary.config.json]
     boundver status  [--config boundary.config.json] [--lock boundary.lock.json]
 
-Requires: Git and Python 3.9+.
+Requires: Git and Python 3.10+.
 """
 
 import os
@@ -75,6 +75,7 @@ from ._utils import (
     FACETS,
     FACET_SET,
     SOURCE_MODE_SET,
+    _bounded_exception_text,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
     _is_windows_reparse_point,
@@ -160,6 +161,7 @@ from ._review_plan import (
 )
 from ._baseline import (
     BaselineError,
+    _validate_baseline_relative_path,
     apply_baseline,
     baseline_change_ids,
     baseline_context,
@@ -273,7 +275,9 @@ def _capture_operation_snapshot(
     try:
         return _capture_git_source_snapshot(repo_root, source)
     except ValueError as exc:
-        raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
+        raise ConfigError(
+            f"Cannot capture {source} source: {_bounded_exception_text(exc)}"
+        ) from exc
 
 
 def _operation_input_provenance(
@@ -435,7 +439,8 @@ def _normalized_filesystem_paths(
         resolved = resolve_before_parents(absolute)
     except (OSError, RuntimeError) as exc:
         raise ConfigError(
-            f"Cannot safely resolve {label} path {absolute}: {exc}"
+            f"Cannot safely resolve {label} path {absolute}: "
+            f"{_bounded_exception_text(exc)}"
         ) from exc
     lexical = Path(os.path.abspath(absolute))
     return lexical, resolved
@@ -640,11 +645,12 @@ def _resolve_baseline_path(repo_root: Path, raw_path: str) -> Path:
         candidate = lexical_root / candidate
     lexical_candidate = Path(os.path.abspath(candidate))
     try:
-        lexical_candidate.relative_to(lexical_root)
+        relative = lexical_candidate.relative_to(lexical_root)
     except (OSError, ValueError) as exc:
         raise BaselineError(
             "verification baseline paths must stay within the repository"
         ) from exc
+    _validate_baseline_relative_path(relative)
     if lexical_candidate.suffix.lower() != ".json":
         raise BaselineError("verification baseline path must end in .json")
     return lexical_candidate
@@ -723,7 +729,7 @@ def _run_cli_handler(command: str, handler, *handler_args) -> None:
     try:
         handler(*handler_args)
     except (OSError, subprocess.CalledProcessError, BoundverError) as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        detail = _bounded_exception_text(exc)
         print(f"ERROR: {command} failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
 
@@ -742,18 +748,18 @@ def _cmd_migrate_lock(args) -> None:
     try:
         old_lock = _load_lockfile(lock_path)
     except LockfileError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     migration_reason = None
     try:
         migrated = migrate_lockfile(old_lock)
     except MigrationError as exc:
         if not args.explain:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {_bounded_exception_text(exc)}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
         migrated = None
         migration_action = "regenerate"
-        migration_reason = str(exc)[:4096]
+        migration_reason = _bounded_exception_text(exc)
     else:
         migration_action = "none" if migrated == old_lock else "normalize"
     if args.explain:
@@ -795,7 +801,11 @@ def _cmd_migrate_lock(args) -> None:
                 migration_reason=migration_reason,
             )
         except (FileNotFoundError, ValueError, ConfigError, GuardrailError) as exc:
-            print(f"error: migration analysis failed: {exc}", file=sys.stderr)
+            print(
+                "error: migration analysis failed: "
+                f"{_bounded_exception_text(exc)}",
+                file=sys.stderr,
+            )
             sys.exit(EXIT_USAGE)
         if args.format == "json":
             _print_json(analysis)
@@ -857,7 +867,8 @@ def _cmd_migrate_lock(args) -> None:
                         f"+{declaration['current_only_omitted']} more"
                     )
         return
-    assert migrated is not None
+    if migrated is None:
+        raise RuntimeError("Lock migration completed without a migrated lock")
     if migrated == old_lock:
         message = f"Lockfile is already normalized: {lock_path}; no changes"
         if args.dry_run:
@@ -899,7 +910,10 @@ def _cmd_diff(args) -> None:
         _require_diffable_lockfile(old)
         _require_diffable_lockfile(new)
     except LockfileError as exc:
-        print(f"ERROR: Invalid lockfile: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: Invalid lockfile: {_bounded_exception_text(exc)}",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_USAGE)
     result = diff_lockfiles(old, new)
     if args.format == "json":
@@ -951,7 +965,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(
@@ -977,7 +991,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
             config_path=config_path,
         )
     except ConfigError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     # Warn when --source head but working tree has uncommitted changes
     if args.source == "head" and not args.quiet:
@@ -991,7 +1005,8 @@ def _cmd_generate(args, repo_root: Path) -> None:
             dirty = []
             print(
                 _yellow(
-                    f"WARNING: Could not inspect uncommitted component changes: {exc}"
+                    "WARNING: Could not inspect uncommitted component changes: "
+                    f"{_bounded_exception_text(exc)}"
                 ),
                 file=sys.stderr,
             )
@@ -1036,7 +1051,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
                 snapshot=snapshot,
             )
     except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         print(
             "Review the reported provider, source, or facet error. Use "
             "--allow-partial only when null slice facet inputs are intentional.",
@@ -1137,7 +1152,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(
@@ -1190,12 +1205,12 @@ def _cmd_verify(args, repo_root: Path) -> None:
             config_path=config_path,
         )
     except ConfigError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except FileNotFoundError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         if args.source == "head":
             print(
                 f"Hint: `--source head` reads committed files. Commit `{args.lock}`, "
@@ -1210,7 +1225,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
             )
         sys.exit(EXIT_USAGE)
     except LockfileError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     inputs = _operation_input_provenance(
         repo_root,
@@ -1260,7 +1275,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 snapshot=snapshot,
             )
         except ValueError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
+            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
         if components_filter:
             auto_set = set(auto)
@@ -1324,7 +1339,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 snapshot=snapshot,
             )
         except ValueError as exc:
-            print(f"ERROR: update failed: {exc}", file=sys.stderr)
+            print(
+                f"ERROR: update failed: {_bounded_exception_text(exc)}",
+                file=sys.stderr,
+            )
             sys.exit(EXIT_USAGE)
         _write_lockfile_atomic(lock_path, updated)
         if args.format == "json":
@@ -1385,7 +1403,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
             consumer_impact=consumer_impact,
         )
     except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     baseline_info: Optional[dict] = None
     if baseline_mode is not None:
@@ -1498,7 +1516,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     "removed_ids": removed_ids,
                 }
         except BaselineError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
+            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
             sys.exit(EXIT_USAGE)
     if issues:
         unavailable_issues = [
@@ -1581,7 +1599,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         snapshot=snapshot,
                     )
             except ValueError as exc:
-                print(f"ERROR: update failed: {exc}", file=sys.stderr)
+                print(
+                    f"ERROR: update failed: {_bounded_exception_text(exc)}",
+                    file=sys.stderr,
+                )
                 sys.exit(EXIT_USAGE)
             _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
@@ -1643,7 +1664,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         snapshot=snapshot,
                     )
             except ValueError as exc:
-                print(f"ERROR: update failed: {exc}", file=sys.stderr)
+                print(
+                    f"ERROR: update failed: {_bounded_exception_text(exc)}",
+                    file=sys.stderr,
+                )
                 sys.exit(EXIT_USAGE)
             _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
@@ -1734,12 +1758,12 @@ def _cmd_slice(args, repo_root: Path) -> None:
     try:
         lockfile = _load_lockfile(lock_path)
     except LockfileError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         _require_valid_lockfile(lockfile)
     except LockfileError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     sl = lockfile.get("slices", {}).get(args.name)
     if sl is None:
@@ -1786,7 +1810,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
     try:
         config = load_config_file(config_path)
     except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     errors = validate_config(
@@ -1813,7 +1837,7 @@ def _cmd_init(args, repo_root: Path) -> None:
     try:
         _ensure_json_mutation_path(config_path, "init")
     except ConfigError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     if config_path.exists() and not args.force:
         print(f"ERROR: Config already exists: {config_path}", file=sys.stderr)
@@ -1821,7 +1845,7 @@ def _cmd_init(args, repo_root: Path) -> None:
     try:
         discovered = discover_components(repo_root) if args.discover else {}
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        detail = _bounded_exception_text(exc)
         print(f"ERROR: component discovery failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     if args.discover and not discovered:
@@ -1862,12 +1886,12 @@ def _cmd_add(args, repo_root: Path) -> None:
     try:
         _ensure_json_mutation_path(config_path, "add")
     except ConfigError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         config = load_config_file(config_path)
     except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     existing_errors = validate_config(config, repo_root)
     if existing_errors:
@@ -1936,12 +1960,12 @@ def _cmd_remove(args, repo_root: Path) -> None:
     try:
         _ensure_json_mutation_path(config_path, "remove")
     except ConfigError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         config = load_config_file(config_path)
     except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     existing_errors = validate_config(config, repo_root)
     if existing_errors:
@@ -2000,7 +2024,7 @@ def _cmd_discover(args, repo_root: Path) -> None:
             excluded_paths=exclusions,
         )
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        detail = str(exc).strip() or type(exc).__name__
+        detail = _bounded_exception_text(exc)
         print(f"ERROR: component discovery failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     payload = {
@@ -2015,7 +2039,11 @@ def _cmd_discover(args, repo_root: Path) -> None:
             config = load_config_file(config_path)
             config_diff = compare_discovery_to_config(discovered, config)
         except (FileNotFoundError, ValueError, ConfigError) as exc:
-            print(f"ERROR: discovery config comparison failed: {exc}", file=sys.stderr)
+            print(
+                "ERROR: discovery config comparison failed: "
+                f"{_bounded_exception_text(exc)}",
+                file=sys.stderr,
+            )
             sys.exit(EXIT_USAGE)
         payload["config_diff"] = config_diff
     if args.format == "json":
@@ -2048,7 +2076,7 @@ def _cmd_status(args, repo_root: Path) -> None:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, LockfileError, ConfigError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     if lockfile is not None:
         structure_issues = [
@@ -2101,8 +2129,9 @@ def _cmd_status(args, repo_root: Path) -> None:
                 config_path, repo_root=repo_root, snapshot=snapshot
             )
         except (FileNotFoundError, ValueError) as exc:
-            print(f"WARNING: Config parse error: {exc}", file=sys.stderr)
-            status_payload["issues"].append(f"Config unavailable: {exc}")
+            detail = _bounded_exception_text(exc)
+            print(f"WARNING: Config parse error: {detail}", file=sys.stderr)
+            status_payload["issues"].append(f"Config unavailable: {detail}")
             config = None
         if config is not None and not structure_issues:
             allow_custom = _resolve_allow_custom(args, config)
@@ -2132,7 +2161,7 @@ def _cmd_status(args, repo_root: Path) -> None:
                         observations=observations,
                     )
                 except ValueError as exc:
-                    issues = [f"Verification error: {exc}"]
+                    issues = [f"Verification error: {_bounded_exception_text(exc)}"]
                 status_payload["observations"] = observations
             status_payload["issues"].extend(issues)
             if issues:
@@ -2167,7 +2196,7 @@ def _cmd_explain(args, repo_root: Path) -> None:
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(
@@ -2218,12 +2247,12 @@ def _cmd_why(args, repo_root: Path) -> None:
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         _require_valid_lockfile(lockfile)
     except LockfileError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(

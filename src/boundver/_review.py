@@ -55,8 +55,14 @@ class _ReviewWorkBudget:
         self.result_bytes = 0
 
     def spend(self, amount: int = 1) -> None:
+        self.ensure(amount)
         self.steps += amount
-        if self.steps > MAX_REVIEW_WORK_STEPS:
+
+    def ensure(self, amount: int) -> None:
+        """Reject known work before allocating traversal-wide state."""
+        if type(amount) is not int or amount < 0:
+            raise ValueError("Range review work must be a non-negative integer")
+        if amount > MAX_REVIEW_WORK_STEPS - self.steps:
             raise GuardrailError(
                 "Range review graph and slice analysis exceeds the "
                 f"{MAX_REVIEW_WORK_STEPS}-step aggregate limit. Reduce graph "
@@ -137,6 +143,21 @@ def _source_label(sources: Iterable[str]) -> str:
     if values == {"target"}:
         return "target"
     raise ConfigError("Internal review provenance is incomplete")
+
+
+def _sorted_mapping_key_union(
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    budget: _ReviewWorkBudget,
+) -> List[str]:
+    """Return one key union only when every resulting row can be visited."""
+    budget.ensure(max(len(before), len(after)))
+    union_size = len(before) + sum(1 for key in after if key not in before)
+    budget.ensure(union_size)
+    names = list(before)
+    names.extend(key for key in after if key not in before)
+    names.sort()
+    return names
 
 
 def _endpoint_path(repo_root: Path, path: Path) -> str:
@@ -315,7 +336,12 @@ def _walk_consumer_graph(
             continue
         consumers = component.get("consumers", [])
         if isinstance(consumers, list):
-            for consumer in sorted(set(consumers)):
+            budget.ensure(len(consumers))
+            previous: object = object()
+            for consumer in sorted(consumers):
+                if consumer == previous:
+                    continue
+                previous = consumer
                 budget.spend()
                 if not isinstance(consumer, str) or consumer not in components:
                     continue
@@ -327,7 +353,12 @@ def _walk_consumer_graph(
                     pending.append(consumer)
         terminals = component.get("external_consumers", [])
         if isinstance(terminals, list):
-            for terminal in sorted(set(terminals)):
+            budget.ensure(len(terminals))
+            previous = object()
+            for terminal in sorted(terminals):
+                if terminal == previous:
+                    continue
+                previous = terminal
                 budget.spend()
                 if not isinstance(terminal, str):
                     continue
@@ -367,16 +398,22 @@ def _consumer_impact(
             external_sources.setdefault(name, set()).add(source)
         for edge in edges:
             edge_sources.setdefault(edge, set()).add(source)
+    budget.ensure(
+        len(component_sources) + len(external_sources) + len(edge_sources)
+    )
     component_rows = []
     for name, sources in sorted(component_sources.items()):
+        budget.spend()
         budget.reserve_row(name)
         component_rows.append({"name": name, "source": _source_label(sources)})
     external_rows = []
     for name, sources in sorted(external_sources.items()):
+        budget.spend()
         budget.reserve_row(name)
         external_rows.append({"name": name, "source": _source_label(sources)})
     edge_rows = []
     for edge, sources in sorted(edge_sources.items()):
+        budget.spend()
         budget.reserve_row(*edge)
         edge_rows.append(
             {
@@ -413,7 +450,11 @@ def _component_transitions(
     changed: List[dict] = []
     unchanged: List[str] = []
     impacts: List[dict] = []
-    for name in sorted(set(base_components) | set(target_components)):
+    for name in _sorted_mapping_key_union(
+        base_components,
+        target_components,
+        budget,
+    ):
         budget.spend()
         before = base_components.get(name)
         after = target_components.get(name)
@@ -507,7 +548,7 @@ def _slice_transitions(
     changed: List[dict] = []
     unchanged: List[str] = []
     metadata_fields = ("description", "mode", "components", "component_digests")
-    for name in sorted(set(base_slices) | set(target_slices)):
+    for name in _sorted_mapping_key_union(base_slices, target_slices, budget):
         budget.spend()
         before = base_slices.get(name)
         after = target_slices.get(name)
@@ -553,11 +594,15 @@ def _slice_impact(
     *,
     budget: _ReviewWorkBudget,
 ) -> List[dict]:
-    roles: Dict[str, Set[str]] = {
-        component["name"]: {"changed"} for component in changed_components
-    }
+    roles: Dict[str, Set[str]] = {}
+    budget.ensure(len(changed_components))
+    for component in changed_components:
+        budget.spend()
+        roles[component["name"]] = {"changed"}
     for impact in consumer_impacts:
+        budget.spend()
         for component in impact["components"]:
+            budget.spend()
             roles.setdefault(component["name"], set()).add("consumer")
 
     membership: Dict[str, Dict[str, Set[str]]] = {}
@@ -578,7 +623,11 @@ def _slice_impact(
                     set(),
                 ).add(source)
 
-    changed_by_name = {item["name"]: item for item in changed_slices}
+    changed_by_name = {}
+    budget.ensure(len(changed_slices))
+    for item in changed_slices:
+        budget.spend()
+        changed_by_name[item["name"]] = item
     for name, transition in changed_by_name.items():
         if name in slice_sources:
             continue
@@ -589,14 +638,17 @@ def _slice_impact(
             sources.add("target")
         slice_sources[name] = sources
 
+    budget.ensure(len(slice_sources))
     result = []
     for name, sources in sorted(slice_sources.items()):
         budget.spend()
         budget.reserve_row(name)
         components = []
+        budget.ensure(len(membership.get(name, {})))
         for component, component_sources in sorted(
             membership.get(name, {}).items()
         ):
+            budget.spend()
             budget.reserve_row(name, component)
             components.append(
                 {
@@ -626,7 +678,8 @@ def _endpoint_payload(
     lock_path: Path,
 ) -> dict:
     commit = snapshot.head_oid
-    assert commit is not None
+    if commit is None:
+        raise ValueError("Review snapshot is missing its exact commit identity")
     result = {
         "requested_ref": requested_ref,
         "requested_commit": requested_commit,

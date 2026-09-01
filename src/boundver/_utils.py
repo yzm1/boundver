@@ -28,6 +28,7 @@ from ._bounded_io import FileSizeLimitError, read_bounded_file
 # while earlier supported interpreters do not.  Enforce one explicit contract
 # so parsing the same JSON cannot depend on the runner's Python version.
 MAX_JSON_INTEGER_DIGITS = 4300
+MAX_JSON_NUMBER_CHARACTERS = MAX_JSON_INTEGER_DIGITS + 32
 _MAX_JSON_INTEGER_ABS = 10 ** MAX_JSON_INTEGER_DIGITS
 MAX_YAML_INTEGER_CHARACTERS = MAX_JSON_INTEGER_DIGITS + 1
 
@@ -44,6 +45,12 @@ MAX_TOML_INTEGER_DIGITS = 640
 # nodes so a chain of long object keys cannot retain every growing prefix.
 MAX_JSON_TREE_DEPTH = 128
 MAX_JSON_TREE_NODES = 100_000
+# PyYAML composes mapping keys as nodes as well as values. Twice the public
+# JSON-value ceiling is therefore the smallest pre-construction cap that never
+# rejects an otherwise accepted tree merely because its keys are represented
+# separately by the parser.
+MAX_YAML_COMPOSE_NODES = 2 * MAX_JSON_TREE_NODES
+MAX_YAML_COMPOSE_DEPTH = MAX_JSON_TREE_DEPTH + 2
 MAX_JSON_TREE_ISSUES = 100
 MAX_JSON_DIAGNOSTIC_PATH_BYTES = 4 * 1024
 MAX_DIAGNOSTIC_VALUE_CHARS = 500
@@ -63,6 +70,31 @@ DIAGNOSTIC_TRUNCATION_SENTINEL = (
     "bounded count or UTF-8 byte budget was reached; truncation never changes "
     "the operation's pass/fail result."
 )
+
+
+def _bounded_yaml_compose_node(
+    loader: Any,
+    parent: Any,
+    index: Any,
+    compose_node: Callable[[Any, Any], Any],
+) -> Any:
+    """Compose one YAML node under pre-construction count/depth ceilings."""
+    nodes = getattr(loader, "_boundver_compose_nodes", 0) + 1
+    depth = getattr(loader, "_boundver_compose_depth", 0) + 1
+    if nodes > MAX_YAML_COMPOSE_NODES:
+        raise GuardrailError(
+            "YAML document exceeds the pre-parse structural node limit"
+        )
+    if depth > MAX_YAML_COMPOSE_DEPTH:
+        raise GuardrailError(
+            "YAML document exceeds the pre-parse structural depth limit"
+        )
+    loader._boundver_compose_nodes = nodes
+    loader._boundver_compose_depth = depth
+    try:
+        return compose_node(parent, index)
+    finally:
+        loader._boundver_compose_depth = depth - 1
 
 # Declared paths and glob matching are reachable through both built-in and
 # extension-provider flows.  Keep the primitive itself bounded rather than
@@ -108,6 +140,21 @@ def _bounded_json_int(value: str) -> int:
         chunk = digits[end - (first if end == first else 9):end]
         result = result * (10 ** len(chunk)) + int(chunk)
     return -result if negative else result
+
+
+def _bounded_json_float(value: str) -> float:
+    """Parse one finite JSON number under an explicit lexical-size limit."""
+    if not isinstance(value, str):
+        raise TypeError("JSON number must be text")
+    if len(value) > MAX_JSON_NUMBER_CHARACTERS:
+        raise ValueError(
+            "JSON number exceeds the "
+            f"{MAX_JSON_NUMBER_CHARACTERS}-character limit"
+        )
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite JSON number is not supported")
+    return result
 
 
 def _bounded_yaml_int(value: str) -> int:
@@ -254,6 +301,29 @@ def _bounded_diagnostic_text(
     return rendered[: max_chars - 3] + "..."
 
 
+def _bounded_exception_text(
+    exc: BaseException,
+    *,
+    max_chars: int = MAX_DIAGNOSTIC_ITEM_CHARS,
+) -> str:
+    """Return one useful, bounded exception diagnostic.
+
+    Exception text is frequently derived from repository paths, parser input,
+    or subprocess diagnostics.  Keep that text from becoming an unbounded CI
+    log or JSON field, and tolerate extension exceptions whose ``__str__`` is
+    itself broken.  Terminal escaping remains the responsibility of the human
+    output layer so structured output retains ordinary diagnostic characters.
+    """
+    try:
+        detail = str(exc).strip()
+    except Exception:
+        detail = ""
+    return _bounded_diagnostic_text(
+        detail or type(exc).__name__,
+        max_chars=max_chars,
+    )
+
+
 def _bounded_diagnostic_utf8(value: Any) -> str:
     """Render one diagnostic under both character and UTF-8 byte limits."""
     text = _bounded_diagnostic_text(
@@ -360,18 +430,25 @@ def _bounded_json_dumps(
     ``max_bytes`` is provided, emitted UTF-8 is accounted incrementally so an
     oversized aggregate is rejected before the complete string is allocated.
     """
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
+        raise ValueError("JSON output byte limit must be a non-negative integer")
+    indent_width = 1
     if indent is None or isinstance(indent, str):
         indent_text = indent
+    elif max_bytes is None:
+        indent_text = " " * indent
+    elif isinstance(indent, int):
+        indent_text = " "
+        indent_width = max(0, indent)
     else:
+        # Preserve the public encoder's TypeError for unsupported indentation
+        # types without adding a separate compatibility vocabulary.
         indent_text = " " * indent
     if separators is None:
         item_separator = ", " if indent_text is None else ","
         key_separator = ": "
     else:
         item_separator, key_separator = separators
-    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
-        raise ValueError("JSON output byte limit must be a non-negative integer")
-
     active: Set[int] = set()
     output = io.StringIO()
     emitted_bytes = 0
@@ -388,8 +465,72 @@ def _bounded_json_dumps(
                 )
         output.write(text)
 
-    def quote(text: str) -> str:
-        return json.dumps(text, ensure_ascii=ensure_ascii)
+    def emit_quoted(text: str) -> None:
+        """Emit one JSON string without allocating its complete escaped form."""
+        if max_bytes is None:
+            emit(json.dumps(text, ensure_ascii=ensure_ascii))
+            return
+
+        emit('"')
+        safe_start = 0
+        # Bound the largest temporary slice independently of the caller's
+        # input.  In particular, a control-heavy string can expand sixfold
+        # under JSON escaping and must hit ``max_bytes`` before that escaped
+        # copy exists in memory.
+        safe_chunk_chars = 4096
+        short_escapes = {
+            '"': '\\"',
+            "\\": "\\\\",
+            "\b": "\\b",
+            "\f": "\\f",
+            "\n": "\\n",
+            "\r": "\\r",
+            "\t": "\\t",
+        }
+        for index, character in enumerate(text):
+            replacement = short_escapes.get(character)
+            codepoint = ord(character)
+            if replacement is None and codepoint < 0x20:
+                replacement = f"\\u{codepoint:04x}"
+            elif replacement is None and ensure_ascii and codepoint >= 0x7F:
+                if codepoint <= 0xFFFF:
+                    replacement = f"\\u{codepoint:04x}"
+                else:
+                    adjusted = codepoint - 0x10000
+                    high = 0xD800 | (adjusted >> 10)
+                    low = 0xDC00 | (adjusted & 0x3FF)
+                    replacement = f"\\u{high:04x}\\u{low:04x}"
+
+            if replacement is not None:
+                if safe_start < index:
+                    emit(text[safe_start:index])
+                emit(replacement)
+                safe_start = index + 1
+            elif index + 1 - safe_start >= safe_chunk_chars:
+                emit(text[safe_start : index + 1])
+                safe_start = index + 1
+        if safe_start < len(text):
+            emit(text[safe_start:])
+        emit('"')
+
+    def emit_indent(level: int) -> None:
+        if indent_text is None:
+            return
+        emit("\n")
+        repeats = level * indent_width
+        if not repeats:
+            return
+        if max_bytes is not None:
+            unit_bytes = (
+                len(indent_text)
+                if indent_text.isascii()
+                else len(indent_text.encode("utf-8"))
+            )
+            if unit_bytes * repeats > max_bytes - emitted_bytes:
+                raise GuardrailError(
+                    f"JSON output exceeds the {max_bytes}-byte limit"
+                )
+        emit(indent_text * repeats)
 
     def enter(container: Any) -> Optional[int]:
         if not check_circular:
@@ -424,7 +565,7 @@ def _bounded_json_dumps(
                 "keys must be str, int, float, bool or None, "
                 f"not {type(key).__name__}"
             )
-        return quote(text)
+        return text
 
     def encode(item: Any, level: int) -> None:
         if item is None:
@@ -437,7 +578,7 @@ def _bounded_json_dumps(
             emit("false")
             return
         if isinstance(item, str):
-            emit(quote(item))
+            emit_quoted(item)
             return
         if isinstance(item, int):
             emit(_bounded_int_to_decimal(item))
@@ -453,10 +594,10 @@ def _bounded_json_dumps(
                     if index:
                         emit(item_separator)
                     if indent_text is not None:
-                        emit("\n" + indent_text * (level + 1))
+                        emit_indent(level + 1)
                     encode(child, level + 1)
                 if item and indent_text is not None:
-                    emit("\n" + indent_text * level)
+                    emit_indent(level)
                 emit("]")
             finally:
                 leave(marker)
@@ -464,6 +605,30 @@ def _bounded_json_dumps(
         if isinstance(item, dict):
             marker = enter(item)
             try:
+                if (
+                    max_bytes is not None
+                    and sort_keys
+                    and item
+                    and isinstance(item_separator, str)
+                    and isinstance(key_separator, str)
+                    and all(isinstance(key, str) for key in item)
+                ):
+                    # Sorting materializes the complete key set. Prove from a
+                    # conservative lower bound that the object can fit before
+                    # making that allocation. Every string-key pair needs two
+                    # quotes, a key separator, and at least one value byte.
+                    pair_count = len(item)
+                    item_separator_bytes = len(item_separator.encode("utf-8"))
+                    key_separator_bytes = len(key_separator.encode("utf-8"))
+                    minimum_bytes = (
+                        2
+                        + pair_count * (3 + key_separator_bytes)
+                        + (pair_count - 1) * item_separator_bytes
+                    )
+                    if emitted_bytes + minimum_bytes > max_bytes:
+                        raise GuardrailError(
+                            f"JSON output exceeds the {max_bytes}-byte limit"
+                        )
                 pairs = (
                     sorted(item.items(), key=lambda pair: pair[0])
                     if sort_keys
@@ -472,19 +637,19 @@ def _bounded_json_dumps(
                 emit("{")
                 emitted_pair = False
                 for key, child in pairs:
-                    encoded_key = encode_key(key)
-                    if encoded_key is None:
+                    key_text = encode_key(key)
+                    if key_text is None:
                         continue
                     if emitted_pair:
                         emit(item_separator)
                     if indent_text is not None:
-                        emit("\n" + indent_text * (level + 1))
-                    emit(encoded_key)
+                        emit_indent(level + 1)
+                    emit_quoted(key_text)
                     emit(key_separator)
                     encode(child, level + 1)
                     emitted_pair = True
                 if emitted_pair and indent_text is not None:
-                    emit("\n" + indent_text * level)
+                    emit_indent(level)
                 emit("}")
             finally:
                 leave(marker)
@@ -727,14 +892,14 @@ def _bounded_json_value_issues(
             ):
                 break
     except (GuardrailError, RuntimeError, ValueError) as exc:
-        append_issue(str(exc))
+        append_issue(_bounded_exception_text(exc))
     finally:
         walker.close()
     return issues
 
 
-def _toml_has_oversized_numeric_token(text: str) -> bool:
-    """Detect oversized numeric value runs outside strings and comments.
+def _toml_preparse_issues(text: str) -> Tuple[bool, bool]:
+    """Detect oversized numeric or structural TOML before parser allocation.
 
     The scanner understands basic, literal, and multiline strings. It runs
     before the real TOML parser because tomllib/tomli provide ``parse_float``
@@ -756,6 +921,14 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
     inline_key_frame = 1
     inline_value_frame = 2
     containers = bytearray()
+    oversized_numeric = False
+    structural_tokens = 0
+    key_depth = 0
+
+    def spend_structure(amount: int = 1) -> bool:
+        nonlocal structural_tokens
+        structural_tokens += amount
+        return structural_tokens > 2 * MAX_JSON_TREE_NODES
 
     def in_key_context() -> bool:
         if table_header_depth:
@@ -765,11 +938,12 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
         return not root_in_value
 
     def reset_line() -> None:
-        nonlocal root_in_value, table_header_depth, at_statement_start
+        nonlocal root_in_value, table_header_depth, at_statement_start, key_depth
         if not containers:
             root_in_value = False
             table_header_depth = 0
             at_statement_start = True
+            key_depth = 0
 
     while index < length:
         char = text[index]
@@ -845,12 +1019,16 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
             index += 1
             continue
         if char == "[":
+            if spend_structure():
+                return oversized_numeric, True
             if table_header_depth:
                 table_header_depth += 1
             elif not containers and not root_in_value and at_statement_start:
                 table_header_depth = 1
             else:
                 containers.append(array_frame)
+                if len(containers) > MAX_JSON_TREE_DEPTH + 2:
+                    return oversized_numeric, True
             at_statement_start = False
             index += 1
             continue
@@ -863,7 +1041,11 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
             index += 1
             continue
         if char == "{":
+            if spend_structure():
+                return oversized_numeric, True
             containers.append(inline_key_frame)
+            if len(containers) > MAX_JSON_TREE_DEPTH + 2:
+                return oversized_numeric, True
             at_statement_start = False
             index += 1
             continue
@@ -877,16 +1059,29 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
             index += 1
             continue
         if char == "=":
+            if spend_structure():
+                return oversized_numeric, True
             if containers and containers[-1] == inline_key_frame:
                 containers[-1] = inline_value_frame
             elif not containers and not table_header_depth:
                 root_in_value = True
+            key_depth = 0
             at_statement_start = False
             index += 1
             continue
         if char == ",":
+            if spend_structure():
+                return oversized_numeric, True
             if containers and containers[-1] == inline_value_frame:
                 containers[-1] = inline_key_frame
+                key_depth = 0
+            at_statement_start = False
+            index += 1
+            continue
+        if char == "." and in_key_context():
+            key_depth += 1
+            if key_depth > MAX_JSON_TREE_DEPTH or spend_structure():
+                return oversized_numeric, True
             at_statement_start = False
             index += 1
             continue
@@ -910,7 +1105,7 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
                 if text[index] != "_":
                     digits += 1
                     if digits > MAX_TOML_INTEGER_DIGITS:
-                        return True
+                        oversized_numeric = True
                 index += 1
             continue
         if not in_key_context() and "0" <= char <= "9":
@@ -921,12 +1116,17 @@ def _toml_has_oversized_numeric_token(text: str) -> bool:
                 if text[index] != "_":
                     digits += 1
                     if digits > MAX_TOML_INTEGER_DIGITS:
-                        return True
+                        oversized_numeric = True
                 index += 1
             continue
         at_statement_start = False
         index += 1
-    return False
+    return oversized_numeric, False
+
+
+def _toml_has_oversized_numeric_token(text: str) -> bool:
+    """Return whether TOML contains an unsafe numeric value token."""
+    return _toml_preparse_issues(text)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1419,7 +1619,9 @@ def _match_text_glob(
     try:
         _validate_glob_pattern_complexity(pattern)
     except ValueError as exc:
-        raise GuardrailError(f"Glob match guardrail exceeded: {exc}") from exc
+        raise GuardrailError(
+            "Glob match guardrail exceeded: " f"{_bounded_exception_text(exc)}"
+        ) from exc
 
     steps = 0
 
@@ -1519,7 +1721,9 @@ def _compile_path_glob_with_spender(
     try:
         _validate_glob_pattern_complexity(pattern)
     except ValueError as exc:
-        raise GuardrailError(f"Glob match guardrail exceeded: {exc}") from exc
+        raise GuardrailError(
+            "Glob match guardrail exceeded: " f"{_bounded_exception_text(exc)}"
+        ) from exc
 
     # Consecutive recursive wildcards are equivalent to one and needlessly
     # multiply the state space. Charge every source segment so compiling long

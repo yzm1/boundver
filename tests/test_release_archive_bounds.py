@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import os
+import ssl
 import sys
 import tarfile
 import warnings
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -67,13 +70,61 @@ def _write_sdist(path: Path, entries: list[tuple[str, bytes]]) -> None:
             archive.addfile(info, io.BytesIO(payload))
 
 
+def test_package_index_openers_disable_ambient_proxies_and_redirects():
+    for module, opener_name in (
+        (testpypi, "_PUBLIC_OPENER"),
+        (locker, "_PYPI_OPENER"),
+    ):
+        opener = getattr(module, opener_name)
+        redirect = next(
+            handler
+            for handler in opener.handlers
+            if isinstance(handler, module._RejectRedirects)
+        )
+        assert module._NO_PROXY_HANDLER.proxies == {}
+        assert (
+            redirect.redirect_request(None, None, 302, "Found", {}, "https://evil.invalid")
+            is None
+        )
+        https = next(
+            handler
+            for handler in opener.handlers
+            if isinstance(handler, module.urllib.request.HTTPSHandler)
+        )
+        assert https._context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
+def test_package_index_tls_contexts_ignore_environment_selected_trust():
+    hostile = {
+        "SSL_CERT_FILE": "repo/attacker-ca.pem",
+        "SSL_CERT_DIR": "repo/attacker-certs",
+        "SSLKEYLOGFILE": "repo/tls-keys.log",
+    }
+    for module in (testpypi, locker):
+        observed: list[dict[str, str | None]] = []
+
+        def context_factory(*, purpose):
+            assert purpose is ssl.Purpose.SERVER_AUTH
+            observed.append({name: os.environ.get(name) for name in hostile})
+            return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+        with patch.dict(os.environ, hostile, clear=False), patch.object(
+            module.ssl,
+            "create_default_context",
+            side_effect=context_factory,
+        ):
+            context = module._public_tls_context()
+            assert {name: os.environ.get(name) for name in hostile} == hostile
+
+        assert observed == [{name: None for name in hostile}]
+        assert context.minimum_version == ssl.TLSVersion.TLSv1_2
+
+
 def test_testpypi_json_content_length_is_checked_before_read(monkeypatch):
     url = "https://test.pypi.org/pypi/boundver/1.2.3/json"
     response = _Response(b"{}", url, {"Content-Length": "5"})
     monkeypatch.setattr(testpypi, "MAX_INDEX_METADATA_BYTES", 4)
-    monkeypatch.setattr(
-        testpypi.urllib.request, "urlopen", lambda *args, **kwargs: response
-    )
+    monkeypatch.setattr(testpypi, "_open_public_url", lambda *args, **kwargs: response)
 
     with pytest.raises(testpypi.ReleaseNetworkError, match="response limit"):
         testpypi._request_json(url)
@@ -85,9 +136,7 @@ def test_testpypi_json_reader_stops_after_one_growth_byte(monkeypatch):
     url = "https://test.pypi.org/pypi/boundver/1.2.3/json"
     response = _Response(b"abcde-more", url)
     monkeypatch.setattr(testpypi, "MAX_INDEX_METADATA_BYTES", 4)
-    monkeypatch.setattr(
-        testpypi.urllib.request, "urlopen", lambda *args, **kwargs: response
-    )
+    monkeypatch.setattr(testpypi, "_open_public_url", lambda *args, **kwargs: response)
 
     with pytest.raises(testpypi.ReleaseNetworkError, match="4-byte response limit"):
         testpypi._request_json(url)
@@ -104,9 +153,7 @@ def test_testpypi_download_stops_at_advertised_size_plus_one(monkeypatch):
         4,
         url,
     )
-    monkeypatch.setattr(
-        testpypi.urllib.request, "urlopen", lambda *args, **kwargs: response
-    )
+    monkeypatch.setattr(testpypi, "_open_public_url", lambda *args, **kwargs: response)
 
     with pytest.raises(testpypi.ReleaseVerificationError, match="advertised size"):
         testpypi._download_and_verify({expected.filename: expected}, url.rsplit("/", 2)[0])
@@ -227,6 +274,73 @@ def test_sdist_rejects_duplicate_non_metadata_members(tmp_path):
         testpypi._metadata_identity(sdist)
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        "example/data.txt:stream",
+        "example/CON.txt",
+        "example/trailing.",
+        "example/control\x1f.txt",
+    ),
+)
+def test_release_validators_reject_nonportable_archive_names(name):
+    with pytest.raises(ValueError, match="unsafe or overlong"):
+        builder._validate_archive_path(name, "example.whl")
+    with pytest.raises(testpypi.ReleaseVerificationError, match="unsafe or overlong"):
+        testpypi._validate_archive_path(name, "example.whl")
+
+
+@pytest.mark.parametrize(
+    "first,second",
+    (
+        ("example/Contract.json", "example/contract.json"),
+        ("example/caf\N{LATIN SMALL LETTER E WITH ACUTE}.json", "example/cafe\u0301.json"),
+    ),
+)
+def test_wheel_rejects_portable_name_collisions(tmp_path, first, second):
+    wheel = tmp_path / "example.whl"
+    metadata = b"Name: example\nVersion: 1.0\n"
+    _write_wheel(
+        wheel,
+        [
+            (first, b"first"),
+            (second, b"second"),
+            ("example-1.0.dist-info/METADATA", metadata),
+        ],
+    )
+
+    with pytest.raises(testpypi.ReleaseVerificationError, match="non-portable"):
+        testpypi._metadata_identity(wheel)
+    with pytest.raises(ValueError, match="non-portable"):
+        builder._canonicalize_wheel(
+            wheel,
+            tmp_path / "canonical.whl",
+            1_700_000_000,
+        )
+
+
+def test_sdist_rejects_portable_name_collisions(tmp_path):
+    sdist = tmp_path / "example.tar.gz"
+    metadata = b"Name: example\nVersion: 1.0\n"
+    _write_sdist(
+        sdist,
+        [
+            ("example/Contract.json", b"first"),
+            ("example/contract.json", b"second"),
+            ("example/PKG-INFO", metadata),
+        ],
+    )
+
+    with pytest.raises(testpypi.ReleaseVerificationError, match="non-portable"):
+        testpypi._metadata_identity(sdist)
+    with pytest.raises(ValueError, match="non-portable"):
+        builder._canonicalize_sdist(
+            sdist,
+            tmp_path / "canonical.tar.gz",
+            1_700_000_000,
+        )
+
+
 def test_builder_rejects_source_zip_size_before_zipfile(tmp_path, monkeypatch):
     wheel = tmp_path / "example.whl"
     _write_wheel(wheel, [("example", b"payload")])
@@ -289,11 +403,20 @@ def test_locker_pypi_content_length_is_checked_before_read(monkeypatch):
     requirement = locker.Requirement("example", "1.0")
     response = _Response(b"{}", "https://pypi.org", {"Content-Length": "5"})
     monkeypatch.setattr(locker, "MAX_PYPI_METADATA_BYTES", 4)
-    monkeypatch.setattr(
-        locker.urllib.request, "urlopen", lambda *args, **kwargs: response
-    )
+    monkeypatch.setattr(locker, "_open_pypi_url", lambda *args, **kwargs: response)
 
     with pytest.raises(locker.LockError, match="response limit"):
+        locker._pypi_release(requirement)
+
+    assert response.read_sizes == []
+
+
+def test_locker_rejects_pypi_metadata_redirected_off_origin(monkeypatch):
+    requirement = locker.Requirement("example", "1.0")
+    response = _Response(b"{}", "https://attacker.invalid/example.json")
+    monkeypatch.setattr(locker, "_open_pypi_url", lambda *args, **kwargs: response)
+
+    with pytest.raises(locker.LockError, match="canonical PyPI origin"):
         locker._pypi_release(requirement)
 
     assert response.read_sizes == []

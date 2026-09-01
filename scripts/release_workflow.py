@@ -47,6 +47,8 @@ MAX_JOB_LOG_BYTES = 32 * 1024 * 1024
 MAX_JOB_LOG_LINES = 500_000
 MAX_POLICY_TRIPLES = 10_000
 MAX_JSON_INTEGER_DIGITS = 20
+MAX_JSON_TOKENS = 500_000
+MAX_JSON_DEPTH = 128
 MAX_GITHUB_ID = (1 << 64) - 1
 MAX_ARTIFACT_NAME_BYTES = 1024
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
@@ -60,9 +62,75 @@ MAX_CHECKSUM_BYTES = 4096
 MAX_PROBE_BYTES = 32 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
+_GITHUB_AMBIENT_OVERRIDE_NAMES = frozenset(
+    {
+        "ALL_PROXY",
+        "BROWSER",
+        "CLICOLOR_FORCE",
+        "CURL_CA_BUNDLE",
+        "CURL_HOME",
+        "DEBUG",
+        "EDITOR",
+        "GH_ACCESSIBLE_COLORS",
+        "GH_ACCESSIBLE_PROMPTER",
+        "GH_BROWSER",
+        "GH_DEBUG",
+        "GH_EDITOR",
+        "GH_ENTERPRISE_TOKEN",
+        "GH_FORCE_TTY",
+        "GH_HOST",
+        "GH_HTTP_UNIX_SOCKET",
+        "GH_MDWIDTH",
+        "GH_PAGER",
+        "GH_PROMPT_DISABLED",
+        "GH_REPO",
+        "GH_SPINNER_DISABLED",
+        "GHES_TOKEN",
+        "GITHUB_API_URL",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "GITHUB_GRAPHQL_URL",
+        "GITHUB_SERVER_URL",
+        "GIT_EDITOR",
+        "GLAMOUR_STYLE",
+        "GODEBUG",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "NO_PROXY",
+        "PAGER",
+        "REQUESTS_CA_BUNDLE",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "SSLKEYLOGFILE",
+        "VISUAL",
+    }
+)
+
 
 class ReleaseWorkflowError(ValueError):
     """A workflow payload is malformed, incomplete, stale, or conflicting."""
+
+
+def _github_environment(environment: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a noninteractive public-GitHub environment for the standalone sidecar."""
+    result = dict(os.environ if environment is None else environment)
+    for name in tuple(result):
+        if name.upper() in _GITHUB_AMBIENT_OVERRIDE_NAMES:
+            result.pop(name, None)
+    result.update(
+        {
+            "GH_HOST": "github.com",
+            "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+            "GH_NO_UPDATE_NOTIFIER": "1",
+            "GH_PAGER": "cat",
+            "GH_PROMPT_DISABLED": "1",
+            "NO_COLOR": "1",
+            "NO_PROXY": "github.com,api.github.com",
+            "PAGER": "cat",
+            "TERM": "dumb",
+        }
+    )
+    return result
 
 
 def _bounded_json_int(value: str) -> int:
@@ -94,6 +162,8 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _strict_json_loads(document: str) -> object:
+    if not _json_shape_within_limits(document):
+        raise ValueError("JSON exceeds the structural limit")
     return json.loads(
         document,
         object_pairs_hook=_unique_json_object,
@@ -101,6 +171,45 @@ def _strict_json_loads(document: str) -> object:
         parse_float=_bounded_json_float,
         parse_constant=_reject_json_constant,
     )
+
+
+def _json_shape_within_limits(document: str) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for character in document:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif character in "[{":
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif character in "]}":
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif character in " \t\r\n,:":
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
 
 
 def _read_bounded_file(path: Path, limit: int, label: str) -> bytes:
@@ -195,9 +304,11 @@ def _read_bounded_pipe(
 
 
 def _run_bounded(command: Sequence[str], stdout_limit: int) -> bytes:
+    environment = _github_environment()
     try:
         process = subprocess.Popen(
             [str(item) for item in command],
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -266,7 +377,13 @@ def _trusted_gh() -> Path:
     executable = shutil.which("gh")
     if executable is None:
         raise ReleaseWorkflowError("trusted GitHub CLI is unavailable")
-    gh = Path(executable).resolve()
+    selected = Path(executable)
+    if not selected.is_absolute():
+        selected = Path.cwd() / selected
+    selected = selected.absolute()
+    if selected == workspace or workspace in selected.parents:
+        raise ReleaseWorkflowError("trusted GitHub CLI is unavailable")
+    gh = selected.resolve()
     if not gh.is_file() or gh == workspace or workspace in gh.parents:
         raise ReleaseWorkflowError("trusted GitHub CLI is unavailable")
     return gh
@@ -297,7 +414,10 @@ def fetch_recovery_payloads(repository: str, run_id: int) -> tuple[object, objec
         remaining = MAX_GITHUB_TOTAL_BYTES - consumed
         if remaining < 1:
             raise ReleaseWorkflowError("recovery API responses exceed the aggregate limit")
-        response = _run_bounded([str(gh), "api", endpoint + suffix], min(limit, remaining))
+        response = _run_bounded(
+            [str(gh), "api", "--hostname", "github.com", endpoint + suffix],
+            min(limit, remaining),
+        )
         consumed += len(response)
         payloads.append(_decode_strict_json(response, label))
     return payloads[0], payloads[1], payloads[2]
@@ -313,7 +433,9 @@ def fetch_verification_job_log(repository: str, job_id: int) -> str:
     command = [str(gh), "api"]
     if b"--allow-escape-sequences" in help_output:
         command.append("--allow-escape-sequences")
-    command.append(f"repos/{repository}/actions/jobs/{job_id}/logs")
+    command.extend(
+        ("--hostname", "github.com", f"repos/{repository}/actions/jobs/{job_id}/logs")
+    )
     payload = _run_bounded(command, MAX_JOB_LOG_BYTES)
     if not payload:
         raise ReleaseWorkflowError("source verification job log is empty")

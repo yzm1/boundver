@@ -60,6 +60,14 @@ The repository owner must configure these controls before starting a release:
   the live ruleset after restoration and keep the issue open until a subsequent
   ordinary pull request proves that the base-controlled status is emitted by the
   GitHub Actions App. Do not add a bypass actor or weaken the tracked contract.
+- Enable private vulnerability reporting, Dependabot alerts and security
+  updates, secret scanning, and secret-scanning push protection. Keep every
+  alert queue at zero before release; the promotion gate checks dependency,
+  secret, and code-scanning alerts directly.
+- Require full-length commit SHA pins for third-party GitHub Actions. Set the
+  default workflow token to read-only and do not allow it to approve pull
+  requests. Keep `.github/workflows/codeql.yml` active so every exact `main`
+  release commit receives a successful Python `security-extended` analysis.
 - Set GitHub Pages to **GitHub Actions** and retain the protected
   `github-pages` deployment environment created by Pages.
 - Create protected GitHub environments named `testpypi`, `pypi`,
@@ -81,6 +89,11 @@ The repository owner must configure these controls before starting a release:
 - Keep the repository homepage pointed at the public Marketplace listing and
   keep the repository description/topics current. These are discovery
   metadata, not versioned release content.
+- In `boundver-project/boundver` on GitLab, protect `main` against force pushes
+  and protect tags matching `*.*.*`, allowing tag creation only to Maintainers.
+  Verify the new tag reports `protected: true` before accepting its Catalog
+  release. The checked-in GitLab pipeline independently refuses to publish when
+  `CI_COMMIT_REF_PROTECTED` is not `true`.
 - Keep the GitHub social preview and GitLab Catalog project avatar synchronized
   with `docs/assets/social-preview.png` and `docs/assets/logo.png`. Marketplace
   Action badges support only GitHub's approved Feather icons and colors, so
@@ -131,9 +144,11 @@ docs, and release profiles generate `scripts/requirements/*.lock`. CI and releas
 each reuse the minimal Action base without sharing unrelated tools. Every direct and
 transitive requirement is exact-pinned, and every permitted non-yanked wheel
 has a checked-in SHA-256 digest. Installs force `--require-hashes` and
-`--only-binary :all:` against the canonical PyPI index. Local boundver source
-is then installed offline with `--no-deps --no-build-isolation`, so neither its
-runtime nor build backend can open an unchecked resolver path.
+`--only-binary :all:` against the canonical PyPI index, while retaining pip's
+dependency resolver so incompatible exact pins fail before automation runs.
+Local boundver source is then installed offline with
+`--no-deps --no-build-isolation`, so neither its runtime nor build backend can
+open an unchecked resolver path.
 
 The Dockerfile uses that same Action lock to download a hash-verified
 wheelhouse, builds boundver with dependencies and build isolation disabled, and
@@ -147,12 +162,33 @@ fails closed on an incomplete update. Digest pinning deliberately stops
 automatic security updates, so weekly Docker Dependabot checks surface base
 updates for review.
 
+The runtime image is scanned at high and critical severity for both supported
+architectures. `.trivyignore.yaml` may contain only temporary, package-scoped
+Debian exceptions for findings with no vendor fix: give every entry an exact
+CVE, one or more `pkg:deb/debian/...` PURLs, a reachability statement, and an
+expiry no more than 14 days away. Before expiry, rebuild against the current
+pinned base, verify the Debian security status, remove fixed or unreachable
+packages where possible, and renew only independently justified residuals.
+CI performs a second scan with `--ignore-unfixed` and no exception file, so a
+newly fixable high/critical issue fails immediately. It also scans the source
+tree for high/critical secret and configuration findings. Never use a wildcard,
+unscoped CVE, non-expiring entry, or global `--ignore-unfixed` as the primary
+publication gate.
+
 `scripts/release-tool-artifacts.json` records the PyPI wheel filenames behind
 the local hashes for review. The generator reads only the official versioned
-PyPI JSON API over HTTPS; copying those digests into a reviewed commit makes
+PyPI JSON API over HTTPS and rejects any pin with an active advisory in that
+version metadata. Copying the accepted digests into a reviewed commit makes
 them local trust inputs rather than accepting an index-provided hash during an
-install. The locks include wheels for Python 3.9+ on Linux, macOS Intel and
-Apple silicon, and Windows; pip still selects only the compatible wheel.
+install. The Linux/Python 3.12 CI job and both release-promotion workflows run
+the networked `check` again so an advisory published after lock generation
+fails closed. The Action and CI locks include wheels for Python 3.10+ on Linux,
+macOS Intel and Apple silicon, and Windows; pip still selects only the
+compatible wheel. The larger release profile is used by Linux promotion jobs.
+Its advisory-free cryptography pin also has upstream wheels for Windows and
+Apple silicon, but not macOS Intel, so do not use an Intel Mac as the release
+build host. The release-profile installer rejects Python older than 3.12
+before contacting the package index.
 
 Use Python 3.12 or newer to maintain the locks:
 
@@ -163,7 +199,8 @@ python scripts/lock_release_tools.py generate
 # Network-free manifest/artifact/lock consistency check.
 python scripts/lock_release_tools.py verify
 
-# Networked proof that checked-in bytes still match official PyPI metadata.
+# Networked proof that checked-in bytes still match official PyPI metadata
+# and that every pin remains free of active advisories reported there.
 python scripts/lock_release_tools.py check
 ```
 
@@ -269,6 +306,15 @@ CI, and runs readiness, review, test, reproducible-build, Twine, TestPyPI, and
 PyPI preflights in a disposable checkout.
 
 Candidate-owned commands receive a minimal allowlisted process environment.
+The maintainer launchers additionally reject repository-local `git` or `gh`
+executables, force authenticated API reads to `github.com`, disable Git hooks,
+fsmonitor callbacks, replacement refs, lazy object fetching, and interactive
+credential prompts, and bound subprocess output and wall time. Do not bypass
+those failures by running equivalent ad hoc Git or GitHub CLI commands.
+The credential-free repository-hygiene, candidate-verification, build-epoch,
+and compatibility-alias helpers enforce the same external-Git and callback
+controls; a local executable or replacement ref must never become release
+evidence.
 Their home, temporary, Git, GitHub CLI, pip, container, cloud, and XDG paths all
 point into disposable directories, so maintainer home-directory credentials and
 ambient CI/cloud variables are not inherited. Inline parsers, environment
@@ -279,7 +325,10 @@ intentionally contact GitHub and package indexes. Before `check` or `start`, set
 `BOUNDVER_RELEASE_REVIEW_TOKEN` to a fine-grained token restricted to this
 repository with read-only Contents, Issues, Metadata, and Pull requests access.
 The gate does not fall back to the maintainer's ambient `gh` token, and only the
-trusted review-audit subprocess receives this credential. Run the local gate
+trusted review-audit subprocess receives this credential. That audit collects
+and evaluates GitHub evidence first, then runs the exact reviewed semantic
+proposal checker in a separate bounded Python process whose environment omits
+the review token and all other ambient credentials. Run the local gate
 only on a trusted, isolated maintainer host and review changes to release
 scripts as security-sensitive code.
 
@@ -402,7 +451,10 @@ publication workflow succeeds:
    the formula update.
 2. Mirror the exact released source into the GitLab component project, create
    the unprefixed `X.Y.Z` tag, and let `.gitlab-ci.yml` create the Catalog
-   Release only after component validation passes.
+   Release only after component validation passes. GitLab must have a protected
+   tag rule matching `*.*.*` with creation restricted to Maintainers. The
+   release job also requires `CI_COMMIT_REF_PROTECTED=true`, so an unprotected
+   semver-looking tag cannot publish a Catalog release.
 3. Treat the release as incomplete until both public install paths resolve the
    exact version. If either downstream service is unavailable, record the
    partial state instead of substituting mutable assets or credentials.

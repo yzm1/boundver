@@ -12,6 +12,7 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "release_alias.py"
 REPOSITORY = "yzm1/boundver"
+REMOTE = f"https://github.com/{REPOSITORY}.git"
 TAG = "v0.11.1"
 ALIAS = "v0.11"
 SHA = "a" * 40
@@ -257,6 +258,165 @@ class PublicationBindingTests(unittest.TestCase):
         self.assertIn("/jobs?filter=all", endpoint)
         self.assertNotIn("/attempts/", endpoint)
 
+
+class ReleaseAliasHardeningTests(unittest.TestCase):
+    def setUp(self):
+        self.alias = _load_script()
+
+    def test_json_shape_is_rejected_before_decoder_allocation(self):
+        with mock.patch.object(
+            self.alias, "MAX_JSON_TOKENS", 2
+        ), mock.patch.object(
+            self.alias.json,
+            "loads",
+            side_effect=AssertionError("decoder must not run"),
+        ), self.assertRaisesRegex(ValueError, "structural limit"):
+            self.alias._strict_json_loads("[0,0,0]")
+
+    def test_json_parser_rejects_duplicates_and_nonfinite_numbers(self):
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.alias._strict_json_loads('{"id":1,"id":2}')
+        for token in ("NaN", "Infinity", "-Infinity", "1e9999"):
+            with self.subTest(token=token), self.assertRaisesRegex(
+                ValueError, "non-finite"
+            ):
+                self.alias._strict_json_loads('{"value":' + token + "}")
+
+    def test_command_output_is_bounded_while_the_process_is_running(self):
+        with self.assertRaisesRegex(self.alias.AliasError, "stdout exceeds"):
+            self.alias._run_bytes(
+                (
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'x' * 4096)",
+                ),
+                cwd=REPO_ROOT,
+                max_stdout_bytes=1024,
+                timeout=10,
+            )
+
+    def test_job_log_uses_the_bounded_runner(self):
+        log = b"2026-08-18T07:00:00Z   RELEASE_TAG: v0.11.1\n"
+        help_result = subprocess.CompletedProcess(
+            [], 0, b"--allow-escape-sequences", b""
+        )
+        log_result = subprocess.CompletedProcess([], 0, log, b"")
+        with mock.patch.object(
+            self.alias,
+            "_run_bytes",
+            side_effect=(help_result, log_result),
+        ) as run:
+            self.assertEqual(
+                self.alias._gh_job_log(REPO_ROOT, REPOSITORY, 987),
+                log.decode("utf-8"),
+            )
+        self.assertEqual(
+            run.call_args_list[1].kwargs["max_stdout_bytes"],
+            self.alias.MAX_JOB_LOG_BYTES,
+        )
+        self.assertIn("--hostname", run.call_args_list[1].args[0])
+
+    def test_git_commands_disable_replacements_hooks_and_prompts(self):
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(
+            self.alias,
+            "_git_credential_helper",
+            return_value="!'trusted-gh' auth git-credential",
+        ), mock.patch.object(self.alias, "_run", return_value=completed) as run:
+            self.alias._git_result(
+                REPO_ROOT,
+                ("ls-remote", REMOTE, f"refs/tags/{TAG}"),
+                check=False,
+            )
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], self.alias.os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], self.alias.os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
+        self.assertEqual(
+            environment["GIT_CONFIG_KEY_2"],
+            "credential.https://github.com.helper",
+        )
+        self.assertEqual(environment["GIT_CONFIG_VALUE_2"], "")
+        self.assertEqual(
+            environment["GIT_CONFIG_VALUE_3"],
+            "!'trusted-gh' auth git-credential",
+        )
+
+    def test_credential_helper_quotes_the_trusted_absolute_gh_path(self):
+        with mock.patch.object(
+            self.alias,
+            "_trusted_tool",
+            return_value="/trusted/it's gh",
+        ):
+            helper = self.alias._git_credential_helper(REPO_ROOT)
+        self.assertEqual(helper, "!'/trusted/it'\"'\"'s gh' auth git-credential")
+
+    def test_git_replace_cannot_forge_alias_ancestry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+
+            def git(*arguments: str, check: bool = True):
+                return subprocess.run(
+                    ("git", *arguments),
+                    cwd=repo,
+                    text=True,
+                    capture_output=True,
+                    check=check,
+                )
+
+            git("init", "-q")
+            git("config", "user.name", "Boundver Tests")
+            git("config", "user.email", "tests@boundver.invalid")
+            (repo / "base.txt").write_text("base\n", encoding="utf-8")
+            git("add", "base.txt")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD").stdout.strip()
+            (repo / "child.txt").write_text("child\n", encoding="utf-8")
+            git("add", "child.txt")
+            git("commit", "-q", "-m", "child")
+            descendant = git("rev-parse", "HEAD").stdout.strip()
+            git("checkout", "-q", "--orphan", "unrelated")
+            (repo / "base.txt").write_text("unrelated\n", encoding="utf-8")
+            git("add", "base.txt")
+            git("commit", "-q", "-m", "unrelated")
+            unrelated = git("rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(
+                git(
+                    "merge-base",
+                    "--is-ancestor",
+                    base,
+                    unrelated,
+                    check=False,
+                ).returncode,
+                1,
+            )
+            git("replace", unrelated, descendant)
+            self.assertEqual(
+                git(
+                    "merge-base",
+                    "--is-ancestor",
+                    base,
+                    unrelated,
+                    check=False,
+                ).returncode,
+                0,
+            )
+            self.assertEqual(
+                self.alias._git_result(
+                    repo,
+                    ("merge-base", "--is-ancestor", base, unrelated),
+                    check=False,
+                ).returncode,
+                1,
+            )
+
 class AliasDispatchTests(unittest.TestCase):
     def setUp(self):
         self.alias = _load_script()
@@ -266,7 +426,7 @@ class AliasDispatchTests(unittest.TestCase):
         return {
             "repo": self.repo,
             "repository": REPOSITORY,
-            "remote": "origin",
+            "remote": REMOTE,
             "tag": TAG,
             "sha": SHA,
             "alias": ALIAS,
@@ -341,6 +501,31 @@ class AliasDispatchTests(unittest.TestCase):
             self.alias.dispatch_alias_workflow(**arguments)
 
         run.assert_not_called()
+
+    def test_dispatch_polling_policy_and_numeric_ids_are_bounded(self):
+        for attempts, delay in (
+            (self.alias.MAX_POLL_ATTEMPTS + 1, 0),
+            (1, self.alias.MAX_POLL_DELAY_SECONDS + 1),
+            (1, float("nan")),
+            (1, float("inf")),
+        ):
+            with self.subTest(
+                attempts=attempts, delay=delay
+            ), self.assertRaisesRegex(self.alias.AliasError, "bounded"):
+                self.alias.dispatch_alias_workflow(
+                    **{
+                        **self._arguments(),
+                        "attempts": attempts,
+                        "delay_seconds": delay,
+                    }
+                )
+
+        with self.assertRaisesRegex(self.alias.AliasError, "supported range"):
+            self.alias._parse_positive_int(
+                str(self.alias.MAX_GITHUB_ID + 1), "publication run ID"
+            )
+        with self.assertRaisesRegex(self.alias.AliasError, "positive decimal"):
+            self.alias._parse_positive_int("9" * 21, "publication run ID")
 
     def test_recovery_dispatch_ref_remains_release_tag_when_control_sha_matches(self):
         arguments = {**self._arguments(), "publication_sha": SHA}
@@ -455,7 +640,7 @@ class AliasMutationTests(unittest.TestCase):
         return {
             "repo": self.repo,
             "repository": REPOSITORY,
-            "remote": "origin",
+            "remote": REMOTE,
             "tag": tag,
             "sha": SHA,
             "alias": ALIAS,
@@ -480,7 +665,7 @@ class AliasMutationTests(unittest.TestCase):
             (
                 "push",
                 f"--force-with-lease=refs/tags/{ALIAS}:",
-                "origin",
+                REMOTE,
                 f"{SHA}:refs/tags/{ALIAS}",
             ),
             calls,
@@ -508,7 +693,7 @@ class AliasMutationTests(unittest.TestCase):
             (
                 "push",
                 f"--force-with-lease=refs/tags/{ALIAS}:{OLD_SHA}",
-                "origin",
+                REMOTE,
                 f"{SHA}:refs/tags/{ALIAS}",
             ),
             calls,
@@ -560,6 +745,47 @@ class AliasMutationTests(unittest.TestCase):
         ), self.assertRaisesRegex(self.alias.AliasError, "non-ancestral"):
             self.alias.advance_alias(**self._arguments())
         self.assertFalse(any(call.args[1:2] == ("push",) for call in git_mock.call_args_list))
+
+    def test_rejects_option_like_or_noncanonical_release_remote(self):
+        for remote in (
+            "--upload-pack=malicious",
+            "upstream",
+            "https://example.invalid/repo",
+        ):
+            with self.subTest(remote=remote), self.assertRaisesRegex(
+                self.alias.AliasError,
+                "release remote must be origin or the canonical",
+            ):
+                self.alias._validate_release_remote(self.repo, REPOSITORY, remote)
+
+    def test_alias_mutation_rejects_noncanonical_remote_before_api_or_git(self):
+        with mock.patch.object(
+            self.alias,
+            "verify_originating_publication",
+        ) as verify, mock.patch.object(self.alias, "_remote_ref") as remote_ref:
+            with self.assertRaisesRegex(
+                self.alias.AliasError,
+                "release remote must be origin or the canonical",
+            ):
+                self.alias.advance_alias(
+                    **{
+                        **self._arguments(),
+                        "remote": "https://example.invalid/steal-token",
+                    }
+                )
+        verify.assert_not_called()
+        remote_ref.assert_not_called()
+
+    def test_origin_must_resolve_to_the_canonical_repository(self):
+        with mock.patch.object(
+            self.alias,
+            "_git",
+            return_value="https://example.invalid/attacker/repo.git",
+        ), self.assertRaisesRegex(
+            self.alias.AliasError,
+            "origin does not identify the canonical GitHub repository",
+        ):
+            self.alias._validate_release_remote(self.repo, REPOSITORY, "origin")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -12,14 +12,38 @@ recovery that workflow loads the reviewed publication controls from current
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import locale
+import math
+import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
-from typing import Sequence
+from typing import BinaryIO, Mapping, Sequence
+
+
+def _load_release_platform():
+    """Load the exact adjacent helper even under isolated Python startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_alias_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_release_platform = _load_release_platform()
+sanitize_git_environment = _release_platform.sanitize_git_environment
+sanitize_github_environment = _release_platform.sanitize_github_environment
 
 
 TAG_RE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
@@ -43,10 +67,257 @@ JOB_LOG_ENV_RE = re.compile(
 )
 JOB_LOG_ENV_VALUE_RE = re.compile(r": (?P<value>\S+)")
 MAX_JOB_LOG_BYTES = 32 * 1024 * 1024
+MAX_COMMAND_STDOUT_BYTES = 8 * 1024 * 1024
+MAX_COMMAND_STDERR_BYTES = 1024 * 1024
+MAX_GITHUB_HELP_BYTES = 1024 * 1024
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_JSON_TOKENS = 500_000
+MAX_JSON_DEPTH = 128
+MAX_JSON_INTEGER_DIGITS = 20
+MAX_JSON_NUMBER_CHARS = 128
+MAX_GITHUB_ID = (1 << 64) - 1
+MAX_POLL_ATTEMPTS = 300
+MAX_POLL_DELAY_SECONDS = 60.0
+MAX_POLL_WINDOW_SECONDS = 1_800.0
+MAX_DIAGNOSTIC_CHARS = 4_096
+COMMAND_TIMEOUT_SECONDS = 120
+STREAM_CHUNK_BYTES = 64 * 1024
 
 
 class AliasError(RuntimeError):
     """The requested alias operation is unsafe, ambiguous, or unreadable."""
+
+
+def _trusted_tool(name: str, repo: Path) -> str:
+    """Resolve a host tool and reject repository-local executable shadowing."""
+    raw = shutil.which(name)
+    if raw is None:
+        raise AliasError(f"required command is unavailable: {name}")
+    try:
+        repo_root = repo.resolve(strict=True)
+        selected = Path(os.path.abspath(raw))
+        selected.relative_to(repo_root)
+    except ValueError:
+        pass
+    except OSError as error:
+        raise AliasError(f"cannot resolve required command: {name}") from error
+    else:
+        raise AliasError(f"required command resolves inside the repository: {name}")
+    try:
+        path = selected.resolve(strict=True)
+        path.relative_to(repo_root)
+    except ValueError:
+        pass
+    except OSError as error:
+        raise AliasError(f"cannot resolve required command: {name}") from error
+    else:
+        raise AliasError(f"required command resolves inside the repository: {name}")
+    try:
+        metadata = path.stat()
+    except OSError as error:
+        raise AliasError(f"cannot inspect required command: {name}") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise AliasError(f"required command is not a regular file: {name}")
+    return str(path)
+
+
+def _shell_single_quote(value: str) -> str:
+    """Quote one trusted executable path for Git's POSIX-style helper shell."""
+    if not value or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        raise AliasError("trusted credential-helper path is malformed")
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _git_credential_helper(repo: Path) -> str:
+    """Bind Git authentication to the already trusted public-GitHub CLI."""
+    executable = Path(_trusted_tool("gh", repo)).as_posix()
+    return f"!{_shell_single_quote(executable)} auth git-credential"
+
+
+def _git_environment(
+    environment: Mapping[str, str] | None = None,
+    *,
+    credential_helper: str | None = None,
+) -> dict[str, str]:
+    """Disable ambient Git execution, transport, and credential configuration."""
+    result = sanitize_git_environment(environment)
+    process_config = [
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+    ]
+    if credential_helper is not None:
+        # An empty helper resets any repository-local helper chain before the
+        # trusted absolute gh command is added. System/global config is also
+        # disabled, so no host-ambient helper or URL rewrite participates.
+        process_config.extend(
+            (
+                ("credential.https://github.com.helper", ""),
+                ("credential.https://github.com.helper", credential_helper),
+            )
+        )
+    result.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": str(len(process_config)),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+        }
+    )
+    for index, (key, value) in enumerate(process_config):
+        result[f"GIT_CONFIG_KEY_{index}"] = key
+        result[f"GIT_CONFIG_VALUE_{index}"] = value
+    return result
+
+
+def _kill_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _read_bounded_pipe(
+    process: subprocess.Popen[bytes],
+    pipe: BinaryIO,
+    label: str,
+    limit: int,
+    destination: bytearray,
+    overflows: list[str],
+    errors: list[str],
+) -> None:
+    try:
+        while True:
+            remaining_with_sentinel = max(1, limit - len(destination) + 1)
+            reader = getattr(pipe, "read1", pipe.read)
+            chunk = reader(min(STREAM_CHUNK_BYTES, remaining_with_sentinel))
+            if not chunk:
+                return
+            if len(destination) + len(chunk) > limit:
+                overflows.append(label)
+                _kill_process(process)
+                return
+            destination.extend(chunk)
+    except (OSError, ValueError) as error:
+        errors.append(f"{label}: {error}")
+        _kill_process(process)
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _run_bytes(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    check: bool = True,
+    env: Mapping[str, str] | None = None,
+    max_stdout_bytes: int = MAX_COMMAND_STDOUT_BYTES,
+    max_stderr_bytes: int = MAX_COMMAND_STDERR_BYTES,
+    timeout: int = COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[bytes]:
+    if (
+        not command
+        or max_stdout_bytes < 0
+        or max_stderr_bytes < 0
+        or timeout <= 0
+    ):
+        raise ValueError("invalid bounded subprocess arguments")
+    argv = [str(item) for item in command]
+    process_environment = env
+    if argv[0] in {"git", "gh"}:
+        original_name = argv[0]
+        argv[0] = _trusted_tool(original_name, cwd)
+        if original_name == "gh":
+            process_environment = sanitize_github_environment(
+                os.environ if env is None else env
+            )
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=None if process_environment is None else dict(process_environment),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as error:
+        raise AliasError(f"cannot execute required command: {command[0]}") from error
+    if process.stdout is None or process.stderr is None:
+        _kill_process(process)
+        raise AliasError("required command pipes are unavailable")
+    stdout = bytearray()
+    stderr = bytearray()
+    overflows: list[str] = []
+    errors: list[str] = []
+    readers = (
+        threading.Thread(
+            target=_read_bounded_pipe,
+            args=(
+                process,
+                process.stdout,
+                "stdout",
+                max_stdout_bytes,
+                stdout,
+                overflows,
+                errors,
+            ),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_read_bounded_pipe,
+            args=(
+                process,
+                process.stderr,
+                "stderr",
+                max_stderr_bytes,
+                stderr,
+                overflows,
+                errors,
+            ),
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        _kill_process(process)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise AliasError(f"required command timed out: {command[0]}") from error
+    finally:
+        for reader in readers:
+            reader.join(timeout=5)
+    if any(reader.is_alive() for reader in readers):
+        _kill_process(process)
+        raise AliasError("required command output pipes did not close")
+    if errors:
+        raise AliasError("required command output could not be read")
+    if overflows:
+        label = "stdout" if "stdout" in overflows else "stderr"
+        limit = max_stdout_bytes if label == "stdout" else max_stderr_bytes
+        raise AliasError(
+            f"{command[0]} {label} exceeds the {limit}-byte limit"
+        )
+    result = subprocess.CompletedProcess(argv, returncode, bytes(stdout), bytes(stderr))
+    if check and returncode != 0:
+        diagnostic = result.stderr or result.stdout or b"command failed"
+        detail = diagnostic.decode("utf-8", "backslashreplace").strip()
+        if len(detail) > MAX_DIAGNOSTIC_CHARS:
+            detail = detail[:MAX_DIAGNOSTIC_CHARS] + "..."
+        raise AliasError(f"{' '.join(command)}: {detail}")
+    return result
 
 
 def _run(
@@ -54,46 +325,156 @@ def _run(
     *,
     cwd: Path,
     check: bool = True,
+    env: Mapping[str, str] | None = None,
+    max_stdout_bytes: int = MAX_COMMAND_STDOUT_BYTES,
+    max_stderr_bytes: int = MAX_COMMAND_STDERR_BYTES,
+    timeout: int = COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            list(command),
-            cwd=cwd,
-            text=True,
-            capture_output=True,
-            check=check,
-        )
-    except FileNotFoundError as error:
-        raise AliasError(f"required command is unavailable: {command[0]}") from error
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout or "command failed").strip()
-        raise AliasError(f"{' '.join(command)}: {detail}") from error
+    raw = _run_bytes(
+        command,
+        cwd=cwd,
+        check=check,
+        env=env,
+        max_stdout_bytes=max_stdout_bytes,
+        max_stderr_bytes=max_stderr_bytes,
+        timeout=timeout,
+    )
+    encoding = locale.getpreferredencoding(False)
+    return subprocess.CompletedProcess(
+        raw.args,
+        raw.returncode,
+        raw.stdout.decode(encoding, "backslashreplace"),
+        raw.stderr.decode(encoding, "backslashreplace"),
+    )
+
+
+def _git_result(
+    repo: Path,
+    arguments: Sequence[str],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    credential_helper = (
+        _git_credential_helper(repo)
+        if arguments and arguments[0] in {"fetch", "ls-remote", "push"}
+        else None
+    )
+    return _run(
+        ("git", *arguments),
+        cwd=repo,
+        check=check,
+        env=_git_environment(credential_helper=credential_helper),
+    )
 
 
 def _git(repo: Path, *arguments: str) -> str:
-    return _run(("git", *arguments), cwd=repo).stdout.strip()
+    return _git_result(repo, arguments).stdout.strip()
+
+
+def _json_shape_within_limits(document: str) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for character in document:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif character in "[{":
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif character in "]}":
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif character in " \t\r\n,:":
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
+
+
+def _bounded_json_int(value: str) -> int:
+    if len(value.lstrip("-")) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError("oversized JSON integer")
+    return int(value)
+
+
+def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError("oversized JSON number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number")
+    return parsed
+
+
+def _reject_json_constant(_value: str) -> object:
+    raise ValueError("non-finite JSON constant")
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(document: str) -> object:
+    if len(document.encode("utf-8", "surrogatepass")) > MAX_JSON_BYTES:
+        raise ValueError(f"JSON exceeds the {MAX_JSON_BYTES}-byte limit")
+    if not _json_shape_within_limits(document):
+        raise ValueError("JSON exceeds the structural limit")
+    return json.loads(
+        document,
+        object_pairs_hook=_unique_json_object,
+        parse_constant=_reject_json_constant,
+        parse_float=_bounded_json_float,
+        parse_int=_bounded_json_int,
+    )
 
 
 def _gh_json(repo: Path, endpoint: str) -> object:
-    result = _run(("gh", "api", endpoint), cwd=repo)
+    result = _run_bytes(
+        ("gh", "api", "--hostname", "github.com", endpoint),
+        cwd=repo,
+        max_stdout_bytes=MAX_JSON_BYTES,
+    )
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as error:
+        document = result.stdout.decode("utf-8", "strict")
+        return _strict_json_loads(document)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise AliasError(f"GitHub API returned invalid JSON for {endpoint}") from error
 
 
 def _gh_job_log(repo: Path, repository: str, job_id: int) -> str:
     _positive_int(job_id, "originating verify-release job ID")
     endpoint = f"repos/{repository}/actions/jobs/{job_id}/logs"
-    try:
-        help_result = subprocess.run(
-            ["gh", "api", "--help"],
-            cwd=repo,
-            capture_output=True,
-            check=False,
-        )
-    except FileNotFoundError as error:
-        raise AliasError("required command is unavailable: gh") from error
+    help_result = _run_bytes(
+        ("gh", "api", "--help"),
+        cwd=repo,
+        check=False,
+        max_stdout_bytes=MAX_GITHUB_HELP_BYTES,
+        max_stderr_bytes=MAX_GITHUB_HELP_BYTES,
+    )
     if help_result.returncode != 0:
         detail = (help_result.stderr or help_result.stdout).decode(
             "utf-8", errors="replace"
@@ -106,8 +487,13 @@ def _gh_job_log(repo: Path, repository: str, job_id: int) -> str:
     command = ["gh", "api"]
     if b"--allow-escape-sequences" in help_output:
         command.append("--allow-escape-sequences")
-    command.append(endpoint)
-    result = subprocess.run(command, cwd=repo, capture_output=True, check=False)
+    command.extend(("--hostname", "github.com", endpoint))
+    result = _run_bytes(
+        command,
+        cwd=repo,
+        check=False,
+        max_stdout_bytes=MAX_JOB_LOG_BYTES,
+    )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
         raise AliasError(
@@ -116,8 +502,6 @@ def _gh_job_log(repo: Path, repository: str, job_id: int) -> str:
         )
     if not result.stdout:
         raise AliasError("originating verify-release job log is empty")
-    if len(result.stdout) > MAX_JOB_LOG_BYTES:
-        raise AliasError("originating verify-release job log exceeds the inspection limit")
     try:
         return result.stdout.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -160,7 +544,11 @@ def _require_release_input_evidence(
 
 
 def _positive_int(value: object, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 < value <= MAX_GITHUB_ID
+    ):
         raise AliasError(f"{label} must be a positive integer")
     return value
 
@@ -172,9 +560,12 @@ def _nonnegative_int(value: object, label: str) -> int:
 
 
 def _parse_positive_int(value: str, label: str) -> int:
-    if re.fullmatch(r"[1-9]\d*", value) is None:
+    if re.fullmatch(r"[1-9]\d{0,19}", value) is None:
         raise AliasError(f"{label} must be a positive decimal integer")
-    return int(value)
+    parsed = int(value)
+    if parsed > MAX_GITHUB_ID:
+        raise AliasError(f"{label} exceeds the supported range")
+    return parsed
 
 
 def _validate_release_identity(
@@ -194,6 +585,29 @@ def _validate_release_identity(
         raise AliasError(f"compatibility alias must be the release line for {tag}")
     if REPOSITORY_RE.fullmatch(repository) is None:
         raise AliasError(f"invalid GitHub repository: {repository!r}")
+
+
+def _validate_release_remote(repo: Path, repository: str, remote: str) -> None:
+    """Allow only the canonical HTTPS URL or its verified ``origin`` alias."""
+    canonical_urls = {
+        f"https://github.com/{repository}",
+        f"https://github.com/{repository}.git",
+    }
+    if remote in canonical_urls:
+        return
+    if remote != "origin":
+        raise AliasError(
+            "release remote must be origin or the canonical public GitHub HTTPS URL"
+        )
+    configured = _git(repo, "remote", "get-url", "origin")
+    accepted_origin_urls = canonical_urls | {
+        f"git@github.com:{repository}",
+        f"git@github.com:{repository}.git",
+        f"ssh://git@github.com/{repository}",
+        f"ssh://git@github.com/{repository}.git",
+    }
+    if configured not in accepted_origin_urls:
+        raise AliasError("origin does not identify the canonical GitHub repository")
 
 
 def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
@@ -333,6 +747,7 @@ def dispatch_alias_workflow(
     delay_seconds: float = 5.0,
 ) -> str:
     _validate_release_identity(tag, sha, alias, repository)
+    _validate_release_remote(repo, repository, remote)
     _positive_int(publication_run_id, "publication run ID")
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:
@@ -340,8 +755,16 @@ def dispatch_alias_workflow(
     _validate_publication_control(
         publication_ref, publication_sha, tag=tag, release_sha=sha
     )
-    if attempts <= 0 or delay_seconds < 0:
-        raise AliasError("poll attempts must be positive and delay cannot be negative")
+    if (
+        type(attempts) is not int
+        or not 0 < attempts <= MAX_POLL_ATTEMPTS
+        or type(delay_seconds) not in {int, float}
+        or isinstance(delay_seconds, bool)
+        or not math.isfinite(delay_seconds)
+        or not 0 <= delay_seconds <= MAX_POLL_DELAY_SECONDS
+        or attempts * delay_seconds > MAX_POLL_WINDOW_SECONDS
+    ):
+        raise AliasError("polling policy exceeds its bounded time or attempt limits")
 
     tag_ref = f"refs/tags/{tag}"
     alias_ref = f"refs/tags/{alias}"
@@ -627,6 +1050,7 @@ def advance_alias(
     publication_sha: str,
 ) -> str:
     _validate_release_identity(tag, sha, alias, repository)
+    _validate_release_remote(repo, repository, remote)
     _positive_int(publication_run_id, "publication run ID")
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:
@@ -660,9 +1084,9 @@ def advance_alias(
     else:
         local_before = "refs/boundver-release/compatibility-alias-before"
         _git(repo, "fetch", "--no-tags", remote, f"{alias_ref}:{local_before}")
-        ancestry = _run(
-            ("git", "merge-base", "--is-ancestor", expected_current, sha),
-            cwd=repo,
+        ancestry = _git_result(
+            repo,
+            ("merge-base", "--is-ancestor", expected_current, sha),
             check=False,
         )
         if ancestry.returncode != 0:
@@ -724,6 +1148,7 @@ def verify_alias_request(
 ) -> str:
     """Fail early unless the immutable tag and parent publication are exact."""
     _validate_release_identity(tag, sha, alias, repository)
+    _validate_release_remote(repo, repository, remote)
     _positive_int(publication_run_id, "publication run ID")
     _positive_int(publication_attempt, "publication attempt")
     if SHA_RE.fullmatch(publication_sha) is None:

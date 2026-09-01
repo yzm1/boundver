@@ -4,7 +4,7 @@ Thanks for your interest in improving boundver.
 
 ## Development setup
 
-- Python 3.9+
+- Python 3.10+
 - Git
 
 Install the development extras, run the undefined-name/unused-code gate, and

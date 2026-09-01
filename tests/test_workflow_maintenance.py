@@ -58,6 +58,8 @@ class WorkflowDependencyMaintenanceTests(unittest.TestCase):
             update["package-ecosystem"] for update in config.get("updates", [])
         }
         self.assertEqual(ecosystems, {"docker", "github-actions", "pip"})
+        for update in config["updates"]:
+            self.assertGreaterEqual(update["cooldown"]["default-days"], 7)
 
 
 if __name__ == "__main__":

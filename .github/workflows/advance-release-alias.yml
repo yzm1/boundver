@@ -43,6 +43,38 @@ concurrency:
 permissions: {}
 
 env:
+  ALL_PROXY: ""
+  BASH_ENV: ""
+  CDPATH: ""
+  CURL_CA_BUNDLE: ""
+  CURL_HOME: ""
+  ENV: ""
+  GCM_INTERACTIVE: never
+  GLOBIGNORE: ""
+  GH_NO_EXTENSION_UPDATE_NOTIFIER: "1"
+  GH_NO_UPDATE_NOTIFIER: "1"
+  GH_HOST: github.com
+  GH_PAGER: cat
+  GH_PROMPT_DISABLED: "1"
+  GIT_NO_LAZY_FETCH: "1"
+  GIT_NO_REPLACE_OBJECTS: "1"
+  GIT_OPTIONAL_LOCKS: "0"
+  GIT_PAGER: cat
+  GIT_TERMINAL_PROMPT: "0"
+  HTTPS_PROXY: ""
+  HTTP_PROXY: ""
+  NODE_EXTRA_CA_CERTS: ""
+  NO_COLOR: "1"
+  NO_PROXY: github.com,api.github.com
+  REQUESTS_CA_BUNDLE: ""
+  SSL_CERT_DIR: ""
+  SSL_CERT_FILE: ""
+  SSLKEYLOGFILE: ""
+  TERM: dumb
+  all_proxy: ""
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: github.com,api.github.com
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}

@@ -59,11 +59,19 @@ the reviewed target commit is the checked-out `HEAD`.
 
 ```bash
 docker run --rm \
+  --network none \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
   --volume "$PWD:/repo:ro" \
   --workdir /repo \
   ghcr.io/yzm1/boundver:<version> \
   verify --source head
 ```
+
+This least-privilege form is exercised in CI. Verification needs no writable
+filesystem, network access, or Linux capabilities. Add those privileges only
+for a workflow that deliberately needs them.
 
 Release images target `linux/amd64` and `linux/arm64`, carry OCI source,
 version, and revision labels, and receive GitHub artifact attestations. Resolve
@@ -71,7 +79,9 @@ and pin the manifest digest for the strongest reproducibility:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/yzm1/boundver:<version>
-docker run --rm ghcr.io/yzm1/boundver@sha256:<manifest-digest> --version
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  ghcr.io/yzm1/boundver@sha256:<manifest-digest> --version
 ```
 
 ## Homebrew
@@ -122,7 +132,7 @@ GitHub Releases also contain `boundver-<version>.pyz` and `SHA256SUMS`:
 python3 boundver-<version>.pyz --version
 ```
 
-The zipapp requires Python 3.9 or newer but no package installation. It bundles
+The zipapp requires Python 3.10 or newer but no package installation. It bundles
 the lock-pinned pure-Python PyYAML runtime and its license; platform-specific
 LibYAML extensions are intentionally omitted. JSON and YAML work on every
 supported Python version. TOML configuration requires Python 3.11 or newer.

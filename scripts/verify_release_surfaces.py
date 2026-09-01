@@ -12,7 +12,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -26,7 +28,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 PROJECT = "boundver"
 SUMMARY = "Classify contract drift and downstream impact across polyglot repositories"
-REQUIRES_PYTHON = ">=3.9"
+REQUIRES_PYTHON = ">=3.10"
 DEFAULT_REPOSITORY = "yzm1/boundver"
 DEFAULT_MARKETPLACE_SLUG = "boundver"
 USER_AGENT = "boundver-release-surface-verifier/1"
@@ -37,6 +39,7 @@ MAX_RELEASE_NOTES_BYTES = 2 * 1024 * 1024
 MAX_CHECKSUM_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_DIRECTORY_ENTRIES = 16
 MAX_JSON_INTEGER_DIGITS = 4300
+MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
@@ -71,6 +74,40 @@ class ReleaseNetworkError(RuntimeError):
     """A public surface could not be read."""
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep public verification requests on their validated first origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _public_tls_context() -> ssl.SSLContext:
+    """Load host trust without environment-selected CAs or TLS key logging."""
+    removed: dict[str, str] = {}
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
+        value = os.environ.pop(name, None)
+        if value is not None:
+            removed[name] = value
+    try:
+        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    finally:
+        os.environ.update(removed)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+_NO_PROXY_HANDLER = urllib.request.ProxyHandler({})
+_PUBLIC_OPENER = urllib.request.build_opener(
+    _NO_PROXY_HANDLER,
+    urllib.request.HTTPSHandler(context=_public_tls_context()),
+    _RejectRedirects(),
+)
+
+
+def _open_public_url(request: urllib.request.Request, *, timeout: int):
+    return _PUBLIC_OPENER.open(request, timeout=timeout)
+
+
 def _bounded_json_int(value: str) -> int:
     """Parse a JSON integer independently of Python's mutable digit limit."""
     if re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value) is None:
@@ -90,6 +127,10 @@ def _bounded_json_int(value: str) -> int:
 
 
 def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError(
+            f"JSON number exceeds the {MAX_JSON_NUMBER_CHARS}-character limit"
+        )
     result = float(value)
     if not math.isfinite(result):
         raise ValueError("non-finite JSON number is not supported")
@@ -254,7 +295,7 @@ def _stdlib_fetch(url: str, accept: str) -> HttpResponse:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_public_url(request, timeout=30) as response:
             max_bytes = (
                 MAX_RELEASE_ARTIFACT_BYTES
                 if accept == "application/octet-stream"

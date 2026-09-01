@@ -73,7 +73,7 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         ) as finder, mock.patch.object(
                 platform.os.path,
                 "isfile",
-                side_effect=lambda candidate: candidate == git_bash,
+                side_effect=lambda candidate: candidate in {git, git_bash},
         ):
             bash = platform.resolve_bash("safe-tools", platform_name="nt")
 
@@ -97,6 +97,57 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         self.assertIsNone(bash)
         finder.assert_called_once_with("git", path="safe-tools")
 
+    def test_platform_helper_rejects_workspace_bash(self):
+        platform = _load_platform_helper()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "bash"
+            fake.write_bytes(b"fake")
+            with mock.patch.object(
+                platform.shutil, "which", return_value=str(fake)
+            ):
+                bash = platform.resolve_bash(
+                    "safe-tools",
+                    platform_name="posix",
+                    forbidden_root=root,
+                )
+        self.assertIsNone(bash)
+
+    def test_verifier_rejects_repository_local_tools(self):
+        verifier = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            fake = repo / "git.exe"
+            fake.write_bytes(b"fake")
+            with mock.patch.object(
+                verifier.shutil, "which", return_value=str(fake)
+            ), self.assertRaisesRegex(
+                verifier.CandidateVerificationError,
+                "release repository",
+            ):
+                verifier._trusted_tool("git", repo, "safe-tools")
+
+    def test_verifier_git_disables_callbacks_replacements_and_prompts(self):
+        verifier = _load_script()
+        completed = subprocess.CompletedProcess(
+            ["trusted-git"], 0, SHA + "\n", ""
+        )
+        with mock.patch.object(verifier, "_run", return_value=completed) as run:
+            result = verifier._git_output(
+                REPO_ROOT,
+                "trusted-git",
+                ("rev-parse", "HEAD"),
+                {"PATH": "safe-tools"},
+            )
+        self.assertEqual(result, SHA)
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertIn(f"core.hooksPath={verifier.os.devnull}", command)
+        self.assertIn("core.fsmonitor=false", command)
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+
     def test_shared_sequence_uses_exact_commit_epoch_and_artifacts(self):
         verifier = _load_script()
         commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
@@ -117,13 +168,25 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 verifier, "_git_output", side_effect=(SHA, "1700000000")
             ), mock.patch.object(verifier, "_run", side_effect=run), mock.patch.object(
                 verifier, "_packaging_bash", return_value="/tools/bash"
+            ), mock.patch.object(
+                verifier,
+                "_trusted_tool",
+                side_effect=lambda command, _repo, _path: command
+                if Path(command).is_absolute()
+                else "/tools/git",
             ):
                 wheel, sdist = verifier.verify_candidate(
                     repo,
                     TAG,
                     SHA,
                     python=sys.executable,
-                    environment={"PATH": "safe-tools", "SAFE_VALUE": "kept"},
+                    environment={
+                        "PATH": "safe-tools",
+                        "SAFE_VALUE": "kept",
+                        "BASH_ENV": "repo/startup.sh",
+                        "ENV": "repo/posix-startup.sh",
+                        "SHELLOPTS": "xtrace",
+                    },
                 )
 
         self.assertEqual(wheel.name, f"boundver-{CURRENT_VERSION}-py3-none-any.whl")
@@ -145,6 +208,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
             commands[2][0], ("/tools/bash", "scripts/packaging_smoke.sh")
         )
         self.assertEqual(commands[2][1]["SOURCE_DATE_EPOCH"], "1700000000")
+        for name in ("BASH_ENV", "ENV", "SHELLOPTS"):
+            self.assertNotIn(name, commands[2][1])
         self.assertNotIn("SOURCE_DATE_EPOCH", commands[0][1])
         self.assertEqual(
             commands[3][0][:5],

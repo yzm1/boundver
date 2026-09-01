@@ -4,13 +4,32 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Iterable, Sequence
+
+
+def _load_release_platform():
+    """Load the exact adjacent helper even under isolated Python startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_alias_validation_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+sanitize_git_environment = _load_release_platform().sanitize_git_environment
 
 
 MAX_TAG_LIST_BYTES = 1024 * 1024
@@ -24,7 +43,7 @@ TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
 ALIAS_RE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
-REMOTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*")
+REMOTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class AliasValidationError(RuntimeError):
@@ -76,17 +95,40 @@ def _run_git(
     accepted_returncodes: Iterable[int] = (0,),
     stdout_limit: int = MAX_TAG_LIST_BYTES,
 ) -> tuple[int, bytes]:
+    environment = sanitize_git_environment()
+    environment.update(
+        {
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
     try:
         process = subprocess.Popen(
             [
                 str(git),
                 "-c",
-                "core.hooksPath=/dev/null",
+                f"core.hooksPath={os.devnull}",
+                "-c",
+                "core.fsmonitor=false",
+                "--no-optional-locks",
                 "-C",
                 str(repo),
                 *arguments,
             ],
             cwd=runner_temp,
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -222,23 +264,36 @@ def validate_alias(
         or REMOTE_RE.fullmatch(remote) is None
     ):
         raise AliasValidationError("alias validation inputs are malformed")
+    if any(
+        len(group) > MAX_VERSION_DIGITS
+        for group in (*release_match.groups(), *alias_match.groups())
+    ):
+        raise AliasValidationError("release version exceeds the digit limit")
     expected_alias = release_tag.rsplit(".", 1)[0]
     if alias != expected_alias:
         raise AliasValidationError(
             f"compatibility alias must be {expected_alias}, got {alias}"
         )
     patch_digits = release_match.group(3)
-    if len(patch_digits) > MAX_VERSION_DIGITS:
-        raise AliasValidationError("release patch exceeds the digit limit")
     release_patch = int(patch_digits)
 
     repo = repo.resolve()
     runner_temp = runner_temp.resolve()
-    git = Path(shutil.which("git") or "").resolve()
+    selected_git = shutil.which("git")
+    try:
+        raw_git = Path(os.path.abspath(selected_git or ""))
+        git = Path(selected_git or "").resolve(strict=True)
+        git_identity = git.stat()
+    except OSError as error:
+        raise AliasValidationError(
+            "trusted Git executable or repository is unavailable"
+        ) from error
     if (
         not repo.is_dir()
         or not runner_temp.is_dir()
-        or not git.is_file()
+        or not stat.S_ISREG(git_identity.st_mode)
+        or raw_git == repo
+        or repo in raw_git.parents
         or git == repo
         or repo in git.parents
     ):

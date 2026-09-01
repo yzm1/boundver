@@ -378,6 +378,18 @@ def test_zip_member_paths_are_bounded_before_inventory(tmp_path):
     assert "overlong ZIP member name" in result.stderr
 
 
+def test_zip_member_portable_name_collisions_are_rejected(tmp_path):
+    wheel, sdist, pyz, license_path, scratch = _artifacts(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("boundver/Contract.json", b"first")
+        archive.writestr("boundver/contract.json", b"second")
+
+    result = _run_archive(wheel, sdist, pyz, license_path, scratch)
+
+    assert result.returncode != 0
+    assert "non-portable member-name collision" in result.stderr
+
+
 def test_zip_member_aggregate_is_preflighted_before_decompression(tmp_path):
     wheel, sdist, pyz, license_path, scratch = _artifacts(tmp_path)
     _patch_zip_uncompressed_sizes(wheel, 100 * 1024 * 1024)

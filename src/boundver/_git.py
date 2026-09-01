@@ -1,12 +1,13 @@
 """Git helper primitives for boundver."""
 
 import os
+import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import (
     BinaryIO,
@@ -15,6 +16,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Tuple,
 )
@@ -25,6 +27,7 @@ from ._utils import (
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
     _bounded_sorted_paths,
+    _is_windows_reparse_point,
     _iter_bounded_filesystem_paths,
     _match_path_glob,
     _match_text_glob,
@@ -50,14 +53,47 @@ MAX_GIT_LIST_RECORD_BYTES = MAX_GIT_PATH_BYTES + 512
 MAX_GIT_COMMAND_OUTPUT_BYTES = 1024 * 1024
 MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
 MAX_GIT_FAILURE_DETAIL_CHARS = 4096
+MAX_GIT_COMMAND_SECONDS = 300
+MAX_GIT_CONFIG_QUERY_SECONDS = 10
+MAX_GIT_FILTER_DRIVERS = 64
+MAX_GIT_FILTER_CONFIG_KEYS = 4 * MAX_GIT_FILTER_DRIVERS
+MAX_GIT_FILTER_KEY_BYTES = 512
+MAX_GIT_FILTER_OVERRIDE_BYTES = 16 * 1024
 _GIT_STREAM_CHUNK_BYTES = 64 * 1024
-_GIT_DIAGNOSTIC_TRUNCATION = b"\n...[Git diagnostic truncated by boundver]"
 MAX_FALLBACK_FILES = 50_000
 MAX_FALLBACK_TRAVERSAL_ENTRIES = 200_000
 MAX_GITIGNORE_BYTES = 1024 * 1024
 MAX_GITIGNORE_PATTERN_BYTES = MAX_GIT_PATH_BYTES
 MAX_GITIGNORE_RULES = 10_000
 MAX_GITIGNORE_MATCH_STEPS = 10_000_000
+
+_GIT_AMBIENT_OVERRIDE_NAMES = frozenset({"SSH_ASKPASS"})
+_GIT_AMBIENT_OVERRIDE_PREFIXES = ("GIT_",)
+
+# These settings alter how Git compares a checked-out worktree with its index,
+# but cannot name executables, callbacks, include files, or credential/network
+# helpers. Repository/worktree values remain visible through local config.
+# When the effective value comes only from a system or global scope, copy this
+# narrow allowlist into process-local config before suppressing those ambient
+# files. This preserves ordinary CRLF/symlink/case semantics without reopening
+# the code-execution and redirection surface of arbitrary Git configuration.
+_SAFE_AMBIENT_WORKTREE_CONFIG_VALUES = {
+    "core.autocrlf": frozenset({"true", "false", "input"}),
+    "core.eol": frozenset({"lf", "crlf", "native"}),
+    "core.filemode": frozenset({"true", "false"}),
+    "core.ignorecase": frozenset({"true", "false"}),
+    "core.precomposeunicode": frozenset({"true", "false"}),
+    "core.safecrlf": frozenset({"true", "false", "warn"}),
+    "core.symlinks": frozenset({"true", "false"}),
+}
+_SAFE_AMBIENT_WORKTREE_CONFIG_PATTERN = (
+    r"^(core\.autocrlf|core\.eol|core\.filemode|core\.ignorecase|"
+    r"core\.precomposeunicode|core\.safecrlf|core\.symlinks)$"
+)
+_FILTER_COMMAND_CONFIG_PATTERN = (
+    r"^filter\..*\.(clean|smudge|process|required)$"
+)
+_FILTER_COMMAND_SUFFIXES = ("clean", "smudge", "process", "required")
 
 
 def _git_text_encoding() -> str:
@@ -82,13 +118,161 @@ def _decode_git_text(data: bytes, *, successful: bool) -> str:
     )
 
 
-def _read_bounded_git_diagnostic(stderr_file: BinaryIO) -> bytes:
-    """Return capped subprocess diagnostics with an explicit truncation mark."""
-    stderr_file.seek(0)
-    diagnostic = stderr_file.read(MAX_GIT_DIAGNOSTIC_BYTES + 1)
-    if len(diagnostic) <= MAX_GIT_DIAGNOSTIC_BYTES:
+def _require_git_process_pipes(
+    process: subprocess.Popen, *names: str
+) -> None:
+    """Fail closed if a requested subprocess pipe was not created."""
+    missing = [name for name in names if getattr(process, name, None) is None]
+    if not missing:
+        return
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    raise RuntimeError(
+        "Git subprocess did not expose its requested " + "/".join(missing) + " pipe"
+    )
+
+
+class _BoundedGitDiagnosticDrain:
+    """Drain one Git stderr pipe without an unbounded memory or disk spool.
+
+    Streaming stdout paths cannot call ``communicate()`` and historically sent
+    stderr to a temporary file to avoid a pipe deadlock. Merely truncating that
+    file when reading it back did not bound what a hostile/corrupt repository
+    could make Git write first. This concurrent drain retains at most the
+    diagnostic ceiling and terminates the child on the one-byte sentinel.
+    """
+
+    def __init__(self, process: subprocess.Popen) -> None:
+        _require_git_process_pipes(process, "stderr")
+        self.process = process
+        self.stream: BinaryIO = process.stderr
+        self.limit = MAX_GIT_DIAGNOSTIC_BYTES
+        self._data = bytearray()
+        self._overflow = False
+        self._error: Optional[BaseException] = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._drain, daemon=True)
+        try:
+            self._thread.start()
+        except BaseException:
+            try:
+                self.stream.close()
+            finally:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            raise
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                with self._lock:
+                    remaining = self.limit - len(self._data)
+                chunk = self.stream.read(
+                    min(_GIT_STREAM_CHUNK_BYTES, remaining + 1)
+                )
+                if not chunk:
+                    return
+                if not isinstance(chunk, bytes):
+                    raise TypeError("Git stderr returned non-byte data")
+                if len(chunk) > remaining:
+                    with self._lock:
+                        self._data.extend(chunk[:remaining])
+                        self._overflow = True
+                    try:
+                        self.process.kill()
+                    except OSError:
+                        pass
+                    return
+                with self._lock:
+                    self._data.extend(chunk)
+        except BaseException as exc:
+            with self._lock:
+                self._error = exc
+            try:
+                self.process.kill()
+            except OSError:
+                pass
+        finally:
+            self.stream.close()
+
+    def snapshot(self) -> bytes:
+        """Return the bounded prefix available without waiting for process exit."""
+        with self._lock:
+            return bytes(self._data)
+
+    def finish(self) -> bytes:
+        """Join after process exit and surface overflow/read failures."""
+        self._thread.join()
+        with self._lock:
+            error = self._error
+            overflow = self._overflow
+            diagnostic = bytes(self._data)
+        if error is not None:
+            raise error
+        if overflow:
+            raise GuardrailError(
+                "Git command stderr exceeds the "
+                f"{self.limit}-byte limit"
+            )
         return diagnostic
-    return diagnostic[:MAX_GIT_DIAGNOSTIC_BYTES] + _GIT_DIAGNOSTIC_TRUNCATION
+
+
+class _GitProcessDeadline:
+    """Kill one Git process if repository input makes it stop making progress."""
+
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        seconds: Optional[float] = None,
+    ) -> None:
+        self.process = process
+        self.seconds = MAX_GIT_COMMAND_SECONDS if seconds is None else seconds
+        self.expired = threading.Event()
+        self.timer = threading.Timer(self.seconds, self._expire)
+        self.timer.daemon = True
+
+    def _expire(self) -> None:
+        try:
+            if self.process.poll() is not None:
+                return
+            self.expired.set()
+            self.process.kill()
+        except (OSError, ValueError):
+            # A concurrent normal reap won the race with the deadline.
+            return
+
+    def start(self) -> None:
+        try:
+            self.timer.start()
+        except BaseException:
+            try:
+                if self.process.poll() is None:
+                    self.process.kill()
+            except (OSError, ValueError):
+                pass
+            try:
+                self.process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired, ValueError):
+                pass
+            raise
+
+    def cancel(self) -> None:
+        self.timer.cancel()
+
+    def raise_if_expired(self) -> None:
+        if self.expired.is_set():
+            raise GuardrailError(
+                "Git command exceeds the "
+                f"{self.seconds}-second wall-clock limit"
+            )
 
 
 def _git_failure_detail(exc: BaseException) -> str:
@@ -246,22 +430,391 @@ class GitSourceSnapshot:
     filemode: bool = True
 
 
+def _filesystem_git_root(start: Path) -> Path:
+    """Find the nearest plain ``.git`` marker without consulting Git config."""
+    current = start.resolve(strict=True)
+    if not current.is_dir():
+        current = current.parent
+    for candidate in (current, *current.parents):
+        marker = candidate / ".git"
+        try:
+            identity = marker.lstat()
+        except FileNotFoundError:
+            continue
+        if _is_windows_reparse_point(identity):
+            raise ValueError(
+                "Git marker must not be a symlink, junction, or reparse point: "
+                f"{marker}"
+            )
+        if stat.S_ISDIR(identity.st_mode) or stat.S_ISREG(identity.st_mode):
+            return candidate
+        raise ValueError(f"Git marker is not a plain file or directory: {marker}")
+    raise ValueError(f"No Git worktree contains {start}")
+
+
 def git_root() -> Path:
-    """Find the repository root through the bounded, lossless text transport."""
-    result = _git_run(Path.cwd(), ["rev-parse", "--show-toplevel"])
-    return Path(result.stdout.strip())
+    """Find a worktree root without allowing local config to redirect it."""
+    expected = _filesystem_git_root(Path.cwd())
+    result = _git_run(expected, ["rev-parse", "--show-toplevel"])
+    reported = Path(result.stdout.strip()).resolve(strict=True)
+    if reported != expected:
+        raise ValueError(
+            "Git reported a worktree outside the nearest .git marker: "
+            f"{reported} != {expected}"
+        )
+    return expected
 
 
-def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
+def _git_config_query_environment() -> Dict[str, str]:
+    """Return an inert environment for reading a narrow Git config allowlist."""
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        canonical = name.upper()
+        if canonical in _GIT_AMBIENT_OVERRIDE_NAMES or canonical.startswith(
+            _GIT_AMBIENT_OVERRIDE_PREFIXES
+        ):
+            environment.pop(name, None)
+    environment.update(
+        {
+            "GCM_INTERACTIVE": "never",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+@lru_cache(maxsize=128)
+def _ambient_worktree_config_overrides(
+    resolved_repo_root: str,
+) -> Tuple[Tuple[str, str], ...]:
+    """Return safe worktree settings lost when ambient config is suppressed.
+
+    ``git config`` only parses configuration; ``--no-includes`` prevents a
+    repository-controlled include path from expanding that read. The static
+    regex selects settings that affect checkout/index comparison but cannot
+    name commands or files. Local/worktree values need no copy because the
+    hardened Git invocation still reads repository config; only an effective
+    system/global value is promoted into process-local config.
+    """
+    repo_root = Path(resolved_repo_root)
+    try:
+        marker = (repo_root / ".git").lstat()
+    except OSError:
+        return ()
+    if (
+        _is_windows_reparse_point(marker)
+        or not (
+            stat.S_ISDIR(marker.st_mode) or stat.S_ISREG(marker.st_mode)
+        )
+    ):
+        return ()
+    try:
+        result = _git_run(
+            repo_root,
+            [
+                "-c",
+                f"safe.directory={resolved_repo_root}",
+                "config",
+                "--no-includes",
+                "--show-scope",
+                "--null",
+                "--get-regexp",
+                _SAFE_AMBIENT_WORKTREE_CONFIG_PATTERN,
+            ],
+            environment=_git_config_query_environment(),
+            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return ()
+    if result.stderr.strip():
+        return ()
+    fields = result.stdout.split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
+    if len(fields) % 2:
+        return ()
+
+    effective: Dict[str, Tuple[str, str]] = {}
+    for index in range(0, len(fields), 2):
+        scope = fields[index].casefold()
+        key, separator, value = fields[index + 1].partition("\n")
+        key = key.casefold()
+        if not separator or key not in _SAFE_AMBIENT_WORKTREE_CONFIG_VALUES:
+            return ()
+        # Record even an invalid value so a later local declaration cannot be
+        # masked by an earlier valid ambient value.
+        effective[key] = (scope, value.casefold())
+
+    overrides = []
+    for key, (scope, value) in effective.items():
+        if (
+            scope in {"system", "global"}
+            and value in _SAFE_AMBIENT_WORKTREE_CONFIG_VALUES[key]
+        ):
+            overrides.append((key, value))
+    return tuple(sorted(overrides))
+
+
+@lru_cache(maxsize=128)
+def _repository_filter_config_overrides(
+    resolved_repo_root: str,
+) -> Tuple[Tuple[str, str], ...]:
+    """Return process-local settings that neutralize active Git filters.
+
+    Git invokes ``filter.<driver>.clean`` while commands such as ``status``
+    compare a working-tree file with the index. Repository and worktree config
+    are therefore executable input unless every active driver is overridden.
+    Querying config names is inert; included local config is inspected because
+    the subsequent Git command would include it as well. System, global, and
+    ambient process config remain suppressed during the query.
+    """
+    repo_root = Path(resolved_repo_root)
+    try:
+        marker = (repo_root / ".git").lstat()
+    except OSError:
+        return ()
+    if _is_windows_reparse_point(marker) or not (
+        stat.S_ISDIR(marker.st_mode) or stat.S_ISREG(marker.st_mode)
+    ):
+        return ()
+
+    environment = _git_config_query_environment()
+    environment.update(
+        {
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    try:
+        result = _git_run(
+            repo_root,
+            [
+                "config",
+                "--includes",
+                "--null",
+                "--name-only",
+                "--get-regexp",
+                _FILTER_COMMAND_CONFIG_PATTERN,
+            ],
+            environment=environment,
+            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1 and not exc.output and not exc.stderr:
+            return ()
+        raise GuardrailError(
+            "Cannot safely inspect repository Git filter configuration"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise GuardrailError(
+            "Cannot safely inspect repository Git filter configuration"
+        ) from exc
+
+    if result.stderr.strip():
+        raise GuardrailError(
+            "Repository Git filter configuration produced an ambiguous diagnostic"
+        )
+    raw = result.stdout
+    if not raw:
+        return ()
+    if not raw.endswith("\0"):
+        raise GuardrailError("Repository Git filter configuration is malformed")
+    keys = raw[:-1].split("\0")
+    if len(keys) > MAX_GIT_FILTER_CONFIG_KEYS:
+        raise GuardrailError(
+            "Repository Git filter configuration exceeds the "
+            f"{MAX_GIT_FILTER_CONFIG_KEYS}-key limit"
+        )
+    prefixes: set[str] = set()
+    for key in keys:
+        try:
+            encoded = key.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise GuardrailError(
+                "Repository Git filter configuration is not UTF-8"
+            ) from exc
+        if (
+            not key
+            or len(encoded) > MAX_GIT_FILTER_KEY_BYTES
+            or any(ord(character) < 32 or ord(character) == 127 for character in key)
+        ):
+            raise GuardrailError(
+                "Repository Git filter configuration exceeds its key limit"
+            )
+        folded = key.casefold()
+        suffix = next(
+            (
+                candidate
+                for candidate in _FILTER_COMMAND_SUFFIXES
+                if folded.endswith("." + candidate)
+            ),
+            None,
+        )
+        if suffix is None or not folded.startswith("filter."):
+            raise GuardrailError("Repository Git filter configuration is malformed")
+        prefix = key[: -(len(suffix) + 1)]
+        if prefix.casefold() == "filter.":
+            raise GuardrailError("Repository Git filter configuration is malformed")
+        prefixes.add(prefix)
+        if len(prefixes) > MAX_GIT_FILTER_DRIVERS:
+            raise GuardrailError(
+                "Repository Git filter configuration exceeds the "
+                f"{MAX_GIT_FILTER_DRIVERS}-driver limit"
+            )
+
+    overrides = []
+    override_bytes = 0
+    for prefix in sorted(prefixes, key=lambda value: (value.casefold(), value)):
+        driver_overrides = (
+            (f"{prefix}.clean", ""),
+            (f"{prefix}.smudge", ""),
+            (f"{prefix}.process", ""),
+            (f"{prefix}.required", "false"),
+        )
+        override_bytes += sum(
+            len(key.encode("utf-8")) + len(value)
+            for key, value in driver_overrides
+        )
+        if override_bytes > MAX_GIT_FILTER_OVERRIDE_BYTES:
+            raise GuardrailError(
+                "Repository Git filter overrides exceed the "
+                f"{MAX_GIT_FILTER_OVERRIDE_BYTES}-byte environment limit"
+            )
+        overrides.extend(driver_overrides)
+    return tuple(overrides)
+
+
+def _git_subprocess_env(repo_root: Optional[Path] = None) -> Dict[str, str]:
+    """Return a non-interactive, local-object-only Git environment.
+
+    System and global config are disabled, so an exact repository path and a
+    narrow inert worktree-semantics allowlist are supplied as process-local
+    values when known. This preserves bind-mounted container and CRLF/case/
+    symlink behavior without trusting a wildcard or executable ambient config.
+    """
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        canonical = name.upper()
+        if canonical in _GIT_AMBIENT_OVERRIDE_NAMES or canonical.startswith(
+            _GIT_AMBIENT_OVERRIDE_PREFIXES
+        ):
+            environment.pop(name, None)
+    environment.update(
+        {
+            "GCM_INTERACTIVE": "never",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "5",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": "diff.ignoreSubmodules",
+            "GIT_CONFIG_VALUE_2": "dirty",
+            "GIT_CONFIG_KEY_3": "status.submoduleSummary",
+            "GIT_CONFIG_VALUE_3": "false",
+            "GIT_CONFIG_KEY_4": "submodule.recurse",
+            "GIT_CONFIG_VALUE_4": "false",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    if repo_root is not None:
+        resolved = str(repo_root.resolve(strict=False))
+        process_values = [
+            ("safe.directory", resolved),
+            *_ambient_worktree_config_overrides(resolved),
+            *_repository_filter_config_overrides(resolved),
+        ]
+        environment["GIT_CONFIG_COUNT"] = str(5 + len(process_values))
+        for offset, (key, value) in enumerate(process_values, start=5):
+            environment[f"GIT_CONFIG_KEY_{offset}"] = key
+            environment[f"GIT_CONFIG_VALUE_{offset}"] = value
+    return environment
+
+
+def _trusted_git_executable(repo_root: Path) -> str:
+    """Resolve Git outside the inspected repository to prevent shadowing."""
+    raw = shutil.which("git")
+    if raw is None:
+        raise FileNotFoundError("git is required")
+    try:
+        repository = repo_root.resolve()
+        selected = Path(os.path.abspath(raw))
+        selected.relative_to(repository)
+    except ValueError:
+        pass
+    except OSError as exc:
+        raise ValueError("Cannot resolve the Git executable safely") from exc
+    else:
+        raise ValueError(
+            "Refusing to execute a Git binary from inside the inspected repository"
+        )
+    try:
+        executable = selected.resolve(strict=True)
+        executable.relative_to(repository)
+    except ValueError:
+        pass
+    except OSError as exc:
+        raise ValueError("Cannot resolve the Git executable safely") from exc
+    else:
+        raise ValueError(
+            "Refusing to execute a Git binary from inside the inspected repository"
+        )
+    try:
+        metadata = executable.stat()
+    except OSError as exc:
+        raise ValueError("Cannot inspect the Git executable safely") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError("Git executable is not a regular file")
+    return str(executable)
+
+
+def _git_command(repo_root: Path, *arguments: str) -> List[str]:
+    worktree = repo_root.resolve(strict=False)
+    return [
+        _trusted_git_executable(worktree),
+        "-C",
+        str(worktree),
+        f"--work-tree={worktree}",
+        *arguments,
+    ]
+
+
+def _git_run(
+    repo_root: Path,
+    args: List[str],
+    *,
+    environment: Optional[Mapping[str, str]] = None,
+    deadline_seconds: Optional[float] = None,
+) -> subprocess.CompletedProcess:
     """Run git against a specific repository root regardless of process CWD."""
-    command = ["git", "-C", str(repo_root), *args]
+    command = _git_command(repo_root, *args)
     proc = subprocess.Popen(
         command,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=(
+            _git_subprocess_env(repo_root)
+            if environment is None
+            else dict(environment)
+        ),
     )
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+    _require_git_process_pipes(proc, "stdout", "stderr")
+    deadline = _GitProcessDeadline(proc, deadline_seconds)
+    deadline.start()
 
     captured: Dict[str, bytes] = {}
     overflows: List[str] = []
@@ -319,7 +872,9 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     finally:
         for reader in readers:
             reader.join()
+        deadline.cancel()
 
+    deadline.raise_if_expired()
     if read_errors:
         raise read_errors[0]
     if overflows:
@@ -362,75 +917,95 @@ def _iter_git_nul_records(
     an opportunity to enforce its entry/path limits.  This parser keeps only a
     fixed-size read chunk plus the current bounded record in memory.
     """
-    command = ["git", "-C", str(repo_root), *args]
+    command = _git_command(repo_root, *args)
     record_limit = MAX_GIT_TREE_ENTRIES if max_records is None else max_records
     if record_limit < 0:
         raise ValueError("Git listing record limit must be non-negative")
-    with tempfile.TemporaryFile() as stderr_file:
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=stderr_file,
-        )
-        assert proc.stdout is not None
-        pending = bytearray()
-        output_bytes = 0
-        record_count = 0
-        try:
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_git_subprocess_env(repo_root),
+    )
+    _require_git_process_pipes(proc, "stdout", "stderr")
+    diagnostic = _BoundedGitDiagnosticDrain(proc)
+    deadline = _GitProcessDeadline(proc)
+    deadline.start()
+    pending = bytearray()
+    output_bytes = 0
+    record_count = 0
+    try:
+        while True:
+            chunk = proc.stdout.read(_GIT_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            output_bytes += len(chunk)
+            if output_bytes > MAX_GIT_LIST_OUTPUT_BYTES:
+                raise GuardrailError(
+                    "Git listing exceeds the "
+                    f"{MAX_GIT_LIST_OUTPUT_BYTES}-byte transport limit"
+                )
+            pending.extend(chunk)
+            consumed = 0
             while True:
-                chunk = proc.stdout.read(_GIT_STREAM_CHUNK_BYTES)
-                if not chunk:
+                terminator = pending.find(b"\0", consumed)
+                if terminator < 0:
                     break
-                output_bytes += len(chunk)
-                if output_bytes > MAX_GIT_LIST_OUTPUT_BYTES:
+                record = bytes(pending[consumed:terminator])
+                consumed = terminator + 1
+                if not record:
+                    continue
+                record_count += 1
+                if record_count > record_limit:
                     raise GuardrailError(
                         "Git listing exceeds the "
-                        f"{MAX_GIT_LIST_OUTPUT_BYTES}-byte transport limit"
+                        f"{record_limit}-entry limit"
                     )
-                pending.extend(chunk)
-                consumed = 0
-                while True:
-                    terminator = pending.find(b"\0", consumed)
-                    if terminator < 0:
-                        break
-                    record = bytes(pending[consumed:terminator])
-                    consumed = terminator + 1
-                    if not record:
-                        continue
-                    record_count += 1
-                    if record_count > record_limit:
-                        raise GuardrailError(
-                            "Git listing exceeds the "
-                            f"{record_limit}-entry limit"
-                        )
-                    if len(record) > MAX_GIT_LIST_RECORD_BYTES:
-                        raise GuardrailError(
-                            "Git listing record exceeds the "
-                            f"{MAX_GIT_LIST_RECORD_BYTES}-byte limit"
-                        )
-                    yield record
-                if consumed:
-                    del pending[:consumed]
-                if len(pending) > MAX_GIT_LIST_RECORD_BYTES:
+                if len(record) > MAX_GIT_LIST_RECORD_BYTES:
                     raise GuardrailError(
                         "Git listing record exceeds the "
                         f"{MAX_GIT_LIST_RECORD_BYTES}-byte limit"
                     )
-
-            returncode = proc.wait()
-            if returncode != 0:
-                raise subprocess.CalledProcessError(
-                    returncode,
-                    command,
-                    stderr=_read_bounded_git_diagnostic(stderr_file),
+                yield record
+            if consumed:
+                del pending[:consumed]
+            if len(pending) > MAX_GIT_LIST_RECORD_BYTES:
+                raise GuardrailError(
+                    "Git listing record exceeds the "
+                    f"{MAX_GIT_LIST_RECORD_BYTES}-byte limit"
                 )
-            if pending:
-                raise ValueError("Truncated NUL-delimited Git listing output")
-        finally:
-            proc.stdout.close()
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+
+        returncode = proc.wait()
+        deadline.raise_if_expired()
+        stderr = diagnostic.finish()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(
+                returncode,
+                command,
+                stderr=stderr,
+            )
+        if pending:
+            raise ValueError("Truncated NUL-delimited Git listing output")
+    except BaseException as exc:
+        if deadline.expired.is_set():
+            try:
+                deadline.raise_if_expired()
+            except GuardrailError as timeout_error:
+                raise timeout_error from exc
+        raise
+    finally:
+        active_error = sys.exc_info()[0] is not None
+        deadline.cancel()
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        try:
+            diagnostic.finish()
+        except BaseException:
+            if not active_error:
+                raise
 
 
 def _iter_bounded_git_paths(
@@ -859,39 +1434,60 @@ def _git_cat_blob(
     if max_bytes < 0:
         raise ValueError("Git blob byte limit must be non-negative")
     effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
-    command = ["git", "-C", str(repo_root), "show", ref]
+    command = _git_command(repo_root, "show", ref)
     # ``capture_output`` would buffer the entire object before the size check.
     # Bound the read itself and terminate Git as soon as the limit is crossed.
-    with tempfile.TemporaryFile() as stderr_file:
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=stderr_file,
-        )
-        assert proc.stdout is not None
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_git_subprocess_env(repo_root),
+    )
+    _require_git_process_pipes(proc, "stdout", "stderr")
+    diagnostic = _BoundedGitDiagnosticDrain(proc)
+    deadline = _GitProcessDeadline(proc)
+    deadline.start()
+    try:
+        content = proc.stdout.read(effective_limit + 1)
+        deadline.raise_if_expired()
+        if len(content) > effective_limit:
+            proc.kill()
+            proc.wait()
+            raise GuardrailError(
+                f"Hash guardrail exceeded: Git blob too large "
+                f"(>{effective_limit} bytes) for ref {ref!r}"
+            )
+        returncode = proc.wait()
+        deadline.raise_if_expired()
+        stderr = diagnostic.finish()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(
+                returncode,
+                command,
+                output=content,
+                stderr=stderr,
+            )
+        return content
+    except BaseException as exc:
+        if deadline.expired.is_set():
+            try:
+                deadline.raise_if_expired()
+            except GuardrailError as timeout_error:
+                raise timeout_error from exc
+        raise
+    finally:
+        active_error = sys.exc_info()[0] is not None
+        deadline.cancel()
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
         try:
-            content = proc.stdout.read(effective_limit + 1)
-            if len(content) > effective_limit:
-                proc.kill()
-                proc.wait()
-                raise GuardrailError(
-                    f"Hash guardrail exceeded: Git blob too large "
-                    f"(>{effective_limit} bytes) for ref {ref!r}"
-                )
-            returncode = proc.wait()
-            if returncode != 0:
-                raise subprocess.CalledProcessError(
-                    returncode,
-                    command,
-                    output=content,
-                    stderr=_read_bounded_git_diagnostic(stderr_file),
-                )
-            return content
-        finally:
-            proc.stdout.close()
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+            diagnostic.finish()
+        except BaseException:
+            if not active_error:
+                raise
 
 
 def _parse_batch_header(header_bytes: bytes, ref: str) -> int:
@@ -943,15 +1539,10 @@ class _GitBlobSession:
 
     def __init__(self, repo_root: Path):
         self.repo_root = repo_root
-        self.command = [
-            "git",
-            "-C",
-            str(repo_root),
-            "cat-file",
-            "--batch",
-        ]
+        self.command = _git_command(repo_root, "cat-file", "--batch")
         self._proc: Optional[subprocess.Popen] = None
-        self._stderr_file: Optional[BinaryIO] = None
+        self._stderr_drain: Optional[_BoundedGitDiagnosticDrain] = None
+        self._deadline: Optional[_GitProcessDeadline] = None
         self._closed = False
         self._lock = threading.RLock()
 
@@ -960,27 +1551,35 @@ class _GitBlobSession:
             raise ValueError("Git blob session is closed")
         if self._proc is not None:
             return self._proc
-        stderr_file = tempfile.TemporaryFile()
+        diagnostic: Optional[_BoundedGitDiagnosticDrain] = None
         try:
             proc = subprocess.Popen(
                 self.command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=stderr_file,
+                stderr=subprocess.PIPE,
+                env=_git_subprocess_env(self.repo_root),
             )
+            _require_git_process_pipes(proc, "stdin", "stdout", "stderr")
+            diagnostic = _BoundedGitDiagnosticDrain(proc)
+            deadline = _GitProcessDeadline(proc)
+            deadline.start()
         except BaseException:
-            stderr_file.close()
+            if diagnostic is not None:
+                try:
+                    diagnostic.finish()
+                except BaseException:
+                    pass
             raise
-        assert proc.stdin is not None
-        assert proc.stdout is not None
         self._proc = proc
-        self._stderr_file = stderr_file
+        self._stderr_drain = diagnostic
+        self._deadline = deadline
         return proc
 
     def _process_error(self, returncode: int) -> subprocess.CalledProcessError:
         stderr = (
-            _read_bounded_git_diagnostic(self._stderr_file)
-            if self._stderr_file is not None
+            self._stderr_drain.snapshot()
+            if self._stderr_drain is not None
             else b""
         )
         return subprocess.CalledProcessError(
@@ -991,12 +1590,16 @@ class _GitBlobSession:
 
     def _release_transport(self, *, kill: bool) -> Optional[int]:
         proc = self._proc
-        stderr_file = self._stderr_file
+        diagnostic = self._stderr_drain
+        deadline = self._deadline
         self._proc = None
-        self._stderr_file = None
+        self._stderr_drain = None
+        self._deadline = None
         if proc is None:
-            if stderr_file is not None:
-                stderr_file.close()
+            if deadline is not None:
+                deadline.cancel()
+            if diagnostic is not None:
+                diagnostic.finish()
             return None
         try:
             if kill and proc.poll() is None:
@@ -1010,6 +1613,8 @@ class _GitBlobSession:
                 raise
             return returncode
         finally:
+            if deadline is not None:
+                deadline.cancel()
             if proc.stdin is not None and not proc.stdin.closed:
                 try:
                     proc.stdin.close()
@@ -1017,8 +1622,8 @@ class _GitBlobSession:
                     pass
             if proc.stdout is not None:
                 proc.stdout.close()
-            if stderr_file is not None:
-                stderr_file.close()
+            if diagnostic is not None:
+                diagnostic.finish()
 
     def _abort_transport(self) -> None:
         self._release_transport(kill=True)
@@ -1039,8 +1644,8 @@ class _GitBlobSession:
         object_id = _validated_git_object_id(oid, "Git blob request")
         effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
         proc = self._start()
-        assert proc.stdin is not None
-        assert proc.stdout is not None
+        deadline = self._deadline
+        _require_git_process_pipes(proc, "stdin", "stdout")
         try:
             try:
                 proc.stdin.write(object_id.encode("ascii") + b"\n")
@@ -1083,12 +1688,20 @@ class _GitBlobSession:
                 raise ValueError(
                     f"Malformed git cat-file terminator for {object_id!r}"
                 )
+            if deadline is not None:
+                deadline.raise_if_expired()
             return content
-        except BaseException:
+        except BaseException as exc:
             # Any failed response leaves the line protocol potentially out of
             # sync. Reap it immediately; a later independent read may lazily
             # start a fresh bounded session.
+            timed_out = deadline is not None and deadline.expired.is_set()
             self._abort_transport()
+            if timed_out and deadline is not None:
+                try:
+                    deadline.raise_if_expired()
+                except GuardrailError as timeout_error:
+                    raise timeout_error from exc
             raise
 
     def close(self) -> None:
@@ -1104,7 +1717,7 @@ class _GitBlobSession:
         if proc is None:
             self._release_transport(kill=False)
             return
-        assert proc.stdin is not None
+        _require_git_process_pipes(proc, "stdin")
         close_error: Optional[BaseException] = None
         try:
             proc.stdin.close()
@@ -1112,6 +1725,8 @@ class _GitBlobSession:
             close_error = exc
         try:
             returncode = proc.wait()
+            if self._deadline is not None:
+                self._deadline.raise_if_expired()
         except BaseException:
             self._abort_transport()
             raise
@@ -1191,85 +1806,104 @@ def _iter_git_blobs(
     if not line_refs:
         return
 
-    command = ["git", "-C", str(repo_root), "cat-file", "--batch"]
-    with tempfile.TemporaryFile() as stderr_file:
-        proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=stderr_file,
-        )
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        try:
-            for ref in line_refs:
-                try:
-                    proc.stdin.write(os.fsencode(ref) + b"\n")
-                    proc.stdin.flush()
-                except (BrokenPipeError, OSError) as exc:
-                    returncode = proc.poll()
-                    if returncode is None:
-                        returncode = proc.wait()
-                    raise subprocess.CalledProcessError(
-                        returncode,
-                        command,
-                        stderr=_read_bounded_git_diagnostic(stderr_file),
-                    ) from exc
-                header = proc.stdout.readline(MAX_GIT_BATCH_HEADER_BYTES + 1)
-                if not header.endswith(b"\n"):
-                    if not header:
-                        returncode = proc.wait()
-                        if returncode != 0:
-                            raise subprocess.CalledProcessError(
-                                returncode,
-                                command,
-                                stderr=_read_bounded_git_diagnostic(stderr_file),
-                            )
-                    if len(header) > MAX_GIT_BATCH_HEADER_BYTES:
-                        raise ValueError(
-                            f"Oversized git cat-file header for {ref!r}"
-                        )
-                    raise ValueError(
-                        f"Truncated git cat-file response before header for {ref!r}"
-                    )
-                size = _parse_batch_header(header[:-1], ref)
-                remaining = remaining_limit()
-                if size > remaining:
-                    raise GuardrailError(
-                        "Hash guardrail exceeded: Git blob size exceeds the "
-                        f"{remaining}-byte remaining aggregate budget"
-                    )
-                content = proc.stdout.read(size)
-                if len(content) != size:
-                    raise ValueError(
-                        f"Truncated git cat-file content for {ref!r}: "
-                        f"expected {size} bytes"
-                    )
-                if proc.stdout.read(1) != b"\n":
-                    raise ValueError(
-                        f"Malformed git cat-file terminator for {ref!r}"
-                    )
-                total_bytes += len(content)
-                yield ref, content
-
-            proc.stdin.close()
-            returncode = proc.wait()
-            if returncode != 0:
+    command = _git_command(repo_root, "cat-file", "--batch")
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_git_subprocess_env(repo_root),
+    )
+    _require_git_process_pipes(proc, "stdin", "stdout", "stderr")
+    diagnostic = _BoundedGitDiagnosticDrain(proc)
+    deadline = _GitProcessDeadline(proc)
+    deadline.start()
+    try:
+        for ref in line_refs:
+            try:
+                proc.stdin.write(os.fsencode(ref) + b"\n")
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                returncode = proc.poll()
+                if returncode is None:
+                    returncode = proc.wait()
                 raise subprocess.CalledProcessError(
                     returncode,
                     command,
-                    stderr=_read_bounded_git_diagnostic(stderr_file),
+                    stderr=diagnostic.snapshot(),
+                ) from exc
+            header = proc.stdout.readline(MAX_GIT_BATCH_HEADER_BYTES + 1)
+            if not header.endswith(b"\n"):
+                if not header:
+                    returncode = proc.wait()
+                    if returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            returncode,
+                            command,
+                            stderr=diagnostic.finish(),
+                        )
+                if len(header) > MAX_GIT_BATCH_HEADER_BYTES:
+                    raise ValueError(
+                        f"Oversized git cat-file header for {ref!r}"
+                    )
+                raise ValueError(
+                    f"Truncated git cat-file response before header for {ref!r}"
                 )
-        finally:
-            if not proc.stdin.closed:
-                try:
-                    proc.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
-            proc.stdout.close()
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+            size = _parse_batch_header(header[:-1], ref)
+            remaining = remaining_limit()
+            if size > remaining:
+                raise GuardrailError(
+                    "Hash guardrail exceeded: Git blob size exceeds the "
+                    f"{remaining}-byte remaining aggregate budget"
+                )
+            content = proc.stdout.read(size)
+            if len(content) != size:
+                raise ValueError(
+                    f"Truncated git cat-file content for {ref!r}: "
+                    f"expected {size} bytes"
+                )
+            if proc.stdout.read(1) != b"\n":
+                raise ValueError(
+                    f"Malformed git cat-file terminator for {ref!r}"
+                )
+            deadline.raise_if_expired()
+            total_bytes += len(content)
+            yield ref, content
+
+        proc.stdin.close()
+        returncode = proc.wait()
+        deadline.raise_if_expired()
+        stderr = diagnostic.finish()
+        if returncode != 0:
+            raise subprocess.CalledProcessError(
+                returncode,
+                command,
+                stderr=stderr,
+            )
+    except BaseException as exc:
+        if deadline.expired.is_set():
+            try:
+                deadline.raise_if_expired()
+            except GuardrailError as timeout_error:
+                raise timeout_error from exc
+        raise
+    finally:
+        active_error = sys.exc_info()[0] is not None
+        deadline.cancel()
+        if not proc.stdin.closed:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        proc.stdout.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        try:
+            diagnostic.finish()
+        except BaseException:
+            if not active_error:
+                raise
 
 
 def _git_batch_cat(repo_root: Path, refs: List[str]) -> Dict[str, bytes]:
@@ -1754,11 +2388,33 @@ def _git_name_status(
     repo_root: Path,
     args: List[str],
 ) -> List[Tuple[str, str]]:
-    """Run a Git name-status command without materializing unbounded stdout."""
+    """Run one deterministic Git diff without helpers or quadratic rename work."""
+    diff_index = next(
+        (
+            index
+            for index, argument in enumerate(args)
+            if argument in {"diff", "diff-tree"}
+        ),
+        None,
+    )
+    if diff_index is None:
+        raise ValueError("Git name-status arguments must invoke diff or diff-tree")
+    hardened_args = [
+        *args[: diff_index + 1],
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        # Submodules are represented by their Gitlink object ID. Inspecting
+        # their worktrees would both exceed that source model and let nested
+        # repository filter commands execute during an otherwise data-only
+        # operation. ``dirty`` still reports a changed checked-out Gitlink.
+        "--ignore-submodules=dirty",
+        *args[diff_index + 1 :],
+    ]
     return _parse_name_status_entries(
         _iter_git_nul_records(
             repo_root,
-            args,
+            hardened_args,
             max_records=MAX_GIT_STATUS_FIELDS,
         )
     )
@@ -1771,19 +2427,14 @@ def changed_paths_since_ref(
     snapshot: Optional[GitSourceSnapshot] = None,
 ) -> List[str]:
     """Return tracked path identities changed from *base_ref* to *source*."""
-    if not base_ref or not base_ref.strip():
-        raise ValueError("--changed-from requires a non-empty Git ref")
-    ref = base_ref.strip()
-    if ref.startswith("-"):
-        raise ValueError(f"Invalid Git ref: {ref!r}")
     if source not in SOURCE_MODE_SET:
         raise ValueError(f"Unknown source mode: {source!r}")
+    resolved_base = _resolve_git_commit(
+        repo_root,
+        base_ref,
+        label="changed-from",
+    )
     try:
-        resolved_base = _git_run(
-            repo_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"]
-        ).stdout.strip()
-        if not resolved_base:
-            raise subprocess.CalledProcessError(1, ["git", "rev-parse", ref])
         if source in {"head", "index"}:
             captured = snapshot or _capture_git_source_snapshot(repo_root, source)
             if captured.source != source:
@@ -1800,7 +2451,6 @@ def changed_paths_since_ref(
                 "diff",
                 "--name-status",
                 "-z",
-                "--find-renames",
                 resolved_base,
                 target,
                 "--",
@@ -1815,19 +2465,17 @@ def changed_paths_since_ref(
                 "diff",
                 "--name-status",
                 "-z",
-                "--find-renames",
                 resolved_base,
                 "--",
             ]
-        changed_paths = _parse_name_status_records(
-            _iter_git_nul_records(
-                repo_root,
-                diff_args,
-                max_records=MAX_GIT_STATUS_FIELDS,
-            )
-        )
+        changed_paths = [
+            path for _status, path in _git_name_status(repo_root, diff_args)
+        ]
     except subprocess.CalledProcessError as exc:
-        raise ValueError(f"Unable to diff from Git ref {ref!r}") from exc
+        raise ValueError(
+            "Unable to diff from Git ref "
+            f"{_bounded_diagnostic_repr(base_ref, max_chars=256)}"
+        ) from exc
     return sorted(set(changed_paths))
 
 
@@ -1900,6 +2548,7 @@ def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[s
                     "--porcelain=v1",
                     "-z",
                     "--untracked-files=all",
+                    "--ignore-submodules=dirty",
                     "--",
                 ],
                 max_records=MAX_GIT_STATUS_FIELDS,

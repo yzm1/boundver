@@ -30,6 +30,7 @@ EXPECTED_CONSUMER_IMPACT = [
         "transitive": True,
     }
 ]
+MAX_DEMO_COMMAND_SECONDS = 300
 
 
 def _run(
@@ -40,14 +41,22 @@ def _run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     print(f"$ {' '.join(command)}", flush=True)
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        check=False,
-        capture_output=capture,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=capture,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=MAX_DEMO_COMMAND_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "demo command exceeded the "
+            f"{MAX_DEMO_COMMAND_SECONDS}-second wall-clock limit"
+        ) from exc
 
 
 def _require_success(result: subprocess.CompletedProcess[str], label: str) -> None:

@@ -15,7 +15,7 @@ your unstaged edits.
 | `index` | One captured index tree | Pre-commit verification |
 | `working-tree` | Disk bytes for a captured tracked path set | Local editing before you stage |
 
-Five rules follow from that model:
+Six rules follow from that model:
 
 1. **Source selection is per invocation.** `--source` is not shared shell
    state. A bare command immediately after `--source working-tree` defaults to
@@ -34,6 +34,17 @@ Five rules follow from that model:
    under `inputs`; text output names the selected config and lock explicitly.
 5. **Fetch history** before using `--changed-from` or a `git_tag_prefix`
    version source. Shallow clones break both.
+6. **Make required Git objects local.** Boundver resolves the host Git binary
+   outside the inspected repository and disables credential prompts,
+   replacement refs, repository hooks, fsmonitor callbacks, and partial-clone
+   lazy fetching for every Git subprocess. Repository/worktree Git clean,
+   smudge, and process filters are also neutralized, so ordinary inspection
+   never executes a filter command from local Git configuration. A missing
+   promised object therefore fails closed instead of turning verification into
+   an undeclared network request. Fetch the complete history and required
+   objects explicitly before verification. Submodules remain opaque Gitlinks:
+   a changed checked-out Gitlink is visible, while dirty/untracked content and
+   local filter configuration inside the submodule are not traversed.
 
 A complete staged refresh therefore looks like this:
 
@@ -118,6 +129,18 @@ Machine-oriented details such as the complete lockfile object, facet-policy
 maps, full object identities, and stable field names remain JSON-only where the
 text command already provides a bounded summary. JSON source/provenance fields
 and command defaults are unchanged.
+
+### Structured-input limits
+
+Config and lock documents are capped at 10 MiB and 100,000 JSON-compatible
+values with at most 128 nesting levels. JSON receives a conservative lexical
+token preflight, YAML composition counts nodes and depth before constructing
+Python containers, and TOML scans array/table structure before invoking its
+parser. These preflights may reject a document that provably cannot fit the
+public tree contract; they do not replace the exact post-parse validation.
+Duplicate object keys, aliases, non-finite numbers, oversized integer or
+floating-point tokens, and format-specific ambiguous values remain
+fail-closed.
 
 ## Selector work limits
 
@@ -222,7 +245,7 @@ fails with exit `2` before emitting a partial result; a truncated closure is
 never presented as an authoritative review.
 
 Supported structural explanations have independent aggregate ceilings across
-the review: 512 MiB of canonical provider input, 250,000 traversal steps,
+the review: 32 MiB of canonical provider input, 250,000 traversal steps,
 20,000 change rows, 16 MiB of retained structural output, 64 nesting levels,
 and 16 KiB per JSON pointer. The canonical provider's existing per-resolution
 source and output limits still apply before this diagnostic pass.

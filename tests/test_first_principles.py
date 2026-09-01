@@ -292,8 +292,15 @@ class SegmentAwareGlobTests(unittest.TestCase):
             )
 
             self.assertIsNone(result["error"])
+            # Rename detection is deliberately disabled to keep diff work
+            # bounded. The delete/add pair still preserves both path
+            # identities, so the removed boundary remains visible.
             self.assertIn(
-                ("R100", "svc/api/contract.yaml"),
+                ("A", "svc/internal/contract.txt"),
+                result["changed"],
+            )
+            self.assertIn(
+                ("D", "svc/api/contract.yaml"),
                 result["boundary_changed"],
             )
 

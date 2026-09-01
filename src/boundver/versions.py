@@ -9,15 +9,17 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
 from ._config_contract import git_tag_prefix_error
+from ._structured_data import StrictJSONError, strict_json_loads
 from ._utils import (
     GuardrailError,
+    MAX_JSON_NUMBER_CHARACTERS,
     MAX_TOML_INTEGER_DIGITS as MAX_TOML_INTEGER_DIGITS,
     _bounded_int_to_decimal,
-    _bounded_json_int,
     _bounded_yaml_int,
+    _bounded_yaml_compose_node,
     _normalize_declared_path,
     _read_bounded_path_bytes,
-    _toml_has_oversized_numeric_token,
+    _toml_preparse_issues,
 )
 
 MAX_VERSION_FILE_BYTES = 10 * 1024 * 1024
@@ -45,7 +47,12 @@ def _load_yaml_with_bounded_integers(text: str) -> Any:
         def compose_node(self, parent: Any, index: Any) -> Any:
             if self.check_event(yaml.AliasEvent):
                 raise ValueError("YAML aliases are not supported in version sources")
-            return super().compose_node(parent, index)
+            return _bounded_yaml_compose_node(
+                self,
+                parent,
+                index,
+                super().compose_node,
+            )
 
     def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
         if not isinstance(node, yaml.MappingNode):
@@ -64,6 +71,15 @@ def _load_yaml_with_bounded_integers(text: str) -> Any:
         scalar = loader.construct_scalar(node)
         return _bounded_yaml_int(scalar)
 
+    def construct_float(loader: Any, node: Any) -> float:
+        scalar = loader.construct_scalar(node)
+        if len(scalar) > MAX_JSON_NUMBER_CHARACTERS:
+            raise ValueError(
+                "YAML number exceeds the "
+                f"{MAX_JSON_NUMBER_CHARACTERS}-character limit"
+            )
+        return yaml.SafeLoader.construct_yaml_float(loader, node)
+
     BoundedVersionLoader.add_constructor(
         yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
         construct_mapping,
@@ -71,6 +87,10 @@ def _load_yaml_with_bounded_integers(text: str) -> Any:
     BoundedVersionLoader.add_constructor(
         "tag:yaml.org,2002:int",
         construct_integer,
+    )
+    BoundedVersionLoader.add_constructor(
+        "tag:yaml.org,2002:float",
+        construct_float,
     )
     return yaml.load(text, Loader=BoundedVersionLoader)
 
@@ -87,20 +107,6 @@ def _version_value_to_string(value: Any) -> Optional[str]:
     # textual or numeric version identifiers. Never stringify a container:
     # nested large integers would reintroduce Python's mutable digit limit.
     return None
-
-
-def _unique_version_json_object(pairs: list[tuple]) -> dict:
-    """Build one version-source object without last-key-wins data loss."""
-    value: dict = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError(f"duplicate JSON version-source key {key!r}")
-        value[key] = item
-    return value
-
-
-def _reject_version_json_constant(value: str) -> Any:
-    raise ValueError(f"non-finite JSON version-source number {value!r}")
 
 
 def _toml_version_value_to_string(value: Any) -> Optional[str]:
@@ -209,22 +215,24 @@ def _read_version_file_bytes(path: Path, path_label: str) -> Optional[bytes]:
 
 def _extract_json_from_text(text: str, field_path: str) -> Optional[str]:
     try:
-        data = json.loads(
-            text,
-            object_pairs_hook=_unique_version_json_object,
-            parse_constant=_reject_version_json_constant,
-            parse_int=_bounded_json_int,
-        )
+        data = strict_json_loads(text)
         for key in field_path.split('.'):
             data = data[key]
         return _version_value_to_string(data)
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (
+        json.JSONDecodeError,
+        StrictJSONError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ):
         return None
 
 
 def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
     keys = field_path.split('.')
-    if _toml_has_oversized_numeric_token(text):
+    oversized_numeric, oversized_structure = _toml_preparse_issues(text)
+    if oversized_numeric or oversized_structure:
         return None
     if tomllib is not None:
         try:
@@ -239,7 +247,7 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
                 return None
             current = current[key]
         return _toml_version_value_to_string(current)
-    # tomli is required on Python 3.9-3.10 and tomllib is built in thereafter.
+    # tomli is required on Python 3.10 and tomllib is built in thereafter.
     # A missing parser is a broken installation; do not guess at TOML syntax
     # and risk blessing a different version identity.
     return None

@@ -395,6 +395,27 @@ class JsonTraversalBudgetTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertIn("3-value JSON tree limit", issues[0])
 
+    def test_yaml_node_limit_is_enforced_during_composition(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+
+        with patch.object(utils, "MAX_YAML_COMPOSE_NODES", 3):
+            with self.assertRaisesRegex(ConfigError, "pre-parse structural"):
+                parse_config_bytes(
+                    b"project: p\ncomponents: [a, b, c]\n",
+                    Path("boundary.config.yaml"),
+                )
+
+    def test_toml_structure_limit_is_enforced_before_parsing(self):
+        with patch.object(utils, "MAX_JSON_TREE_NODES", 2):
+            with self.assertRaisesRegex(ConfigError, "pre-parse structural"):
+                parse_config_bytes(
+                    b'project = "p"\ncomponents = ["a", "b", "c", "d"]\n',
+                    Path("boundary.config.toml"),
+                )
+
     def test_diagnostic_paths_and_issue_counts_are_bounded(self):
         invalid = object()
         for _ in range(8):
@@ -520,11 +541,20 @@ class JsonTraversalBudgetTests(unittest.TestCase):
 
 
 class AggregateReadBoundTests(unittest.TestCase):
+    def setUp(self):
+        self._ambient_config = patch(
+            "boundver._git._ambient_worktree_config_overrides",
+            return_value=(),
+        )
+        self._ambient_config.start()
+        self.addCleanup(self._ambient_config.stop)
+
     @staticmethod
     def _batch_process(stdout):
         process = MagicMock()
         process.stdin = io.BytesIO()
         process.stdout = stdout
+        process.stderr = io.BytesIO()
         process.poll.return_value = 0
         process.wait.return_value = 0
         return process
@@ -623,15 +653,6 @@ class AggregateReadBoundTests(unittest.TestCase):
                     max_bytes=1,
                 )
         readlink.assert_not_called()
-
-    def test_git_diagnostic_read_is_capped_and_marked(self):
-        diagnostic = _TrackingBytesIO(b"abcdefghij")
-        with patch("boundver._git.MAX_GIT_DIAGNOSTIC_BYTES", 4):
-            result = git_helpers._read_bounded_git_diagnostic(diagnostic)
-        self.assertEqual(diagnostic.read_sizes, [5])
-        self.assertTrue(result.startswith(b"abcd"))
-        self.assertIn(b"truncated", result)
-
 
 if __name__ == "__main__":
     unittest.main()

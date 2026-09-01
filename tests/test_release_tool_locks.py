@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import stat
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +22,17 @@ def _load_locker():
     spec = importlib.util.spec_from_file_location("lock_release_tools", SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - import invariant
         raise AssertionError(f"cannot import {SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_installer():
+    path = ROOT / "scripts" / "install_locked_tools.py"
+    spec = importlib.util.spec_from_file_location("install_locked_tools", path)
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise AssertionError(f"cannot import {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -96,11 +112,61 @@ def test_generated_locks_are_canonical_and_complete():
         assert len(hashes) == len(set(hashes))
 
 
+def test_lock_generation_rejects_active_pypi_advisories():
+    locker = _load_locker()
+    requirement = locker.Requirement("example", "1.0")
+    payload = {
+        "vulnerabilities": [
+            {"id": "GHSA-aaaa-bbbb-cccc", "withdrawn": None},
+            {"id": "PYSEC-2026-1", "withdrawn": "2026-01-01T00:00:00Z"},
+        ]
+    }
+
+    assert locker._active_pypi_advisories(payload, requirement) == [
+        "GHSA-aaaa-bbbb-cccc"
+    ]
+    with pytest.raises(locker.LockError, match="malformed vulnerability metadata"):
+        locker._active_pypi_advisories(
+            {"vulnerabilities": [{"id": "bad advisory", "withdrawn": None}]},
+            requirement,
+        )
+
+
+def test_lock_writer_refuses_symlinks_and_preserves_regular_file_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    locker = _load_locker()
+    root = tmp_path / "repo"
+    output_dir = root / "scripts" / "requirements"
+    output_dir.mkdir(parents=True)
+    output = output_dir / "ci.lock"
+    target = tmp_path / "outside.txt"
+    target.write_bytes(b"outside")
+    try:
+        output.symlink_to(target)
+    except OSError as exc:  # pragma: no cover - host policy dependent
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.setattr(locker, "ROOT", root)
+
+    with pytest.raises(locker.LockError, match="not a regular file"):
+        locker._atomic_write(output, b"replacement")
+    assert target.read_bytes() == b"outside"
+
+    output.unlink()
+    output.write_bytes(b"old")
+    if os.name != "nt":
+        output.chmod(0o640)
+    locker._atomic_write(output, b"replacement")
+    assert output.read_bytes() == b"replacement"
+    if os.name != "nt":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o640
+
+
 def test_action_native_wheels_cover_supported_python_and_os_matrix():
     artifacts = _artifacts()
     for package in ("pyyaml", "rpds-py", "tomli"):
         filenames = [wheel["filename"] for wheel in artifacts[package]["wheels"]]
-        for minor in (9, 12):
+        for minor in (10, 12):
             if package == "tomli" and minor == 12:
                 continue
             for platform in ("linux", "macos-intel", "macos-arm", "windows"):
@@ -122,7 +188,13 @@ def test_release_native_wheels_cover_python312_on_every_runner_os():
         "rfc3161-client",
     ):
         filenames = [wheel["filename"] for wheel in artifacts[package]["wheels"]]
-        for platform in ("linux", "macos-intel", "macos-arm", "windows"):
+        platforms = ("linux", "macos-arm", "windows") if package == "cryptography" else (
+            "linux",
+            "macos-intel",
+            "macos-arm",
+            "windows",
+        )
+        for platform in platforms:
             assert any(
                 _supports_python(filename, 12)
                 and _supports_platform(filename, platform)
@@ -164,16 +236,17 @@ def test_automation_uses_locked_or_offline_installs_only():
     for flag in (
         '"-I"',
         '"--isolated"',
+        '"--no-cache-dir"',
         '"--require-hashes"',
         '"--only-binary=:all:"',
         '"https://pypi.org/simple"',
     ):
         assert flag in installer
-
     direct_lines = [line for line in combined.splitlines() if " -m pip " in line]
     assert direct_lines
     assert all("--isolated" in line for line in direct_lines)
     assert all(" -I -m pip " in line for line in direct_lines)
+    assert '"--no-deps"' not in installer
     action = automation["action.yml"]
     assert 'python -I "${BOUNDVER_ACTION_PATH}/scripts/install_locked_tools.py"' in action
     assert "python -I -m boundver verify" in action
@@ -186,3 +259,46 @@ def test_automation_uses_locked_or_offline_installs_only():
     ):
         assert "--no-index" in automation[relative]
         assert "--no-deps" in automation[relative]
+
+
+def test_locked_tool_install_has_a_process_deadline(monkeypatch, capsys):
+    installer = _load_installer()
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(installer.subprocess, "run", timeout)
+    assert installer.main(["ci"]) == 1
+    captured = capsys.readouterr()
+    assert "1800-second wall-clock limit" in captured.err
+
+
+def test_locked_tool_install_resolves_the_hashed_dependency_set(monkeypatch):
+    installer = _load_installer()
+    observed = {}
+    monkeypatch.setattr(installer.sys, "version_info", (3, 12, 0))
+
+    def succeed(command, **kwargs):
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(installer.subprocess, "run", succeed)
+
+    assert installer.main(["release"]) == 0
+    command = observed["command"]
+    assert "--require-hashes" in command
+    assert "--only-binary=:all:" in command
+    assert "--no-deps" not in command
+    assert observed["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert observed["kwargs"]["timeout"] == installer.MAX_INSTALL_SECONDS
+
+
+def test_release_tool_install_rejects_unsupported_python(monkeypatch, capsys):
+    installer = _load_installer()
+    monkeypatch.setattr(installer.sys, "version_info", (3, 10, 18))
+    run = monkeypatch.setattr(installer.subprocess, "run", pytest.fail)
+
+    assert installer.main(["release"]) == 2
+    assert run is None
+    assert "release tools require Python 3.12 or newer" in capsys.readouterr().err

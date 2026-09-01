@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import locale
 import os
@@ -31,8 +32,25 @@ import time
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
-from typing import Any, BinaryIO, Optional, Sequence
+from typing import Any, BinaryIO, Mapping, Optional, Sequence
+
+
+def _load_release_platform():
+    """Load the exact adjacent helper even under isolated Python startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_semantic_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_release_platform = _load_release_platform()
+sanitize_git_environment = _release_platform.sanitize_git_environment
+sanitize_github_environment = _release_platform.sanitize_github_environment
 
 
 MAX_STDOUT_BYTES = 8 * 1024 * 1024
@@ -46,11 +64,15 @@ MAX_RECORDS = 1_000
 MAX_REVIEW_BODY_CHARS = 256 * 1024
 MAX_GITHUB_ID = (1 << 63) - 1
 MAX_JSON_INTEGER = (1 << 63) - 1
+MAX_JSON_TOKENS = 250_000
+MAX_JSON_DEPTH = 128
 COMMAND_TIMEOUT_SECONDS = 15
 AUDIT_TIMEOUT_SECONDS = 90
+PIPE_CLOSE_GRACE_SECONDS = 5
 STREAM_CHUNK_BYTES = 64 * 1024
 CANONICAL_MANIFEST = Path("spec/semantic-provider-proposal.json")
 V015_RELEASE_TAG = "v0.15.0"
+PROPOSAL_ID = "boundver-semantic-provider-system/v1"
 V015_RELEASE_MARKER = "semantic-provider-v0.15-release-review/v1"
 V015_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.15-product-review/v1"
 PROPOSAL_SECURITY_REVIEW_MARKER = "semantic-provider-security-review/v1"
@@ -141,8 +163,17 @@ def _trusted_tool(name: str, repo: Path) -> str:
     if raw is None:
         raise AuditError(f"required command is unavailable: {name}")
     try:
-        path = Path(raw).resolve(strict=True)
         repo_root = repo.resolve(strict=True)
+        selected = Path(os.path.abspath(raw))
+        selected.relative_to(repo_root)
+    except ValueError:
+        pass
+    except OSError as exc:
+        raise AuditError(f"cannot resolve trusted command: {name}") from exc
+    else:
+        raise AuditError(f"required command resolves inside the repository: {name}")
+    try:
+        path = selected.resolve(strict=True)
         path.relative_to(repo_root)
     except ValueError:
         pass
@@ -189,6 +220,7 @@ def _run_bounded(
     command: Sequence[str],
     *,
     cwd: Path,
+    env: Optional[Mapping[str, str]] = None,
     stdout_limit: int = MAX_STDOUT_BYTES,
     stderr_limit: int = MAX_STDERR_BYTES,
     timeout: int = COMMAND_TIMEOUT_SECONDS,
@@ -200,14 +232,19 @@ def _run_bounded(
         process = subprocess.Popen(
             list(command),
             cwd=cwd,
+            env=None if env is None else dict(env),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as exc:
         raise AuditError(f"required command is unavailable: {command[0]}") from exc
-    assert process.stdout is not None
-    assert process.stderr is not None
+    if process.stdout is None or process.stderr is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        raise AuditError("required command output pipes are unavailable")
 
     captured: dict[str, bytes] = {}
     overflows: list[str] = []
@@ -268,8 +305,16 @@ def _run_bounded(
         process.wait()
         raise
     finally:
+        pipe_deadline = time.monotonic() + PIPE_CLOSE_GRACE_SECONDS
         for reader in readers:
-            reader.join()
+            reader.join(timeout=max(0.0, pipe_deadline - time.monotonic()))
+
+    if any(reader.is_alive() for reader in readers):
+        terminate()
+        raise AuditError(
+            f"{command[0]} output pipes did not close within "
+            f"{PIPE_CLOSE_GRACE_SECONDS} seconds"
+        )
 
     if read_errors:
         raise AuditError(
@@ -292,9 +337,50 @@ def _run_bounded(
     return captured.get("stdout", b"")
 
 
+def _json_shape_within_limits(raw: bytes) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif byte in {0x5B, 0x7B}:
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif byte in {0x5D, 0x7D}:
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif byte in {0x09, 0x0A, 0x0D, 0x20, 0x2C, 0x3A}:
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
+
+
 def _decode_json(raw: bytes, label: str) -> Any:
     if len(raw) > MAX_JSON_BYTES:
         raise AuditError(f"{label} exceeds the {MAX_JSON_BYTES}-byte JSON limit")
+    if not _json_shape_within_limits(raw):
+        raise AuditError(f"{label} exceeds the JSON structural limit")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -356,11 +442,42 @@ def _read_regular(path: Path, limit: int, label: str) -> bytes:
     return raw
 
 
+def _git_environment(
+    environment: Optional[Mapping[str, str]] = None,
+) -> dict[str, str]:
+    """Keep review Git reads local, noninteractive, and replacement-free."""
+    result = sanitize_git_environment(environment)
+    result.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+        }
+    )
+    return result
+
+
 def _git(repo: Path, *arguments: str) -> bytes:
-    return _run_bounded([_trusted_tool("git", repo), *arguments], cwd=repo)
+    return _run_bounded(
+        [_trusted_tool("git", repo), *arguments],
+        cwd=repo,
+        env=_git_environment(),
+    )
 
 
 def _git_blob(repo: Path, commit: str, path: str) -> bytes:
+    environment = _git_environment()
     raw_entry = _run_bounded(
         [
             _trusted_tool("git", repo),
@@ -372,6 +489,7 @@ def _git_blob(repo: Path, commit: str, path: str) -> bytes:
             path,
         ],
         cwd=repo,
+        env=environment,
         stdout_limit=4_096,
     )
     expected_path = path.encode("utf-8")
@@ -397,6 +515,7 @@ def _git_blob(repo: Path, commit: str, path: str) -> bytes:
     return _run_bounded(
         [_trusted_tool("git", repo), "cat-file", "blob", blob],
         cwd=repo,
+        env=environment,
         stdout_limit=MAX_REVIEWED_FILE_BYTES,
     )
 
@@ -597,6 +716,7 @@ class GitHubClient:
                 *arguments,
             ],
             cwd=self.repo_root,
+            env=sanitize_github_environment(),
             timeout=min(COMMAND_TIMEOUT_SECONDS, max(1, int(remaining))),
         )
         self.response_bytes += len(raw)
@@ -1826,17 +1946,130 @@ def evaluate_snapshot(
     }
 
 
-def _load_checker(repo: Path) -> ModuleType:
-    path = repo / "scripts" / "check_semantic_provider_proposal.py"
-    source = _read_regular(path, 2 * 1024 * 1024, "proposal checker")
+_CHECKER_RUNNER = r"""
+import contextlib
+import importlib.util
+import json
+import os
+import pathlib
+import sys
+
+checker_path = pathlib.Path(sys.argv[1])
+repo = pathlib.Path(sys.argv[2])
+manifest = pathlib.Path(sys.argv[3])
+flags = tuple(value == "1" for value in sys.argv[4:9])
+original_stdout = sys.stdout
+with open(os.devnull, "w", encoding="utf-8") as sink:
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        spec = importlib.util.spec_from_file_location(
+            "boundver_semantic_provider_proposal_checker_for_audit",
+            checker_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("proposal checker cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        result = module.validate_proposal(
+            repo,
+            manifest,
+            authoritative_review_passed=flags[0],
+            authoritative_release_passed=flags[1],
+            require_accepted=flags[2],
+            require_v0_15_work=flags[3],
+            require_v0_15_release=flags[4],
+        )
+original_stdout.write(
+    json.dumps(result, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+)
+"""
+
+
+def _checker_environment() -> dict[str, str]:
+    """Return only non-credential process settings needed by isolated Python."""
+    source = {name.upper(): value for name, value in os.environ.items()}
+    result = {
+        name: source[name]
+        for name in (
+            "COMSPEC",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+            "PATHEXT",
+            "SYSTEMDRIVE",
+            "SYSTEMROOT",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "TZ",
+            "WINDIR",
+        )
+        if name in source
+    }
+    result.update(
+        {
+            "PYTHONHASHSEED": "0",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
+    )
+    return result
+
+
+def _run_checker(
+    authority_repo: Path,
+    validation_root: Path,
+    manifest_path: Path,
+    *,
+    authoritative_review_passed: bool,
+    authoritative_release_passed: bool,
+    require_accepted: bool,
+    require_v0_15_work: bool,
+    require_v0_15_release: bool,
+) -> dict[str, Any]:
+    """Run reviewed checker code without exposing audit-process credentials."""
+    checker_path = validation_root / "scripts" / "check_semantic_provider_proposal.py"
+    _read_regular(checker_path, 2 * 1024 * 1024, "proposal checker")
     try:
-        code = compile(source, str(path), "exec")
-    except (SyntaxError, ValueError) as exc:
-        raise AuditError("proposal checker cannot be compiled") from exc
-    module = ModuleType("boundver_semantic_provider_proposal_checker_for_audit")
-    module.__file__ = str(path)
-    exec(code, module.__dict__)
-    return module
+        authority_root = authority_repo.resolve(strict=True)
+        python = Path(sys.executable).resolve(strict=True)
+        python.relative_to(authority_root)
+    except ValueError:
+        pass
+    except OSError as exc:
+        raise AuditError("trusted Python runtime is unavailable") from exc
+    else:
+        raise AuditError("refusing a Python runtime inside the audited repository")
+    raw = _run_bounded(
+        (
+            str(python),
+            "-I",
+            "-c",
+            _CHECKER_RUNNER,
+            str(checker_path),
+            str(validation_root),
+            str(manifest_path),
+            *("1" if value else "0" for value in (
+                authoritative_review_passed,
+                authoritative_release_passed,
+                require_accepted,
+                require_v0_15_work,
+                require_v0_15_release,
+            )),
+        ),
+        cwd=validation_root,
+        env=_checker_environment(),
+        stdout_limit=2 * 1024 * 1024,
+        stderr_limit=MAX_STDERR_BYTES,
+        timeout=60,
+    )
+    value = _decode_json(raw, "isolated proposal checker result")
+    if (
+        type(value) is not dict
+        or value.get("ok") is not True
+        or value.get("proposal") != PROPOSAL_ID
+    ):
+        raise AuditError("isolated proposal checker returned a malformed result")
+    return value
 
 
 def _load_requirements(manifest_path: Path) -> dict[str, Any]:
@@ -2237,7 +2470,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 release_review_result["valid_until"]
             ) < _timestamp_datetime(authority_valid_until):
                 authority_valid_until = release_review_result["valid_until"]
-            checker = _load_checker(validation_root)
             checker_arguments = {
                 "authoritative_review_passed": True,
                 "authoritative_release_passed": release_review_result is not None,
@@ -2245,7 +2477,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "require_v0_15_work": args.gate == "v0.15-work",
                 "require_v0_15_release": args.gate == "v0.15-release",
             }
-            proposal_result = checker.validate_proposal(
+            proposal_result = _run_checker(
+                repo,
                 validation_root,
                 manifest_path,
                 **checker_arguments,

@@ -452,7 +452,10 @@ def analyze_selector_migration(
                 )
                 continue
             compared_count += 1
-            assert current_selector is not None
+            if current_selector is None:
+                raise RuntimeError(
+                    "Comparable selector migration is missing its current selector"
+                )
             if is_glob:
                 legacy = []
                 current = []

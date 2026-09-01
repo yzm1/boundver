@@ -15,17 +15,39 @@ import binascii
 import copy
 import gzip
 import hashlib
+import importlib.util
 import os
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
+from typing import BinaryIO, Mapping, Sequence
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
+
+
+def _load_release_platform():
+    """Load the exact adjacent helper even under isolated Python startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_build_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_release_platform = _load_release_platform()
+prepare_plain_output_directory = _release_platform.prepare_plain_output_directory
+revalidate_plain_output_directory = _release_platform.revalidate_plain_output_directory
+sanitize_git_environment = _release_platform.sanitize_git_environment
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +65,68 @@ MAX_TAR_EXTENSION_BYTES = 64 * 1024
 MAX_CANONICAL_TAR_BYTES = 768 * 1024 * 1024
 MAX_RELEASE_ARTIFACT_BYTES = MAX_CANONICAL_TAR_BYTES + 64 * 1024
 MAX_BUILD_DIRECTORY_ENTRIES = 16
+MAX_GIT_SECONDS = 120
+MAX_BUILD_SECONDS = 1_800
+
+_WINDOWS_RESERVED_ARCHIVE_STEMS = {
+    "aux",
+    "con",
+    "nul",
+    "prn",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
+def _is_windows_reparse_point(identity: os.stat_result) -> bool:
+    attributes = getattr(identity, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag)
+
+
+def _trusted_git() -> str:
+    selected = shutil.which("git")
+    if selected is None:
+        raise ValueError("git is required to derive SOURCE_DATE_EPOCH")
+    try:
+        root = REPO_ROOT.resolve(strict=True)
+        raw = Path(os.path.abspath(selected))
+        resolved = Path(selected).resolve(strict=True)
+        identity = resolved.stat()
+    except OSError as error:
+        raise ValueError("trusted Git executable is unavailable") from error
+    if (
+        not stat.S_ISREG(identity.st_mode)
+        or raw == root
+        or root in raw.parents
+        or resolved == root
+        or root in resolved.parents
+    ):
+        raise ValueError("refusing a Git executable inside the repository")
+    return str(resolved)
+
+
+def _git_environment() -> dict[str, str]:
+    environment = sanitize_git_environment()
+    environment.update(
+        {
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
 
 
 def _safe_file_size(path: Path, max_bytes: int, label: str) -> int:
@@ -88,7 +172,8 @@ def _read_exact_file_bytes(stream: BinaryIO, size: int, context: str) -> bytes:
     return b"".join(chunks)
 
 
-def _validate_archive_path(name: str, archive_name: str) -> None:
+def _validate_archive_path(name: str, archive_name: str) -> str:
+    """Validate one portable member name and return its collision key."""
     try:
         encoded_length = len(name.encode("utf-8"))
     except UnicodeEncodeError as error:
@@ -101,10 +186,18 @@ def _validate_archive_path(name: str, archive_name: str) -> None:
         or PurePosixPath(name).is_absolute()
         or "\\" in name
         or any(part in ("", ".", "..") for part in parts)
+        or any(":" in part for part in parts)
+        or any(part.endswith((" ", ".")) for part in parts)
+        or any(
+            part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_ARCHIVE_STEMS
+            for part in parts
+        )
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
     ):
         raise ValueError(
             f"{archive_name} contains an unsafe or overlong archive path: {name!r}"
         )
+    return unicodedata.normalize("NFC", stripped).casefold()
 
 
 def _preflight_zip(path: Path) -> None:
@@ -147,6 +240,8 @@ def _preflight_zip(path: Path) -> None:
         central_end = central_offset + central_size
         stream.seek(central_offset)
         total_uncompressed = 0
+        names: set[str] = set()
+        portable_names: set[str] = set()
         for _ in range(total_entries):
             header = _read_exact_file_bytes(
                 stream, 46, f"ZIP central directory in {path.name}"
@@ -180,7 +275,17 @@ def _preflight_zip(path: Path) -> None:
                 filename = filename_bytes.decode(encoding)
             except UnicodeDecodeError as error:
                 raise ValueError(f"{path.name} contains an invalid archive path") from error
-            _validate_archive_path(filename, path.name)
+            portable_name = _validate_archive_path(filename, path.name)
+            if filename in names:
+                raise ValueError(
+                    f"{path.name} contains a duplicate archive member: {filename}"
+                )
+            if portable_name in portable_names:
+                raise ValueError(
+                    f"{path.name} contains a non-portable archive path collision"
+                )
+            names.add(filename)
+            portable_names.add(portable_name)
             if uncompressed_size > MAX_ARCHIVE_MEMBER_BYTES:
                 raise ValueError(
                     f"{path.name} contains an oversized archive member: {filename}"
@@ -238,11 +343,29 @@ def _project_version(pyproject_path: Path) -> str:
 def _release_epoch(explicit: str | None) -> int:
     value = explicit or os.environ.get("SOURCE_DATE_EPOCH")
     if value is None:
-        value = subprocess.check_output(
-            ["git", "show", "-s", "--format=%ct", "HEAD"],
-            cwd=REPO_ROOT,
-            text=True,
-        ).strip()
+        try:
+            value = subprocess.check_output(
+                [
+                    _trusted_git(),
+                    "-c",
+                    f"core.hooksPath={os.devnull}",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "--no-optional-locks",
+                    "show",
+                    "-s",
+                    "--format=%ct",
+                    "HEAD",
+                ],
+                cwd=REPO_ROOT,
+                env=_git_environment(),
+                stdin=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=MAX_GIT_SECONDS,
+            ).strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise ValueError("Git could not derive SOURCE_DATE_EPOCH") from exc
     try:
         epoch = int(value)
     except ValueError as exc:
@@ -272,12 +395,18 @@ def _canonicalize_wheel(source: Path, destination: Path, epoch: int) -> None:
                 f"wheel exceeds the {MAX_ARCHIVE_MEMBERS}-member archive limit: {source}"
             )
         names: set[str] = set()
+        portable_names: set[str] = set()
         total_uncompressed = 0
         for item in entries:
-            _validate_archive_path(item.filename, source.name)
+            portable_name = _validate_archive_path(item.filename, source.name)
             if item.filename in names:
                 raise ValueError(f"wheel contains duplicate members: {source}")
+            if portable_name in portable_names:
+                raise ValueError(
+                    f"wheel contains a non-portable archive path collision: {source}"
+                )
             names.add(item.filename)
+            portable_names.add(portable_name)
             if item.file_size > MAX_ARCHIVE_MEMBER_BYTES:
                 raise ValueError(
                     f"wheel contains an oversized member: {item.filename}"
@@ -484,6 +613,7 @@ def _canonicalize_sdist(source: Path, destination: Path, epoch: int) -> None:
         with tarfile.open(raw_tar, "r:") as archive:
             members: list[tarfile.TarInfo] = []
             names: set[str] = set()
+            portable_names: set[str] = set()
             aggregate = 0
             for member in archive:
                 if len(members) >= MAX_ARCHIVE_MEMBERS:
@@ -491,10 +621,16 @@ def _canonicalize_sdist(source: Path, destination: Path, epoch: int) -> None:
                         f"sdist exceeds the {MAX_ARCHIVE_MEMBERS}-member archive limit: "
                         f"{source}"
                     )
-                _validate_archive_path(member.name, source.name)
+                portable_name = _validate_archive_path(member.name, source.name)
                 if member.name in names:
                     raise ValueError(f"sdist contains duplicate members: {source}")
+                if portable_name in portable_names:
+                    raise ValueError(
+                        "sdist contains a non-portable archive path collision: "
+                        f"{source}"
+                    )
                 names.add(member.name)
+                portable_names.add(portable_name)
                 if member.islnk() or member.issym():
                     _validate_archive_path(member.linkname, source.name)
                 if not (
@@ -550,7 +686,7 @@ def _write_stored_gzip(source: Path, destination: Path, epoch: int) -> None:
     size = _safe_file_size(source, MAX_CANONICAL_TAR_BYTES, "canonical TAR")
     crc = 0
     total = 0
-    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+    with source.open("rb") as input_stream, destination.open("xb") as output_stream:
         output_stream.write(struct.pack("<BBBBIBB", 0x1F, 0x8B, 8, 0, epoch, 0, 255))
         if size:
             while total < size:
@@ -598,10 +734,32 @@ def _stored_gzip(payload: bytes, epoch: int) -> bytes:
     return bytes(result)
 
 
+def _remove_generated_directory(path: Path) -> None:
+    """Remove one exact generated directory without traversing path aliases."""
+    try:
+        identity = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+        raise ValueError(
+            "refusing to recursively remove a non-directory, symlink, "
+            f"junction, or reparse point: {path}"
+        )
+    shutil.rmtree(path)
+
+
 def _clear_backend_state() -> None:
     for path in (REPO_ROOT / "build", REPO_ROOT / "src" / "boundver.egg-info"):
-        if path.exists():
-            shutil.rmtree(path)
+        _remove_generated_directory(path)
+
+
+def _clear_packaging_state() -> None:
+    for path in (
+        REPO_ROOT / "dist",
+        REPO_ROOT / "build",
+        REPO_ROOT / "src" / "boundver.egg-info",
+    ):
+        _remove_generated_directory(path)
 
 
 def _bounded_directory_entries(directory: Path) -> list[Path]:
@@ -614,6 +772,28 @@ def _bounded_directory_entries(directory: Path) -> list[Path]:
             )
         entries.append(path)
     return entries
+
+
+def _run_build_step(
+    command: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    label: str,
+) -> None:
+    """Run one release build step under the job-independent wall-clock cap."""
+    try:
+        subprocess.run(
+            list(command),
+            cwd=REPO_ROOT,
+            env=dict(environment),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=MAX_BUILD_SECONDS,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"{label} exceeds the {MAX_BUILD_SECONDS}-second wall-clock limit"
+        ) from error
 
 
 def _single_build(output: Path, version: str, epoch: int) -> None:
@@ -633,7 +813,7 @@ def _single_build(output: Path, version: str, epoch: int) -> None:
             "LANG": "C",
         }
     )
-    subprocess.run(
+    _run_build_step(
         [
             sys.executable,
             "-I",
@@ -643,9 +823,8 @@ def _single_build(output: Path, version: str, epoch: int) -> None:
             "--outdir",
             str(raw),
         ],
-        cwd=REPO_ROOT,
-        env=env,
-        check=True,
+        environment=env,
+        label="Python distribution build",
     )
 
     raw_entries = _bounded_directory_entries(raw)
@@ -658,7 +837,7 @@ def _single_build(output: Path, version: str, epoch: int) -> None:
         )
     _canonicalize_wheel(wheels[0], canonical / wheels[0].name, epoch)
     _canonicalize_sdist(sdists[0], canonical / sdists[0].name, epoch)
-    subprocess.run(
+    _run_build_step(
         [
             sys.executable,
             "-I",
@@ -666,9 +845,8 @@ def _single_build(output: Path, version: str, epoch: int) -> None:
             "--output",
             str(canonical / f"boundver-{version}.pyz"),
         ],
-        cwd=REPO_ROOT,
-        env=env,
-        check=True,
+        environment=env,
+        label="standalone archive build",
     )
 
 
@@ -712,7 +890,7 @@ def _copy_file_bounded(source: Path, destination: Path) -> None:
         source, MAX_RELEASE_ARTIFACT_BYTES, "release artifact"
     )
     total = 0
-    with source.open("rb") as input_stream, destination.open("wb") as output_stream:
+    with source.open("rb") as input_stream, destination.open("xb") as output_stream:
         while total < MAX_RELEASE_ARTIFACT_BYTES:
             requested = min(
                 READ_CHUNK_BYTES, MAX_RELEASE_ARTIFACT_BYTES - total
@@ -739,9 +917,11 @@ def _copy_file_bounded(source: Path, destination: Path) -> None:
 
 def build_release_artifacts(output: Path, epoch: int) -> dict[str, str]:
     version = _project_version(REPO_ROOT / "pyproject.toml")
-    if output.exists() and any(output.iterdir()):
+    output, output_ancestor_identities = prepare_plain_output_directory(
+        output, "release artifact output directory"
+    )
+    if any(output.iterdir()):
         raise ValueError(f"output directory must be empty: {output}")
-    output.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory(prefix="boundver-release-build-") as temp:
         temp_root = Path(temp)
@@ -761,7 +941,17 @@ def build_release_artifacts(output: Path, epoch: int) -> dict[str, str]:
             )
             raise RuntimeError(f"release builds are not byte-reproducible:\n{details}")
         for name in sorted(first_digests):
+            revalidate_plain_output_directory(
+                output,
+                output_ancestor_identities,
+                "release artifact output directory",
+            )
             _copy_file_bounded(first / "canonical" / name, output / name)
+    revalidate_plain_output_directory(
+        output,
+        output_ancestor_identities,
+        "release artifact output directory",
+    )
     _clear_backend_state()
     return first_digests
 
@@ -770,13 +960,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=Path("dist"))
     parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Remove only the repository's exact generated packaging directories",
+    )
+    parser.add_argument(
         "--source-date-epoch",
         help="Release timestamp (defaults to SOURCE_DATE_EPOCH, then HEAD)",
     )
     args = parser.parse_args()
     try:
+        if args.clean:
+            _clear_packaging_state()
+            print("Removed generated packaging state.")
+            return 0
         epoch = _release_epoch(args.source_date_epoch)
-        digests = build_release_artifacts(args.output_dir.resolve(), epoch)
+        digests = build_release_artifacts(args.output_dir, epoch)
     except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

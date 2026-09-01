@@ -1,8 +1,11 @@
 """Hard-bound regressions for small Git command capture."""
 
 import io
+import os
 import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +22,10 @@ class _FakeProcess:
         self.returncode = returncode
         self.killed = False
 
-    def wait(self):
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
         return self.returncode
 
     def kill(self):
@@ -43,7 +49,55 @@ class _AdversarialPipe:
         self.closed = True
 
 
+class _HangingProcess:
+    """Expose finite pipes while refusing to exit until the deadline kills it."""
+
+    def __init__(self):
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
+        self.returncode = None
+        self.killed = False
+        self._finished = threading.Event()
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if not self._finished.wait(timeout):
+            raise subprocess.TimeoutExpired(["git"], timeout)
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+        self._finished.set()
+
+
 class GitRunBoundTests(unittest.TestCase):
+    def tearDown(self):
+        git_helpers._ambient_worktree_config_overrides.cache_clear()
+        git_helpers._repository_filter_config_overrides.cache_clear()
+        super().tearDown()
+
+    def test_filesystem_git_root_rejects_windows_reparse_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            with patch(
+                "boundver._git._is_windows_reparse_point", return_value=True
+            ), self.assertRaisesRegex(ValueError, "junction, or reparse point"):
+                git_helpers._filesystem_git_root(root)
+
+    def test_filesystem_git_root_accepts_plain_linked_worktree_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").write_text(
+                "gitdir: ../repository/.git/worktrees/example\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(git_helpers._filesystem_git_root(root), root.resolve())
+
     def test_success_returns_text_completed_process(self):
         process = _FakeProcess(
             io.BytesIO(b"object-id\r\n"),
@@ -52,19 +106,417 @@ class GitRunBoundTests(unittest.TestCase):
         with patch("boundver._git.subprocess.Popen", return_value=process) as popen:
             result = git_helpers._git_run(Path("repo"), ["rev-parse", "HEAD"])
 
+        command = git_helpers._git_command(Path("repo"), "rev-parse", "HEAD")
         self.assertIsInstance(result, subprocess.CompletedProcess)
-        self.assertEqual(
-            result.args,
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
-        )
+        self.assertEqual(result.args, command)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "object-id\n")
         self.assertEqual(result.stderr, "warning\n")
         popen.assert_called_once_with(
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
+            command,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=git_helpers._git_subprocess_env(Path("repo")),
         )
+
+    def test_git_environment_is_offline_noninteractive_and_replace_free(self):
+        hostile = {
+            "GIT_CONFIG_KEY_99": "credential.helper",
+            "GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='malicious'",
+            "GIT_CONFIG": "alternate-config",
+            "GIT_DIR": "elsewhere.git",
+            "GIT_EXEC_PATH": "repo-tools",
+            "GIT_GRAFT_FILE": "grafts",
+            "GIT_INDEX_FILE": "alternate-index",
+            "GIT_LITERAL_PATHSPECS": "1",
+            "GIT_OBJECT_DIRECTORY": "alternate-objects",
+            "GIT_TRACE2_EVENT": "trace.json",
+            "GIT_FUTURE_REDIRECT": "future-control",
+        }
+        with patch.dict(os.environ, hostile, clear=False):
+            environment = git_helpers._git_subprocess_env()
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(environment["GCM_INTERACTIVE"], "never")
+        self.assertEqual(environment["GIT_PAGER"], "cat")
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], git_helpers.os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_KEY_1"], "core.fsmonitor")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_1"], "false")
+        self.assertEqual(environment["GIT_CONFIG_KEY_2"], "diff.ignoreSubmodules")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_2"], "dirty")
+        self.assertEqual(environment["GIT_CONFIG_KEY_3"], "status.submoduleSummary")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_3"], "false")
+        self.assertEqual(environment["GIT_CONFIG_KEY_4"], "submodule.recurse")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_4"], "false")
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], git_helpers.os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertEqual(environment["GIT_ATTR_NOSYSTEM"], "1")
+        for name in hostile:
+            self.assertNotIn(name, environment)
+
+    def test_git_environment_promotes_only_prevalidated_worktree_semantics(self):
+        with patch(
+            "boundver._git._ambient_worktree_config_overrides",
+            return_value=(
+                ("core.autocrlf", "true"),
+                ("core.eol", "crlf"),
+            ),
+        ):
+            environment = git_helpers._git_subprocess_env(Path("repo"))
+
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "8")
+        self.assertEqual(environment["GIT_CONFIG_KEY_6"], "core.autocrlf")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_6"], "true")
+        self.assertEqual(environment["GIT_CONFIG_KEY_7"], "core.eol")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_7"], "crlf")
+
+    def test_ambient_config_query_ignores_local_and_invalid_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / ".git").mkdir()
+            response = subprocess.CompletedProcess(
+                ["git", "config"],
+                0,
+                (
+                    "system\0core.autocrlf\ntrue\0"
+                    "global\0core.eol\ncrlf\0"
+                    "local\0core.autocrlf\ninvalid\0"
+                    "local\0core.filemode\nfalse\0"
+                ),
+                "",
+            )
+            with patch("boundver._git._git_run", return_value=response) as run:
+                overrides = git_helpers._ambient_worktree_config_overrides(
+                    str(root)
+                )
+
+        self.assertEqual(overrides, (("core.eol", "crlf"),))
+        query = run.call_args.args[1]
+        self.assertIn("--no-includes", query)
+        self.assertIn("--show-scope", query)
+        query_environment = run.call_args.kwargs["environment"]
+        self.assertNotIn("GIT_CONFIG_GLOBAL", query_environment)
+        self.assertNotIn("GIT_CONFIG_NOSYSTEM", query_environment)
+        self.assertEqual(
+            run.call_args.kwargs["deadline_seconds"],
+            git_helpers.MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+
+    def test_repository_filter_query_neutralizes_every_driver_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / ".git").mkdir()
+            response = subprocess.CompletedProcess(
+                ["git", "config"],
+                0,
+                (
+                    "filter.evil.clean\0"
+                    "filter.evil.required\0"
+                    "filter.LFS.process\0"
+                ),
+                "",
+            )
+            with patch("boundver._git._git_run", return_value=response) as run:
+                overrides = git_helpers._repository_filter_config_overrides(
+                    str(root)
+                )
+
+        self.assertEqual(
+            overrides,
+            (
+                ("filter.evil.clean", ""),
+                ("filter.evil.smudge", ""),
+                ("filter.evil.process", ""),
+                ("filter.evil.required", "false"),
+                ("filter.LFS.clean", ""),
+                ("filter.LFS.smudge", ""),
+                ("filter.LFS.process", ""),
+                ("filter.LFS.required", "false"),
+            ),
+        )
+        query = run.call_args.args[1]
+        self.assertIn("--includes", query)
+        self.assertIn("--name-only", query)
+        environment = run.call_args.kwargs["environment"]
+        self.assertEqual(environment["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+
+    def test_repository_clean_filter_cannot_execute_during_git_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.email", "audit@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Audit"],
+                check=True,
+            )
+            helper = root / "filter.py"
+            helper.write_text(
+                "import pathlib, sys\n"
+                "pathlib.Path('filter-ran').write_text('executed')\n"
+                "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+                encoding="utf-8",
+            )
+            (root / ".gitattributes").write_text(
+                "*.txt filter=hostile\n",
+                encoding="utf-8",
+            )
+            target = root / "data.txt"
+            target.write_text("initial\n", encoding="utf-8")
+            filter_command = f'"{sys.executable}" filter.py'
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "filter.hostile.clean",
+                    filter_command,
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "filter.hostile.smudge",
+                    "cat",
+                ],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "--quiet", "-m", "initial"],
+                check=True,
+            )
+            marker = root / "filter-ran"
+            marker.unlink(missing_ok=True)
+            target.write_text("changed\n", encoding="utf-8")
+
+            status = git_helpers._git_run(
+                root,
+                ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            )
+
+            self.assertIn("data.txt", status.stdout)
+            self.assertFalse(marker.exists())
+            environment = git_helpers._git_subprocess_env(root)
+            configured = {
+                environment[f"GIT_CONFIG_KEY_{index}"]:
+                environment[f"GIT_CONFIG_VALUE_{index}"]
+                for index in range(int(environment["GIT_CONFIG_COUNT"]))
+            }
+            self.assertEqual(configured["filter.hostile.clean"], "")
+            self.assertEqual(configured["filter.hostile.smudge"], "")
+            self.assertEqual(configured["filter.hostile.process"], "")
+            self.assertEqual(configured["filter.hostile.required"], "false")
+
+    def test_submodule_clean_filter_cannot_execute_during_git_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source = root / "source"
+            repository = root / "repository"
+            subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.email", "audit@example.invalid"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.name", "Audit"],
+                check=True,
+            )
+            (source / ".gitattributes").write_text(
+                "*.txt filter=hostile\n",
+                encoding="utf-8",
+            )
+            (source / "filter.py").write_text(
+                "import pathlib, sys\n"
+                "pathlib.Path('filter-ran').write_text('executed')\n"
+                "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+                encoding="utf-8",
+            )
+            (source / "data.txt").write_text("initial\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "commit", "--quiet", "-m", "source"],
+                check=True,
+            )
+            first_commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            (source / "revision.md").write_text("second\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "revision.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "commit", "--quiet", "-m", "second"],
+                check=True,
+            )
+
+            subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "config",
+                    "user.email",
+                    "audit@example.invalid",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "user.name", "Audit"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "protocol.file.allow=always",
+                    "-C",
+                    str(repository),
+                    "submodule",
+                    "add",
+                    "--quiet",
+                    str(source),
+                    "nested",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "commit", "--quiet", "-m", "super"],
+                check=True,
+            )
+            checkout = repository / "nested"
+            filter_command = f'"{sys.executable}" filter.py'
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "config",
+                    "filter.hostile.clean",
+                    filter_command,
+                ],
+                check=True,
+            )
+            (checkout / "data.txt").write_text("changed\n", encoding="utf-8")
+            marker = checkout / "filter-ran"
+
+            status = git_helpers._git_run(
+                repository,
+                ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            )
+
+            self.assertEqual(status.returncode, 0)
+            self.assertEqual(status.stdout, "")
+            self.assertFalse(marker.exists())
+
+            (checkout / "data.txt").write_text("initial\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(checkout), "checkout", "--quiet", first_commit],
+                check=True,
+            )
+            marker.unlink(missing_ok=True)
+            changed_gitlink = git_helpers._git_run(
+                repository,
+                ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            )
+
+            self.assertIn("nested", changed_gitlink.stdout)
+            self.assertFalse(marker.exists())
+
+    def test_exact_repository_is_the_only_process_local_safe_directory(self):
+        repository = Path("repo")
+        environment = git_helpers._git_subprocess_env(repository)
+        self.assertEqual(environment["GIT_CONFIG_COUNT"], "6")
+        self.assertEqual(environment["GIT_CONFIG_KEY_5"], "safe.directory")
+        self.assertEqual(
+            environment["GIT_CONFIG_VALUE_5"],
+            str(repository.resolve(strict=False)),
+        )
+
+    def test_ambient_git_config_cannot_redirect_config_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repo"
+            alternate = root / "alternate.config"
+            subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "config",
+                    "core.filemode",
+                    "true",
+                ],
+                check=True,
+            )
+            alternate.write_text("[core]\n\tfilemode = false\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"GIT_CONFIG": str(alternate)}):
+                result = git_helpers._git_run(
+                    repository,
+                    ["config", "--bool", "core.filemode"],
+                )
+
+        self.assertEqual(result.stdout.strip(), "true")
+
+    def test_repository_local_git_executable_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            executable = repo / "git.exe"
+            executable.write_bytes(b"not git")
+            with patch(
+                "boundver._git.shutil.which", return_value=str(executable)
+            ), self.assertRaisesRegex(ValueError, "inside the inspected repository"):
+                git_helpers._trusted_git_executable(repo)
+
+    def test_repository_local_core_worktree_cannot_redirect_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "repo"
+            outside = root / "outside"
+            repository.mkdir()
+            outside.mkdir()
+            subprocess.run(
+                ["git", "init", "--quiet", str(repository)],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repository),
+                    "config",
+                    "core.worktree",
+                    str(outside),
+                ],
+                check=True,
+            )
+            nested = repository / "nested"
+            nested.mkdir()
+            previous = Path.cwd()
+            try:
+                os.chdir(nested)
+                self.assertEqual(git_helpers.git_root(), repository.resolve())
+            finally:
+                os.chdir(previous)
 
     def test_success_uses_filesystem_codec_and_losslessly_preserves_bytes(self):
         process = _FakeProcess(
@@ -109,7 +561,10 @@ class GitRunBoundTests(unittest.TestCase):
 
         error = raised.exception
         self.assertEqual(error.returncode, 7)
-        self.assertEqual(error.cmd, ["git", "-C", "repo", "write-tree"])
+        self.assertEqual(
+            error.cmd,
+            git_helpers._git_command(Path("repo"), "write-tree"),
+        )
         self.assertEqual(error.output, "partial\n")
         self.assertEqual(error.stdout, "partial\n")
         self.assertEqual(error.stderr, "failure\n")
@@ -163,6 +618,42 @@ class GitRunBoundTests(unittest.TestCase):
         self.assertTrue(process.killed)
         self.assertTrue(stdout.closed)
         self.assertEqual(stdout.read_sizes, [5])
+
+    def test_streaming_git_stderr_never_spools_past_the_diagnostic_limit(self):
+        stderr = _AdversarialPipe()
+        process = _FakeProcess(io.BytesIO(b"path.txt\0"), stderr)
+        with (
+            patch("boundver._git.subprocess.Popen", return_value=process),
+            patch("boundver._git.MAX_GIT_DIAGNOSTIC_BYTES", 4),
+        ):
+            with self.assertRaisesRegex(
+                GuardrailError,
+                "Git command stderr exceeds the 4-byte limit",
+            ):
+                list(
+                    git_helpers._iter_git_nul_records(
+                        Path("repo"), ["ls-files", "-z"]
+                    )
+                )
+
+        self.assertTrue(process.killed)
+        self.assertTrue(stderr.closed)
+        self.assertEqual(stderr.read_sizes, [5])
+
+    def test_stalled_git_command_is_killed_at_wall_clock_deadline(self):
+        process = _HangingProcess()
+        with (
+            patch("boundver._git.subprocess.Popen", return_value=process),
+            patch("boundver._git.MAX_GIT_COMMAND_SECONDS", 0.02),
+        ):
+            with self.assertRaisesRegex(
+                GuardrailError,
+                "Git command exceeds the 0.02-second wall-clock limit",
+            ):
+                git_helpers._git_run(Path("repo"), ["rev-parse", "HEAD"])
+
+        self.assertTrue(process.killed)
+        self.assertEqual(process.returncode, -9)
 
     def test_index_capture_surfaces_terminal_safe_write_tree_stderr(self):
         failure = subprocess.CalledProcessError(

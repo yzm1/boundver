@@ -19,6 +19,8 @@ from ._utils import (
     FACETS,
     GuardrailError,
     SOURCE_MODE_SET,
+    _bounded_diagnostic_list_preview,
+    _bounded_exception_text,
     _bounded_diagnostic_text,
     _bounded_json_dumps,
     _effective_component_facets,
@@ -28,7 +30,7 @@ from ._utils import (
     _short,
     boundary_provider_name,
 )
-from ._consumer_graph import affected_consumer_groups, affected_consumers
+from ._consumer_graph import affected_consumer_groups
 from ._lockfile import MAX_LOCKFILE_BYTES, parse_lockfile_bytes
 
 
@@ -605,7 +607,7 @@ def analyze_explain_changes(
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            detail = str(exc).strip() or type(exc).__name__
+            detail = _bounded_exception_text(exc)
             return {"error": f"cannot capture {source} source: {detail}"}
 
     component_path = str(comp.get("path", "")).rstrip("/")
@@ -692,7 +694,7 @@ def analyze_explain_changes(
             return {
                 "error": (
                     f"failed to diff '{component_name}' against "
-                    f"{effective_base}: {exc}"
+                    f"{effective_base}: {_bounded_exception_text(exc)}"
                 )
             }
 
@@ -725,7 +727,12 @@ def analyze_explain_changes(
                     boundary_changed.append((status, rel))
                     break
     except GuardrailError as exc:
-        return {"error": f"boundary glob analysis failed closed: {exc}"}
+        return {
+            "error": (
+                "boundary glob analysis failed closed: "
+                f"{_bounded_exception_text(exc)}"
+            )
+        }
 
     return {
         "error": None,
@@ -894,9 +901,15 @@ def print_consumer_impact(consumer_impact: List[dict]) -> None:
         components = row.get("components", [])
         external = row.get("external_consumers", [])
         if components:
-            print(f"    Components: {', '.join(components)}")
+            print(
+                "    Components: "
+                f"{_bounded_diagnostic_list_preview(components)}"
+            )
         if external:
-            print(f"    External consumers: {', '.join(external)}")
+            print(
+                "    External consumers: "
+                f"{_bounded_diagnostic_list_preview(external)}"
+            )
         if not components and not external:
             print("    none declared")
 
@@ -955,14 +968,9 @@ def why_component(
         if {"boundary", "compat"} & set(changes)
         else {"components": [], "external_consumers": []}
     )
-    consumers = (
-        affected_consumers(
-            config.get("components", {}),
-            component_name,
-            transitive=transitive_consumers,
-        )
-        if {"boundary", "compat"} & set(changes)
-        else []
+    consumers = sorted(
+        set(consumer_groups["components"])
+        | set(consumer_groups["external_consumers"])
     )
     if output_format == "json":
         _print_json(
@@ -1239,7 +1247,7 @@ def analyze_component_drift(
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            detail = str(exc).strip() or type(exc).__name__
+            detail = _bounded_exception_text(exc)
             print(
                 f"ERROR: cannot capture {source} source: {detail}",
                 file=sys.stderr,
@@ -1262,7 +1270,11 @@ def analyze_component_drift(
     except (MemoryError, RecursionError, KeyboardInterrupt):
         raise
     except Exception as exc:
-        print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
+        print(
+            "ERROR: could not compute current fingerprints: "
+            f"{_bounded_exception_text(exc)}",
+            file=sys.stderr,
+        )
         return None
 
     current_comp = current_lock["components"][component_name]
@@ -1391,7 +1403,7 @@ def analyze_component_drift(
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"
-                changed_files_error = str(exc).strip() or type(exc).__name__
+                changed_files_error = _bounded_exception_text(exc)
         elif source == "index":
             diagnostic_base = diagnostic_base_ref or "HEAD"
             diagnostic_base_origin = (
@@ -1447,7 +1459,7 @@ def analyze_component_drift(
                 except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                     changed_files = []
                     changed_files_status = "error"
-                    changed_files_error = str(exc).strip() or type(exc).__name__
+                    changed_files_error = _bounded_exception_text(exc)
         elif source == "head":
             try:
                 if diagnostic_base_ref:
@@ -1488,7 +1500,7 @@ def analyze_component_drift(
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"
-                changed_files_error = str(exc).strip() or type(exc).__name__
+                changed_files_error = _bounded_exception_text(exc)
 
     # ``git diff HEAD`` already includes staged changes, while the additional
     # cached diff is useful for unborn/fallback cases.  Keep one stable entry

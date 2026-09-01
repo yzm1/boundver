@@ -256,11 +256,28 @@ class GitSourceContractTests(unittest.TestCase):
 
 
 class FailClosedGitBlobTests(unittest.TestCase):
+    def setUp(self):
+        # Keep mocked Popen calls scoped to the cat-file transport under test;
+        # the inert ambient/filter-config queries have their own coverage.
+        self._ambient_config = patch(
+            "boundver._git._ambient_worktree_config_overrides",
+            return_value=(),
+        )
+        self._ambient_config.start()
+        self.addCleanup(self._ambient_config.stop)
+        self._filter_config = patch(
+            "boundver._git._repository_filter_config_overrides",
+            return_value=(),
+        )
+        self._filter_config.start()
+        self.addCleanup(self._filter_config.stop)
+
     @staticmethod
     def _popen_with_stdout(stdout: bytes, returncode: int = 0):
         proc = MagicMock()
         proc.stdin = io.BytesIO()
         proc.stdout = io.BytesIO(stdout)
+        proc.stderr = io.BytesIO()
         proc.wait.return_value = returncode
         proc.poll.return_value = returncode
         return proc
@@ -338,9 +355,14 @@ class FailClosedGitBlobTests(unittest.TestCase):
                 with _GitBlobSession(root) as session:
                     self.assertEqual(session.read_blob(oid_a), b"alpha")
                     self.assertEqual(session.read_blob(oid_b), b"beta")
-            self.assertEqual(popen.call_count, 1)
+            batch_calls = [
+                call
+                for call in popen.call_args_list
+                if call.args[0][-2:] == ["cat-file", "--batch"]
+            ]
+            self.assertEqual(len(batch_calls), 1)
             self.assertEqual(
-                popen.call_args.args[0][-2:], ["cat-file", "--batch"]
+                batch_calls[0].args[0][-2:], ["cat-file", "--batch"]
             )
 
     def test_blob_session_serializes_concurrent_provider_reads(self):
@@ -377,7 +399,12 @@ class FailClosedGitBlobTests(unittest.TestCase):
                 contents,
                 [expected[refs[index % 2]] for index in range(20)],
             )
-            self.assertEqual(popen.call_count, 1)
+            batch_calls = [
+                call
+                for call in popen.call_args_list
+                if call.args[0][-2:] == ["cat-file", "--batch"]
+            ]
+            self.assertEqual(len(batch_calls), 1)
 
     def test_blob_session_rejects_non_object_id_before_start(self):
         with patch("boundver._git.subprocess.Popen") as popen:

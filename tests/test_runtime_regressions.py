@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import io
 import os
@@ -50,6 +51,7 @@ from boundver._utils import (
     MAX_GLOB_SEGMENTS,
     MAX_YAML_INTEGER_CHARACTERS,
     _bounded_int_to_decimal,
+    _bounded_exception_text,
     _bounded_json_dumps,
     _bounded_json_int,
     _bounded_yaml_int,
@@ -125,6 +127,52 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
     )
+
+
+class RuntimeBenchmarkHarnessTests(unittest.TestCase):
+    @staticmethod
+    def _load_benchmark():
+        path = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_runtime.py"
+        spec = importlib.util.spec_from_file_location(
+            "boundver_runtime_benchmark_test",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("cannot load runtime benchmark")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_fixture_initialization_precedes_worktree_bound_git_commands(self):
+        benchmark = self._load_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            benchmark._init_repository(root)
+
+            self.assertTrue((root / ".git").is_dir())
+
+    def test_process_attribution_skips_hardening_options(self):
+        benchmark = self._load_benchmark()
+
+        self.assertEqual(
+            benchmark._git_command_name(
+                [
+                    "git",
+                    "-C",
+                    "repo",
+                    "--work-tree=repo",
+                    "status",
+                    "--porcelain=v1",
+                ]
+            ),
+            "status",
+        )
+        self.assertEqual(
+            benchmark._git_command_name(
+                ["git", "-C", "repo", "--work-tree=repo", "--version"]
+            ),
+            "--version",
+        )
 
 
 class IntegerRuntimeLimitTests(unittest.TestCase):
@@ -342,6 +390,20 @@ class IntegerRuntimeLimitTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "JSON decimal syntax"):
             _load_yaml_with_bounded_integers(tagged)
 
+    def test_oversized_yaml_float_is_rejected_across_parsers(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is unavailable")
+
+        oversized = "value: 1." + ("0" * 4_400) + "\n"
+        with self.assertRaisesRegex(ConfigError, "character limit"):
+            parse_config_text(oversized, Path("boundary.config.yaml"))
+        with self.assertRaisesRegex(ProviderError, "character limit"):
+            _parse_yaml_strict(oversized, "openapi.yaml")
+        with self.assertRaisesRegex(ValueError, "character limit"):
+            _load_yaml_with_bounded_integers(oversized)
+
     def test_malformed_yaml_diagnostic_does_not_echo_source_content(self):
         try:
             import yaml  # noqa: F401
@@ -357,6 +419,40 @@ class IntegerRuntimeLimitTests(unittest.TestCase):
         self.assertNotIn(secret, diagnostic)
         self.assertIn("ParserError", diagnostic)
         self.assertIn("line 3, column 24", diagnostic)
+
+    def test_malformed_config_yaml_does_not_echo_source_content(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is unavailable")
+
+        secret = "SECRET_TOKEN_abc123"
+        malformed = f"project: x\ncomponents: [{secret}\n"
+        with self.assertRaises(ConfigError) as raised:
+            parse_config_text(malformed, Path("boundary.config.yaml"))
+
+        diagnostic = str(raised.exception)
+        self.assertNotIn(secret, diagnostic)
+        self.assertIn("ParserError", diagnostic)
+        self.assertIn("line 2, column 13", diagnostic)
+
+    def test_duplicate_yaml_key_diagnostic_is_bounded(self):
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is unavailable")
+
+        key = "x" * 20_000
+        with self.assertRaises(ConfigError) as raised:
+            parse_config_text(
+                f'? "{key}"\n: first\n? "{key}"\n: second\n',
+                Path("boundary.config.yaml"),
+            )
+
+        diagnostic = str(raised.exception)
+        self.assertIn("duplicate YAML mapping key", diagnostic)
+        self.assertLess(len(diagnostic), 5_000)
+        self.assertNotIn(key, diagnostic)
 
 
 class GlobComplexityTests(unittest.TestCase):
@@ -746,6 +842,30 @@ class DiagnosticGuardrailTests(unittest.TestCase):
         self.assertEqual(
             result["error"], "cannot capture head source: git unavailable"
         )
+
+    def test_exception_diagnostics_are_bounded_and_tolerate_broken_stringification(self):
+        oversized = _bounded_exception_text(ValueError("x" * 10_000))
+        self.assertEqual(len(oversized), 4_096)
+        self.assertTrue(oversized.endswith("..."))
+
+        class BrokenError(Exception):
+            def __str__(self) -> str:
+                raise RuntimeError("broken formatter")
+
+        self.assertEqual(_bounded_exception_text(BrokenError()), "BrokenError")
+
+    def test_exported_explain_bounds_snapshot_capture_failure(self):
+        with patch(
+            "boundver._output._capture_git_source_snapshot",
+            side_effect=OSError("x" * 10_000),
+        ):
+            result = analyze_explain_changes(
+                self._config(), Path("."), "svc", source="head"
+            )
+
+        self.assertTrue(result["error"].startswith("cannot capture head source: "))
+        self.assertLessEqual(len(result["error"]), 4_128)
+        self.assertTrue(result["error"].endswith("..."))
 
     def test_explain_returns_a_controlled_error_for_bounded_git_diff_failure(self):
         config = {

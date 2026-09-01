@@ -11,7 +11,6 @@ from ._config import _json_value_issues, _snapshot_relative_path
 from ._config_contract import git_tag_prefix_error
 from ._consumer_graph import (
     affected_consumer_groups,
-    affected_consumers,
     empty_explicit_slice_error,
     resolve_slice_components,
 )
@@ -1294,6 +1293,7 @@ def verify_lockfile(
             + _diagnostic_list_preview(sorted(unknown_facets))
         ]
     non_gating = BoundedDiagnosticList(observations or [])
+    impact_groups_by_component: Dict[str, Dict[str, List[str]]] = {}
 
     def truncated_issue_result() -> List[str]:
         if observations is not None:
@@ -1430,11 +1430,14 @@ def verify_lockfile(
                 if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
-                        groups = affected_consumer_groups(
-                            all_components,
-                            name,
-                            transitive=transitive_consumers,
-                        )
+                        groups = impact_groups_by_component.get(name)
+                        if groups is None:
+                            groups = affected_consumer_groups(
+                                all_components,
+                                name,
+                                transitive=transitive_consumers,
+                            )
+                            impact_groups_by_component[name] = groups
                         if consumer_impact is not None:
                             existing = (
                                 consumer_impact[-1]
@@ -1458,10 +1461,9 @@ def verify_lockfile(
                             elif facet not in existing["facets"]:
                                 existing["facets"].append(facet)
                                 existing["facets"].sort()
-                        consumers = affected_consumers(
-                            all_components,
-                            name,
-                            transitive=transitive_consumers,
+                        consumers = sorted(
+                            set(groups["components"])
+                            | set(groups["external_consumers"])
                         )
                         if consumers:
                             qualifier = " (TRANSITIVE)" if transitive_consumers else ""

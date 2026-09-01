@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import functools
 import importlib.util
 import json
 import locale
 import math
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -45,7 +47,10 @@ def _load_release_platform():
     return module
 
 
-resolve_bash = _load_release_platform().resolve_bash
+_release_platform = _load_release_platform()
+resolve_bash = _release_platform.resolve_bash
+sanitize_git_environment = _release_platform.sanitize_git_environment
+sanitize_github_environment = _release_platform.sanitize_github_environment
 
 
 def _load_release_workflow():
@@ -66,7 +71,7 @@ ReleaseWorkflowError = release_workflow.ReleaseWorkflowError
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib
 
 
@@ -78,6 +83,7 @@ TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+REMOTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 ALIAS_RE = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 RUN_ID_RE = re.compile(r"[1-9][0-9]{0,19}")
 MAX_COMMAND_STDOUT_BYTES = 32 * 1024 * 1024
@@ -95,6 +101,13 @@ GITHUB_ACTIONS_APP_ID = 15368
 REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
 MAIN_RULESET_PATH = ".github/rulesets/protect-main.json"
 MAX_MAIN_RULESET_BYTES = 64 * 1024
+MAX_RELEASE_TAG_BYTES = 64
+MAX_RULESET_PATTERNS = 256
+MAX_RULESET_PATTERN_BYTES = 4 * 1024
+MAX_RULESET_PATTERN_SEGMENTS = 64
+MAX_RULESET_SEGMENT_BYTES = 256
+MAX_RULESET_SEGMENT_METACHARACTERS = 4
+MAX_RULESET_REF_BYTES = 8 * 1024
 GITHUB_EFFECTIVE_PULL_REQUEST_DEFAULTS = {
     "required_reviewers": [],
     "require_extra_approval_for_unattributed_changes": True,
@@ -111,11 +124,17 @@ MAX_DISTRIBUTION_DIRECTORY_ENTRIES = 10_000
 MAX_DISTRIBUTION_NAME_BYTES = 4 * 1024
 MAX_DISTRIBUTION_TOTAL_NAME_BYTES = 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4300
+MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
+MAX_JSON_TOKENS = 1_000_000
+MAX_JSON_DEPTH = 128
 MAX_TOML_INTEGER_DIGITS = 640
 MAX_GITHUB_NUMERIC_ID = (1 << 64) - 1
 _STREAM_CHUNK_BYTES = 64 * 1024
 DISPATCH_DISCOVERY_ATTEMPTS = 12
 DISPATCH_DISCOVERY_DELAY_SECONDS = 5.0
+MAX_COMMAND_SECONDS = 3_600
+MAX_GITHUB_COMMAND_SECONDS = 120
+MAX_COMMAND_DIAGNOSTIC_CHARS = 4_096
 SURFACES = (
     "repository hygiene",
     "README and hosted documentation",
@@ -158,6 +177,10 @@ def _bounded_json_int(value: str) -> int:
 
 
 def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError(
+            f"JSON number exceeds the {MAX_JSON_NUMBER_CHARS}-character limit"
+        )
     result = float(value)
     if not math.isfinite(result):
         raise ValueError("non-finite JSON number is not supported")
@@ -178,6 +201,8 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _strict_json_loads(document: str) -> object:
+    if not _json_shape_within_limits(document):
+        raise ValueError("JSON exceeds the structural limit")
     return json.loads(
         document,
         object_pairs_hook=_unique_json_object,
@@ -185,6 +210,45 @@ def _strict_json_loads(document: str) -> object:
         parse_float=_bounded_json_float,
         parse_int=_bounded_json_int,
     )
+
+
+def _json_shape_within_limits(document: str) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for character in document:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif character in "[{":
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif character in "]}":
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif character in " \t\r\n,:":
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
 
 
 def _toml_has_oversized_numeric_token(text: str) -> bool:
@@ -395,6 +459,70 @@ class Check:
     detail: str
 
 
+def _trusted_tool(
+    name: str,
+    repo: Path,
+    environment: dict[str, str] | None = None,
+) -> str:
+    """Resolve a host tool and reject repository-local executable shadowing."""
+    search_path = None if environment is None else environment.get("PATH")
+    raw = shutil.which(name, path=search_path)
+    if raw is None:
+        raise GateError(f"required command is unavailable: {name}")
+    try:
+        repo_root = repo.resolve(strict=True)
+        selected = Path(os.path.abspath(raw))
+        selected.relative_to(repo_root)
+    except ValueError:
+        pass
+    except OSError as error:
+        raise GateError(f"cannot resolve required command: {name}") from error
+    else:
+        raise GateError(f"required command resolves inside the repository: {name}")
+    try:
+        path = selected.resolve(strict=True)
+        path.relative_to(repo_root)
+    except ValueError:
+        pass
+    except OSError as error:
+        raise GateError(f"cannot resolve required command: {name}") from error
+    else:
+        raise GateError(f"required command resolves inside the repository: {name}")
+    try:
+        metadata = path.stat()
+    except OSError as error:
+        raise GateError(f"cannot inspect required command: {name}") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise GateError(f"required command is not a regular file: {name}")
+    return str(path)
+
+
+def _git_environment(
+    environment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Disable Git hooks, replacement objects, lazy fetches, and prompts."""
+    result = sanitize_git_environment(environment)
+    result.update(
+        {
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+        }
+    )
+    return result
+
+
 def _run_bytes(
     command: Sequence[str],
     *,
@@ -402,6 +530,7 @@ def _run_bytes(
     env: dict[str, str] | None = None,
     max_stdout_bytes: int | None = None,
     max_stderr_bytes: int | None = None,
+    timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run a command while enforcing independent hard stream ceilings."""
     stdout_limit = (
@@ -414,22 +543,35 @@ def _run_bytes(
         if max_stderr_bytes is None
         else max_stderr_bytes
     )
-    if stdout_limit < 0 or stderr_limit < 0:
+    if stdout_limit < 0 or stderr_limit < 0 or timeout_seconds <= 0:
         raise ValueError("subprocess output limits must be non-negative")
 
     argv = list(command)
+    process_environment = env
+    if argv and argv[0] in {"git", "gh"}:
+        original_name = argv[0]
+        argv[0] = _trusted_tool(original_name, cwd, env)
+        if original_name == "gh":
+            process_environment = sanitize_github_environment(
+                os.environ if env is None else env
+            )
     try:
         process = subprocess.Popen(
             argv,
             cwd=cwd,
-            env=env,
+            env=process_environment,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as error:
         raise GateError(f"required command is unavailable: {command[0]}") from error
-    assert process.stdout is not None
-    assert process.stderr is not None
+    if process.stdout is None or process.stderr is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        raise GateError("required command output pipes are unavailable")
 
     captured: dict[str, bytes] = {}
     overflows: list[str] = []
@@ -479,14 +621,25 @@ def _run_bytes(
     for reader in readers:
         reader.start()
     try:
-        returncode = process.wait()
+        returncode = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as error:
+        terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise GateError(f"{' '.join(command)}: command timed out") from error
     except BaseException:
         terminate()
         process.wait()
         raise
     finally:
         for reader in readers:
-            reader.join()
+            reader.join(timeout=5)
+
+    if any(reader.is_alive() for reader in readers):
+        terminate()
+        raise GateError(f"{' '.join(command)}: output pipes did not close")
 
     if read_errors:
         raise read_errors[0]
@@ -512,6 +665,7 @@ def _run(
     check: bool = True,
     max_stdout_bytes: int | None = None,
     max_stderr_bytes: int | None = None,
+    timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     raw = _run_bytes(
         command,
@@ -519,6 +673,7 @@ def _run(
         env=env,
         max_stdout_bytes=max_stdout_bytes,
         max_stderr_bytes=max_stderr_bytes,
+        timeout_seconds=timeout_seconds,
     )
     encoding = locale.getpreferredencoding(False)
 
@@ -530,8 +685,27 @@ def _run(
     result = subprocess.CompletedProcess(raw.args, raw.returncode, stdout, stderr)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout or "command failed").strip()
+        if len(detail) > MAX_COMMAND_DIAGNOSTIC_CHARS:
+            detail = detail[:MAX_COMMAND_DIAGNOSTIC_CHARS] + "..."
         raise GateError(f"{' '.join(command)}: {detail}")
     return result
+
+
+def _git_result(
+    repo: Path,
+    arguments: Sequence[str],
+    *,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+    max_stdout_bytes: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        ("git", *arguments),
+        cwd=repo,
+        check=check,
+        env=_git_environment(env),
+        max_stdout_bytes=max_stdout_bytes,
+    )
 
 
 def _git(
@@ -541,9 +715,9 @@ def _git(
     env: dict[str, str] | None = None,
     max_stdout_bytes: int | None = None,
 ) -> str:
-    return _run(
-        ("git", *arguments),
-        cwd=repo,
+    return _git_result(
+        repo,
+        arguments,
         check=check,
         env=env,
         max_stdout_bytes=max_stdout_bytes,
@@ -716,7 +890,7 @@ def _copy_bounded_distribution(
 
 
 def _head(repo: Path) -> str | None:
-    result = _run(("git", "rev-parse", "--verify", "HEAD"), cwd=repo, check=False)
+    result = _git_result(repo, ("rev-parse", "--verify", "HEAD"), check=False)
     value = result.stdout.strip()
     return value if result.returncode == 0 and SHA_RE.fullmatch(value) else None
 
@@ -775,7 +949,11 @@ def _sanitized_tool_environment(
             "GNUPGHOME": str(config / "gnupg"),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
             "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
             "GIT_PAGER": "cat",
             "GH_HOST": "github.com",
             "GH_PAGER": "cat",
@@ -806,14 +984,38 @@ def _canonical_origin(value: str) -> str | None:
 
 
 def _github_ref_pattern_matches(pattern: str, ref: str) -> bool:
-    """Match GitHub ruleset ref patterns with slash-aware fnmatch semantics."""
+    """Match GitHub ruleset ref patterns with slash-aware bounded semantics."""
     if pattern == "~ALL":
         return True
     if pattern == "~DEFAULT_BRANCH":
         return ref == "refs/heads/main"
+    try:
+        pattern_bytes = pattern.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise GateError("GitHub ruleset contains an invalid ref pattern") from exc
+    if len(pattern_bytes) > MAX_RULESET_PATTERN_BYTES:
+        raise GateError("GitHub ruleset ref pattern exceeds the safety limit")
     pattern_parts = pattern.split("/")
     ref_parts = ref.split("/")
+    try:
+        ref_bytes = len(ref.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise GateError("GitHub ref contains invalid Unicode") from exc
+    if ref_bytes > MAX_RULESET_REF_BYTES:
+        raise GateError("GitHub ref exceeds the safety limit")
+    if len(pattern_parts) > MAX_RULESET_PATTERN_SEGMENTS:
+        raise GateError("GitHub ruleset ref pattern has too many segments")
+    if len(ref_parts) > MAX_RULESET_PATTERN_SEGMENTS:
+        raise GateError("GitHub ref has too many segments")
+    for segment in pattern_parts:
+        if (
+            len(segment.encode("utf-8")) > MAX_RULESET_SEGMENT_BYTES
+            or sum(character in "*?[" for character in segment)
+            > MAX_RULESET_SEGMENT_METACHARACTERS
+        ):
+            raise GateError("GitHub ruleset ref pattern is too complex")
 
+    @functools.lru_cache(maxsize=None)
     def match(pattern_index: int, ref_index: int) -> bool:
         if pattern_index == len(pattern_parts):
             return ref_index == len(ref_parts)
@@ -825,11 +1027,83 @@ def _github_ref_pattern_matches(pattern: str, ref: str) -> bool:
             )
         return (
             ref_index < len(ref_parts)
-            and fnmatch.fnmatchcase(ref_parts[ref_index], segment)
+            and _ruleset_segment_matches(ref_parts[ref_index], segment)
             and match(pattern_index + 1, ref_index + 1)
         )
 
     return match(0, 0)
+
+
+def _ruleset_segment_tokens(pattern: str) -> tuple[tuple[str, str], ...]:
+    """Compile one bounded fnmatch segment without constructing a regex."""
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "*":
+            if not tokens or tokens[-1][0] != "star":
+                tokens.append(("star", ""))
+            index += 1
+            continue
+        if character == "?":
+            tokens.append(("any", ""))
+            index += 1
+            continue
+        if character != "[":
+            tokens.append(("literal", character))
+            index += 1
+            continue
+        closing = index + 1
+        if closing < len(pattern) and pattern[closing] == "!":
+            closing += 1
+        if closing < len(pattern) and pattern[closing] == "]":
+            closing += 1
+        while closing < len(pattern) and pattern[closing] != "]":
+            closing += 1
+        if closing >= len(pattern):
+            tokens.append(("literal", "["))
+            index += 1
+            continue
+        tokens.append(("class", pattern[index : closing + 1]))
+        index = closing + 1
+    return tuple(tokens)
+
+
+def _ruleset_segment_matches(candidate: str, pattern: str) -> bool:
+    """Run a linear NFA; class checks use fnmatch only on one character."""
+    tokens = _ruleset_segment_tokens(pattern)
+
+    def closure(states: set[int]) -> set[int]:
+        closed = set(states)
+        pending = list(states)
+        while pending:
+            token_index = pending.pop()
+            if (
+                token_index < len(tokens)
+                and tokens[token_index][0] == "star"
+                and token_index + 1 not in closed
+            ):
+                closed.add(token_index + 1)
+                pending.append(token_index + 1)
+        return closed
+
+    states = closure({0})
+    for character in candidate:
+        next_states: set[int] = set()
+        for token_index in states:
+            if token_index >= len(tokens):
+                continue
+            kind, value = tokens[token_index]
+            if kind == "star":
+                next_states.add(token_index)
+            elif kind == "any" or (
+                kind == "literal" and character == value
+            ) or (kind == "class" and fnmatch.fnmatchcase(character, value)):
+                next_states.add(token_index + 1)
+        states = closure(next_states)
+        if not states:
+            return False
+    return len(tokens) in closure(states)
 
 
 def _ruleset_targets_ref(ref_name: object, ref: str) -> bool:
@@ -845,6 +1119,8 @@ def _ruleset_targets_ref(ref_name: object, ref: str) -> bool:
         isinstance(item, str) for item in excludes
     ):
         return False
+    if len(includes) > MAX_RULESET_PATTERNS or len(excludes) > MAX_RULESET_PATTERNS:
+        raise GateError("GitHub ruleset contains too many ref patterns")
     return any(_github_ref_pattern_matches(item, ref) for item in includes) and not any(
         _github_ref_pattern_matches(item, ref) for item in excludes
     )
@@ -1046,10 +1322,11 @@ def _remote_ref(repo: Path, remote: str, ref: str) -> str | None:
 
 def _gh_json(repo: Path, repository: str, endpoint: str) -> object:
     result = _run(
-        ("gh", "api", endpoint),
+        ("gh", "api", "--hostname", "github.com", endpoint),
         cwd=repo,
         check=False,
         max_stdout_bytes=MAX_GITHUB_API_BYTES,
+        timeout_seconds=MAX_GITHUB_COMMAND_SECONDS,
     )
     if result.returncode != 0:
         raise GateError(
@@ -1070,10 +1347,19 @@ def _gh_paginated_list(
 ) -> list[object]:
     """Read every REST page as one bounded list, failing closed on shape drift."""
     result = _run(
-        ("gh", "api", "--paginate", "--slurp", endpoint),
+        (
+            "gh",
+            "api",
+            "--hostname",
+            "github.com",
+            "--paginate",
+            "--slurp",
+            endpoint,
+        ),
         cwd=repo,
         check=False,
         max_stdout_bytes=MAX_GITHUB_API_BYTES,
+        timeout_seconds=MAX_GITHUB_COMMAND_SECONDS,
     )
     if result.returncode != 0:
         raise GateError(
@@ -1185,7 +1471,12 @@ def _dispatch_workflow(
     if existing is not None:
         return f"exact workflow dispatch already exists at {existing['html_url']}"
 
-    result = _run(command, cwd=repo, check=False)
+    result = _run(
+        command,
+        cwd=repo,
+        check=False,
+        timeout_seconds=MAX_GITHUB_COMMAND_SECONDS,
+    )
     for attempt in range(DISPATCH_DISCOVERY_ATTEMPTS):
         accepted = _find_dispatch_run(repo, workflow, control_sha, title)
         if accepted is not None:
@@ -1211,6 +1502,7 @@ def _gh_job_log(repo: Path, job_id: int) -> str:
         cwd=repo,
         max_stdout_bytes=MAX_GITHUB_HELP_BYTES,
         max_stderr_bytes=MAX_GITHUB_HELP_BYTES,
+        timeout_seconds=MAX_GITHUB_COMMAND_SECONDS,
     )
     if help_result.returncode != 0:
         detail = (help_result.stderr or help_result.stdout).decode(
@@ -1224,11 +1516,12 @@ def _gh_job_log(repo: Path, job_id: int) -> str:
     command = ["gh", "api"]
     if b"--allow-escape-sequences" in help_output:
         command.append("--allow-escape-sequences")
-    command.append(endpoint)
+    command.extend(("--hostname", "github.com", endpoint))
     result = _run_bytes(
         command,
         cwd=repo,
         max_stdout_bytes=MAX_JOB_LOG_BYTES,
+        timeout_seconds=MAX_GITHUB_COMMAND_SECONDS,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8", errors="replace")
@@ -1377,6 +1670,8 @@ def _repository_hygiene(repo: Path) -> str:
 
 
 def _repo_identity(repo: Path, remote: str) -> str:
+    if REMOTE_RE.fullmatch(remote) is None:
+        raise GateError("release remote name is malformed")
     if Path(_git(repo, "rev-parse", "--show-toplevel")).resolve() != repo.resolve():
         raise GateError("--repo must be the repository root")
     origin = _git(repo, "remote", "get-url", remote)
@@ -1435,6 +1730,94 @@ def _github_controls(
         raise GateError(
             "GitHub repository topics must include " + ", ".join(sorted(required_topics))
         )
+    security = metadata.get("security_and_analysis")
+    required_security_features = (
+        "dependabot_security_updates",
+        "secret_scanning",
+        "secret_scanning_push_protection",
+    )
+    if not isinstance(security, dict) or any(
+        not isinstance(security.get(name), dict)
+        or security[name].get("status") != "enabled"
+        for name in required_security_features
+    ):
+        raise GateError(
+            "Dependabot security updates, secret scanning, and push protection "
+            "must be enabled"
+        )
+    private_reporting = _gh_json(
+        repo,
+        REPOSITORY,
+        f"repos/{REPOSITORY}/private-vulnerability-reporting",
+    )
+    if (
+        not isinstance(private_reporting, dict)
+        or private_reporting.get("enabled") is not True
+    ):
+        raise GateError("GitHub private vulnerability reporting must be enabled")
+    actions_policy = _gh_json(
+        repo,
+        REPOSITORY,
+        f"repos/{REPOSITORY}/actions/permissions",
+    )
+    if (
+        not isinstance(actions_policy, dict)
+        or actions_policy.get("enabled") is not True
+        or actions_policy.get("sha_pinning_required") is not True
+    ):
+        raise GateError(
+            "GitHub Actions must be enabled with full-length SHA pinning required"
+        )
+    workflow_policy = _gh_json(
+        repo,
+        REPOSITORY,
+        f"repos/{REPOSITORY}/actions/permissions/workflow",
+    )
+    if (
+        not isinstance(workflow_policy, dict)
+        or workflow_policy.get("default_workflow_permissions") != "read"
+        or workflow_policy.get("can_approve_pull_request_reviews") is not False
+    ):
+        raise GateError(
+            "GitHub Actions default token permissions must be read-only and "
+            "must not approve pull requests"
+        )
+    analyses = _gh_paginated_list(
+        repo,
+        f"repos/{REPOSITORY}/code-scanning/analyses"
+        "?ref=refs/heads/main&per_page=100",
+    )
+    if not any(
+        isinstance(analysis, dict)
+        and analysis.get("commit_sha") == sha
+        and analysis.get("ref") == "refs/heads/main"
+        and analysis.get("language") == "python"
+        and analysis.get("category") == "/language:python"
+        and isinstance(analysis.get("tool"), dict)
+        and analysis["tool"].get("name") == "CodeQL"
+        and analysis.get("error") in (None, "")
+        for analysis in analyses
+    ):
+        raise GateError(
+            "the exact main release commit must have a successful Python "
+            "CodeQL security-extended analysis"
+        )
+    for label, endpoint in (
+        (
+            "Dependabot",
+            f"repos/{REPOSITORY}/dependabot/alerts?state=open&per_page=100",
+        ),
+        (
+            "secret scanning",
+            f"repos/{REPOSITORY}/secret-scanning/alerts?state=open&per_page=100",
+        ),
+        (
+            "code scanning",
+            f"repos/{REPOSITORY}/code-scanning/alerts?state=open&per_page=100",
+        ),
+    ):
+        if _gh_paginated_list(repo, endpoint):
+            raise GateError(f"GitHub has unresolved open {label} alerts")
     values = _gh_paginated_list(
         repo,
         f"repos/{REPOSITORY}/environments?per_page=100",
@@ -1619,9 +2002,9 @@ def _resume_release_state(repo: Path, remote: str, tag: str, sha: str) -> str:
 
 
 def _release_is_on_main(repo: Path, release_sha: str, main_sha: str) -> str:
-    result = _run(
-        ("git", "merge-base", "--is-ancestor", release_sha, main_sha),
-        cwd=repo,
+    result = _git_result(
+        repo,
+        ("merge-base", "--is-ancestor", release_sha, main_sha),
         check=False,
     )
     if result.returncode != 0:
@@ -1683,9 +2066,9 @@ def _require_reviewed_alias_control(
     repo: Path, publication_sha: str, control_sha: str
 ) -> str:
     """Allow later main commits only when the credentialed control code is identical."""
-    ancestry = _run(
-        ("git", "merge-base", "--is-ancestor", publication_sha, control_sha),
-        cwd=repo,
+    ancestry = _git_result(
+        repo,
+        ("merge-base", "--is-ancestor", publication_sha, control_sha),
         check=False,
     )
     if ancestry.returncode != 0:
@@ -1739,7 +2122,6 @@ def _advance_alias_locally(
 ) -> str:
     """Apply the reviewed local handoff without exposing credentials to candidate code."""
     _authenticated_alias_actor(repo)
-    _run(("gh", "auth", "setup-git", "--hostname", "github.com"), cwd=repo)
     authenticated_remote = f"https://github.com/{REPOSITORY}.git"
     environment = os.environ.copy()
     environment.pop(REVIEW_TOKEN_ENV, None)
@@ -1858,7 +2240,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
         tool_env = _sanitized_tool_environment(
             sandbox_root=Path(temporary) / "e"
         )
-        bash = resolve_bash(tool_env.get("PATH"))
+        bash = resolve_bash(tool_env.get("PATH"), forbidden_root=repo)
         if bash is None:
             raise GateError(
                 "Git-for-Windows Bash is required on Windows; a WSL launcher is "
@@ -1868,19 +2250,19 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
         if _canonical_origin(configured_source) != REPOSITORY:
             raise GateError(f"{remote} is not canonical repository {REPOSITORY}")
         source = f"https://github.com/{REPOSITORY}.git"
-        _run(
-            ("git", "clone", "--quiet", source, str(checkout)),
-            cwd=repo,
+        _git_result(
+            repo,
+            ("clone", "--quiet", source, str(checkout)),
             env=tool_env,
         )
-        _run(
-            ("git", "checkout", "--quiet", "--detach", sha),
-            cwd=checkout,
+        _git_result(
+            checkout,
+            ("checkout", "--quiet", "--detach", sha),
             env=tool_env,
         )
-        checked_out_sha = _run(
-            ("git", "rev-parse", "--verify", "HEAD"),
-            cwd=checkout,
+        checked_out_sha = _git_result(
+            checkout,
+            ("rev-parse", "--verify", "HEAD"),
             env=tool_env,
         ).stdout.strip()
         if checked_out_sha != sha:
@@ -2067,6 +2449,7 @@ def _surface_inventory(repo: Path) -> str:
         ),
         "GHCR multi-platform container": (
             "Dockerfile",
+            ".trivyignore.yaml",
             ".github/workflows/publish-container.yml",
             ".github/workflows/publish.yml",
         ),
@@ -2447,7 +2830,11 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if TAG_RE.fullmatch(args.tag) is None:
+    if (
+        len(args.tag.encode("utf-8", errors="surrogatepass"))
+        > MAX_RELEASE_TAG_BYTES
+        or TAG_RE.fullmatch(args.tag) is None
+    ):
         parser.error("--tag must be an exact vMAJOR.MINOR.PATCH release")
     confirmation_sha: str | None = None
     if args.command in {"start", "resume", "alias"}:
@@ -2490,7 +2877,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     control_sha: str | None = None
     if args.command == "resume":
-        assert confirmation_sha is not None
+        if confirmation_sha is None:
+            parser.error("resume requires an exact confirmation SHA")
         control_sha, checks = _evaluate_resume(
             args.repo,
             args.remote,
@@ -2501,7 +2889,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         sha = confirmation_sha
     elif args.command == "alias":
-        assert confirmation_sha is not None
+        if confirmation_sha is None:
+            parser.error("alias requires an exact confirmation SHA")
         control_sha, publication, checks = _evaluate_alias(
             args.repo,
             args.remote,
@@ -2523,8 +2912,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "alias":
         if publication is None:
             return _emit(args, sha, checks, None)
-        assert sha is not None
-        assert control_sha is not None
+        if sha is None or control_sha is None:
+            checks.append(
+                Check(
+                    "compatibility alias advance",
+                    "failed",
+                    "validated release identity is unavailable",
+                )
+            )
+            return _emit(args, sha, checks, None)
         try:
             # Re-read current main immediately before exposing the maintainer's
             # credential to the reviewed, bounded alias updater.
@@ -2542,11 +2938,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         checks.append(Check("compatibility alias advance", "passed", detail))
         return _emit(args, sha, checks, None)
 
-    assert sha is not None
+    if sha is None:
+        checks.append(
+            Check(
+                "workflow dispatch",
+                "failed",
+                "validated release identity is unavailable",
+            )
+        )
+        return _emit(args, sha, checks, None)
     # Re-read remote main immediately before the command's only mutation.
     try:
         dispatch_control_sha = control_sha if args.command == "resume" else sha
-        assert dispatch_control_sha is not None
+        if dispatch_control_sha is None:
+            raise GateError("validated release control identity is unavailable")
         _main_identity(args.repo.resolve(), args.remote, dispatch_control_sha)
         workflow = "create-release-tag.yml"
         fields = (

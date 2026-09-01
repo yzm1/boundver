@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -47,6 +49,36 @@ def _run(root: Path) -> subprocess.CompletedProcess[str]:
 
 
 class RepositoryHygieneTests(unittest.TestCase):
+    def test_git_cannot_be_shadowed_and_disables_repository_callbacks(self):
+        hygiene = _load_script()
+        temporary, root = _repo()
+        with temporary:
+            fake = root / "git.exe"
+            fake.write_bytes(b"not an executable")
+            with mock.patch.object(
+                hygiene.shutil, "which", return_value=str(fake)
+            ), self.assertRaisesRegex(RuntimeError, "inside the repository"):
+                hygiene._git(root, "status")
+
+            process = mock.Mock()
+            process.stdout = io.BytesIO(b"")
+            process.stderr = io.BytesIO(b"")
+            process.wait.return_value = 0
+            with mock.patch.object(
+                hygiene, "_trusted_git", return_value="trusted-git"
+            ), mock.patch.object(
+                hygiene.subprocess, "Popen", return_value=process
+            ) as popen:
+                hygiene._git(root, "ls-files")
+
+            command = popen.call_args.args[0]
+            environment = popen.call_args.kwargs["env"]
+            self.assertIn(f"core.hooksPath={os.devnull}", command)
+            self.assertIn("core.fsmonitor=false", command)
+            self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+            self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+            self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
     def test_git_capture_and_tracked_record_limits_fail_closed(self):
         hygiene = _load_script()
         temporary, root = _repo()

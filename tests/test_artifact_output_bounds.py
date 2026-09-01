@@ -6,6 +6,7 @@ import io
 import json
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -122,6 +123,23 @@ class BoundedJsonEncoderTests(unittest.TestCase):
                 max_bytes=size - 1,
             )
 
+    def test_capped_string_escaping_matches_the_public_encoder(self) -> None:
+        value = (
+            "".join(chr(codepoint) for codepoint in range(256))
+            + "\N{ROCKET}\N{MUSICAL SYMBOL G CLEF}"
+        )
+        for ensure_ascii in (False, True):
+            with self.subTest(ensure_ascii=ensure_ascii):
+                expected = json.dumps(value, ensure_ascii=ensure_ascii)
+                self.assertEqual(
+                    _bounded_json_dumps(
+                        value,
+                        ensure_ascii=ensure_ascii,
+                        max_bytes=len(expected.encode("utf-8")),
+                    ),
+                    expected,
+                )
+
     def test_incremental_limit_stops_before_later_aggregate_values(self) -> None:
         class MustNotBeVisited:
             pass
@@ -146,6 +164,41 @@ class BoundedJsonEncoderTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     _bounded_json_dumps({}, max_bytes=invalid)  # type: ignore[arg-type]
+
+    def test_string_escaping_hits_limit_before_expanded_copy_is_allocated(self) -> None:
+        value = "\x00" * 2_000_000
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(GuardrailError, "byte limit"):
+                _bounded_json_dumps(value, max_bytes=32)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_sorted_object_hits_minimum_limit_before_sort_allocation(self) -> None:
+        value = {f"key-{index:06d}": 0 for index in range(100_000)}
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(GuardrailError, "byte limit"):
+                _bounded_json_dumps(value, sort_keys=True, max_bytes=4)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        self.assertLess(peak, 2 * 1024 * 1024)
+
+    def test_indent_hits_limit_before_repeated_whitespace_allocation(self) -> None:
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(GuardrailError, "byte limit"):
+                _bounded_json_dumps([0], indent=2_000_000, max_bytes=4)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        self.assertLess(peak, 2 * 1024 * 1024)
 
 
 class ArtifactDumpContractTests(unittest.TestCase):

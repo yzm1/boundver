@@ -47,7 +47,8 @@ def _structural_input(
     fingerprints = component.get("fingerprints", {})
     if not isinstance(fingerprints, dict):
         fingerprints = {}
-    assert snapshot.head_oid is not None
+    if snapshot.head_oid is None:
+        raise ValueError("Structural review snapshot is missing its commit identity")
     return {
         "endpoint": endpoint,
         "requested_ref": requested_ref,
@@ -310,7 +311,10 @@ def structural_boundary_changes(
                 target_registry,
             )
             if reason is not None:
-                assert detail is not None
+                if detail is None:
+                    raise RuntimeError(
+                        "Unavailable structural provider is missing its diagnostic"
+                    )
                 report = _unavailable_report(
                     name,
                     base_input,
@@ -333,7 +337,10 @@ def structural_boundary_changes(
             )
         elif report is None:
             try:
-                assert method is not None
+                if method is None:
+                    raise RuntimeError(
+                        "Structural provider selection returned no comparison method"
+                    )
                 result = method(
                     _provider_context(
                         repo_root,
@@ -370,7 +377,8 @@ def structural_boundary_changes(
                     detail=_bounded_diagnostic_text(str(exc) or type(exc).__name__),
                 )
 
-        assert report is not None
+        if report is None:
+            raise RuntimeError("Structural review produced no component report")
         review_budget.reserve_row(name, report["status"], report["reason"])
         for document in report["documents"]:
             review_budget.reserve_row(name, document["label"], document["status"])

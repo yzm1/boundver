@@ -52,16 +52,20 @@ def test_homebrew_formula_rejects_ambiguous_release_identity(version, digest):
 
 def test_gitlab_component_is_version_bound_and_validated():
     assert gitlab.component_errors() == []
+    validator = (ROOT / "scripts" / "validate_gitlab_component.py").read_text(
+        encoding="utf-8"
+    )
+    assert ".read_bytes()" not in validator
+    assert "MAX_COMPONENT_BYTES + 1" in validator
     component = (ROOT / "templates" / "boundver.yml").read_text(encoding="utf-8")
     assert "component: [version]" in component
     assert "ghcr.io/yzm1/boundver:$[[ component.version ]]" in component
-    safe_directory = 'git config --global --add safe.directory "$CI_PROJECT_DIR"'
-    assert safe_directory in component
-    assert component.index(safe_directory) < component.index("set -- boundver verify")
+    assert "git config --global" not in component
+    assert "git rev-parse --is-shallow-repository" not in component
     assert "set -- boundver review" in component
     assert "--format plan" in component
     assert 'GIT_DEPTH: "$[[ inputs.history-depth ]]"' in component
-    assert "GitLab remediation: set GIT_DEPTH: 0" in component
+    assert "History remediation: set GIT_DEPTH: 0" in component
     assert "boundver-result.json" in component
     assert "boundver-summary.md" in component
     assert "when: always" in component
@@ -88,6 +92,17 @@ def test_gitlab_component_is_version_bound_and_validated():
     }
 
 
+def test_gitlab_catalog_release_requires_a_protected_semver_tag():
+    pipeline = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
+    release_job = pipeline["publish-catalog-release"]
+    condition = release_job["rules"][0]["if"]
+    assert "CI_COMMIT_TAG" in condition
+    assert "CI_COMMIT_REF_PROTECTED" in condition
+    assert '== "true"' in condition
+    assert pipeline["validate-component-source"]["timeout"] == "10m"
+    assert release_job["timeout"] == "5m"
+
+
 def test_docs_and_container_publish_from_pinned_dependencies():
     pages = (ROOT / ".github" / "workflows" / "docs.yml").read_text(
         encoding="utf-8"
@@ -106,6 +121,9 @@ def test_docs_and_container_publish_from_pinned_dependencies():
     assert "tonistiigi/binfmt:qemu-v10.2.3@sha256:" in container
     assert "version: v0.36.1" in container
     assert "image=moby/buildkit:v0.32.2@sha256:" in container
+    assert "ghcr.io/aquasecurity/trivy@sha256:" in container
+    assert "--ignorefile /policy/.trivyignore.yaml --exit-code 1" in container
+    assert "--ignore-unfixed --exit-code 1" in container
     assert "push-to-registry: true" in container
     assert "oras cp --from-oci-layout" in container
     assert '"$archive@$ARCHIVE_DIGEST" "$IMAGE:$version"' in container

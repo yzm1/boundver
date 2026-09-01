@@ -57,6 +57,7 @@ EXPECTED_PROVIDER_FAMILIES = {
     "typescript-exports",
 }
 OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+MAX_DEMO_COMMAND_SECONDS = 300
 
 
 class DemoError(RuntimeError):
@@ -70,14 +71,22 @@ def _run(
     env: Dict[str, str],
 ) -> Tuple[subprocess.CompletedProcess[str], float]:
     started = time.perf_counter()
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=MAX_DEMO_COMMAND_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DemoError(
+            "demo command exceeded the "
+            f"{MAX_DEMO_COMMAND_SECONDS}-second wall-clock limit"
+        ) from exc
     return completed, time.perf_counter() - started
 
 

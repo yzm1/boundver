@@ -499,7 +499,8 @@ def _stream_tree_digest(
     total_content_bytes = 0
 
     if source in {"head", "index"}:
-        assert captured is not None
+        if captured is None:
+            raise RuntimeError("Git-backed hashing requires a captured source snapshot")
         git_entries = [captured.entries[repo_rel] for _, repo_rel in descriptors]
         for (_, repo_rel), entry in zip(descriptors, git_entries):
             if entry.object_type != "blob":

@@ -1,12 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This script intentionally removes generated build directories below. Resolve
+# its own repository root before the first helper invocation or deletion, and
+# fail closed if a caller launched it from anywhere else.
+invocation_root=$PWD
+script_source=${BASH_SOURCE[0]}
+case "$script_source" in
+  /*) ;;
+  *) script_source="$invocation_root/$script_source" ;;
+esac
+if [[ -L "$script_source" || ! -f "$script_source" ]]; then
+  echo "Packaging smoke script must be invoked from its regular repository file." >&2
+  exit 2
+fi
+if ! cd -P -- "$invocation_root"; then
+  echo "Unable to resolve the packaging smoke working directory." >&2
+  exit 2
+fi
+invocation_root=$PWD
+if ! cd -P -- "${script_source%/*}/.."; then
+  echo "Unable to resolve the packaging smoke repository root." >&2
+  exit 2
+fi
+repository_root=$PWD
+if [[ "$invocation_root" != "$repository_root" ]]; then
+  echo "Run scripts/packaging_smoke.sh from the repository root." >&2
+  exit 2
+fi
+
 # The release build runs on Python 3.12. Install its complete reviewed tool
 # closure with local SHA-256 hashes before disabling build isolation below.
 python -I scripts/install_locked_tools.py release
 # Generated backend state must not shadow the `build` frontend or leak stale
 # package metadata into a repeat smoke run.
-rm -rf -- dist build src/boundver.egg-info
+python -I scripts/build_release_artifacts.py --clean
 python -I scripts/build_release_artifacts.py --output-dir dist
 
 set -- dist/*.whl
@@ -352,6 +380,7 @@ import stat
 import struct
 import sys
 import tarfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZipFile
 
@@ -371,6 +400,14 @@ MAX_METADATA_BYTES = 2 * 1024 * 1024
 MAX_LICENSE_BYTES = 4 * 1024 * 1024
 MAX_TOOL_LOCK_BYTES = 4 * 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
+WINDOWS_RESERVED_ARCHIVE_STEMS = {
+    "aux",
+    "con",
+    "nul",
+    "prn",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
 
 
 def is_reparse_point(identity):
@@ -478,7 +515,10 @@ def read_exact(stream, size, label):
 
 
 def validate_archive_name(name, label):
-    encoded_length = len(name.encode("utf-8", "surrogatepass"))
+    try:
+        encoded_length = len(name.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{label} contains a non-UTF-8 member name") from error
     stripped = name[:-1] if name.endswith("/") else name
     parts = stripped.split("/")
     if (
@@ -486,12 +526,17 @@ def validate_archive_name(name, label):
         or encoded_length > MAX_ARCHIVE_NAME_BYTES
         or PurePosixPath(name).is_absolute()
         or "\\" in name
-        or "\0" in name
         or any(part in {"", ".", ".."} for part in parts)
-        or (parts and ":" in parts[0])
+        or any(":" in part for part in parts)
+        or any(part.endswith((" ", ".")) for part in parts)
+        or any(
+            part.split(".", 1)[0].casefold() in WINDOWS_RESERVED_ARCHIVE_STEMS
+            for part in parts
+        )
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
     ):
         raise ValueError(f"{label} contains an unsafe or overlong member name")
-    return encoded_length
+    return encoded_length, unicodedata.normalize("NFC", stripped).casefold()
 
 
 def preflight_zip(stream, source_size, label):
@@ -550,6 +595,8 @@ def preflight_zip(stream, source_size, label):
     count = 0
     total_names = 0
     total_members = 0
+    names = set()
+    portable_names = set()
     while stream.tell() < eocd_offset:
         header = read_exact(stream, 46, f"{label} ZIP directory")
         values = struct.unpack("<4s6H3L5H2L", header)
@@ -583,7 +630,14 @@ def preflight_zip(stream, source_size, label):
             name = name_bytes.decode(encoding)
         except UnicodeError as error:
             raise ValueError(f"{label} contains an invalid ZIP member name") from error
-        total_names += validate_archive_name(name, label)
+        encoded_length, portable_name = validate_archive_name(name, label)
+        total_names += encoded_length
+        if name in names:
+            raise ValueError(f"{label} contains duplicate member names")
+        if portable_name in portable_names:
+            raise ValueError(f"{label} contains a non-portable member-name collision")
+        names.add(name)
+        portable_names.add(portable_name)
         if total_names > MAX_ARCHIVE_TOTAL_NAME_BYTES:
             raise ValueError(
                 f"{label} member names exceed the "
@@ -611,18 +665,23 @@ def preflight_zip(stream, source_size, label):
 
 def bounded_zip_inventory(archive, label):
     names = set()
+    portable_names = set()
     total_names = 0
     total_members = 0
     infos = archive.infolist()
     if len(infos) > MAX_ARCHIVE_MEMBERS:
         raise ValueError(f"{label} exceeds the archive member limit")
     for info in infos:
-        total_names += validate_archive_name(info.filename, label)
+        encoded_length, portable_name = validate_archive_name(info.filename, label)
+        total_names += encoded_length
         if total_names > MAX_ARCHIVE_TOTAL_NAME_BYTES:
             raise ValueError(f"{label} exceeds the member-name aggregate limit")
         if info.filename in names:
             raise ValueError(f"{label} contains duplicate member names")
+        if portable_name in portable_names:
+            raise ValueError(f"{label} contains a non-portable member-name collision")
         names.add(info.filename)
+        portable_names.add(portable_name)
         if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
             raise ValueError(f"{label} contains an oversized archive member")
         total_members += info.file_size
@@ -711,6 +770,7 @@ def decompress_sdist(stream, destination, label):
 
 def bounded_tar_inventory(stream, label):
     names = set()
+    portable_names = set()
     total_names = 0
     total_members = 0
     count = 0
@@ -720,12 +780,18 @@ def bounded_tar_inventory(stream, label):
             count += 1
             if count > MAX_ARCHIVE_MEMBERS:
                 raise ValueError(f"{label} exceeds the archive member limit")
-            total_names += validate_archive_name(member.name, label)
+            encoded_length, portable_name = validate_archive_name(member.name, label)
+            total_names += encoded_length
             if total_names > MAX_ARCHIVE_TOTAL_NAME_BYTES:
                 raise ValueError(f"{label} exceeds the member-name aggregate limit")
             if member.name in names:
                 raise ValueError(f"{label} contains duplicate member names")
+            if portable_name in portable_names:
+                raise ValueError(
+                    f"{label} contains a non-portable member-name collision"
+                )
             names.add(member.name)
+            portable_names.add(portable_name)
             if not (member.isfile() or member.isdir()):
                 raise ValueError(f"{label} contains a non-regular archive member")
             if member.size > MAX_ARCHIVE_MEMBER_BYTES:

@@ -327,24 +327,60 @@ class _ProviderEntryCollector:
     total_source_bytes: int = 0
     total_label_bytes: int = 0
     previous_label: Optional[bytes] = None
+    max_entry_bytes: Optional[int] = None
+    max_total_bytes: Optional[int] = None
+    max_total_source_bytes: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        limits = (
+            self.max_entry_bytes,
+            self.max_total_bytes,
+            self.max_total_source_bytes,
+        )
+        if any(value is not None and (type(value) is not int or value < 0) for value in limits):
+            raise ValueError("Provider collector limits must be non-negative integers")
+
+    @property
+    def entry_limit(self) -> int:
+        return (
+            MAX_PROVIDER_ENTRY_BYTES
+            if self.max_entry_bytes is None
+            else min(self.max_entry_bytes, MAX_PROVIDER_ENTRY_BYTES)
+        )
+
+    @property
+    def output_limit(self) -> int:
+        return (
+            MAX_PROVIDER_TOTAL_BYTES
+            if self.max_total_bytes is None
+            else min(self.max_total_bytes, MAX_PROVIDER_TOTAL_BYTES)
+        )
+
+    @property
+    def source_limit(self) -> int:
+        return (
+            MAX_PROVIDER_TOTAL_BYTES
+            if self.max_total_source_bytes is None
+            else min(self.max_total_source_bytes, MAX_PROVIDER_TOTAL_BYTES)
+        )
 
     @property
     def remaining_output_bytes(self) -> int:
-        return MAX_PROVIDER_TOTAL_BYTES - self.total_bytes
+        return self.output_limit - self.total_bytes
 
     @property
     def remaining_source_bytes(self) -> int:
-        return MAX_PROVIDER_TOTAL_BYTES - self.total_source_bytes
+        return self.source_limit - self.total_source_bytes
 
     def add_source(self, content: bytes) -> None:
         """Account for canonical-provider input independently of output."""
         if type(content) not in {bytes, _ModeAwareBytes}:
             raise ProviderError("source content must be bytes")
         next_total = self.total_source_bytes + len(content)
-        if next_total > MAX_PROVIDER_TOTAL_BYTES:
+        if next_total > self.source_limit:
             raise ProviderError(
                 "source files exceed the "
-                f"{MAX_PROVIDER_TOTAL_BYTES}-byte aggregate limit"
+                f"{self.source_limit}-byte aggregate limit"
             )
         self.total_source_bytes = next_total
 
@@ -379,16 +415,16 @@ class _ProviderEntryCollector:
             raise ProviderError("entries must be in deterministic sorted order")
         if type(content) not in {bytes, _ModeAwareBytes}:
             raise ProviderError("entry content must be bytes")
-        if len(content) > MAX_PROVIDER_ENTRY_BYTES:
+        if len(content) > self.entry_limit:
             raise ProviderError(
                 f"entry '{label}' exceeds the "
-                f"{MAX_PROVIDER_ENTRY_BYTES}-byte limit"
+                f"{self.entry_limit}-byte limit"
             )
         next_total = self.total_bytes + len(content)
-        if next_total > MAX_PROVIDER_TOTAL_BYTES:
+        if next_total > self.output_limit:
             raise ProviderError(
                 "entries exceed the "
-                f"{MAX_PROVIDER_TOTAL_BYTES}-byte aggregate limit"
+                f"{self.output_limit}-byte aggregate limit"
             )
         self.entries.append((label, content))
         self.total_bytes = next_total
@@ -1262,7 +1298,13 @@ class OpenApiCanonicalProvider:
             ]
         return []
 
-    def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
+    def _resolve(
+        self,
+        ctx: ProviderContext,
+        *,
+        collector: Optional[_ProviderEntryCollector] = None,
+        propagate_limits: bool = False,
+    ) -> ResolvedBoundary:
         paths = ctx.boundary_cfg.get("paths", [])
         if not paths:
             return ResolvedBoundary(
@@ -1272,7 +1314,7 @@ class OpenApiCanonicalProvider:
         selected, errors = _resolve_declared_files(ctx, paths)
         if errors:
             return ResolvedBoundary(status="error", errors=errors)
-        collector = _ProviderEntryCollector()
+        collector = collector or _ProviderEntryCollector()
         for repo_rel, child_rel in selected:
             try:
                 raw = _read_provider_file(
@@ -1295,6 +1337,16 @@ class OpenApiCanonicalProvider:
                 )
                 del raw, obj, contract
                 collector.add(f"canonical:{child_rel}", canonical)
+            except (GuardrailError, _CanonicalJsonLimitError) as exc:
+                if propagate_limits:
+                    raise
+                return ResolvedBoundary(
+                    status="error",
+                    errors=[
+                        f"OpenAPI canonicalization failed for {child_rel}: "
+                        f"{_bounded_exception(exc)}"
+                    ],
+                )
             except (ProviderError, OSError, RecursionError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
@@ -1310,6 +1362,9 @@ class OpenApiCanonicalProvider:
             )
         return ResolvedBoundary(entries=collector.entries)
 
+    def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
+        return self._resolve(ctx)
+
     def structural_diff(
         self,
         before_ctx: ProviderContext,
@@ -1319,15 +1374,37 @@ class OpenApiCanonicalProvider:
         """Explain canonical OpenAPI drift without making compatibility claims."""
         resolved = []
         for label, ctx in (("base", before_ctx), ("target", after_ctx)):
-            boundary = self.resolve(ctx)
+            remaining = max(0, budget.max_input_bytes - budget.input_bytes)
+            collector = _ProviderEntryCollector(
+                max_entry_bytes=remaining,
+                max_total_bytes=remaining,
+                max_total_source_bytes=remaining,
+            )
+            try:
+                boundary = self._resolve(
+                    ctx,
+                    collector=collector,
+                    propagate_limits=True,
+                )
+            except (GuardrailError, _CanonicalJsonLimitError) as exc:
+                raise budget._limit(
+                    f"{budget.max_input_bytes}-byte aggregate input limit"
+                ) from exc
             if boundary.status != "ok" or boundary.errors or not boundary.entries:
                 detail = "; ".join(boundary.errors[:3]) or boundary.status
                 raise ProviderError(
                     f"Cannot resolve {label} OpenAPI structure: "
                     f"{_bounded_diagnostic_text(detail)}"
                 )
+            for entry_label, content in boundary.entries:
+                budget.reserve_input(entry_label, content)
             resolved.append(boundary.entries)
-        return diff_canonical_json_entries(resolved[0], resolved[1], budget)
+        return diff_canonical_json_entries(
+            resolved[0],
+            resolved[1],
+            budget,
+            reserve_inputs=False,
+        )
 
     def validate_config(
         self,

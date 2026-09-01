@@ -33,6 +33,7 @@ def _review_state_runner() -> dict:
     tree = ast.parse(program)
     assignments = {
         "MAX_API_BYTES",
+        "MAX_COMMAND_BYTES",
         "MAX_STDERR_BYTES",
         "MAX_JSON_NUMBER_DIGITS",
         "READ_CHUNK_BYTES",
@@ -63,6 +64,7 @@ def _review_state_runner() -> dict:
         ast.Module(body=selected, type_ignores=[])
     )
     exec(compile(helper_module, "<review-state-helpers>", "exec"), namespace)
+    namespace["command_environment"] = dict(os.environ)
     return namespace
 
 
@@ -77,6 +79,7 @@ def _publication_state_helpers() -> dict:
         "MAX_ITEMS",
         "READ_CHUNK_BYTES",
         "MAX_UINT64",
+        "MAX_JSON_NUMBER_CHARACTERS",
         "ACTIVE_STATES",
         "consumed_bytes",
     }
@@ -85,6 +88,7 @@ def _publication_state_helpers() -> dict:
         "read_pipe",
         "unique_object",
         "parse_integer",
+        "parse_float",
         "reject_constant",
         "api_page",
         "iter_runs",
@@ -105,6 +109,7 @@ def _publication_state_helpers() -> dict:
         ast.Module(body=selected, type_ignores=[])
     )
     exec(compile(helper_module, "<publication-state-helpers>", "exec"), namespace)
+    namespace["command_environment"] = dict(os.environ)
     return namespace
 
 
@@ -188,6 +193,36 @@ class CreateTagReviewStateContracts(unittest.TestCase):
                     self.assertEqual(parse_integer("18446744073709551615"), 2**64 - 1)
         finally:
             sys.set_int_max_str_digits(original_limit)
+
+        parse_float = helpers["parse_float"]
+        self.assertEqual(parse_float("1.25"), 1.25)
+        with self.assertRaisesRegex(ValueError, "oversized JSON float"):
+            parse_float("0." + ("1" * 100))
+        with self.assertRaisesRegex(ValueError, "non-finite JSON float"):
+            parse_float("1e999")
+
+    def test_workflow_commands_are_bound_to_safe_git_and_github_state(self):
+        workflow = _workflow()
+        for name, value in {
+            "GCM_INTERACTIVE": "never",
+            "GH_HOST": "github.com",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }.items():
+            self.assertEqual(workflow["env"][name], value)
+
+        review_program = workflow["env"]["REVIEW_STATE_PROGRAM"]
+        self.assertIn('"GIT_CONFIG_GLOBAL": os.devnull', review_program)
+        self.assertIn('"GIT_CONFIG_NOSYSTEM": "1"', review_program)
+        self.assertIn('"core.fsmonitor"', review_program)
+        self.assertIn("env=command_environment", review_program)
+
+        publication_program = workflow["env"]["PUBLICATION_RUN_STATE_PROGRAM"]
+        self.assertIn('"GH_CONFIG_DIR": str(gh_config_dir)', publication_program)
+        self.assertIn('parse_float=parse_float', publication_program)
+        self.assertIn('server_url = "https://github.com"', publication_program)
 
     def test_publication_pagination_finds_active_runs_after_first_page(self):
         helpers = _publication_state_helpers()
@@ -449,6 +484,14 @@ class CreateTagReviewStateContracts(unittest.TestCase):
 
     def test_shell_audit_requests_and_enforces_merge_destination(self):
         source = AUDIT.read_text(encoding="utf-8")
+        for setting in (
+            "GIT_NO_LAZY_FETCH=1",
+            "GIT_NO_REPLACE_OBJECTS=1",
+            "GIT_OPTIONAL_LOCKS=0",
+            "GIT_TERMINAL_PROMPT=0",
+            "GH_HOST=github.com",
+        ):
+            self.assertIn(setting, source)
         self.assertIn(
             '"$python_command" -I - "$release_tag" "$merged_tags_file"',
             source,

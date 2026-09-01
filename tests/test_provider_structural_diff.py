@@ -10,6 +10,7 @@ import pytest
 
 from boundver._provider_diff import (
     StructuralDiffBudget,
+    _diff_json,
     _validate_tree,
     structural_diff_payload,
 )
@@ -36,7 +37,7 @@ def _context(raw: bytes) -> ProviderContext:
     def read_file_limited(repo_relative: str, max_bytes: int) -> bytes:
         value = files[repo_relative]
         if len(value) > max_bytes:
-            raise ValueError("fixture exceeds requested read limit")
+            raise GuardrailError("fixture exceeds requested read limit")
         return value
 
     def list_files(prefix: str) -> list[str]:
@@ -217,6 +218,26 @@ def test_structural_diff_bounds_aggregate_input() -> None:
         )
 
 
+def test_structural_diff_rejects_source_before_parser_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenApiCanonicalProvider()
+
+    def parser_must_not_run(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("parser must not run after the source cap is exceeded")
+
+    monkeypatch.setattr(
+        "boundver.providers._parse_yaml_or_json",
+        parser_must_not_run,
+    )
+    with pytest.raises(GuardrailError, match="aggregate input limit"):
+        provider.structural_diff(
+            _context(_json_bytes(_before())),
+            _context(_json_bytes(_after())),
+            StructuralDiffBudget(max_input_bytes=16),
+        )
+
+
 def test_structural_diff_bounds_nesting_independently_of_provider() -> None:
     provider = OpenApiCanonicalProvider()
 
@@ -234,6 +255,27 @@ def test_tree_work_budget_does_not_queue_unbudgeted_wide_input() -> None:
     try:
         with pytest.raises(GuardrailError, match="aggregate work limit"):
             _validate_tree(value, StructuralDiffBudget(max_work_steps=1))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 2 * 1024 * 1024
+
+
+def test_diff_work_budget_rejects_wide_union_before_allocating_it() -> None:
+    before = {f"a{index:06d}": None for index in range(100_000)}
+    after = {f"b{index:06d}": None for index in range(100_000)}
+    tracemalloc.start()
+    try:
+        with pytest.raises(GuardrailError, match="aggregate work limit"):
+            _diff_json(
+                before,
+                after,
+                path="",
+                depth=0,
+                budget=StructuralDiffBudget(max_work_steps=1),
+                changes=[],
+            )
         _current, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

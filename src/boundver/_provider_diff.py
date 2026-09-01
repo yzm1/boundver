@@ -26,7 +26,12 @@ from ._structured_data import StrictJSONError, strict_json_loads
 from ._utils import GuardrailError, ProviderError
 
 
-MAX_PROVIDER_DIFF_INPUT_BYTES = 512 * 1024 * 1024
+# Structural explanations are optional evidence layered over verification.
+# Retaining two canonical endpoint payloads at the general provider ceiling
+# can multiply into gigabytes once JSON trees are parsed. Keep this narrower
+# than ordinary hashing so a hostile contract yields an unavailable
+# explanation instead of exhausting a CI runner.
+MAX_PROVIDER_DIFF_INPUT_BYTES = 32 * 1024 * 1024
 MAX_PROVIDER_DIFF_WORK_STEPS = 250_000
 MAX_PROVIDER_DIFF_ROWS = 20_000
 MAX_PROVIDER_DIFF_RESULT_BYTES = 16 * 1024 * 1024
@@ -153,10 +158,18 @@ class StructuralDiffBudget:
             )
 
     def spend(self, *, depth: int) -> None:
+        self.ensure_work(1, depth=depth)
+        self.work_steps += 1
+
+    def ensure_work(self, amount: int, *, depth: int) -> None:
+        """Reject known work before allocating traversal-wide state."""
+        if type(amount) is not int or amount < 0:
+            raise ValueError("Structural diff work must be a non-negative integer")
+        if amount == 0:
+            return
         if depth > self.max_depth:
             raise self._limit(f"{self.max_depth}-level nesting limit")
-        self.work_steps += 1
-        if self.work_steps > self.max_work_steps:
+        if amount > self.max_work_steps - self.work_steps:
             raise self._limit(
                 f"{self.max_work_steps}-step aggregate work limit"
             )
@@ -272,6 +285,26 @@ def _validate_tree(value: Any, budget: StructuralDiffBudget) -> None:
             pending.append((reversed(item), depth + 1))
 
 
+def _sorted_mapping_key_union(
+    before: dict,
+    after: dict,
+    *,
+    depth: int,
+    budget: StructuralDiffBudget,
+) -> List[str]:
+    """Return one sorted key union only after its traversal fits the budget."""
+    # The union is at least as wide as either mapping.  Check that cheap lower
+    # bound before scanning or allocating anything proportional to attacker-
+    # controlled width, then check the exact width before retaining the list.
+    budget.ensure_work(max(len(before), len(after)), depth=depth)
+    union_size = len(before) + sum(1 for key in after if key not in before)
+    budget.ensure_work(union_size, depth=depth)
+    keys = list(before)
+    keys.extend(key for key in after if key not in before)
+    keys.sort()
+    return keys
+
+
 def _diff_json(
     before: Any,
     after: Any,
@@ -296,11 +329,15 @@ def _diff_json(
         return
 
     if before_type == "object":
-        before_keys = set(before)
-        after_keys = set(after)
-        for key in sorted(before_keys | after_keys):
+        for key in _sorted_mapping_key_union(
+            before,
+            after,
+            depth=depth + 1,
+            budget=budget,
+        ):
             child_path = budget.pointer_child(path, key)
             if key not in before:
+                budget.spend(depth=depth + 1)
                 changes.append(
                     budget.change(
                         kind="added",
@@ -310,6 +347,7 @@ def _diff_json(
                     )
                 )
             elif key not in after:
+                budget.spend(depth=depth + 1)
                 changes.append(
                     budget.change(
                         kind="removed",
@@ -331,6 +369,7 @@ def _diff_json(
 
     if before_type == "array":
         common = min(len(before), len(after))
+        budget.ensure_work(max(len(before), len(after)), depth=depth + 1)
         for index in range(common):
             _diff_json(
                 before[index],
@@ -341,6 +380,7 @@ def _diff_json(
                 changes=changes,
             )
         for index in range(common, len(before)):
+            budget.spend(depth=depth + 1)
             changes.append(
                 budget.change(
                     kind="removed",
@@ -350,6 +390,7 @@ def _diff_json(
                 )
             )
         for index in range(common, len(after)):
+            budget.spend(depth=depth + 1)
             changes.append(
                 budget.change(
                     kind="added",
@@ -375,6 +416,8 @@ def diff_canonical_json_entries(
     before_entries: Sequence[tuple],
     after_entries: Sequence[tuple],
     budget: StructuralDiffBudget,
+    *,
+    reserve_inputs: bool = True,
 ) -> StructuralDiffResult:
     """Return a complete, deterministic structural diff for canonical JSON.
 
@@ -399,14 +442,21 @@ def diff_canonical_json_entries(
                 raise ProviderError(
                     f"Structural provider returned duplicate entry label {label!r}"
                 )
-            budget.reserve_input(label, content)
+            if reserve_inputs:
+                budget.reserve_input(label, content)
             result[label] = content
         return result
 
     before_by_label = entry_map(before_entries)
     after_by_label = entry_map(after_entries)
     documents: List[StructuralDocumentDiff] = []
-    for label in sorted(set(before_by_label) | set(after_by_label)):
+    for label in _sorted_mapping_key_union(
+        before_by_label,
+        after_by_label,
+        depth=0,
+        budget=budget,
+    ):
+        budget.spend(depth=0)
         before_content = before_by_label.get(label)
         after_content = after_by_label.get(label)
         if before_content is not None and before_content == after_content:

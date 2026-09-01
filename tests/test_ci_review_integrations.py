@@ -53,6 +53,18 @@ def _gitlab_script() -> str:
 
 
 def _review_environment(root: Path, base: str, target: str, *, transitive: bool) -> dict:
+    head = ""
+    if (root / ".git").exists():
+        completed = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD^{commit}"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if completed.returncode == 0:
+            head = completed.stdout.strip()
     return {
         **os.environ,
         "BOUNDVER_OPERATION": "review",
@@ -72,9 +84,7 @@ def _review_environment(root: Path, base: str, target: str, *, transitive: bool)
         "BOUNDVER_UPLOAD_ARTIFACT": "false",
         "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         "CI_PROJECT_DIR": str(root),
-        # Keep the GitLab component's safe.directory write out of the user's
-        # real global Git configuration while exercising the exact command.
-        "GIT_CONFIG_GLOBAL": str(root / "test-global.gitconfig"),
+        "GITHUB_SHA": head,
     }
 
 
@@ -300,7 +310,7 @@ def test_ci_review_integrations_fail_closed_with_exact_shallow_history_remediati
     assert completed.returncode == 2
     assert "Repository is shallow" in completed.stderr
     if integration == "action":
-        assert "actions/checkout with fetch-depth: 0" in completed.stderr
+        assert "GitHub Actions: fetch-depth: 0" in completed.stderr
         values = _parse_github_output(output)
         assert values["exit-code"] == "2"
         assert values["transport-complete"] == "false"
@@ -309,7 +319,7 @@ def test_ci_review_integrations_fail_closed_with_exact_shallow_history_remediati
             encoding="utf-8"
         )
     else:
-        assert "GitLab remediation: set GIT_DEPTH: 0" in completed.stderr
+        assert "GitLab: GIT_DEPTH: 0" in completed.stderr
         assert (clone / "boundver-result.json").is_file()
         assert "Review incomplete" in (
             clone / "boundver-summary.md"
@@ -342,3 +352,25 @@ def test_gitlab_component_retains_diagnostics_for_preflight_failure(
     assert "No complete machine result was emitted" in (
         tmp_path / "boundver-summary.md"
     ).read_text(encoding="utf-8")
+
+
+def test_gitlab_component_refuses_preexisting_artifact_paths(
+    tmp_path: Path,
+) -> None:
+    result = tmp_path / "boundver-result.json"
+    result.write_text("do not overwrite\n", encoding="utf-8")
+    environment = _review_environment(tmp_path, "", "HEAD", transitive=False)
+
+    completed = subprocess.run(
+        [_bash(), "-c", _gitlab_script()],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "refusing unsafe or pre-existing boundver output" in completed.stderr
+    assert result.read_text(encoding="utf-8") == "do not overwrite\n"
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in _gitlab_script()

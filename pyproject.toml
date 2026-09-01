@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==80.9.0", "wheel==0.48.0"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "boundver"
 version = "0.14.1"
 description = "Classify contract drift and downstream impact across polyglot repositories"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "boundver contributors" }]
@@ -33,7 +33,6 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -62,7 +61,7 @@ schema = ["jsonschema>=4.18"]
 yaml = ["PyYAML>=6"]
 dev = [
   "coverage==7.10.7",
-  "pytest>=7,<9",
+  "pytest>=9,<10",
   "jsonschema>=4.18",
   "build>=1.2",
   "PyYAML>=6",
@@ -82,7 +81,7 @@ boundver = ["py.typed", "boundary.config.schema.json"]
 where = ["src"]
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["F"]

@@ -309,6 +309,32 @@ class TerminalSafeOutputTests(unittest.TestCase):
         self.assertIn("partner\\n::notice", rendered)
         self.assertIn("1.0.0\\n::warning", rendered)
 
+    def test_consumer_impact_human_output_uses_a_bounded_preview(self):
+        stdout = io.StringIO()
+        components = [f"component-{index:02d}" for index in range(20)]
+        external = [f"external-{index:02d}" for index in range(10)]
+
+        with redirect_stdout(stdout):
+            output.print_consumer_impact(
+                [
+                    {
+                        "component": "source",
+                        "facets": ["boundary"],
+                        "components": components,
+                        "external_consumers": external,
+                        "transitive": True,
+                    }
+                ]
+            )
+
+        rendered = stdout.getvalue()
+        self.assertIn("component-00", rendered)
+        self.assertIn("+12 more", rendered)
+        self.assertNotIn("component-19", rendered)
+        self.assertIn("external-00", rendered)
+        self.assertIn("+2 more", rendered)
+        self.assertNotIn("external-09", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

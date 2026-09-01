@@ -11,8 +11,10 @@ use the documented, reviewed ruleset-maintenance procedure.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -34,12 +36,16 @@ MAX_EVENT_BYTES = 1024 * 1024
 MAX_API_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_PULL_FILES = 300
 MAX_TOKEN_BYTES = 4_096
+MAX_JSON_TOKENS = 500_000
+MAX_JSON_DEPTH = 128
+MAX_JSON_INTEGER_DIGITS = 4_300
+MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 EXPECTED_JOBS = (
     "Public Action contract (macos-15, Python 3.12)",
     "Public Action contract (ubuntu-latest, Python 3.12)",
-    "Public Action contract (ubuntu-latest, Python 3.9)",
+    "Public Action contract (ubuntu-latest, Python 3.10)",
     "Public Action contract (windows-latest, Python 3.12)",
     "Public installation contracts (macos-15)",
     "Public installation contracts (ubuntu-latest)",
@@ -52,13 +58,11 @@ EXPECTED_JOBS = (
     "test (ubuntu-latest, 3.12)",
     "test (ubuntu-latest, 3.13)",
     "test (ubuntu-latest, 3.14)",
-    "test (ubuntu-latest, 3.9)",
     "test (windows-latest, 3.10)",
     "test (windows-latest, 3.11)",
     "test (windows-latest, 3.12)",
     "test (windows-latest, 3.13)",
     "test (windows-latest, 3.14)",
-    "test (windows-latest, 3.9)",
 )
 
 PROTECTED_PATHS = frozenset(
@@ -78,6 +82,35 @@ class RequiredCiGateError(ValueError):
     """The source run cannot safely produce the required success status."""
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Never replay the status-writing token after an HTTP redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RequiredCiGateError("GitHub API redirects are not permitted")
+
+
+def _public_tls_context() -> ssl.SSLContext:
+    """Load host trust without environment-selected CAs or TLS key logging."""
+    removed: dict[str, str] = {}
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
+        value = os.environ.pop(name, None)
+        if value is not None:
+            removed[name] = value
+    try:
+        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    finally:
+        os.environ.update(removed)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+_GITHUB_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=_public_tls_context()),
+    _RejectRedirects(),
+)
+
+
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -87,18 +120,98 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _bounded_json_int(value: str) -> int:
+    if re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value) is None:
+        raise ValueError("invalid JSON integer")
+    negative = value.startswith("-")
+    digits = value[1:] if negative else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            "JSON integer exceeds the "
+            f"{MAX_JSON_INTEGER_DIGITS}-decimal-digit limit"
+        )
+    result = 0
+    first = len(digits) % 9 or 9
+    for end in range(first, len(digits) + 1, 9):
+        width = first if end == first else 9
+        result = result * (10**width) + int(digits[end - width : end])
+    return -result if negative else result
+
+
+def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError(
+            f"JSON number exceeds the {MAX_JSON_NUMBER_CHARS}-character limit"
+        )
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite JSON number is not supported")
+    return result
+
+
+def _reject_json_constant(_value: str) -> object:
+    raise ValueError("non-finite JSON number is not supported")
+
+
+def _json_shape_within_limits(raw: bytes) -> bool:
+    """Reject provably wide or deep JSON before ``json.loads`` allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif byte in {0x5B, 0x7B}:
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif byte in {0x5D, 0x7D}:
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif byte in {0x09, 0x0A, 0x0D, 0x20, 0x2C, 0x3A}:
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
+
+
 def _decode_json(raw: bytes, *, label: str, limit: int) -> object:
     if len(raw) > limit:
         raise RequiredCiGateError(f"{label} exceeds the {limit}-byte limit")
+    if not _json_shape_within_limits(raw):
+        raise RequiredCiGateError(f"{label} exceeds the JSON structural limit")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RequiredCiGateError(f"{label} is not UTF-8") from exc
     try:
-        return json.loads(text, object_pairs_hook=_unique_object)
+        return json.loads(
+            text,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+            parse_float=_bounded_json_float,
+            parse_int=_bounded_json_int,
+        )
     except RequiredCiGateError:
         raise
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, OverflowError, RecursionError, ValueError) as exc:
         raise RequiredCiGateError(f"{label} is not valid JSON") from exc
 
 
@@ -215,7 +328,7 @@ class GitHubClient:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with _GITHUB_OPENER.open(request, timeout=30) as response:
                 raw = response.read(MAX_API_RESPONSE_BYTES + 1)
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
             raise RequiredCiGateError("GitHub API request failed") from exc

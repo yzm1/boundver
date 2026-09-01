@@ -263,12 +263,6 @@ runs:
           if [[ "$BOUNDVER_MERGE_BASE" == true ]]; then
             command+=(--merge-base)
           fi
-          shallow=$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'unknown')
-          if [[ "$shallow" == true ]]; then
-            echo "Boundver review detected a shallow checkout." >&2
-            echo "GitHub Actions remediation: set actions/checkout with fetch-depth: 0 before this Action." >&2
-            echo "GitLab remediation: set GIT_DEPTH: 0 before repository checkout." >&2
-          fi
         fi
         if [[ -n "$BOUNDVER_FACETS" ]]; then
           command+=(--facets "$BOUNDVER_FACETS")
@@ -288,7 +282,10 @@ runs:
         "${command[@]}" >"$result_file"
         code=$?
         set -e
-        annotation_commit=$(git rev-parse --verify 'HEAD^{commit}' 2>/dev/null || true)
+        # GitHub owns GITHUB_SHA. Using it as the annotation guard avoids a
+        # second, ambient-config-sensitive Git probe after boundver has already
+        # captured and reported the exact target commit itself.
+        annotation_commit=${GITHUB_SHA:-}
         set +e
         python -I "${BOUNDVER_ACTION_PATH}/scripts/export_action_outputs.py" \
           --result "$result_file" \

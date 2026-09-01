@@ -14,7 +14,7 @@ import pytest
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 compatibility
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 from tests._project_metadata import (
@@ -388,7 +388,7 @@ def test_cli_rejects_alias_none_without_skip_alias(candidate, monkeypatch, capsy
     ("field", "value", "message"),
     [
         ("summary", "wrong", "summary"),
-        ("requires_python", ">=3.10", "Requires-Python"),
+        ("requires_python", ">=3.9", "Requires-Python"),
         ("project_urls", {}, "project URL"),
     ],
 )
@@ -661,7 +661,7 @@ def test_stdlib_fetch_rejects_oversized_content_length_before_read(monkeypatch):
         url,
         {"Content-Length": str(verifier.MAX_PUBLIC_DOCUMENT_BYTES + 1)},
     )
-    monkeypatch.setattr(verifier.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    monkeypatch.setattr(verifier, "_open_public_url", lambda *args, **kwargs: response)
 
     with pytest.raises(verifier.ReleaseNetworkError, match="response limit"):
         verifier._stdlib_fetch(url, "application/json")
@@ -669,11 +669,52 @@ def test_stdlib_fetch_rejects_oversized_content_length_before_read(monkeypatch):
     assert response.read_sizes == []
 
 
+def test_stdlib_fetch_opener_disables_ambient_proxies_and_redirects():
+    redirect = next(
+        handler
+        for handler in verifier._PUBLIC_OPENER.handlers
+        if isinstance(handler, verifier._RejectRedirects)
+    )
+    assert verifier._NO_PROXY_HANDLER.proxies == {}
+    assert (
+        redirect.redirect_request(None, None, 302, "Found", {}, "https://evil.invalid")
+        is None
+    )
+    https = next(
+        handler
+        for handler in verifier._PUBLIC_OPENER.handlers
+        if isinstance(handler, verifier.urllib.request.HTTPSHandler)
+    )
+    assert https._context.minimum_version == verifier.ssl.TLSVersion.TLSv1_2
+
+
+def test_stdlib_fetch_tls_context_ignores_environment_selected_trust(monkeypatch):
+    hostile = {
+        "SSL_CERT_FILE": "repo/attacker-ca.pem",
+        "SSL_CERT_DIR": "repo/attacker-certs",
+        "SSLKEYLOGFILE": "repo/tls-keys.log",
+    }
+    observed = []
+    for name, value in hostile.items():
+        monkeypatch.setenv(name, value)
+
+    def context_factory(*, purpose):
+        assert purpose is verifier.ssl.Purpose.SERVER_AUTH
+        observed.append({name: verifier.os.environ.get(name) for name in hostile})
+        return verifier.ssl.SSLContext(verifier.ssl.PROTOCOL_TLS_CLIENT)
+
+    monkeypatch.setattr(verifier.ssl, "create_default_context", context_factory)
+    context = verifier._public_tls_context()
+
+    assert observed == [{name: None for name in hostile}]
+    assert {name: verifier.os.environ.get(name) for name in hostile} == hostile
+    assert context.minimum_version == verifier.ssl.TLSVersion.TLSv1_2
+
 def test_stdlib_fetch_uses_one_byte_growth_sentinel(monkeypatch):
     url = "https://api.github.com/example"
     response = _StreamingResponse(b"abcde-more", url, {})
     monkeypatch.setattr(verifier, "MAX_PUBLIC_DOCUMENT_BYTES", 4)
-    monkeypatch.setattr(verifier.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    monkeypatch.setattr(verifier, "_open_public_url", lambda *args, **kwargs: response)
 
     with pytest.raises(verifier.ReleaseNetworkError, match="4-byte response limit"):
         verifier._stdlib_fetch(url, "application/json")

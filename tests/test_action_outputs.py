@@ -5,9 +5,11 @@ import io
 import json
 import sys
 import tempfile
+import tracemalloc
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 from boundver._utils import DIAGNOSTIC_TRUNCATION_SENTINEL
 
@@ -49,6 +51,96 @@ def _parse_github_output(path: Path) -> dict[str, str]:
 
 
 class ActionOutputTests(unittest.TestCase):
+    def test_rejects_oversized_numeric_tokens(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            payloads = (
+                b'{"n":'
+                + (b"9" * (exporter.MAX_JSON_INTEGER_DIGITS + 1))
+                + b"}",
+                b'{"n":1.'
+                + (b"0" * (exporter.MAX_JSON_NUMBER_CHARS + 1))
+                + b"}",
+                b'{"n":1e9999}',
+            )
+            for payload in payloads:
+                with self.subTest(size=len(payload)):
+                    path.write_bytes(payload)
+                    value, status = exporter._load_payload(path, 64 * 1024)
+                    self.assertEqual(value, {})
+                    self.assertEqual(status, "invalid-json")
+
+    def test_rejects_wide_or_deep_result_before_json_parser_allocation(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            path.write_bytes(b"[0,0,0]")
+            with (
+                mock.patch.object(exporter, "MAX_RESULT_JSON_TOKENS", 2),
+                mock.patch.object(
+                    exporter.json,
+                    "loads",
+                    side_effect=AssertionError("parser must not be called"),
+                ) as loads,
+            ):
+                payload, status = exporter._load_payload(path, 1024)
+            self.assertEqual(payload, {})
+            self.assertEqual(status, exporter.SOURCE_OVER_COMPLEX)
+            loads.assert_not_called()
+
+            original = path.read_bytes()
+            with mock.patch.object(exporter, "MAX_RESULT_JSON_TOKENS", 2):
+                exporter.export_outputs(
+                    path,
+                    Path(temporary) / "github-output.txt",
+                )
+            self.assertEqual(path.read_bytes(), original)
+
+            path.write_bytes(b"[[[0]]]")
+            with (
+                mock.patch.object(exporter, "MAX_RESULT_JSON_DEPTH", 2),
+                mock.patch.object(
+                    exporter.json,
+                    "loads",
+                    side_effect=AssertionError("parser must not be called"),
+                ) as loads,
+            ):
+                payload, status = exporter._load_payload(path, 1024)
+            self.assertEqual(payload, {})
+            self.assertEqual(status, exporter.SOURCE_OVER_COMPLEX)
+            loads.assert_not_called()
+
+    def test_bounded_outputs_do_not_materialize_values_beyond_the_limit(self):
+        exporter = _load_script()
+        lines = ["\x1b" * 512] * 1_000
+        tracemalloc.start()
+        try:
+            value, truncated = exporter._bounded_lines(
+                lines,
+                exporter.MAX_VALUE_UTF16_BYTES,
+            )
+            _current, line_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertTrue(truncated)
+        self.assertLessEqual(exporter._utf16_size(value), 64 * 1024)
+        self.assertLess(line_peak, 2 * 1024 * 1024)
+
+        rows = ["x" * 1_024] * 1_000
+        tracemalloc.start()
+        try:
+            value, truncated = exporter._bounded_json_array(
+                rows,
+                exporter.MAX_VALUE_UTF16_BYTES,
+            )
+            _current, json_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertTrue(truncated)
+        self.assertEqual(value, "[]")
+        self.assertLess(json_peak, 2 * 1024 * 1024)
+
     def test_exports_validation_truncation_sentinel_as_a_failed_issue(self):
         exporter = _load_script()
         with tempfile.TemporaryDirectory() as temporary:

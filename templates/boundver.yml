@@ -78,6 +78,24 @@ spec:
       : "${CI_PROJECT_DIR:?CI_PROJECT_DIR is required}"
       result_file=boundver-result.json
       summary_file=boundver-summary.md
+      # Never follow a repository-controlled symlink when creating CI output.
+      # The files are reserved before any repository content is parsed.
+      python -I - "$result_file" "$summary_file" <<'PY'
+      import os
+      import sys
+
+      flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+      flags |= getattr(os, "O_NOFOLLOW", 0)
+      for value in sys.argv[1:]:
+          try:
+              descriptor = os.open(value, flags, 0o600)
+          except OSError as error:
+              raise SystemExit(
+                  f"refusing unsafe or pre-existing boundver output {value!r}: {error}"
+              ) from None
+          else:
+              os.close(descriptor)
+      PY
       ensure_boundver_artifacts() {
         if [ ! -s "$result_file" ]; then
           printf '%s\n' \
@@ -93,7 +111,6 @@ spec:
         fi
       }
       trap ensure_boundver_artifacts EXIT
-      git config --global --add safe.directory "$CI_PROJECT_DIR"
       case "$BOUNDVER_OPERATION" in
         verify|review) ;;
         *) echo "operation must be verify or review" >&2; exit 2 ;;
@@ -148,12 +165,6 @@ spec:
           --summary-file "$summary_file"
         if [ "$BOUNDVER_MERGE_BASE" = true ]; then
           set -- "$@" --merge-base
-        fi
-        shallow=$(git rev-parse --is-shallow-repository 2>/dev/null || printf 'unknown')
-        if [ "$shallow" = true ]; then
-          echo "Boundver review detected a shallow checkout." >&2
-          echo "GitLab remediation: set GIT_DEPTH: 0 before repository checkout." >&2
-          echo "GitHub Actions remediation: set actions/checkout with fetch-depth: 0." >&2
         fi
       fi
       if [ -n "$BOUNDVER_FACETS" ]; then

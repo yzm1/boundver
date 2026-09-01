@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -703,6 +704,23 @@ def test_review_enforces_one_aggregate_graph_and_slice_work_budget(
 
     with pytest.raises(GuardrailError, match="No partial review result was emitted"):
         analyze_review_range(tmp_path, base, target, transitive=True)
+
+
+def test_review_work_budget_rejects_wide_union_before_allocating_it() -> None:
+    base = {"slices": {f"a{index:06d}": {} for index in range(100_000)}}
+    target = {"slices": {f"b{index:06d}": {} for index in range(100_000)}}
+    budget = review_module._ReviewWorkBudget()
+    budget.steps = review_module.MAX_REVIEW_WORK_STEPS
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(GuardrailError, match="aggregate limit"):
+            review_module._slice_transitions(base, target, budget=budget)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 2 * 1024 * 1024
 
 
 def test_review_refuses_an_oversized_complete_result_instead_of_truncating(
