@@ -281,6 +281,10 @@ All notable changes to this project are documented here. The format follows
   worktree hardening and made process attribution skip the fixed worktree
   options, so the release performance gate once again measures actual Git
   subcommands and enforces its committed process ceilings.
+- Removed case-variant duplicate proxy keys from release-workflow environments,
+  which GitHub Actions rejects even though ordinary YAML parsers accept them.
+  Workflow maintenance tests now enforce GitHub's case-insensitive `env` key
+  uniqueness before a workflow reaches hosted validation.
 
 ## [0.14.1] - 2026-08-26
 

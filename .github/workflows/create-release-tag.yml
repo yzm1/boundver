@@ -57,10 +57,6 @@ env:
   SSL_CERT_FILE: ""
   SSLKEYLOGFILE: ""
   TERM: dumb
-  all_proxy: ""
-  http_proxy: ""
-  https_proxy: ""
-  no_proxy: github.com,api.github.com
   # Workflow-defined, isolated code independently snapshots every mutable input
   # used by the full repository audit.  The read-only and mutation jobs compare
   # its digest so candidate scripts never receive a contents-write token.

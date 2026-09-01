@@ -59,10 +59,6 @@ env:
   SSL_CERT_FILE: ""
   SSLKEYLOGFILE: ""
   TERM: dumb
-  all_proxy: ""
-  http_proxy: ""
-  https_proxy: ""
-  no_proxy: github.com,api.github.com
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
