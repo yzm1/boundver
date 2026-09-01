@@ -1,0 +1,41 @@
+name: Required PR Gate
+
+on:
+  # This base-controlled status aggregator never executes pull-request code;
+  # scripts/check_required_ci_results.py binds and validates the exact source
+  # run, pull request, job topology, base/head commits, and protected paths
+  # before the narrowly scoped token can publish one commit status.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: required-pr-gate-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  publish-required-status:
+    name: Publish trusted required-pr-gate status
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # This is the only job and the only process allowed to publish the required
+    # status. It checks out base-controlled code and never executes PR content.
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Checkout trusted gate from the pull request base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.pull_requests[0].base.sha }}
+          persist-credentials: false
+
+      - name: Validate source run and publish required status
+        env:
+          BOUNDVER_GATE_TOKEN: ${{ github.token }}
+        run: python -I scripts/check_required_ci_results.py
