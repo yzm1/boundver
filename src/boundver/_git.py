@@ -14,6 +14,7 @@ from typing import (
     BinaryIO,
     Callable,
     Dict,
+    FrozenSet,
     Iterable,
     Iterator,
     List,
@@ -352,8 +353,12 @@ class GitSourceSnapshot:
     """Immutable Git-backed source used by one generate/verify operation.
 
     ``tree_oid`` is either the tree reached from one captured HEAD commit or a
-    tree written from the index once.  Reading blobs by object ID prevents a
+    tree written from the index once. Reading blobs by object ID prevents a
     concurrent ref/index update from producing a hybrid lockfile.
+
+    ``tracked_paths`` additionally freezes index membership for working-tree
+    operations. It includes intent-to-add paths, which have no blob in the
+    written tree and therefore cannot appear in ``entries``.
     """
 
     source: str
@@ -361,6 +366,17 @@ class GitSourceSnapshot:
     entries: Dict[str, GitTreeEntry]
     head_oid: Optional[str] = None
     filemode: bool = True
+    tracked_paths: FrozenSet[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        # Compatibility snapshots constructed by callers historically only
+        # supplied ``entries``. Keep every materialized tree entry tracked
+        # while allowing captured index snapshots to add intent-to-add names.
+        object.__setattr__(
+            self,
+            "tracked_paths",
+            frozenset(self.entries) | frozenset(self.tracked_paths),
+        )
 
 
 def git_root() -> Path:
@@ -725,12 +741,39 @@ def _capture_tree_entries(
         ) from exc
 
 
+def _capture_index_tracked_paths(repo_root: Path) -> FrozenSet[str]:
+    """Capture bounded index membership, including intent-to-add entries."""
+    try:
+        paths = list(
+            _iter_bounded_git_paths(
+                repo_root,
+                [
+                    "--literal-pathspecs",
+                    "ls-files",
+                    "--cached",
+                    "-z",
+                    "--",
+                ],
+            )
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError(
+            "Cannot capture index path membership: git ls-files failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    tracked_paths = frozenset(paths)
+    if len(tracked_paths) != len(paths):
+        raise ValueError("Duplicate path in captured Git index membership")
+    return tracked_paths
+
+
 def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnapshot:
     """Capture one immutable tree for a ``head`` or ``index`` operation."""
     if source not in {"head", "index"}:
         raise ValueError(f"Cannot capture a Git snapshot for source {source!r}")
 
     head_oid = _resolve_head_oid(repo_root)
+    tracked_paths: FrozenSet[str] = frozenset()
     if source == "head":
         if head_oid is None:
             raise ValueError("HEAD does not resolve to a commit")
@@ -750,6 +793,29 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         treeish = _validated_git_object_id(result.stdout, "git write-tree")
 
     entries = _capture_tree_entries(repo_root, treeish, source)
+    if source == "index":
+        # A written tree omits CE_INTENT_TO_ADD entries. Capture the bounded
+        # index name set between two equal write-tree results so the immutable
+        # content tree and the additional tracking membership describe one
+        # coherent index state.
+        tracked_paths = _capture_index_tracked_paths(repo_root)
+        try:
+            confirmation = _git_run(repo_root, ["write-tree"])
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise ValueError(
+                "Cannot confirm captured index tree: git write-tree failed "
+                f"({_git_failure_detail(exc)})"
+            ) from exc
+        confirmed_treeish = _validated_git_object_id(
+            confirmation.stdout,
+            "git write-tree confirmation",
+        )
+        if confirmed_treeish != treeish:
+            raise ValueError("Index changed while capturing tracked paths; retry")
+        if set(entries) - tracked_paths:
+            raise ValueError(
+                "Captured index membership omitted materialized tree paths"
+            )
     try:
         filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
     except subprocess.CalledProcessError as exc:
@@ -778,6 +844,7 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         entries=entries,
         head_oid=head_oid,
         filemode=core_filemode,
+        tracked_paths=tracked_paths,
     )
 
 
@@ -790,6 +857,19 @@ def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
     return sorted(
         candidate
         for candidate in snapshot.entries
+        if candidate == normalized or candidate.startswith(prefix)
+    )
+
+
+def _snapshot_tracked_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
+    """List tracked paths, including intent-to-add index membership."""
+    normalized = Path(path).as_posix().strip("/")
+    if normalized in {"", "."}:
+        return sorted(snapshot.tracked_paths)
+    prefix = normalized + "/"
+    return sorted(
+        candidate
+        for candidate in snapshot.tracked_paths
         if candidate == normalized or candidate.startswith(prefix)
     )
 
@@ -1581,7 +1661,7 @@ def _working_tree_name_status(
 
     paths = sorted(
         path
-        for path in set(base_entries) | set(captured.entries)
+        for path in set(base_entries) | set(captured.tracked_paths)
         if selected(path)
     )
     if len(paths) > MAX_GIT_STATUS_PATHS:
@@ -1627,6 +1707,7 @@ def _working_tree_name_status(
         for path in paths:
             base_entry = base_entries.get(path)
             current_entry = captured.entries.get(path)
+            current_is_tracked = path in captured.tracked_paths
 
             base_identity: Optional[Tuple[str, str, bytes]] = None
             if base_entry is not None:
@@ -1663,14 +1744,14 @@ def _working_tree_name_status(
                     )
 
             current_identity: Optional[Tuple[str, str, bytes]] = None
-            if current_entry is not None:
+            if current_is_tracked:
                 full_path = repo_root / path
                 try:
                     full_path.lstat()
                 except FileNotFoundError:
                     pass
                 else:
-                    if current_entry.object_type == "blob":
+                    if current_entry is None or current_entry.object_type == "blob":
                         content = _read_path_content(
                             repo_root,
                             full_path,
@@ -1681,7 +1762,7 @@ def _working_tree_name_status(
                             tracked_entry=current_entry,
                             core_filemode=captured.filemode,
                         )
-                        current_total += len(content)
+                        current_total += content.source_size
                         current_identity = (
                             content.git_mode,
                             content.git_object_type,

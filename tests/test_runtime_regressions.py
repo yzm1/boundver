@@ -682,6 +682,66 @@ class ChangedPathSelectionTests(unittest.TestCase):
                 )
                 self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["b"])
 
+    def test_intent_to_add_is_visible_to_every_worktree_change_view(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "baseline.txt").write_bytes(b"")
+            _commit_all(root)
+
+            (root / "a").mkdir()
+            (root / "a" / "new.txt").write_text("new\n", encoding="utf-8")
+            _git(root, "add", "-N", "--", "a/new.txt")
+
+            snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("a/new.txt", snapshot.tracked_paths)
+            self.assertNotIn("a/new.txt", snapshot.entries)
+            self.assertEqual(
+                changed_components_since_ref(
+                    self._config(), root, "HEAD", source="working-tree"
+                ),
+                ["a"],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["a"])
+
+            explanation = analyze_explain_changes(
+                self._config(),
+                root,
+                "a",
+                base_ref="HEAD",
+                source="working-tree",
+            )
+            self.assertIsNone(explanation["error"])
+            self.assertEqual(explanation["changed"], [("A", "a/new.txt")])
+
+            working_digest = source_tree_digest(
+                root,
+                "a",
+                source="working-tree",
+                snapshot=snapshot,
+            )
+            _git(root, "add", "--", "a/new.txt")
+            self.assertEqual(
+                working_digest,
+                source_tree_digest(root, "a", source="index"),
+            )
+
+    def test_worktree_scan_budget_counts_bytes_before_crlf_normalization(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "baseline.txt").write_bytes(b"")
+            _commit_all(root)
+
+            (root / "a").mkdir()
+            (root / "a" / "one.txt").write_bytes(b"x\r\n")
+            (root / "a" / "two.txt").write_bytes(b"y\r\n")
+            _git(root, "add", "-N", "--", "a/one.txt", "a/two.txt")
+
+            with patch("boundver._git.MAX_GIT_REPOSITORY_SCAN_BYTES", 5):
+                with self.assertRaisesRegex(GuardrailError, "file too large"):
+                    dirty_component_paths(root, ["a"])
+
     def test_worktree_diagnostics_never_execute_clean_filters(self):
         with (
             tempfile.TemporaryDirectory() as td,
