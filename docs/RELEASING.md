@@ -71,7 +71,9 @@ credentials from the protected environments.
 ## Required-gate control maintenance
 
 The base-controlled `required-pr-gate` deliberately rejects a pull request that
-changes `.github/`, a workflow, or `scripts/`. Those files can change what
+changes `.github/workflows/`, the tracked main-ruleset snapshot
+`.github/rulesets/protect-main.json`, or the gate validator
+`scripts/check_required_ci_results.py`. Those control paths can change what
 counts as successful CI, so a candidate must not authorize its own merge.
 Control-plane maintenance therefore uses a narrow ruleset transaction:
 
