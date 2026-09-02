@@ -14,7 +14,7 @@ import pytest
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 compatibility
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     import tomli as tomllib
 
 from tests._project_metadata import (
@@ -388,7 +388,7 @@ def test_cli_rejects_alias_none_without_skip_alias(candidate, monkeypatch, capsy
     ("field", "value", "message"),
     [
         ("summary", "wrong", "summary"),
-        ("requires_python", ">=3.10", "Requires-Python"),
+        ("requires_python", ">=3.11", "Requires-Python"),
         ("project_urls", {}, "project URL"),
     ],
 )

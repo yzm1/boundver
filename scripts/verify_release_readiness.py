@@ -23,7 +23,7 @@ from typing import Iterable, Optional, Sequence
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10 release tooling
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 release tooling
     import tomli as tomllib
 
 

@@ -26,7 +26,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 PROJECT = "boundver"
 SUMMARY = "Classify contract drift and downstream impact across polyglot repositories"
-REQUIRES_PYTHON = ">=3.9"
+REQUIRES_PYTHON = ">=3.10"
 DEFAULT_REPOSITORY = "yzm1/boundver"
 DEFAULT_MARKETPLACE_SLUG = "boundver"
 USER_AGENT = "boundver-release-surface-verifier/1"

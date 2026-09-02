@@ -25,7 +25,7 @@ Common commands:
     boundver validate-config [--config boundary.config.json]
     boundver status  [--config boundary.config.json] [--lock boundary.lock.json]
 
-Requires: Git and Python 3.9+.
+Requires: Git and Python 3.10+.
 """
 
 import os

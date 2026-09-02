@@ -36,7 +36,7 @@ RUN python -I -m pip download \
       --no-index \
       --no-deps \
       --find-links=/wheelhouse \
-      setuptools==80.9.0 wheel==0.48.0
+      setuptools==84.0.0 wheel==0.48.0
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN python -I -m pip wheel \

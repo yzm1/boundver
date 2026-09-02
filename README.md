@@ -13,7 +13,7 @@
 [![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-boundver-blue?logo=github)](https://github.com/marketplace/actions/boundver)
 [![GitLab Catalog](https://img.shields.io/badge/GitLab%20Catalog-boundver-FC6D26?logo=gitlab)](https://gitlab.com/boundver-project/boundver)
-[![Python 3.9+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
+[![Python 3.10+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
 **boundver classifies declared contract drift and downstream impact across
@@ -348,7 +348,7 @@ boundver completions --shell bash
 
 ## Installation and documentation
 
-boundver requires Git and Python 3.9 or newer.
+boundver requires Git and Python 3.10 or newer.
 
 ```bash
 python -m pip install boundver

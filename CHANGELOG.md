@@ -28,6 +28,21 @@ All notable changes to this project are documented here. The format follows
   through the final tag-mutation handoff, and GitHub repository/owner numeric
   identities prevent namespace transfer or recreation from inheriting evidence.
 
+### Changed
+
+- Raised the minimum supported Python version from 3.9 to 3.10 across the
+  package, standalone archive, Action contract, CI matrix, and release checks.
+  Python 3.9 is end-of-life; Python 3.10 is now the oldest version exercised on
+  both Linux and Windows and by the public Action contract.
+
+### Security
+
+- Updated the isolated build backend to Setuptools 84.0.0, beyond the
+  vulnerable `<83.0.0` range for GHSA-h35f-9h28-mq5c / CVE-2026-59890, and
+  refreshed the coordinated test toolchain to Coverage 7.16.0, pytest 9.1.1,
+  and Ruff 0.16.5. Generated wheel-only, hash-pinned automation locks remain
+  the authority for CI, Action, container, and release installs.
+
 ### Fixed
 
 - Replaced filter-capable working-tree Git comparisons with bounded raw file

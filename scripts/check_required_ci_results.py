@@ -5,7 +5,8 @@ This program is executed by ``required-pr-gate.yml`` from the pull request's
 base commit after the unprivileged ``CI`` workflow completes. It never checks
 out or executes pull-request code. A pull request that changes CI or either
 gate control file is intentionally ineligible for automatic approval and must
-use the documented, reviewed ruleset-maintenance procedure.
+use the reviewed ``docs/RELEASING.md#required-gate-control-maintenance``
+procedure.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 EXPECTED_JOBS = (
     "Public Action contract (macos-15, Python 3.12)",
     "Public Action contract (ubuntu-latest, Python 3.12)",
-    "Public Action contract (ubuntu-latest, Python 3.9)",
+    "Public Action contract (ubuntu-latest, Python 3.10)",
     "Public Action contract (windows-latest, Python 3.12)",
     "Public installation contracts (macos-15)",
     "Public installation contracts (ubuntu-latest)",
@@ -53,13 +54,11 @@ EXPECTED_JOBS = (
     "build",
     "test (macos-15, 3.12)",
     "test (macos-15-intel, 3.12)",
-    "test (ubuntu-latest, 3.9)",
     "test (ubuntu-latest, 3.10)",
     "test (ubuntu-latest, 3.11)",
     "test (ubuntu-latest, 3.12)",
     "test (ubuntu-latest, 3.13)",
     "test (ubuntu-latest, 3.14)",
-    "test (windows-latest, 3.9)",
     "test (windows-latest, 3.10)",
     "test (windows-latest, 3.11)",
     "test (windows-latest, 3.12)",
