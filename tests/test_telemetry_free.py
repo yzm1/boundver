@@ -169,6 +169,8 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         "repo",
         "-c",
         "core.fsmonitor=false",
+        "-c",
+        "log.showSignature=false",
         "--literal-pathspecs",
         "ls-files",
         "-z",
@@ -192,7 +194,9 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         ["cat-file", "--filters", "HEAD:file"],
         ["cat-file", "--batch-command"],
         ["ls-files", "--recurse-submodules"],
-        ["log", "--submodule=diff", "HEAD"],
+        ["log", "HEAD"],
+        ["rev-list", "--show-signature", "HEAD"],
+        ["rev-list", "--format=%G?", "HEAD"],
     )
     for unsafe_args in unsafe_commands:
         try:

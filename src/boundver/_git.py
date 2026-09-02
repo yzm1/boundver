@@ -77,7 +77,6 @@ _OFFLINE_GIT_SUBCOMMANDS = frozenset(
         "describe",
         "diff",
         "diff-tree",
-        "log",
         "ls-files",
         "ls-tree",
         "rev-list",
@@ -120,7 +119,18 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         for argument in subcommand_arguments
     ):
         raise ValueError("Refusing recursive Git submodule inspection")
-    if subcommand in {"diff", "diff-tree", "log"} and any(
+    if subcommand == "rev-list" and any(
+        argument == "--show-signature"
+        or argument.startswith("--show-signature=")
+        or argument == "--pretty"
+        or argument.startswith("--pretty=")
+        or argument == "--format"
+        or argument.startswith("--format=")
+        or "%G" in argument
+        for argument in subcommand_arguments
+    ):
+        raise ValueError("Refusing Git signature display or pretty formatting")
+    if subcommand in {"diff", "diff-tree"} and any(
         argument in {"--ext-diff", "--textconv", "--no-index"}
         or argument.startswith("--submodule")
         for argument in subcommand_arguments
@@ -143,7 +153,7 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
                 "Refusing Git worktree diff because repository clean filters "
                 "can execute external commands"
             )
-    if subcommand in {"diff", "diff-tree", "log"}:
+    if subcommand in {"diff", "diff-tree"}:
         safe_args[command_index + 1 : command_index + 1] = [
             "--no-ext-diff",
             "--no-textconv",
@@ -156,6 +166,8 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         str(repo_root),
         "-c",
         "core.fsmonitor=false",
+        "-c",
+        "log.showSignature=false",
         *safe_args,
     ]
 

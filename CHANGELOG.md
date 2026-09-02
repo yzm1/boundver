@@ -11,7 +11,8 @@ All notable changes to this project are documented here. The format follows
 - Declared and enforced a telemetry-free invariant for the built-in CLI. The
   runtime has no outbound-network or telemetry-client imports, and every Git
   subprocess is restricted to a local-command allowlist with prompts, lazy
-  fetches, tracing, hooks, filters, pagers, and external diff helpers disabled.
+  fetches, tracing, hooks, filters, pagers, signature verification, and
+  external diff helpers disabled.
   Added a public privacy policy, a visible voluntary adopter Discussion, and
   privacy-preserving Search Console ownership metadata for the documentation
   site; platform-side aggregate counters remain outside the CLI.

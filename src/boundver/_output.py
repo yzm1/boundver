@@ -68,10 +68,9 @@ def _component_lock_history_base(
     result = _git_run(
         repo_root,
         [
-            "log",
+            "rev-list",
             "--first-parent",
             f"--max-count={_MAX_DIAGNOSTIC_LOCK_HISTORY_COMMITS + 1}",
-            "--format=%H",
             target,
             "--",
             normalized_lock,
@@ -183,10 +182,9 @@ def _resolve_lock_history_base(
             result = _git_run(
                 repo_root,
                 [
-                    "log",
+                    "rev-list",
                     "--first-parent",
-                    "-1",
-                    "--format=%H",
+                    "--max-count=1",
                     target,
                     "--",
                     normalized_lock,
