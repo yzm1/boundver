@@ -238,7 +238,7 @@ def _extract_toml_from_text(text: str, field_path: str) -> Optional[str]:
                 return None
             current = current[key]
         return _toml_version_value_to_string(current)
-    # tomli is required on Python 3.9-3.10 and tomllib is built in thereafter.
+    # tomli is required on Python 3.10 and tomllib is built in thereafter.
     # A missing parser is a broken installation; do not guess at TOML syntax
     # and risk blessing a different version identity.
     return None

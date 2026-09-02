@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 try:
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.9
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib
 
 

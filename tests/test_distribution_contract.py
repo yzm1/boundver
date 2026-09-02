@@ -58,7 +58,7 @@ def _inline_toml_helpers(workflow_path: Path, job_name: str, step_name: str) -> 
             selected.append(node)
     try:
         toml_parser = __import__("tomllib")
-    except ModuleNotFoundError:  # pragma: no cover - Python 3.9/3.10
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10
         toml_parser = __import__("tomli")
     namespace: dict = {"tomllib": toml_parser}
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
@@ -2107,7 +2107,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(
             workflow["jobs"]["action"]["strategy"]["matrix"]["include"],
             [
-                {"os": "ubuntu-latest", "python-version": "3.9"},
+                {"os": "ubuntu-latest", "python-version": "3.10"},
                 {"os": "ubuntu-latest", "python-version": "3.12"},
                 {"os": "windows-latest", "python-version": "3.12"},
                 {"os": "macos-15", "python-version": "3.12"},
@@ -2121,7 +2121,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("python -I -m ruff check src tests scripts", workflow)
         self.assertNotIn("ruff check --fix", workflow)
         project = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('ruff==0.16.3', project)
+        self.assertIn('ruff==0.16.5', project)
         self.assertIn('select = ["F"]', project)
 
     def test_workflows_do_not_persist_checkout_credentials(self):

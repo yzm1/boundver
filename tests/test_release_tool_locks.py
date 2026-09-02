@@ -100,7 +100,7 @@ def test_action_native_wheels_cover_supported_python_and_os_matrix():
     artifacts = _artifacts()
     for package in ("pyyaml", "rpds-py", "tomli"):
         filenames = [wheel["filename"] for wheel in artifacts[package]["wheels"]]
-        for minor in (9, 12):
+        for minor in (10, 12):
             if package == "tomli" and minor == 12:
                 continue
             for platform in ("linux", "macos-intel", "macos-arm", "windows"):

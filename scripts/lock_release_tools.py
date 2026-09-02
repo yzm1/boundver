@@ -24,7 +24,7 @@ from typing import Any, Mapping, Sequence
 
 try:
     import tomllib
-except ImportError:  # pragma: no cover - exercised by the Python 3.9 CI job
+except ImportError:  # pragma: no cover - exercised by the Python 3.10 CI job
     import tomli as tomllib
 
 

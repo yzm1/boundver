@@ -80,7 +80,7 @@ GitHub Releases also contain `boundver-<version>.pyz` and `SHA256SUMS`:
 python3 boundver-<version>.pyz --version
 ```
 
-The zipapp requires Python 3.9 or newer but no package installation. It bundles
+The zipapp requires Python 3.10 or newer but no package installation. It bundles
 the lock-pinned pure-Python PyYAML runtime and its license; platform-specific
 LibYAML extensions are intentionally omitted. JSON and YAML work on every
 supported Python version. TOML configuration requires Python 3.11 or newer.

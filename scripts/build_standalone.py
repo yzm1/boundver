@@ -16,7 +16,7 @@ On Unix systems you can also make it executable:
     ./dist/boundver.pyz verify
 
 Requires:
-  - Python 3.9+ for JSON and YAML configs
+  - Python 3.10+ for JSON and YAML configs
   - Python 3.11+ for TOML configs in the standalone archive
 
 The archive vendors the pure-Python runtime from the exact PyYAML wheel pinned

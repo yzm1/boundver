@@ -529,8 +529,8 @@ pypi-attestations==0.0.28 \
     --hash=sha256:a7eebfb55f3b9848bb99e15a6c7ff462e0e7d9a1395690426e4d069fa0dd0158
 pyproject_hooks==1.2.0 \
     --hash=sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913
-pytest==8.4.2 \
-    --hash=sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79
+pytest==9.1.1 \
+    --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
 pywin32-ctypes==0.2.3; sys_platform == 'win32' \
     --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
 readme_renderer==45.0 \
