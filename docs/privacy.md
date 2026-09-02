@@ -27,7 +27,9 @@ Repository tests preserve this promise as a reviewed architecture boundary:
   Git-rooted commands, with an offline subcommand allowlist that rejects
   network-capable Git operations before launch. Git filesystem-monitor hooks,
   external diff and text-conversion helpers, trace sinks, pagers, prompts, and
-  partial-clone lazy fetching are disabled for those subprocesses.
+  partial-clone lazy fetching are disabled for those subprocesses. Boundver
+  compares worktree bytes with its own bounded reader, so repository-defined
+  clean and process filters are never launched during analysis.
 
 Changing one of those constraints requires changing the invariant test and
 this policy in the same reviewed pull request. There is no hidden opt-out

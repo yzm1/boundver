@@ -174,7 +174,8 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         "-z",
     ]
     diff_command = git_helpers._offline_git_command(
-        Path("repo"), ["--literal-pathspecs", "diff", "--name-status"]
+        Path("repo"),
+        ["--literal-pathspecs", "diff", "--name-status", "a" * 40, "b" * 40],
     )
     assert "--no-ext-diff" in diff_command
     assert "--no-textconv" in diff_command
@@ -184,9 +185,29 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         except ValueError:
             continue
         raise AssertionError(f"network-capable Git subcommand allowed: {subcommand}")
+    unsafe_commands = (
+        ["status", "--short"],
+        ["diff", "HEAD", "--"],
+        ["diff", "--no-index", "one", "two"],
+        ["cat-file", "--filters", "HEAD:file"],
+        ["cat-file", "--batch-command"],
+        ["ls-files", "--recurse-submodules"],
+        ["log", "--submodule=diff", "HEAD"],
+    )
+    for unsafe_args in unsafe_commands:
+        try:
+            git_helpers._offline_git_command(Path("repo"), unsafe_args)
+        except ValueError:
+            continue
+        raise AssertionError(f"Git worktree inspection allowed: {unsafe_args}")
 
     environment = {
         "GIT_EXTERNAL_DIFF": "helper",
+        "GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE": "true",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "helper",
+        "GIT_CONFIG_PARAMETERS": "'core.fsmonitor'='helper'",
         "GIT_TRACE": "1",
         "GIT_TRACE2_EVENT": "af_unix:stream:/tmp/trace.sock",
         "KEEP_ME": "yes",

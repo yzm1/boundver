@@ -627,6 +627,70 @@ class ChangedPathSelectionTests(unittest.TestCase):
 
             self.assertEqual(dirty_component_paths(root, [".", "svc"]), ["."])
 
+    def test_worktree_diagnostics_never_execute_clean_filters(self):
+        with (
+            tempfile.TemporaryDirectory() as td,
+            tempfile.TemporaryDirectory() as helper_td,
+        ):
+            root = Path(td)
+            helper_root = Path(helper_td)
+            marker = helper_root / "filter-ran"
+            filter_script = helper_root / "clean-filter.sh"
+            filter_script.write_text(
+                "#!/bin/sh\n"
+                f"printf invoked > '{marker.as_posix()}'\n"
+                "cat\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            filter_script.chmod(0o755)
+
+            _init_repo(root)
+            _git(
+                root,
+                "config",
+                "filter.probe.clean",
+                f'sh "{filter_script.as_posix()}"',
+            )
+            (root / ".gitattributes").write_text(
+                "*.txt filter=probe\n", encoding="utf-8"
+            )
+            (root / "root.txt").write_text("base\n", encoding="utf-8")
+            _commit_all(root)
+            self.assertTrue(marker.exists(), "test filter did not execute")
+            marker.unlink()
+
+            (root / "root.txt").write_text("dirty\n", encoding="utf-8")
+            config = {
+                "components": {
+                    "root": {
+                        "path": ".",
+                        "boundary": {"provider": "implicit"},
+                    }
+                }
+            }
+
+            self.assertEqual(dirty_component_paths(root, ["."]), ["."])
+            self.assertEqual(
+                changed_components_since_ref(
+                    config,
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                ),
+                ["root"],
+            )
+            explanation = analyze_explain_changes(
+                config,
+                root,
+                "root",
+                base_ref="HEAD",
+                source="working-tree",
+            )
+            self.assertIsNone(explanation["error"])
+            self.assertEqual(explanation["changed"], [("M", "root.txt")])
+            self.assertFalse(marker.exists())
+
 
 @unittest.skipIf(os.name == "nt", "arbitrary-byte symlink targets require POSIX")
 class PosixSymlinkByteTests(unittest.TestCase):
@@ -757,7 +821,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             }
         }
         with patch(
-            "boundver._output._git_name_status",
+            "boundver._output._working_tree_name_status",
             side_effect=GuardrailError("Git status paths exceed the limit"),
         ):
             result = analyze_explain_changes(
@@ -793,7 +857,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             return_value={"components": {"svc": current_component}},
         ):
             with patch(
-                "boundver._output._git_name_status",
+                "boundver._output._working_tree_name_status",
                 side_effect=GuardrailError("Git status paths exceed the limit"),
             ):
                 result = analyze_component_drift(
