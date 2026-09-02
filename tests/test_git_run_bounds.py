@@ -338,6 +338,28 @@ class GitRunBoundTests(unittest.TestCase):
             ):
                 git_helpers._capture_git_source_snapshot(Path("repo"), "index")
 
+    def test_index_capture_rejects_concurrent_intent_to_add_change(self):
+        stable_tree = subprocess.CompletedProcess(
+            ["git", "write-tree"], 0, "a" * 40 + "\n", ""
+        )
+        with (
+            patch("boundver._git._resolve_head_oid", return_value="c" * 40),
+            patch("boundver._git._git_run", side_effect=[stable_tree, stable_tree]),
+            patch("boundver._git._capture_tree_entries", return_value={}),
+            patch(
+                "boundver._git._capture_index_tracked_paths",
+                side_effect=[
+                    frozenset({"before.txt"}),
+                    frozenset({"after.txt"}),
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Index path membership changed while capturing tracked paths",
+            ):
+                git_helpers._capture_git_source_snapshot(Path("repo"), "index")
+
     def test_resolve_head_distinguishes_unborn_from_operational_failure(self):
         unresolved = subprocess.CalledProcessError(
             1,

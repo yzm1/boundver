@@ -811,10 +811,10 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
 
     entries = _capture_tree_entries(repo_root, treeish, source)
     if source == "index":
-        # A written tree omits CE_INTENT_TO_ADD entries. Capture the bounded
-        # index name set between two equal write-tree results so the immutable
-        # content tree and the additional tracking membership describe one
-        # coherent index state.
+        # A written tree omits CE_INTENT_TO_ADD entries. Require both the
+        # written tree and the bounded index name set to remain stable so the
+        # immutable content tree and the additional tracking membership
+        # describe one coherent index state.
         tracked_paths = _capture_index_tracked_paths(repo_root)
         try:
             confirmation = _git_run(repo_root, ["write-tree"])
@@ -829,6 +829,11 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         )
         if confirmed_treeish != treeish:
             raise ValueError("Index changed while capturing tracked paths; retry")
+        confirmed_tracked_paths = _capture_index_tracked_paths(repo_root)
+        if confirmed_tracked_paths != tracked_paths:
+            raise ValueError(
+                "Index path membership changed while capturing tracked paths; retry"
+            )
         if set(entries) - tracked_paths:
             raise ValueError(
                 "Captured index membership omitted materialized tree paths"
