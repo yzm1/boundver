@@ -192,6 +192,13 @@ def _offline_git_environment() -> Dict[str, str]:
             environment.pop(name)
     environment["GIT_NO_LAZY_FETCH"] = "1"
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    # Trace2 falls back to trace2.*Target values from system/global config when
+    # its environment variables are absent. Explicit false values take
+    # precedence and prevent configured file or Unix-socket sinks from
+    # receiving repository paths and argv.
+    environment["GIT_TRACE2"] = "0"
+    environment["GIT_TRACE2_EVENT"] = "0"
+    environment["GIT_TRACE2_PERF"] = "0"
     return environment
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,8 +239,53 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
     assert sanitized == {
         "GIT_NO_LAZY_FETCH": "1",
         "GIT_TERMINAL_PROMPT": "0",
+        "GIT_TRACE2": "0",
+        "GIT_TRACE2_EVENT": "0",
+        "GIT_TRACE2_PERF": "0",
         "KEEP_ME": "yes",
     }
+
+
+def test_configured_git_trace2_targets_are_explicitly_disabled() -> None:
+    from boundver import _git as git_helpers
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "repo"
+        root.mkdir()
+        subprocess.run(
+            ["git", "init"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+        global_config = Path(td) / "global.gitconfig"
+        targets = {
+            "trace2.normalTarget": Path(td) / "trace2-normal.log",
+            "trace2.eventTarget": Path(td) / "trace2-event.json",
+            "trace2.perfTarget": Path(td) / "trace2-perf.log",
+        }
+        for key, target in targets.items():
+            subprocess.run(
+                ["git", "config", "--file", str(global_config), key, str(target)],
+                check=True,
+                capture_output=True,
+            )
+
+        with patch.dict(
+            "boundver._git.os.environ",
+            {
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+            },
+            clear=False,
+        ):
+            result = git_helpers._git_run(
+                root,
+                ["rev-parse", "--is-inside-work-tree"],
+            )
+
+        assert result.stdout.strip() == "true"
+        assert all(not target.exists() for target in targets.values())
 
 
 def test_runtime_dependency_surface_remains_explicit() -> None:
