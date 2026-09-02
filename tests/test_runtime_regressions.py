@@ -636,12 +636,12 @@ class ChangedPathSelectionTests(unittest.TestCase):
             helper_root = Path(helper_td)
             marker = helper_root / "filter-ran"
             filter_script = helper_root / "clean-filter.sh"
-            filter_script.write_text(
-                "#!/bin/sh\n"
-                f"printf invoked > '{marker.as_posix()}'\n"
-                "cat\n",
-                encoding="utf-8",
-                newline="\n",
+            filter_script.write_bytes(
+                (
+                    "#!/bin/sh\n"
+                    f"printf invoked > '{marker.as_posix()}'\n"
+                    "cat\n"
+                ).encode("utf-8")
             )
             filter_script.chmod(0o755)
 
