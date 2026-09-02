@@ -119,6 +119,11 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         for argument in subcommand_arguments
     ):
         raise ValueError("Refusing recursive Git submodule inspection")
+    rev_list_arguments = (
+        subcommand_arguments[: subcommand_arguments.index("--")]
+        if subcommand == "rev-list" and "--" in subcommand_arguments
+        else subcommand_arguments
+    )
     if subcommand == "rev-list" and any(
         argument == "--show-signature"
         or argument.startswith("--show-signature=")
@@ -127,7 +132,7 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         or argument == "--format"
         or argument.startswith("--format=")
         or "%G" in argument
-        for argument in subcommand_arguments
+        for argument in rev_list_arguments
     ):
         raise ValueError("Refusing Git signature display or pretty formatting")
     if subcommand in {"diff", "diff-tree"} and any(

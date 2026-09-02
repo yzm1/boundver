@@ -202,6 +202,34 @@ def test_lock_history_treats_malformed_historical_components_as_no_entry(
     assert "commit that introduced the current lock entry for svc" in explained.stdout
 
 
+def test_lock_history_allows_signature_tokens_in_the_lock_path(tmp_path: Path) -> None:
+    _single_component_repo(tmp_path)
+    unusual_lock = tmp_path / "%Good.lock"
+    (tmp_path / "boundary.lock.json").replace(unusual_lock)
+    commit_all(tmp_path, "move lock to a signature-like path")
+    (tmp_path / "svc" / "impl.py").write_text("VALUE = 2\n", encoding="utf-8")
+    commit_all(tmp_path, "implementation drift")
+
+    why_json = _run(
+        tmp_path,
+        "why",
+        "svc",
+        "--source",
+        "head",
+        "--lock",
+        "%Good.lock",
+        "--format",
+        "json",
+    )
+
+    assert why_json.returncode == 0, why_json.stderr
+    payload = json.loads(why_json.stdout)
+    assert payload["changed_files"] == [{"path": "svc/impl.py", "status": "M"}]
+    assert "introduced the current lock entry for svc" in payload[
+        "diagnostic_base_origin"
+    ]
+
+
 def test_verify_json_exposes_typed_transitive_consumer_impact(
     tmp_path: Path,
 ) -> None:

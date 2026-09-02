@@ -181,6 +181,22 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
     )
     assert "--no-ext-diff" in diff_command
     assert "--no-textconv" in diff_command
+    pathspec_command = git_helpers._offline_git_command(
+        Path("repo"),
+        [
+            "rev-list",
+            "--max-count=1",
+            "HEAD",
+            "--",
+            "%Good.lock",
+            "--show-signature",
+        ],
+    )
+    assert pathspec_command[-3:] == [
+        "--",
+        "%Good.lock",
+        "--show-signature",
+    ]
     for subcommand in ("fetch", "ls-remote", "push", "remote", "send-pack"):
         try:
             git_helpers._offline_git_command(Path("repo"), [subcommand])
