@@ -25,7 +25,9 @@ Repository tests preserve this promise as a reviewed architecture boundary:
 - runtime and optional-runtime dependencies are explicitly allowlisted; and
 - process creation in the built-in runtime is confined to statically
   Git-rooted commands, with an offline subcommand allowlist that rejects
-  network-capable Git operations before launch.
+  network-capable Git operations before launch. Git filesystem-monitor hooks,
+  external diff and text-conversion helpers, trace sinks, pagers, prompts, and
+  partial-clone lazy fetching are disabled for those subprocesses.
 
 Changing one of those constraints requires changing the invariant test and
 this policy in the same reviewed pull request. There is no hidden opt-out

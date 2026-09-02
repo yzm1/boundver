@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import tomllib
@@ -142,6 +143,12 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         and call.args
         and isinstance(call.args[0], ast.Name)
         and call.args[0].id == "command"
+        and any(
+            keyword.arg == "env"
+            and isinstance(keyword.value, ast.Call)
+            and _qualified_name(keyword.value.func) == "_offline_git_environment"
+            for keyword in call.keywords
+        )
         for _, call in process_calls
     )
     assert len(git_command_assignments) == len(process_calls)
@@ -155,13 +162,42 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
 
     assert git_helpers._offline_git_command(
         Path("repo"), ["--literal-pathspecs", "ls-files", "-z"]
-    ) == ["git", "-C", "repo", "--literal-pathspecs", "ls-files", "-z"]
+    ) == [
+        "git",
+        "--no-pager",
+        "-C",
+        "repo",
+        "-c",
+        "core.fsmonitor=false",
+        "--literal-pathspecs",
+        "ls-files",
+        "-z",
+    ]
+    diff_command = git_helpers._offline_git_command(
+        Path("repo"), ["--literal-pathspecs", "diff", "--name-status"]
+    )
+    assert "--no-ext-diff" in diff_command
+    assert "--no-textconv" in diff_command
     for subcommand in ("fetch", "ls-remote", "push", "remote", "send-pack"):
         try:
             git_helpers._offline_git_command(Path("repo"), [subcommand])
         except ValueError:
             continue
         raise AssertionError(f"network-capable Git subcommand allowed: {subcommand}")
+
+    environment = {
+        "GIT_EXTERNAL_DIFF": "helper",
+        "GIT_TRACE": "1",
+        "GIT_TRACE2_EVENT": "af_unix:stream:/tmp/trace.sock",
+        "KEEP_ME": "yes",
+    }
+    with patch.dict("boundver._git.os.environ", environment, clear=True):
+        sanitized = git_helpers._offline_git_environment()
+    assert sanitized == {
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "KEEP_ME": "yes",
+    }
 
 
 def test_runtime_dependency_surface_remains_explicit() -> None:

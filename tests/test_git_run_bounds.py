@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import boundver._git as git_helpers
 from boundver._lockfile import _SourceAccessor
@@ -55,15 +55,34 @@ class GitRunBoundTests(unittest.TestCase):
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual(
             result.args,
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "rev-parse",
+                "HEAD",
+            ],
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "object-id\n")
         self.assertEqual(result.stderr, "warning\n")
         popen.assert_called_once_with(
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "rev-parse",
+                "HEAD",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=ANY,
         )
 
     def test_success_uses_filesystem_codec_and_losslessly_preserves_bytes(self):
@@ -109,7 +128,18 @@ class GitRunBoundTests(unittest.TestCase):
 
         error = raised.exception
         self.assertEqual(error.returncode, 7)
-        self.assertEqual(error.cmd, ["git", "-C", "repo", "write-tree"])
+        self.assertEqual(
+            error.cmd,
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "write-tree",
+            ],
+        )
         self.assertEqual(error.output, "partial\n")
         self.assertEqual(error.stdout, "partial\n")
         self.assertEqual(error.stderr, "failure\n")

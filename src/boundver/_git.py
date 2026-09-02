@@ -83,6 +83,7 @@ _OFFLINE_GIT_SUBCOMMANDS = frozenset(
     }
 )
 _OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
+_GIT_EXTERNAL_PROCESS_ENVIRONMENT = frozenset({"GIT_EXTERNAL_DIFF"})
 
 
 def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
@@ -100,7 +101,35 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         raise ValueError(
             "Refusing Git invocation outside boundver's offline allowlist"
         )
-    return ["git", "-C", str(repo_root), *args]
+    safe_args = list(args)
+    if safe_args[command_index] in {"diff", "diff-tree"}:
+        safe_args[command_index + 1 : command_index + 1] = [
+            "--no-ext-diff",
+            "--no-textconv",
+        ]
+    return [
+        "git",
+        "--no-pager",
+        "-C",
+        str(repo_root),
+        "-c",
+        "core.fsmonitor=false",
+        *safe_args,
+    ]
+
+
+def _offline_git_environment() -> Dict[str, str]:
+    """Return a Git environment that cannot emit traces or lazy-fetch objects."""
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if (
+            name.startswith("GIT_TRACE")
+            or name in _GIT_EXTERNAL_PROCESS_ENVIRONMENT
+        ):
+            environment.pop(name)
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
 
 
 def _git_text_encoding() -> str:
@@ -302,6 +331,7 @@ def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=_offline_git_environment(),
     )
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -414,6 +444,7 @@ def _iter_git_nul_records(
             command,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdout is not None
         pending = bytearray()
@@ -758,6 +789,7 @@ def _git_cat_blob(
             command,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdout is not None
         try:
@@ -878,6 +910,7 @@ def _iter_git_blobs(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdin is not None
         assert proc.stdout is not None
