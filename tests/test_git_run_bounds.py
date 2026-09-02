@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import boundver._git as git_helpers
 from boundver._lockfile import _SourceAccessor
@@ -55,15 +55,38 @@ class GitRunBoundTests(unittest.TestCase):
         self.assertIsInstance(result, subprocess.CompletedProcess)
         self.assertEqual(
             result.args,
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "log.showSignature=false",
+                "rev-parse",
+                "HEAD",
+            ],
         )
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "object-id\n")
         self.assertEqual(result.stderr, "warning\n")
         popen.assert_called_once_with(
-            ["git", "-C", "repo", "rev-parse", "HEAD"],
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "log.showSignature=false",
+                "rev-parse",
+                "HEAD",
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=ANY,
         )
 
     def test_success_uses_filesystem_codec_and_losslessly_preserves_bytes(self):
@@ -109,7 +132,20 @@ class GitRunBoundTests(unittest.TestCase):
 
         error = raised.exception
         self.assertEqual(error.returncode, 7)
-        self.assertEqual(error.cmd, ["git", "-C", "repo", "write-tree"])
+        self.assertEqual(
+            error.cmd,
+            [
+                "git",
+                "--no-pager",
+                "-C",
+                "repo",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "log.showSignature=false",
+                "write-tree",
+            ],
+        )
         self.assertEqual(error.output, "partial\n")
         self.assertEqual(error.stdout, "partial\n")
         self.assertEqual(error.stderr, "failure\n")
@@ -277,6 +313,82 @@ class GitRunBoundTests(unittest.TestCase):
         self.assertIs(raised.exception.__cause__, listing_failure)
         self.assertIn("git ls-tree failed", message)
         self.assertIn("missing tree object", message)
+
+    def test_index_capture_rejects_concurrent_index_change(self):
+        first_tree = subprocess.CompletedProcess(
+            ["git", "write-tree"], 0, "a" * 40 + "\n", ""
+        )
+        changed_tree = subprocess.CompletedProcess(
+            ["git", "write-tree"], 0, "b" * 40 + "\n", ""
+        )
+        with (
+            patch("boundver._git._resolve_head_oid", return_value="c" * 40),
+            patch(
+                "boundver._git._git_run",
+                side_effect=[first_tree, changed_tree],
+            ),
+            patch(
+                "boundver._git._iter_git_nul_records",
+                side_effect=[iter(()), iter(())],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Index changed while capturing tracked paths",
+            ):
+                git_helpers._capture_git_source_snapshot(Path("repo"), "index")
+
+    def test_index_capture_rejects_concurrent_intent_to_add_change(self):
+        stable_tree = subprocess.CompletedProcess(
+            ["git", "write-tree"], 0, "a" * 40 + "\n", ""
+        )
+        with (
+            patch("boundver._git._resolve_head_oid", return_value="c" * 40),
+            patch("boundver._git._git_run", side_effect=[stable_tree, stable_tree]),
+            patch("boundver._git._capture_tree_entries", return_value={}),
+            patch(
+                "boundver._git._capture_index_membership",
+                side_effect=[
+                    git_helpers._IndexMembership(
+                        frozenset({"before.txt"}), frozenset()
+                    ),
+                    git_helpers._IndexMembership(
+                        frozenset({"after.txt"}), frozenset()
+                    ),
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Index path membership changed while capturing tracked paths",
+            ):
+                git_helpers._capture_git_source_snapshot(Path("repo"), "index")
+
+    def test_index_capture_rejects_concurrent_skip_worktree_change(self):
+        stable_tree = subprocess.CompletedProcess(
+            ["git", "write-tree"], 0, "a" * 40 + "\n", ""
+        )
+        with (
+            patch("boundver._git._resolve_head_oid", return_value="c" * 40),
+            patch("boundver._git._git_run", side_effect=[stable_tree, stable_tree]),
+            patch("boundver._git._capture_tree_entries", return_value={}),
+            patch(
+                "boundver._git._capture_index_membership",
+                side_effect=[
+                    git_helpers._IndexMembership(
+                        frozenset({"same.txt"}), frozenset()
+                    ),
+                    git_helpers._IndexMembership(
+                        frozenset({"same.txt"}), frozenset({"same.txt"})
+                    ),
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Index path membership changed while capturing tracked paths",
+            ):
+                git_helpers._capture_git_source_snapshot(Path("repo"), "index")
 
     def test_resolve_head_distinguishes_unborn_from_operational_failure(self):
         unresolved = subprocess.CalledProcessError(
@@ -479,7 +591,10 @@ class GitRunBoundTests(unittest.TestCase):
         )
         with (
             patch("boundver._git._resolve_head_oid", return_value="a" * 40),
-            patch("boundver._git._git_run", side_effect=[write_tree, unset]),
+            patch(
+                "boundver._git._git_run",
+                side_effect=[write_tree, write_tree, unset],
+            ),
             patch("boundver._git._iter_git_nul_records", return_value=iter(())),
         ):
             snapshot = git_helpers._capture_git_source_snapshot(
@@ -499,7 +614,10 @@ class GitRunBoundTests(unittest.TestCase):
         )
         with (
             patch("boundver._git._resolve_head_oid", return_value="a" * 40),
-            patch("boundver._git._git_run", side_effect=[write_tree, failure]),
+            patch(
+                "boundver._git._git_run",
+                side_effect=[write_tree, write_tree, failure],
+            ),
             patch("boundver._git._iter_git_nul_records", return_value=iter(())),
         ):
             with self.assertRaises(ValueError) as raised:
@@ -519,7 +637,7 @@ class GitRunBoundTests(unittest.TestCase):
             patch("boundver._git._resolve_head_oid", return_value="a" * 40),
             patch(
                 "boundver._git._git_run",
-                side_effect=[write_tree, noisy_return_one],
+                side_effect=[write_tree, write_tree, noisy_return_one],
             ),
             patch("boundver._git._iter_git_nul_records", return_value=iter(())),
         ):

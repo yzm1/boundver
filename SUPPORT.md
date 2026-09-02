@@ -16,6 +16,11 @@ Python version, operating system, and Git version. For product ideas, use the
 feature request template. A blank issue is available for focused usage
 questions that do not fit either template.
 
+Using or evaluating boundver in a real repository? The voluntary [adopter
+discussion](https://github.com/yzm1/boundver/discussions/100) is the place to
+share a sanitized use case, integration path, and wishlist without filing a
+bug. The boundver CLI is telemetry-free and never reports usage for you.
+
 Please do not use public issues for vulnerabilities. Follow
 [`SECURITY.md`](SECURITY.md) to report them privately. Questions about third-party
 services or unsupported versions may need to be handled by those providers or by

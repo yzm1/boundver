@@ -1,17 +1,20 @@
 """Git helper primitives for boundver."""
 
+import hashlib
 import os
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     BinaryIO,
     Callable,
     Dict,
+    FrozenSet,
     Iterable,
     Iterator,
     List,
@@ -34,6 +37,10 @@ from ._utils import (
 
 MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024
 MAX_GIT_BATCH_BYTES = 256 * 1024 * 1024
+# Repository-wide change reporting spans multiple independently bounded
+# components, so it needs a distinct I/O budget. This cap applies separately
+# to the immutable base stream and local worktree reads.
+MAX_GIT_REPOSITORY_SCAN_BYTES = 16 * 1024 * 1024 * 1024
 MAX_GIT_BATCH_HEADER_BYTES = 64 * 1024
 MAX_GIT_TREE_ENTRIES = 50_000
 MAX_GIT_STATUS_PATHS = 50_000
@@ -57,6 +64,142 @@ MAX_GITIGNORE_BYTES = 1024 * 1024
 MAX_GITIGNORE_PATTERN_BYTES = MAX_GIT_PATH_BYTES
 MAX_GITIGNORE_RULES = 10_000
 MAX_GITIGNORE_MATCH_STEPS = 10_000_000
+
+# Keep every Git subprocess local.  This allowlist is deliberately enforced
+# before process creation so a future caller cannot accidentally turn a local
+# repository inspection into fetch, push, ls-remote, or another network-capable
+# Git operation.
+_OFFLINE_GIT_SUBCOMMANDS = frozenset(
+    {
+        "cat-file",
+        "check-ref-format",
+        "config",
+        "describe",
+        "diff",
+        "diff-tree",
+        "ls-files",
+        "ls-tree",
+        "rev-list",
+        "rev-parse",
+        "show-ref",
+        "symbolic-ref",
+        "write-tree",
+    }
+)
+_OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
+
+
+def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
+    """Build a Git argv only for a statically approved local subcommand."""
+    command_index = 0
+    while (
+        command_index < len(args)
+        and args[command_index] in _OFFLINE_GIT_GLOBAL_OPTIONS
+    ):
+        command_index += 1
+    if (
+        command_index >= len(args)
+        or args[command_index] not in _OFFLINE_GIT_SUBCOMMANDS
+    ):
+        raise ValueError(
+            "Refusing Git invocation outside boundver's offline allowlist"
+        )
+    safe_args = list(args)
+    subcommand = safe_args[command_index]
+    subcommand_arguments = safe_args[command_index + 1 :]
+    if subcommand == "cat-file" and any(
+        argument in {"--filters", "--textconv"}
+        or argument.startswith("--batch-command")
+        for argument in subcommand_arguments
+    ):
+        raise ValueError("Refusing Git cat-file conversion or command mode")
+    if subcommand == "ls-files" and any(
+        argument == "--recurse-submodules"
+        or argument.startswith("--recurse-submodules=")
+        for argument in subcommand_arguments
+    ):
+        raise ValueError("Refusing recursive Git submodule inspection")
+    rev_list_arguments = (
+        subcommand_arguments[: subcommand_arguments.index("--")]
+        if subcommand == "rev-list" and "--" in subcommand_arguments
+        else subcommand_arguments
+    )
+    if subcommand == "rev-list" and any(
+        argument == "--show-signature"
+        or argument.startswith("--show-signature=")
+        or argument == "--pretty"
+        or argument.startswith("--pretty=")
+        or argument == "--format"
+        or argument.startswith("--format=")
+        or "%G" in argument
+        for argument in rev_list_arguments
+    ):
+        raise ValueError("Refusing Git signature display or pretty formatting")
+    if subcommand in {"diff", "diff-tree"} and any(
+        argument in {"--ext-diff", "--textconv", "--no-index"}
+        or argument.startswith("--submodule")
+        for argument in subcommand_arguments
+    ):
+        raise ValueError("Refusing Git diff helper or submodule execution mode")
+    if subcommand == "diff":
+        diff_arguments = subcommand_arguments
+        pre_pathspec = (
+            diff_arguments[: diff_arguments.index("--")]
+            if "--" in diff_arguments
+            else diff_arguments
+        )
+        revisions = [
+            argument
+            for argument in pre_pathspec
+            if not argument.startswith("-")
+        ]
+        if "--cached" not in pre_pathspec and len(revisions) < 2:
+            raise ValueError(
+                "Refusing Git worktree diff because repository clean filters "
+                "can execute external commands"
+            )
+    if subcommand in {"diff", "diff-tree"}:
+        safe_args[command_index + 1 : command_index + 1] = [
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+        ]
+    return [
+        "git",
+        "--no-pager",
+        "-C",
+        str(repo_root),
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "log.showSignature=false",
+        *safe_args,
+    ]
+
+
+def _offline_git_environment() -> Dict[str, str]:
+    """Return a Git environment that cannot emit traces or lazy-fetch objects."""
+    environment = dict(os.environ)
+    for name in tuple(environment):
+        if (
+            name.startswith("GIT_TRACE")
+            or name.startswith("GIT_EXTERNAL_DIFF")
+            or name == "GIT_CONFIG_PARAMETERS"
+            or name == "GIT_CONFIG_COUNT"
+            or name.startswith("GIT_CONFIG_KEY_")
+            or name.startswith("GIT_CONFIG_VALUE_")
+        ):
+            environment.pop(name)
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    # Trace2 falls back to trace2.*Target values from system/global config when
+    # its environment variables are absent. Explicit false values take
+    # precedence and prevent configured file or Unix-socket sinks from
+    # receiving repository paths and argv.
+    environment["GIT_TRACE2"] = "0"
+    environment["GIT_TRACE2_EVENT"] = "0"
+    environment["GIT_TRACE2_PERF"] = "0"
+    return environment
 
 
 def _git_text_encoding() -> str:
@@ -234,8 +377,17 @@ class GitSourceSnapshot:
     """Immutable Git-backed source used by one generate/verify operation.
 
     ``tree_oid`` is either the tree reached from one captured HEAD commit or a
-    tree written from the index once.  Reading blobs by object ID prevents a
+    tree written from the index once. Reading blobs by object ID prevents a
     concurrent ref/index update from producing a hybrid lockfile.
+
+    ``tracked_paths`` additionally freezes index membership for working-tree
+    operations. It includes intent-to-add paths, which have no blob in the
+    written tree and therefore cannot appear in ``entries``.
+
+    ``skip_worktree_paths`` records materialized index entries that a sparse
+    checkout intentionally leaves absent. Working-tree comparisons treat an
+    absent path in this set as its captured index identity, matching Git's
+    sparse-checkout semantics without consulting repository-defined filters.
     """
 
     source: str
@@ -243,6 +395,29 @@ class GitSourceSnapshot:
     entries: Dict[str, GitTreeEntry]
     head_oid: Optional[str] = None
     filemode: bool = True
+    tracked_paths: FrozenSet[str] = frozenset()
+    skip_worktree_paths: FrozenSet[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        # Compatibility snapshots constructed by callers historically only
+        # supplied ``entries``. Keep every materialized tree entry tracked
+        # while allowing captured index snapshots to add intent-to-add names.
+        tracked_paths = frozenset(self.entries) | frozenset(self.tracked_paths)
+        skip_worktree_paths = frozenset(self.skip_worktree_paths)
+        if not skip_worktree_paths <= frozenset(self.entries):
+            raise ValueError(
+                "Skip-worktree paths must have materialized captured index entries"
+            )
+        object.__setattr__(self, "tracked_paths", tracked_paths)
+        object.__setattr__(self, "skip_worktree_paths", skip_worktree_paths)
+
+
+@dataclass(frozen=True)
+class _IndexMembership:
+    """One bounded capture of tracked and sparse index path state."""
+
+    tracked_paths: FrozenSet[str]
+    skip_worktree_paths: FrozenSet[str]
 
 
 def git_root() -> Path:
@@ -253,11 +428,12 @@ def git_root() -> Path:
 
 def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     """Run git against a specific repository root regardless of process CWD."""
-    command = ["git", "-C", str(repo_root), *args]
+    command = _offline_git_command(repo_root, args)
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=_offline_git_environment(),
     )
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -361,7 +537,7 @@ def _iter_git_nul_records(
     an opportunity to enforce its entry/path limits.  This parser keeps only a
     fixed-size read chunk plus the current bounded record in memory.
     """
-    command = ["git", "-C", str(repo_root), *args]
+    command = _offline_git_command(repo_root, args)
     record_limit = MAX_GIT_TREE_ENTRIES if max_records is None else max_records
     if record_limit < 0:
         raise ValueError("Git listing record limit must be non-negative")
@@ -370,6 +546,7 @@ def _iter_git_nul_records(
             command,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdout is not None
         pending = bytearray()
@@ -585,12 +762,93 @@ def _collect_ls_tree_entries(records: Iterator[bytes]) -> Dict[str, GitTreeEntry
     return entries
 
 
+def _capture_tree_entries(
+    repo_root: Path,
+    treeish: str,
+    source_label: str,
+) -> Dict[str, GitTreeEntry]:
+    """Capture one immutable tree without consulting worktree conversion hooks."""
+    try:
+        return _collect_ls_tree_entries(
+            _iter_git_nul_records(
+                repo_root,
+                ["ls-tree", "-r", "-z", "--full-tree", treeish],
+            )
+        )
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError(
+            f"Cannot enumerate captured {source_label} tree {treeish}: "
+            f"git ls-tree failed ({_git_failure_detail(exc)})"
+        ) from exc
+
+
+def _capture_index_membership(repo_root: Path) -> _IndexMembership:
+    """Capture bounded index membership and skip-worktree state together."""
+    try:
+        records = _iter_git_nul_records(
+            repo_root,
+            [
+                "--literal-pathspecs",
+                "ls-files",
+                "--cached",
+                "-t",
+                "-z",
+                "--",
+            ],
+        )
+        tracked_paths = set()
+        skip_worktree_paths = set()
+        total_path_bytes = 0
+        for record in records:
+            if len(record) < 3 or record[1:2] != b" ":
+                raise ValueError("Malformed tagged git ls-files record")
+            tag = record[:1]
+            if tag not in {b"H", b"S"}:
+                raise ValueError(
+                    f"Unsupported git ls-files index status tag {tag!r}"
+                )
+            raw_path = record[2:]
+            if len(raw_path) > MAX_GIT_PATH_BYTES:
+                raise GuardrailError(
+                    "Git path exceeds the "
+                    f"{MAX_GIT_PATH_BYTES}-byte limit"
+                )
+            total_path_bytes += len(raw_path)
+            if total_path_bytes > MAX_GIT_TOTAL_PATH_BYTES:
+                raise GuardrailError(
+                    "Git paths exceed the "
+                    f"{MAX_GIT_TOTAL_PATH_BYTES}-byte aggregate limit"
+                )
+            if len(tracked_paths) >= MAX_GIT_TREE_ENTRIES:
+                raise GuardrailError(
+                    "Git index membership exceeds the "
+                    f"{MAX_GIT_TREE_ENTRIES}-entry limit"
+                )
+            path = os.fsdecode(raw_path)
+            if path in tracked_paths:
+                raise ValueError("Duplicate path in captured Git index membership")
+            tracked_paths.add(path)
+            if tag == b"S":
+                skip_worktree_paths.add(path)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError(
+            "Cannot capture index path membership: git ls-files failed "
+            f"({_git_failure_detail(exc)})"
+        ) from exc
+    return _IndexMembership(
+        tracked_paths=frozenset(tracked_paths),
+        skip_worktree_paths=frozenset(skip_worktree_paths),
+    )
+
+
 def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnapshot:
     """Capture one immutable tree for a ``head`` or ``index`` operation."""
     if source not in {"head", "index"}:
         raise ValueError(f"Cannot capture a Git snapshot for source {source!r}")
 
     head_oid = _resolve_head_oid(repo_root)
+    tracked_paths: FrozenSet[str] = frozenset()
+    skip_worktree_paths: FrozenSet[str] = frozenset()
     if source == "head":
         if head_oid is None:
             raise ValueError("HEAD does not resolve to a commit")
@@ -609,18 +867,41 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
             ) from exc
         treeish = _validated_git_object_id(result.stdout, "git write-tree")
 
-    try:
-        entries = _collect_ls_tree_entries(
-            _iter_git_nul_records(
-                repo_root,
-                ["ls-tree", "-r", "-z", "--full-tree", treeish],
-            )
+    entries = _capture_tree_entries(repo_root, treeish, source)
+    if source == "index":
+        # A written tree omits CE_INTENT_TO_ADD entries. Require both the
+        # written tree and the bounded index name set to remain stable so the
+        # immutable content tree and the additional tracking membership
+        # describe one coherent index state.
+        membership = _capture_index_membership(repo_root)
+        try:
+            confirmation = _git_run(repo_root, ["write-tree"])
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise ValueError(
+                "Cannot confirm captured index tree: git write-tree failed "
+                f"({_git_failure_detail(exc)})"
+            ) from exc
+        confirmed_treeish = _validated_git_object_id(
+            confirmation.stdout,
+            "git write-tree confirmation",
         )
-    except (subprocess.CalledProcessError, OSError) as exc:
-        raise ValueError(
-            f"Cannot enumerate captured {source} tree {treeish}: "
-            f"git ls-tree failed ({_git_failure_detail(exc)})"
-        ) from exc
+        if confirmed_treeish != treeish:
+            raise ValueError("Index changed while capturing tracked paths; retry")
+        confirmed_membership = _capture_index_membership(repo_root)
+        if confirmed_membership != membership:
+            raise ValueError(
+                "Index path membership changed while capturing tracked paths; retry"
+            )
+        tracked_paths = membership.tracked_paths
+        if set(entries) - tracked_paths:
+            raise ValueError(
+                "Captured index membership omitted materialized tree paths"
+            )
+        if not membership.skip_worktree_paths <= set(entries):
+            raise ValueError(
+                "Captured skip-worktree membership omitted materialized tree paths"
+            )
+        skip_worktree_paths = membership.skip_worktree_paths
     try:
         filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
     except subprocess.CalledProcessError as exc:
@@ -649,6 +930,8 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         entries=entries,
         head_oid=head_oid,
         filemode=core_filemode,
+        tracked_paths=tracked_paths,
+        skip_worktree_paths=skip_worktree_paths,
     )
 
 
@@ -661,6 +944,19 @@ def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
     return sorted(
         candidate
         for candidate in snapshot.entries
+        if candidate == normalized or candidate.startswith(prefix)
+    )
+
+
+def _snapshot_tracked_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
+    """List tracked paths, including intent-to-add index membership."""
+    normalized = Path(path).as_posix().strip("/")
+    if normalized in {"", "."}:
+        return sorted(snapshot.tracked_paths)
+    prefix = normalized + "/"
+    return sorted(
+        candidate
+        for candidate in snapshot.tracked_paths
         if candidate == normalized or candidate.startswith(prefix)
     )
 
@@ -706,7 +1002,7 @@ def _git_cat_blob(
     if max_bytes < 0:
         raise ValueError("Git blob byte limit must be non-negative")
     effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
-    command = ["git", "-C", str(repo_root), "show", ref]
+    command = _offline_git_command(repo_root, ["cat-file", "blob", ref])
     # ``capture_output`` would buffer the entire object before the size check.
     # Bound the read itself and terminate Git as soon as the limit is crossed.
     with tempfile.TemporaryFile() as stderr_file:
@@ -714,6 +1010,7 @@ def _git_cat_blob(
             command,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdout is not None
         try:
@@ -785,10 +1082,13 @@ def _iter_git_blobs(
     max_total_bytes: int = MAX_GIT_BATCH_BYTES,
     remaining_bytes: Optional[Callable[[], int]] = None,
 ) -> Iterator[Tuple[str, bytes]]:
-    """Yield unique Git blobs under a pre-read aggregate byte ceiling."""
+    """Yield unique Git blobs under caller-specific and absolute ceilings."""
     if max_total_bytes < 0:
         raise ValueError("Git blob aggregate byte limit must be non-negative")
-    effective_total_limit = min(max_total_bytes, MAX_GIT_BATCH_BYTES)
+    effective_total_limit = min(
+        max_total_bytes,
+        MAX_GIT_REPOSITORY_SCAN_BYTES,
+    )
     total_bytes = 0
 
     def remaining_limit() -> int:
@@ -827,13 +1127,14 @@ def _iter_git_blobs(
     if not line_refs:
         return
 
-    command = ["git", "-C", str(repo_root), "cat-file", "--batch"]
+    command = _offline_git_command(repo_root, ["cat-file", "--batch"])
     with tempfile.TemporaryFile() as stderr_file:
         proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr_file,
+            env=_offline_git_environment(),
         )
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -1392,6 +1693,299 @@ def _git_name_status(
     )
 
 
+def _working_tree_name_status(
+    repo_root: Path,
+    base_ref: str,
+    *,
+    pathspec: Optional[str] = None,
+    tracking_snapshot: Optional[GitSourceSnapshot] = None,
+) -> List[Tuple[str, str]]:
+    """Compare a commit with raw tracked worktree state without Git filters.
+
+    Git porcelain worktree comparisons can execute repository-defined clean or
+    process filters. Boundver instead reads tracked paths through its bounded
+    source reader and compares them with immutable base-tree blobs. This uses
+    the same CRLF normalization and mode rules as working-tree fingerprints.
+    """
+    if not base_ref or not base_ref.strip() or base_ref.lstrip().startswith("-"):
+        raise ValueError("working-tree comparison requires a valid base ref")
+    try:
+        resolved_base = _git_run(
+            repo_root,
+            ["rev-parse", "--verify", f"{base_ref.strip()}^{{commit}}"],
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise ValueError(
+            f"Cannot resolve working-tree comparison base {base_ref!r}: "
+            f"{_git_failure_detail(exc)}"
+        ) from exc
+    base_oid = _validated_git_object_id(
+        resolved_base,
+        "git working-tree comparison base lookup",
+    )
+    base_entries = _capture_tree_entries(repo_root, base_oid, "base")
+
+    captured = tracking_snapshot or _capture_git_source_snapshot(
+        repo_root, "index"
+    )
+    if captured.source != "index":
+        raise ValueError(
+            "working-tree comparison accepts only an index tracking snapshot"
+        )
+
+    normalized_pathspec = ""
+    if pathspec is not None:
+        normalized_pathspec = _to_posix(pathspec).strip("/")
+        if normalized_pathspec == ".":
+            normalized_pathspec = ""
+
+    def selected(path: str) -> bool:
+        return (
+            not normalized_pathspec
+            or path == normalized_pathspec
+            or path.startswith(f"{normalized_pathspec}/")
+        )
+
+    paths = sorted(
+        path
+        for path in set(base_entries) | set(captured.tracked_paths)
+        if selected(path)
+    )
+    if len(paths) > MAX_GIT_STATUS_PATHS:
+        raise GuardrailError(
+            "Working-tree comparison exceeds the "
+            f"{MAX_GIT_STATUS_PATHS}-path limit"
+        )
+
+    # Local import avoids a module cycle: _hashing uses these Git primitives.
+    from ._hashing import _normalize_hash_content, _read_path_content
+
+    base_blob_oids = [
+        base_entries[path].oid
+        for path in paths
+        if path in base_entries
+        and base_entries[path].object_type == "blob"
+    ]
+    oid_counts = Counter(base_blob_oids)
+    base_blobs = _iter_git_blobs(
+        repo_root,
+        base_blob_oids,
+        # This is a repository change-reporting scan, not one component hash.
+        # The path-count and per-blob ceilings remain in force. The separate
+        # repository reporting budget avoids applying one component's 256 MiB
+        # aggregate ceiling to a large multi-component repository.
+        max_total_bytes=MAX_GIT_REPOSITORY_SCAN_BYTES,
+    )
+    sparse_blob_oids = []
+    for path in paths:
+        if path not in captured.skip_worktree_paths:
+            continue
+        try:
+            (repo_root / path).lstat()
+        except FileNotFoundError:
+            current_entry = captured.entries.get(path)
+            base_entry = base_entries.get(path)
+            if (
+                current_entry is not None
+                and current_entry.object_type == "blob"
+                and (
+                    base_entry is None
+                    or base_entry.object_type != "blob"
+                    or base_entry.oid != current_entry.oid
+                )
+            ):
+                sparse_blob_oids.append(current_entry.oid)
+    sparse_blob_digests: Dict[str, bytes] = {}
+    sparse_blob_total = 0
+    sparse_blobs = _iter_git_blobs(
+        repo_root,
+        sparse_blob_oids,
+        max_total_bytes=MAX_GIT_REPOSITORY_SCAN_BYTES,
+    )
+    try:
+        for oid, raw_content in sparse_blobs:
+            sparse_blob_total += len(raw_content)
+            sparse_blob_digests[oid] = hashlib.sha256(
+                _normalize_hash_content(raw_content)
+            ).digest()
+    finally:
+        close = getattr(sparse_blobs, "close", None)
+        if close is not None:
+            close()
+    seen_oids = set()
+    duplicate_cache: Dict[str, bytes] = {}
+    current_total = sparse_blob_total
+    changes: List[Tuple[str, str]] = []
+    deleted_by_identity: Dict[Tuple[str, str, bytes], List[str]] = {}
+    added_by_identity: Dict[Tuple[str, str, bytes], List[str]] = {}
+
+    def rename_key(identity: Tuple[str, str, bytes]) -> Tuple[str, str, bytes]:
+        return (
+            identity[0],
+            identity[1],
+            hashlib.sha256(identity[2]).digest(),
+        )
+
+    try:
+        for path in paths:
+            base_entry = base_entries.get(path)
+            current_entry = captured.entries.get(path)
+            current_is_tracked = path in captured.tracked_paths
+
+            base_identity: Optional[Tuple[str, str, bytes]] = None
+            if base_entry is not None:
+                if base_entry.object_type == "blob":
+                    if base_entry.oid in seen_oids:
+                        base_digest = duplicate_cache[base_entry.oid]
+                    else:
+                        try:
+                            streamed_oid, raw_content = next(base_blobs)
+                        except StopIteration as exc:
+                            raise ValueError(
+                                f"Missing base blob while comparing {path}"
+                            ) from exc
+                        if streamed_oid != base_entry.oid:
+                            raise ValueError(
+                                "Base blob stream order disagreed with captured tree"
+                            )
+                        seen_oids.add(base_entry.oid)
+                        base_digest = hashlib.sha256(
+                            _normalize_hash_content(raw_content)
+                        ).digest()
+                        if oid_counts[base_entry.oid] > 1:
+                            duplicate_cache[base_entry.oid] = base_digest
+                    base_identity = (
+                        base_entry.mode,
+                        base_entry.object_type,
+                        base_digest,
+                    )
+                else:
+                    base_identity = (
+                        base_entry.mode,
+                        base_entry.object_type,
+                        base_entry.oid.encode("ascii"),
+                    )
+
+            current_identity: Optional[Tuple[str, str, bytes]] = None
+            if current_is_tracked:
+                full_path = repo_root / path
+                try:
+                    full_path.lstat()
+                except FileNotFoundError:
+                    if path in captured.skip_worktree_paths:
+                        if current_entry is None:
+                            raise ValueError(
+                                "Sparse index path has no captured tree entry: "
+                                f"{path}"
+                            )
+                        if current_entry.object_type == "blob":
+                            if (
+                                base_entry is not None
+                                and base_entry.object_type == "blob"
+                                and base_entry.oid == current_entry.oid
+                            ):
+                                assert base_identity is not None
+                                current_digest = base_identity[2]
+                            else:
+                                current_digest = sparse_blob_digests.get(
+                                    current_entry.oid
+                                )
+                                if current_digest is None:
+                                    # The path disappeared after the sparse
+                                    # pre-scan. Preserve snapshot semantics with
+                                    # one bounded fallback read for that race.
+                                    raw_content = _git_cat_blob(
+                                        repo_root,
+                                        current_entry.oid,
+                                        max_bytes=(
+                                            MAX_GIT_REPOSITORY_SCAN_BYTES
+                                            - current_total
+                                        ),
+                                    )
+                                    current_total += len(raw_content)
+                                    current_digest = hashlib.sha256(
+                                        _normalize_hash_content(raw_content)
+                                    ).digest()
+                            current_identity = (
+                                current_entry.mode,
+                                current_entry.object_type,
+                                current_digest,
+                            )
+                        else:
+                            current_identity = (
+                                current_entry.mode,
+                                current_entry.object_type,
+                                current_entry.oid.encode("ascii"),
+                            )
+                else:
+                    if current_entry is None or current_entry.object_type == "blob":
+                        content = _read_path_content(
+                            repo_root,
+                            full_path,
+                            "working-tree",
+                            max_bytes=(
+                                MAX_GIT_REPOSITORY_SCAN_BYTES - current_total
+                            ),
+                            tracked_entry=current_entry,
+                            core_filemode=captured.filemode,
+                        )
+                        current_total += content.source_size
+                        current_identity = (
+                            content.git_mode,
+                            content.git_object_type,
+                            hashlib.sha256(content).digest(),
+                        )
+                    else:
+                        # Do not recurse into a submodule or invoke its Git.
+                        current_identity = (
+                            current_entry.mode,
+                            current_entry.object_type,
+                            current_entry.oid.encode("ascii"),
+                        )
+
+            if base_identity is None and current_identity is not None:
+                changes.append(("A", path))
+                added_by_identity.setdefault(rename_key(current_identity), []).append(
+                    path
+                )
+            elif base_identity is not None and current_identity is None:
+                changes.append(("D", path))
+                deleted_by_identity.setdefault(rename_key(base_identity), []).append(
+                    path
+                )
+            elif base_identity != current_identity:
+                assert base_identity is not None
+                assert current_identity is not None
+                status = (
+                    "T"
+                    if base_identity[:2] != current_identity[:2]
+                    else "M"
+                )
+                changes.append((status, path))
+        try:
+            next(base_blobs)
+        except StopIteration:
+            pass
+        else:
+            raise ValueError("Unexpected extra base blob in comparison stream")
+    finally:
+        close = getattr(base_blobs, "close", None)
+        if close is not None:
+            close()
+
+    renamed_paths: Dict[str, str] = {}
+    for identity in sorted(set(deleted_by_identity) & set(added_by_identity)):
+        removed = deleted_by_identity[identity]
+        added = added_by_identity[identity]
+        for source_path, destination_path in zip(removed, added):
+            renamed_paths[source_path] = "R100"
+            renamed_paths[destination_path] = "R100"
+    return [
+        (renamed_paths.get(path, status), path)
+        for status, path in changes
+    ]
+
+
 def changed_paths_since_ref(
     repo_root: Path,
     base_ref: str,
@@ -1424,36 +2018,35 @@ def changed_paths_since_ref(
                 if source == "head"
                 else captured.tree_oid
             )
-            diff_args = [
-                "diff",
-                "--name-status",
-                "-z",
-                "--find-renames",
-                resolved_base,
-                target,
-                "--",
-            ]
+            changed_paths = _parse_name_status_records(
+                _iter_git_nul_records(
+                    repo_root,
+                    [
+                        "diff",
+                        "--name-status",
+                        "-z",
+                        "--find-renames",
+                        resolved_base,
+                        target,
+                        "--",
+                    ],
+                    max_records=MAX_GIT_STATUS_FIELDS,
+                )
+            )
         else:
             if snapshot is not None and snapshot.source != "index":
                 raise ValueError(
                     "working-tree changed-path selection accepts only an "
                     "index tracking snapshot"
                 )
-            diff_args = [
-                "diff",
-                "--name-status",
-                "-z",
-                "--find-renames",
-                resolved_base,
-                "--",
+            changed_paths = [
+                path
+                for _status, path in _working_tree_name_status(
+                    repo_root,
+                    resolved_base,
+                    tracking_snapshot=snapshot,
+                )
             ]
-        changed_paths = _parse_name_status_records(
-            _iter_git_nul_records(
-                repo_root,
-                diff_args,
-                max_records=MAX_GIT_STATUS_FIELDS,
-            )
-        )
     except subprocess.CalledProcessError as exc:
         raise ValueError(f"Unable to diff from Git ref {ref!r}") from exc
     return sorted(set(changed_paths))
@@ -1517,41 +2110,46 @@ def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[s
     Used to warn users when --source head is used but boundary files have been
     modified locally.
     """
-    dirty_files: List[str] = []
-    total_path_bytes = 0
     try:
-        records = iter(
-            _iter_git_nul_records(
+        captured = _capture_git_source_snapshot(repo_root, "index")
+        if captured.head_oid is None:
+            return sorted(component_paths)
+        staged = _git_name_status(
+            repo_root,
+            [
+                "diff",
+                "--name-status",
+                "-z",
+                captured.head_oid,
+                captured.tree_oid,
+                "--",
+            ],
+        )
+        unstaged = _working_tree_name_status(
+            repo_root,
+            captured.head_oid,
+            tracking_snapshot=captured,
+        )
+        untracked = list(
+            _iter_bounded_git_paths(
                 repo_root,
                 [
-                    "status",
-                    "--porcelain=v1",
+                    "--literal-pathspecs",
+                    "ls-files",
+                    "--others",
+                    "--exclude-standard",
                     "-z",
-                    "--untracked-files=all",
                     "--",
                 ],
-                max_records=MAX_GIT_STATUS_FIELDS,
             )
         )
-        for record in records:
-            if len(record) < 4 or record[2:3] != b" ":
-                raise ValueError("Malformed NUL-delimited git status output")
-            status = record[:2]
-            total_path_bytes = _append_bounded_git_path(
-                dirty_files, record[3:], total_path_bytes
-            )
-            if b"R" in status or b"C" in status:
-                try:
-                    source_path = next(records)
-                except StopIteration as exc:
-                    raise ValueError(
-                        "Truncated rename in git status output"
-                    ) from exc
-                total_path_bytes = _append_bounded_git_path(
-                    dirty_files, source_path, total_path_bytes
-                )
     except subprocess.CalledProcessError:
         return []
+    dirty_files = sorted(
+        {path for _status, path in staged}
+        | {path for _status, path in unstaged}
+        | set(untracked)
+    )
     dirty: List[str] = []
     for cpath in component_paths:
         cpath_norm = cpath.rstrip("/")

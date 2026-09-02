@@ -13,6 +13,7 @@ from ._git import (
     _git_run,
     _to_posix,
     _validated_git_object_id,
+    _working_tree_name_status,
 )
 from ._utils import (
     FACETS,
@@ -67,10 +68,9 @@ def _component_lock_history_base(
     result = _git_run(
         repo_root,
         [
-            "log",
+            "rev-list",
             "--first-parent",
             f"--max-count={_MAX_DIAGNOSTIC_LOCK_HISTORY_COMMITS + 1}",
-            "--format=%H",
             target,
             "--",
             normalized_lock,
@@ -182,10 +182,9 @@ def _resolve_lock_history_base(
             result = _git_run(
                 repo_root,
                 [
-                    "log",
+                    "rev-list",
                     "--first-parent",
-                    "-1",
-                    "--format=%H",
+                    "--max-count=1",
                     target,
                     "--",
                     normalized_lock,
@@ -622,8 +621,24 @@ def analyze_explain_changes(
     if source == "head" and base_origin == "root commit fallback":
         root_commit_target = snapshot.head_oid if snapshot is not None else "HEAD"
 
-    # Choose diff target based on source
-    if root_commit_target is not None:
+    # Choose diff target based on source. Never ask Git to compare worktree
+    # contents: repository clean/process filters are executable commands.
+    if source == "working-tree":
+        try:
+            changed = _working_tree_name_status(
+                repo_root,
+                effective_base,
+                pathspec=component_path,
+            )
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            return {
+                "error": (
+                    f"failed to diff '{component_name}' against "
+                    f"{effective_base}: {exc}"
+                )
+            }
+        diff_args = []
+    elif root_commit_target is not None:
         diff_args = [
             "diff-tree",
             "--root",
@@ -635,10 +650,10 @@ def analyze_explain_changes(
         ]
     else:
         diff_args = ["diff", "--name-status", "-z"]
-    if root_commit_target is not None:
+    if source == "working-tree":
         pass
-    elif source == "working-tree":
-        diff_args.append(effective_base)
+    elif root_commit_target is not None:
+        pass
     elif source == "index" and snapshot is not None:
         if effective_base == "HEAD" and snapshot.head_oid is not None:
             effective_base = snapshot.head_oid
@@ -835,7 +850,7 @@ def why_component(
     Compares current fingerprints against the locked values and shows:
     - Which facets (exact/behavior/boundary/compat) changed and how
     - What type of change it is (impl-only, behavioral, boundary, breaking)
-    - Files that changed under the component path (git diff against HEAD)
+    - Files that changed under the component path (bounded source comparison)
 
     Returns 0 if no drift, 1 if drift found, 2 on usage/config error.
     """
@@ -1254,36 +1269,11 @@ def analyze_component_drift(
                 else "default for working-tree diagnostics"
             )
             try:
-                diagnostic_files: List[Tuple[str, str]] = []
-                diagnostic_files.extend(
-                    _git_name_status(
-                        repo_root,
-                        [
-                            "--literal-pathspecs",
-                            "diff",
-                            diagnostic_base,
-                            "--name-status",
-                            "-z",
-                            "--",
-                            component_pathspec,
-                        ],
-                    )
+                changed_files = _working_tree_name_status(
+                    repo_root,
+                    diagnostic_base,
+                    pathspec=component_pathspec,
                 )
-                diagnostic_files.extend(
-                    _git_name_status(
-                        repo_root,
-                        [
-                            "--literal-pathspecs",
-                            "diff",
-                            "--cached",
-                            "--name-status",
-                            "-z",
-                            "--",
-                            component_pathspec,
-                        ],
-                    )
-                )
-                changed_files = diagnostic_files
                 changed_files_status = "ok"
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
@@ -1387,9 +1377,8 @@ def analyze_component_drift(
                 changed_files_status = "error"
                 changed_files_error = str(exc).strip() or type(exc).__name__
 
-    # ``git diff HEAD`` already includes staged changes, while the additional
-    # cached diff is useful for unborn/fallback cases.  Keep one stable entry
-    # per path so JSON and text views expose the same file set.
+    # Keep one stable entry per path so JSON and text views expose the same
+    # file set even when a tree comparison reports both sides of a rename.
     deduplicated_files: List[Tuple[str, str]] = []
     seen_paths: set = set()
     for status, path in changed_files:
