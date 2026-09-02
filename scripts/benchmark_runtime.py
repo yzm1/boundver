@@ -39,7 +39,6 @@ from boundver import _git as git_helpers  # noqa: E402
 from boundver import _lockfile as lockfile_helpers  # noqa: E402
 from boundver._git import (  # noqa: E402
     _capture_git_source_snapshot,
-    _git_run,
 )
 from boundver._lockfile import (  # noqa: E402
     dump_lockfile,
@@ -63,24 +62,20 @@ PERFORMANCE_CONTRACT = {
     "small_staged_change": {
         "first_wall_seconds": 5.0,
         "repeated_median_wall_seconds": 3.0,
-        "git_processes": 7,
+        # Index capture proves both its tree object and path membership stable,
+        # then the three readers open independent bounded blob sessions.
+        "git_processes": 10,
     },
 }
 
 
 def _run(root: Path, *args: str) -> str:
-    return _git_run(root, list(args)).stdout.strip()
-
-
-def _init_repository(root: Path) -> None:
-    """Initialize the trusted benchmark fixture before a worktree exists."""
+    """Run one trusted fixture command outside the production read-only API."""
     command = [
         git_helpers._trusted_git_executable(root),
         "-C",
         str(root.resolve(strict=True)),
-        "init",
-        "-b",
-        "main",
+        *args,
     ]
     result = subprocess.run(
         command,
@@ -92,9 +87,9 @@ def _init_repository(root: Path) -> None:
         check=False,
     )
     if len(result.stdout) > git_helpers.MAX_GIT_COMMAND_OUTPUT_BYTES:
-        raise RuntimeError("Git init output exceeds the runtime benchmark limit")
+        raise RuntimeError("Git output exceeds the runtime benchmark limit")
     if len(result.stderr) > git_helpers.MAX_GIT_DIAGNOSTIC_BYTES:
-        raise RuntimeError("Git init diagnostic exceeds the runtime benchmark limit")
+        raise RuntimeError("Git diagnostic exceeds the runtime benchmark limit")
     if result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode,
@@ -102,6 +97,12 @@ def _init_repository(root: Path) -> None:
             output=result.stdout,
             stderr=result.stderr,
         )
+    return result.stdout.decode("utf-8", errors="replace").strip()
+
+
+def _init_repository(root: Path) -> None:
+    """Initialize the trusted benchmark fixture before a worktree exists."""
+    _run(root, "init", "-b", "main")
 
 
 def _provider_declaration(index: int) -> Tuple[dict, List[str]]:
@@ -244,10 +245,18 @@ def _git_command_name(command: object) -> str:
         start = 1
     else:
         start = root_flag + 2
-    while start < len(values) and values[start].startswith(
-        ("--work-tree=", "--git-dir=")
-    ):
-        start += 1
+    while start < len(values):
+        value = values[start]
+        if value.startswith(("--work-tree=", "--git-dir=")) or value in {
+            "--literal-pathspecs",
+            "--no-pager",
+        }:
+            start += 1
+            continue
+        if value == "-c" and start + 1 < len(values):
+            start += 2
+            continue
+        break
     return values[start] if start < len(values) else "git"
 
 

@@ -152,6 +152,23 @@ class RuntimeBenchmarkHarnessTests(unittest.TestCase):
 
             self.assertTrue((root / ".git").is_dir())
 
+    def test_fixture_runner_can_create_the_trusted_benchmark_commit(self):
+        benchmark = self._load_benchmark()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            benchmark._init_repository(root)
+            benchmark._run(root, "config", "user.email", "benchmark@example.invalid")
+            benchmark._run(root, "config", "user.name", "Boundver Benchmark")
+            (root / "tracked.txt").write_text("fixture\n", encoding="utf-8")
+
+            benchmark._run(root, "add", "--all")
+            benchmark._run(root, "commit", "-m", "benchmark fixture")
+
+            self.assertEqual(
+                benchmark._run(root, "rev-parse", "HEAD"),
+                _git(root, "rev-parse", "HEAD").stdout.strip(),
+            )
+
     def test_process_attribution_skips_hardening_options(self):
         benchmark = self._load_benchmark()
 
@@ -173,6 +190,25 @@ class RuntimeBenchmarkHarnessTests(unittest.TestCase):
                 ["git", "-C", "repo", "--work-tree=repo", "--version"]
             ),
             "--version",
+        )
+        self.assertEqual(
+            benchmark._git_command_name(
+                [
+                    "git",
+                    "-C",
+                    "repo",
+                    "--work-tree=repo",
+                    "--no-pager",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "log.showSignature=false",
+                    "--literal-pathspecs",
+                    "ls-files",
+                    "-z",
+                ]
+            ),
+            "ls-files",
         )
 
 

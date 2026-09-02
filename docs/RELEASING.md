@@ -110,6 +110,43 @@ Record configuration changes through normal repository/owner review. Never add
 an API token or `.pypirc` to this repository; PyPI uploads use short-lived OIDC
 credentials from the protected environments.
 
+## Required-gate control maintenance
+
+The base-controlled `required-pr-gate` deliberately rejects a pull request that
+changes `.github/workflows/`, the tracked main-ruleset snapshot
+`.github/rulesets/protect-main.json`, or the gate validator
+`scripts/check_required_ci_results.py`. Those control paths can change what
+counts as successful CI, so a candidate must not authorize its own merge.
+Control-plane maintenance therefore uses a narrow ruleset transaction:
+
+1. Freeze and record the pull request's full head SHA. Obtain a fresh review of
+   that exact head, resolve every review thread, and require every ordinary CI
+   job in the current base-controlled topology to succeed. Do not update the
+   branch afterward.
+2. Record the reason, frozen SHA, CI run, review evidence, and intended
+   transaction on the pull request or its tracking issue before changing the
+   live ruleset.
+3. Read and retain the complete effective branch ruleset from GitHub. Confirm
+   that it is active, targets only `refs/heads/main`, has no bypass actors, and
+   contains deletion, non-fast-forward, squash-only pull-request/thread-
+   resolution, and `required-pr-gate` status rules.
+4. Temporarily remove only `required_status_checks`. Keep the ruleset active
+   and preserve every condition, bypass-actor list, and other rule exactly.
+   Do not add a bypass actor, allow a direct push, or disable the ruleset.
+5. Squash-merge through the pull-request API only when its current head still
+   equals the frozen SHA. Never push the candidate directly to `main`.
+6. In a `finally` path, restore the exact retained ruleset whether the merge
+   succeeds or fails. Re-read the effective server state and compare every
+   condition, rule, parameter, enforcement value, and bypass actor before doing
+   any follow-up work.
+7. Record the merge commit and restored effective state. A failed merge is not
+   retried until the required-status rule has already been restored and the new
+   blocker has been resolved.
+
+This transaction exists only because the gate cannot approve a modification to
+itself. Ordinary pull requests must receive the base-controlled
+`required-pr-gate` success and never use this procedure.
+
 ## Public surface matrix
 
 | Surface | Source of truth | Release requirement |

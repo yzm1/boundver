@@ -5,7 +5,8 @@ This program is executed by ``required-pr-gate.yml`` from the pull request's
 base commit after the unprivileged ``CI`` workflow completes. It never checks
 out or executes pull-request code. A pull request that changes CI or either
 gate control file is intentionally ineligible for automatic approval and must
-use the documented, reviewed ruleset-maintenance procedure.
+use the reviewed ``docs/RELEASING.md#required-gate-control-maintenance``
+procedure.
 """
 
 from __future__ import annotations

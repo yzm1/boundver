@@ -119,8 +119,20 @@ All notable changes to this project are documented here. The format follows
   release-only profile reject Python older than its 3.12 toolchain contract
   before contacting the index.
 
+### Security
+
+- Updated the isolated build backend to Setuptools 84.0.0, beyond the
+  vulnerable `<83.0.0` range for GHSA-h35f-9h28-mq5c / CVE-2026-59890, and
+  refreshed the coordinated test toolchain to Coverage 7.16.0, pytest 9.1.1,
+  and Ruff 0.16.5. Generated wheel-only, hash-pinned automation locks remain
+  the authority for CI, Action, container, and release installs.
+
 ### Fixed
 
+- Kept trusted runtime-benchmark fixture setup outside the production CLI's
+  read-only Git allowlist while preserving the same bounded, telemetry-disabled
+  subprocess environment. Benchmark command attribution and the staged-index
+  process ceiling now account for the deliberate coherent-snapshot checks.
 - Closed fail-late resource-exhaustion paths in JSON/YAML/TOML parsing,
   capped JSON rendering, structural provider diffs, range-review graph unions,
   GitHub Action output export, and release-ruleset glob matching. Structural

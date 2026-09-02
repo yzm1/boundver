@@ -388,7 +388,7 @@ def test_cli_rejects_alias_none_without_skip_alias(candidate, monkeypatch, capsy
     ("field", "value", "message"),
     [
         ("summary", "wrong", "summary"),
-        ("requires_python", ">=3.9", "Requires-Python"),
+        ("requires_python", ">=3.11", "Requires-Python"),
         ("project_urls", {}, "project URL"),
     ],
 )

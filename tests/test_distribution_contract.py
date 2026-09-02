@@ -2172,7 +2172,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("python -I -m ruff check src tests scripts", workflow)
         self.assertNotIn("ruff check --fix", workflow)
         project = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('ruff==0.16.3', project)
+        self.assertIn('ruff==0.16.5', project)
         self.assertIn('select = ["F"]', project)
 
     def test_workflows_do_not_persist_checkout_credentials(self):
