@@ -7,6 +7,7 @@ build-system boundaries.
 
 [Start the one-minute demo](demo.md){ .md-button .md-button--primary }
 [Install boundver](getting-started.md){ .md-button }
+[Using boundver? Tell us](https://github.com/yzm1/boundver/discussions/100){ .md-button }
 
 ![A boundver verification reports boundary drift and affected consumers](assets/verify-demo.svg)
 
@@ -43,6 +44,14 @@ Git snapshot -> boundver drift class -> semantic checker -> affected consumer su
 For example, boundary drift in an OpenAPI artifact can trigger oasdiff and only
 the consumer suites reachable from that API in the declared graph. See
 [comparison and integrations](comparison.md).
+
+## Private by default
+
+The built-in boundver CLI is telemetry-free. It analyzes local Git state and
+does not collect or transmit usage or analytics data, phone home, check for
+updates, or submit crash reports. Hosting platforms may count page views,
+downloads, or workflow activity independently; those counters are not emitted
+by boundver. Read the [privacy and telemetry policy](privacy.md).
 
 ## Choose your path
 

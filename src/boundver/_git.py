@@ -58,6 +58,50 @@ MAX_GITIGNORE_PATTERN_BYTES = MAX_GIT_PATH_BYTES
 MAX_GITIGNORE_RULES = 10_000
 MAX_GITIGNORE_MATCH_STEPS = 10_000_000
 
+# Keep every Git subprocess local.  This allowlist is deliberately enforced
+# before process creation so a future caller cannot accidentally turn a local
+# repository inspection into fetch, push, ls-remote, or another network-capable
+# Git operation.
+_OFFLINE_GIT_SUBCOMMANDS = frozenset(
+    {
+        "cat-file",
+        "check-ref-format",
+        "config",
+        "describe",
+        "diff",
+        "diff-tree",
+        "log",
+        "ls-files",
+        "ls-tree",
+        "rev-list",
+        "rev-parse",
+        "show",
+        "show-ref",
+        "status",
+        "symbolic-ref",
+        "write-tree",
+    }
+)
+_OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
+
+
+def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
+    """Build a Git argv only for a statically approved local subcommand."""
+    command_index = 0
+    while (
+        command_index < len(args)
+        and args[command_index] in _OFFLINE_GIT_GLOBAL_OPTIONS
+    ):
+        command_index += 1
+    if (
+        command_index >= len(args)
+        or args[command_index] not in _OFFLINE_GIT_SUBCOMMANDS
+    ):
+        raise ValueError(
+            "Refusing Git invocation outside boundver's offline allowlist"
+        )
+    return ["git", "-C", str(repo_root), *args]
+
 
 def _git_text_encoding() -> str:
     """Return the encoding Python uses to transport filesystem arguments."""
@@ -253,7 +297,7 @@ def git_root() -> Path:
 
 def _git_run(repo_root: Path, args: List[str]) -> subprocess.CompletedProcess:
     """Run git against a specific repository root regardless of process CWD."""
-    command = ["git", "-C", str(repo_root), *args]
+    command = _offline_git_command(repo_root, args)
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -361,7 +405,7 @@ def _iter_git_nul_records(
     an opportunity to enforce its entry/path limits.  This parser keeps only a
     fixed-size read chunk plus the current bounded record in memory.
     """
-    command = ["git", "-C", str(repo_root), *args]
+    command = _offline_git_command(repo_root, args)
     record_limit = MAX_GIT_TREE_ENTRIES if max_records is None else max_records
     if record_limit < 0:
         raise ValueError("Git listing record limit must be non-negative")
@@ -706,7 +750,7 @@ def _git_cat_blob(
     if max_bytes < 0:
         raise ValueError("Git blob byte limit must be non-negative")
     effective_limit = min(max_bytes, MAX_GIT_BLOB_BYTES)
-    command = ["git", "-C", str(repo_root), "show", ref]
+    command = _offline_git_command(repo_root, ["show", ref])
     # ``capture_output`` would buffer the entire object before the size check.
     # Bound the read itself and terminate Git as soon as the limit is crossed.
     with tempfile.TemporaryFile() as stderr_file:
@@ -827,7 +871,7 @@ def _iter_git_blobs(
     if not line_refs:
         return
 
-    command = ["git", "-C", str(repo_root), "cat-file", "--batch"]
+    command = _offline_git_command(repo_root, ["cat-file", "--batch"])
     with tempfile.TemporaryFile() as stderr_file:
         proc = subprocess.Popen(
             command,
