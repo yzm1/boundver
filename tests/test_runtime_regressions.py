@@ -27,6 +27,7 @@ from boundver._git import (
     _git_batch_cat,
     _iter_git_blobs,
     changed_components_since_ref,
+    changed_paths_since_ref,
     dirty_component_paths,
 )
 from boundver._hashing import (
@@ -725,6 +726,61 @@ class ChangedPathSelectionTests(unittest.TestCase):
                 working_digest,
                 source_tree_digest(root, "a", source="index"),
             )
+
+    def test_sparse_checkout_absence_is_not_reported_as_deletion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / "a" / "x.txt").write_text("visible\n", encoding="utf-8")
+            (root / "b" / "y.txt").write_text("sparse\n", encoding="utf-8")
+            _commit_all(root)
+
+            _git(root, "sparse-checkout", "init", "--cone")
+            _git(root, "sparse-checkout", "set", "a")
+
+            self.assertFalse((root / "b" / "y.txt").exists())
+            self.assertEqual(_git(root, "status", "--porcelain").stdout, "")
+            snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("b/y.txt", snapshot.skip_worktree_paths)
+            self.assertEqual(
+                changed_paths_since_ref(
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                    snapshot=snapshot,
+                ),
+                [],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), [])
+
+            (root / "replacement.txt").write_text("changed\n", encoding="utf-8")
+            replacement_oid = _git(
+                root, "hash-object", "-w", "replacement.txt"
+            ).stdout.strip()
+            _git(
+                root,
+                "update-index",
+                "--cacheinfo",
+                "100644",
+                replacement_oid,
+                "b/y.txt",
+            )
+            _git(root, "update-index", "--skip-worktree", "b/y.txt")
+
+            changed_snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("b/y.txt", changed_snapshot.skip_worktree_paths)
+            self.assertEqual(
+                changed_paths_since_ref(
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                    snapshot=changed_snapshot,
+                ),
+                ["b/y.txt"],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["b"])
 
     def test_worktree_scan_budget_counts_bytes_before_crlf_normalization(self):
         with tempfile.TemporaryDirectory() as td:

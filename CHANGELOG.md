@@ -31,10 +31,12 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 
 - Replaced filter-capable working-tree Git comparisons with bounded raw file
-  reads, preserved intent-to-add paths in captured index membership, and
-  charged repository scan budgets against bytes read before line-ending
-  normalization. Dirty-component, changed-component, explain, migration, and
-  working-tree fingerprint views now agree without executing repository code.
+  reads, preserved intent-to-add paths and sparse-checkout skip-worktree state
+  in captured index membership, and charged repository scan budgets against
+  bytes read before line-ending normalization. Dirty-component,
+  changed-component, explain, migration, and working-tree fingerprint views
+  now agree without executing repository code or misreporting sparse paths as
+  deletions.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

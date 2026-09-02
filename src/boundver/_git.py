@@ -376,6 +376,11 @@ class GitSourceSnapshot:
     ``tracked_paths`` additionally freezes index membership for working-tree
     operations. It includes intent-to-add paths, which have no blob in the
     written tree and therefore cannot appear in ``entries``.
+
+    ``skip_worktree_paths`` records materialized index entries that a sparse
+    checkout intentionally leaves absent. Working-tree comparisons treat an
+    absent path in this set as its captured index identity, matching Git's
+    sparse-checkout semantics without consulting repository-defined filters.
     """
 
     source: str
@@ -384,16 +389,28 @@ class GitSourceSnapshot:
     head_oid: Optional[str] = None
     filemode: bool = True
     tracked_paths: FrozenSet[str] = frozenset()
+    skip_worktree_paths: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         # Compatibility snapshots constructed by callers historically only
         # supplied ``entries``. Keep every materialized tree entry tracked
         # while allowing captured index snapshots to add intent-to-add names.
-        object.__setattr__(
-            self,
-            "tracked_paths",
-            frozenset(self.entries) | frozenset(self.tracked_paths),
-        )
+        tracked_paths = frozenset(self.entries) | frozenset(self.tracked_paths)
+        skip_worktree_paths = frozenset(self.skip_worktree_paths)
+        if not skip_worktree_paths <= frozenset(self.entries):
+            raise ValueError(
+                "Skip-worktree paths must have materialized captured index entries"
+            )
+        object.__setattr__(self, "tracked_paths", tracked_paths)
+        object.__setattr__(self, "skip_worktree_paths", skip_worktree_paths)
+
+
+@dataclass(frozen=True)
+class _IndexMembership:
+    """One bounded capture of tracked and sparse index path state."""
+
+    tracked_paths: FrozenSet[str]
+    skip_worktree_paths: FrozenSet[str]
 
 
 def git_root() -> Path:
@@ -758,30 +775,63 @@ def _capture_tree_entries(
         ) from exc
 
 
-def _capture_index_tracked_paths(repo_root: Path) -> FrozenSet[str]:
-    """Capture bounded index membership, including intent-to-add entries."""
+def _capture_index_membership(repo_root: Path) -> _IndexMembership:
+    """Capture bounded index membership and skip-worktree state together."""
     try:
-        paths = list(
-            _iter_bounded_git_paths(
-                repo_root,
-                [
-                    "--literal-pathspecs",
-                    "ls-files",
-                    "--cached",
-                    "-z",
-                    "--",
-                ],
-            )
+        records = _iter_git_nul_records(
+            repo_root,
+            [
+                "--literal-pathspecs",
+                "ls-files",
+                "--cached",
+                "-t",
+                "-z",
+                "--",
+            ],
         )
+        tracked_paths = set()
+        skip_worktree_paths = set()
+        total_path_bytes = 0
+        for record in records:
+            if len(record) < 3 or record[1:2] != b" ":
+                raise ValueError("Malformed tagged git ls-files record")
+            tag = record[:1]
+            if tag not in {b"H", b"S"}:
+                raise ValueError(
+                    f"Unsupported git ls-files index status tag {tag!r}"
+                )
+            raw_path = record[2:]
+            if len(raw_path) > MAX_GIT_PATH_BYTES:
+                raise GuardrailError(
+                    "Git path exceeds the "
+                    f"{MAX_GIT_PATH_BYTES}-byte limit"
+                )
+            total_path_bytes += len(raw_path)
+            if total_path_bytes > MAX_GIT_TOTAL_PATH_BYTES:
+                raise GuardrailError(
+                    "Git paths exceed the "
+                    f"{MAX_GIT_TOTAL_PATH_BYTES}-byte aggregate limit"
+                )
+            if len(tracked_paths) >= MAX_GIT_TREE_ENTRIES:
+                raise GuardrailError(
+                    "Git index membership exceeds the "
+                    f"{MAX_GIT_TREE_ENTRIES}-entry limit"
+                )
+            path = os.fsdecode(raw_path)
+            if path in tracked_paths:
+                raise ValueError("Duplicate path in captured Git index membership")
+            tracked_paths.add(path)
+            if tag == b"S":
+                skip_worktree_paths.add(path)
     except (subprocess.CalledProcessError, OSError) as exc:
         raise ValueError(
             "Cannot capture index path membership: git ls-files failed "
             f"({_git_failure_detail(exc)})"
         ) from exc
-    tracked_paths = frozenset(paths)
-    if len(tracked_paths) != len(paths):
-        raise ValueError("Duplicate path in captured Git index membership")
-    return tracked_paths
+    return _IndexMembership(
+        tracked_paths=frozenset(tracked_paths),
+        skip_worktree_paths=frozenset(skip_worktree_paths),
+    )
 
 
 def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnapshot:
@@ -791,6 +841,7 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
 
     head_oid = _resolve_head_oid(repo_root)
     tracked_paths: FrozenSet[str] = frozenset()
+    skip_worktree_paths: FrozenSet[str] = frozenset()
     if source == "head":
         if head_oid is None:
             raise ValueError("HEAD does not resolve to a commit")
@@ -815,7 +866,7 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         # written tree and the bounded index name set to remain stable so the
         # immutable content tree and the additional tracking membership
         # describe one coherent index state.
-        tracked_paths = _capture_index_tracked_paths(repo_root)
+        membership = _capture_index_membership(repo_root)
         try:
             confirmation = _git_run(repo_root, ["write-tree"])
         except (subprocess.CalledProcessError, OSError) as exc:
@@ -829,15 +880,21 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         )
         if confirmed_treeish != treeish:
             raise ValueError("Index changed while capturing tracked paths; retry")
-        confirmed_tracked_paths = _capture_index_tracked_paths(repo_root)
-        if confirmed_tracked_paths != tracked_paths:
+        confirmed_membership = _capture_index_membership(repo_root)
+        if confirmed_membership != membership:
             raise ValueError(
                 "Index path membership changed while capturing tracked paths; retry"
             )
+        tracked_paths = membership.tracked_paths
         if set(entries) - tracked_paths:
             raise ValueError(
                 "Captured index membership omitted materialized tree paths"
             )
+        if not membership.skip_worktree_paths <= set(entries):
+            raise ValueError(
+                "Captured skip-worktree membership omitted materialized tree paths"
+            )
+        skip_worktree_paths = membership.skip_worktree_paths
     try:
         filemode_result = _git_run(repo_root, ["config", "--bool", "core.filemode"])
     except subprocess.CalledProcessError as exc:
@@ -867,6 +924,7 @@ def _capture_git_source_snapshot(repo_root: Path, source: str) -> GitSourceSnaps
         head_oid=head_oid,
         filemode=core_filemode,
         tracked_paths=tracked_paths,
+        skip_worktree_paths=skip_worktree_paths,
     )
 
 
@@ -1711,9 +1769,45 @@ def _working_tree_name_status(
         # aggregate ceiling to a large multi-component repository.
         max_total_bytes=MAX_GIT_REPOSITORY_SCAN_BYTES,
     )
+    sparse_blob_oids = []
+    for path in paths:
+        if path not in captured.skip_worktree_paths:
+            continue
+        try:
+            (repo_root / path).lstat()
+        except FileNotFoundError:
+            current_entry = captured.entries.get(path)
+            base_entry = base_entries.get(path)
+            if (
+                current_entry is not None
+                and current_entry.object_type == "blob"
+                and (
+                    base_entry is None
+                    or base_entry.object_type != "blob"
+                    or base_entry.oid != current_entry.oid
+                )
+            ):
+                sparse_blob_oids.append(current_entry.oid)
+    sparse_blob_digests: Dict[str, bytes] = {}
+    sparse_blob_total = 0
+    sparse_blobs = _iter_git_blobs(
+        repo_root,
+        sparse_blob_oids,
+        max_total_bytes=MAX_GIT_REPOSITORY_SCAN_BYTES,
+    )
+    try:
+        for oid, raw_content in sparse_blobs:
+            sparse_blob_total += len(raw_content)
+            sparse_blob_digests[oid] = hashlib.sha256(
+                _normalize_hash_content(raw_content)
+            ).digest()
+    finally:
+        close = getattr(sparse_blobs, "close", None)
+        if close is not None:
+            close()
     seen_oids = set()
     duplicate_cache: Dict[str, bytes] = {}
-    current_total = 0
+    current_total = sparse_blob_total
     changes: List[Tuple[str, str]] = []
     deleted_by_identity: Dict[Tuple[str, str, bytes], List[str]] = {}
     added_by_identity: Dict[Tuple[str, str, bytes], List[str]] = {}
@@ -1771,7 +1865,51 @@ def _working_tree_name_status(
                 try:
                     full_path.lstat()
                 except FileNotFoundError:
-                    pass
+                    if path in captured.skip_worktree_paths:
+                        if current_entry is None:
+                            raise ValueError(
+                                "Sparse index path has no captured tree entry: "
+                                f"{path}"
+                            )
+                        if current_entry.object_type == "blob":
+                            if (
+                                base_entry is not None
+                                and base_entry.object_type == "blob"
+                                and base_entry.oid == current_entry.oid
+                            ):
+                                assert base_identity is not None
+                                current_digest = base_identity[2]
+                            else:
+                                current_digest = sparse_blob_digests.get(
+                                    current_entry.oid
+                                )
+                                if current_digest is None:
+                                    # The path disappeared after the sparse
+                                    # pre-scan. Preserve snapshot semantics with
+                                    # one bounded fallback read for that race.
+                                    raw_content = _git_cat_blob(
+                                        repo_root,
+                                        current_entry.oid,
+                                        max_bytes=(
+                                            MAX_GIT_REPOSITORY_SCAN_BYTES
+                                            - current_total
+                                        ),
+                                    )
+                                    current_total += len(raw_content)
+                                    current_digest = hashlib.sha256(
+                                        _normalize_hash_content(raw_content)
+                                    ).digest()
+                            current_identity = (
+                                current_entry.mode,
+                                current_entry.object_type,
+                                current_digest,
+                            )
+                        else:
+                            current_identity = (
+                                current_entry.mode,
+                                current_entry.object_type,
+                                current_entry.oid.encode("ascii"),
+                            )
                 else:
                     if current_entry is None or current_entry.object_type == "blob":
                         content = _read_path_content(
