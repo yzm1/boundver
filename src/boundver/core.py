@@ -769,19 +769,29 @@ def _cmd_migrate_lock(args) -> None:
             analysis_snapshot = snapshot
             if args.source == "working-tree":
                 tracked_snapshot = _capture_git_source_snapshot(repo_root, "index")
-                if tracked_snapshot.entries or tracked_snapshot.head_oid is not None:
+                if (
+                    tracked_snapshot.tracked_paths
+                    or tracked_snapshot.head_oid is not None
+                ):
                     visible_entries = {
                         path: entry
                         for path, entry in tracked_snapshot.entries.items()
                         if (repo_root / path).exists()
                         or (repo_root / path).is_symlink()
                     }
+                    visible_tracked_paths = frozenset(
+                        path
+                        for path in tracked_snapshot.tracked_paths
+                        if (repo_root / path).exists()
+                        or (repo_root / path).is_symlink()
+                    )
                     analysis_snapshot = GitSourceSnapshot(
                         source="working-tree",
                         tree_oid=tracked_snapshot.tree_oid,
                         entries=visible_entries,
                         head_oid=tracked_snapshot.head_oid,
                         filemode=tracked_snapshot.filemode,
+                        tracked_paths=visible_tracked_paths,
                     )
             config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
             config = load_config_file(

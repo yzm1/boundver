@@ -59,6 +59,7 @@ REQUIRED_PROJECT_URLS = {
     "Changelog": "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md",
     "Issues": "https://github.com/yzm1/boundver/issues",
     "Repository": "https://github.com/yzm1/boundver",
+    "Community": "https://github.com/yzm1/boundver/discussions/100",
     "GitHub Action": "https://github.com/marketplace/actions/boundver",
     "Container": "https://github.com/yzm1/boundver/pkgs/container/boundver",
     "Homebrew": "https://github.com/yzm1/homebrew-boundver",

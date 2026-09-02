@@ -67,6 +67,14 @@ All notable changes to this project are documented here. The format follows
   live policy with the checked-in contract and rejects overlapping active
   rulesets, additive classic branch protection, stale statuses, extra merge
   methods, review-policy drift, and bypass changes.
+- Declared and enforced a telemetry-free invariant for the built-in CLI. The
+  runtime has no outbound-network or telemetry-client imports, and every Git
+  subprocess is restricted to a local-command allowlist with prompts, lazy
+  fetches, tracing, hooks, filters, pagers, signature verification, and
+  external diff helpers disabled.
+  Added a public privacy policy, a visible voluntary adopter Discussion, and
+  privacy-preserving Search Console ownership metadata for the documentation
+  site; platform-side aggregate counters remain outside the CLI.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
   threat model. The review-ready proposal keeps implementation and v0.15 work
   blocked until exact-commit proposal reviews pass, separates future capability-confined
@@ -224,6 +232,13 @@ All notable changes to this project are documented here. The format follows
   vendored-copy checks. Full verification no longer starts Git once per
   component or file; snapshot identity, per-read and aggregate byte budgets,
   deterministic digests, and fail-closed protocol validation are unchanged.
+- Replaced filter-capable working-tree Git comparisons with bounded raw file
+  reads, preserved intent-to-add paths and sparse-checkout skip-worktree state
+  in captured index membership, and charged repository scan budgets against
+  bytes read before line-ending normalization. Dirty-component,
+  changed-component, explain, migration, and working-tree fingerprint views
+  now agree without executing repository code or misreporting sparse paths as
+  deletions.
 - Bounded every generated config and lockfile to the same 10 MiB UTF-8
   contract enforced by its loader. Full and scoped generation, verification
   updates, migration, init/add/remove, and the public Python API now reject an

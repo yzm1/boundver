@@ -292,15 +292,15 @@ class SegmentAwareGlobTests(unittest.TestCase):
             )
 
             self.assertIsNone(result["error"])
-            # Rename detection is deliberately disabled to keep diff work
-            # bounded. The delete/add pair still preserves both path
-            # identities, so the removed boundary remains visible.
+            # Raw worktree comparison recognizes exact-identity renames without
+            # invoking Git's filter-capable worktree diff machinery. Both path
+            # identities remain visible to boundary classification.
             self.assertIn(
-                ("A", "svc/internal/contract.txt"),
+                ("R100", "svc/internal/contract.txt"),
                 result["changed"],
             )
             self.assertIn(
-                ("D", "svc/api/contract.yaml"),
+                ("R100", "svc/api/contract.yaml"),
                 result["boundary_changed"],
             )
 

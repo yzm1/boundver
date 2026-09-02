@@ -24,6 +24,7 @@ from ._git import (
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
+    _snapshot_tracked_files,
     _to_posix,
     git_latest_tag,
 )
@@ -515,7 +516,8 @@ class _SourceAccessor:
             # Preserve the documented unborn/non-Git filesystem fallback when
             # there is no captured tracked state at all.
             if tracking_snapshot is not None and (
-                tracking_snapshot.entries or tracking_snapshot.head_oid is not None
+                tracking_snapshot.tracked_paths
+                or tracking_snapshot.head_oid is not None
             ):
                 self.snapshot = tracking_snapshot
 
@@ -569,7 +571,12 @@ class _SourceAccessor:
             mode = data.git_mode
             object_type = data.git_object_type
         _enforce_content_size(data, repo_rel)
-        return _ModeAwareBytes(data, mode, object_type)
+        return _ModeAwareBytes(
+            data,
+            mode,
+            object_type,
+            source_size=getattr(data, "source_size", len(data)),
+        )
 
     def read_blob_limited(self, oid: str, max_bytes: int) -> bytes:
         """Read one captured blob through this operation's shared transport."""
@@ -586,7 +593,11 @@ class _SourceAccessor:
     def list_files(self, prefix: str) -> List[str]:
         """List files under a prefix."""
         if self.snapshot is not None:
-            files = _snapshot_files(self.snapshot, prefix)
+            files = (
+                _snapshot_tracked_files(self.snapshot, prefix)
+                if self.source == "working-tree"
+                else _snapshot_files(self.snapshot, prefix)
+            )
             if self.source == "working-tree":
                 files = [
                     rel
@@ -613,7 +624,10 @@ class _SourceAccessor:
     def version_read_file(self, repo_rel: str) -> bytes:
         """Read file content for version extraction."""
         if self.source == "working-tree":
-            if self.snapshot is not None and repo_rel not in self.snapshot.entries:
+            if (
+                self.snapshot is not None
+                and repo_rel not in self.snapshot.tracked_paths
+            ):
                 raise ConfigError(
                     f"Version source is not tracked in the captured index: {repo_rel}"
                 )

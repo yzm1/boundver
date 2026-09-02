@@ -32,6 +32,11 @@ or transitive consumers should be re-verified. It complements those tools
 rather than replacing them; see the [comparison and integration
 guide](https://yzm1.github.io/boundver/comparison/).
 
+**Privacy:** the built-in boundver CLI is telemetry-free. It does not collect
+or transmit usage or analytics data, phone home, check for updates, or submit
+crash reports. See the [privacy and telemetry
+policy](https://yzm1.github.io/boundver/privacy/).
+
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
 The [reproducible 17-component range-review case
@@ -39,6 +44,10 @@ study](https://yzm1.github.io/boundver/case-study-range-review/) shows an
 implementation-only edit, behavioral drift, and an OpenAPI boundary change
 before and after lock reconciliation, with direct/transitive consumers and
 source-bound structural evidence.
+
+Using or evaluating boundver? [Tell us what your repository needs in the
+adopter discussion](https://github.com/yzm1/boundver/discussions/100). Sharing
+is entirely voluntary; the CLI never reports usage for you.
 
 The install and Action examples below target the exact v0.14.1 release so local
 writers and CI verifiers use the same contract implementation.
@@ -442,6 +451,8 @@ Exact-version and digest-pinned examples are in the
 - [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)
 - [Migration inspection and verification ratchets](https://yzm1.github.io/boundver/migration-and-ratcheting/)
 - [Why boundver?](https://yzm1.github.io/boundver/WHY_BOUNDVER/)
+- [Privacy and telemetry](https://yzm1.github.io/boundver/privacy/)
+- [Using boundver? Join the adopter discussion](https://github.com/yzm1/boundver/discussions/100)
 - [Lockfile merge strategy](https://yzm1.github.io/boundver/LOCKFILE_MERGE/)
 - [Maintainer release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md)
 - [Changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md)

@@ -84,7 +84,12 @@ def _component_files(
     step_consumer: Optional[Callable[[int], None]] = None,
 ) -> List[str]:
     if path_index is None and snapshot is not None:
-        path_index = tuple(sorted(snapshot.entries))
+        snapshot_paths = (
+            snapshot.tracked_paths
+            if snapshot.source == "working-tree"
+            else snapshot.entries
+        )
+        path_index = tuple(sorted(snapshot_paths))
     if path_index is not None:
         if component_path in {"", "."}:
             if step_consumer is not None:
@@ -396,7 +401,13 @@ def analyze_selector_migration(
         for _, _, _, _, _, _, analysis_status, _ in declarations
     )
     captured_path_index = (
-        tuple(sorted(snapshot.entries))
+        tuple(
+            sorted(
+                snapshot.tracked_paths
+                if snapshot.source == "working-tree"
+                else snapshot.entries
+            )
+        )
         if snapshot is not None and needs_source_paths
         else None
     )

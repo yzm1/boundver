@@ -28,6 +28,7 @@ from boundver._git import (
     _git_batch_cat,
     _iter_git_blobs,
     changed_components_since_ref,
+    changed_paths_since_ref,
     dirty_component_paths,
 )
 from boundver._hashing import (
@@ -610,6 +611,33 @@ class GitBlobStreamingTests(unittest.TestCase):
 
             self.assertEqual(streamed, [(oid, b"identical")])
 
+    def test_reporting_stream_can_use_repository_aggregate_ceiling(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a.txt").write_bytes(b"aaa")
+            (root / "b.txt").write_bytes(b"bbb")
+            _commit_all(root)
+            refs = [
+                _git(root, "rev-parse", "HEAD:a.txt").stdout.strip(),
+                _git(root, "rev-parse", "HEAD:b.txt").stdout.strip(),
+            ]
+
+            with patch("boundver._git.MAX_GIT_BATCH_BYTES", 1):
+                streamed = list(
+                    _iter_git_blobs(root, refs, max_total_bytes=7)
+                )
+
+            self.assertEqual(
+                streamed,
+                [(refs[0], b"aaa"), (refs[1], b"bbb")],
+            )
+            with patch("boundver._git.MAX_GIT_REPOSITORY_SCAN_BYTES", 5):
+                with self.assertRaisesRegex(
+                    GuardrailError, "remaining aggregate"
+                ):
+                    list(_iter_git_blobs(root, refs, max_total_bytes=7))
+
     def test_compatibility_collector_has_aggregate_limit(self):
         fake_stream = iter([("a", b"123"), ("b", b"456")])
         with patch("boundver._git.MAX_GIT_BATCH_BYTES", 5):
@@ -722,6 +750,213 @@ class ChangedPathSelectionTests(unittest.TestCase):
             (root / "root.txt").write_text("dirty\n", encoding="utf-8")
 
             self.assertEqual(dirty_component_paths(root, [".", "svc"]), ["."])
+
+    def test_repository_reporting_does_not_share_component_byte_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / "a" / "value.txt").write_bytes(b"aaaa")
+            (root / "b" / "value.txt").write_bytes(b"bbbb")
+            _commit_all(root)
+
+            with patch("boundver._hashing.MAX_HASH_TOTAL_BYTES", 5):
+                self.assertEqual(
+                    changed_components_since_ref(
+                        self._config(), root, "HEAD", source="working-tree"
+                    ),
+                    [],
+                )
+                self.assertEqual(dirty_component_paths(root, ["a", "b"]), [])
+
+                (root / "b" / "value.txt").write_bytes(b"edit")
+                self.assertEqual(
+                    changed_components_since_ref(
+                        self._config(), root, "HEAD", source="working-tree"
+                    ),
+                    ["b"],
+                )
+                self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["b"])
+
+    def test_intent_to_add_is_visible_to_every_worktree_change_view(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "baseline.txt").write_bytes(b"")
+            _commit_all(root)
+
+            (root / "a").mkdir()
+            (root / "a" / "new.txt").write_text("new\n", encoding="utf-8")
+            _git(root, "add", "-N", "--", "a/new.txt")
+
+            snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("a/new.txt", snapshot.tracked_paths)
+            self.assertNotIn("a/new.txt", snapshot.entries)
+            self.assertEqual(
+                changed_components_since_ref(
+                    self._config(), root, "HEAD", source="working-tree"
+                ),
+                ["a"],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["a"])
+
+            explanation = analyze_explain_changes(
+                self._config(),
+                root,
+                "a",
+                base_ref="HEAD",
+                source="working-tree",
+            )
+            self.assertIsNone(explanation["error"])
+            self.assertEqual(explanation["changed"], [("A", "a/new.txt")])
+
+            working_digest = source_tree_digest(
+                root,
+                "a",
+                source="working-tree",
+                snapshot=snapshot,
+            )
+            _git(root, "add", "--", "a/new.txt")
+            self.assertEqual(
+                working_digest,
+                source_tree_digest(root, "a", source="index"),
+            )
+
+    def test_sparse_checkout_absence_is_not_reported_as_deletion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / "a" / "x.txt").write_text("visible\n", encoding="utf-8")
+            (root / "b" / "y.txt").write_text("sparse\n", encoding="utf-8")
+            _commit_all(root)
+
+            _git(root, "sparse-checkout", "init", "--cone")
+            _git(root, "sparse-checkout", "set", "a")
+
+            self.assertFalse((root / "b" / "y.txt").exists())
+            self.assertEqual(_git(root, "status", "--porcelain").stdout, "")
+            snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("b/y.txt", snapshot.skip_worktree_paths)
+            self.assertEqual(
+                changed_paths_since_ref(
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                    snapshot=snapshot,
+                ),
+                [],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), [])
+
+            (root / "replacement.txt").write_text("changed\n", encoding="utf-8")
+            replacement_oid = _git(
+                root, "hash-object", "-w", "replacement.txt"
+            ).stdout.strip()
+            _git(
+                root,
+                "update-index",
+                "--cacheinfo",
+                "100644",
+                replacement_oid,
+                "b/y.txt",
+            )
+            _git(root, "update-index", "--skip-worktree", "b/y.txt")
+
+            changed_snapshot = _capture_git_source_snapshot(root, "index")
+            self.assertIn("b/y.txt", changed_snapshot.skip_worktree_paths)
+            self.assertEqual(
+                changed_paths_since_ref(
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                    snapshot=changed_snapshot,
+                ),
+                ["b/y.txt"],
+            )
+            self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["b"])
+
+    def test_worktree_scan_budget_counts_bytes_before_crlf_normalization(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "baseline.txt").write_bytes(b"")
+            _commit_all(root)
+
+            (root / "a").mkdir()
+            (root / "a" / "one.txt").write_bytes(b"x\r\n")
+            (root / "a" / "two.txt").write_bytes(b"y\r\n")
+            _git(root, "add", "-N", "--", "a/one.txt", "a/two.txt")
+
+            with patch("boundver._git.MAX_GIT_REPOSITORY_SCAN_BYTES", 5):
+                with self.assertRaisesRegex(GuardrailError, "file too large"):
+                    dirty_component_paths(root, ["a"])
+
+    def test_worktree_diagnostics_never_execute_clean_filters(self):
+        with (
+            tempfile.TemporaryDirectory() as td,
+            tempfile.TemporaryDirectory() as helper_td,
+        ):
+            root = Path(td)
+            helper_root = Path(helper_td)
+            marker = helper_root / "filter-ran"
+            filter_script = helper_root / "clean-filter.sh"
+            filter_script.write_bytes(
+                (
+                    "#!/bin/sh\n"
+                    f"printf invoked > '{marker.as_posix()}'\n"
+                    "cat\n"
+                ).encode("utf-8")
+            )
+            filter_script.chmod(0o755)
+
+            _init_repo(root)
+            _git(
+                root,
+                "config",
+                "filter.probe.clean",
+                f'sh "{filter_script.as_posix()}"',
+            )
+            (root / ".gitattributes").write_text(
+                "*.txt filter=probe\n", encoding="utf-8"
+            )
+            (root / "root.txt").write_text("base\n", encoding="utf-8")
+            _commit_all(root)
+            self.assertTrue(marker.exists(), "test filter did not execute")
+            marker.unlink()
+
+            (root / "root.txt").write_text("dirty\n", encoding="utf-8")
+            config = {
+                "components": {
+                    "root": {
+                        "path": ".",
+                        "boundary": {"provider": "implicit"},
+                    }
+                }
+            }
+
+            self.assertEqual(dirty_component_paths(root, ["."]), ["."])
+            self.assertEqual(
+                changed_components_since_ref(
+                    config,
+                    root,
+                    "HEAD",
+                    source="working-tree",
+                ),
+                ["root"],
+            )
+            explanation = analyze_explain_changes(
+                config,
+                root,
+                "root",
+                base_ref="HEAD",
+                source="working-tree",
+            )
+            self.assertIsNone(explanation["error"])
+            self.assertEqual(explanation["changed"], [("M", "root.txt")])
+            self.assertFalse(marker.exists())
 
 
 @unittest.skipIf(os.name == "nt", "arbitrary-byte symlink targets require POSIX")
@@ -877,7 +1112,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             }
         }
         with patch(
-            "boundver._output._git_name_status",
+            "boundver._output._working_tree_name_status",
             side_effect=GuardrailError("Git status paths exceed the limit"),
         ):
             result = analyze_explain_changes(
@@ -913,7 +1148,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             return_value={"components": {"svc": current_component}},
         ):
             with patch(
-                "boundver._output._git_name_status",
+                "boundver._output._working_tree_name_status",
                 side_effect=GuardrailError("Git status paths exceed the limit"),
             ):
                 result = analyze_component_drift(

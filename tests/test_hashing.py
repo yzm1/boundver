@@ -526,6 +526,7 @@ class ReadPathContentTests(unittest.TestCase):
             f.write_bytes(b"line1\r\nline2\r\n")
             result = _read_path_content(root, f, source="working-tree")
             self.assertEqual(result, b"line1\nline2\n")
+            self.assertEqual(result.source_size, len(b"line1\r\nline2\r\n"))
 
     def test_binary_not_crlf_normalized(self):
         """_read_path_content does not strip CRLF from binary files (null byte present)."""

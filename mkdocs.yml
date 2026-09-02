@@ -51,6 +51,7 @@ nav:
   - Understand boundver:
       - Why boundver?: WHY_BOUNDVER.md
       - Comparison and integrations: comparison.md
+      - Privacy and telemetry: privacy.md
       - Public and custom providers: public-vs-custom-providers.md
       - Semantic provider RFC: design/semantic-provider-rfc.md
       - Semantic provider threat model: design/semantic-provider-threat-model.md
@@ -89,3 +90,6 @@ extra:
       link: https://github.com/yzm1/boundver
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/boundver/
+    - icon: fontawesome/solid/comments
+      link: https://github.com/yzm1/boundver/discussions/100
+      name: Using boundver? Tell us

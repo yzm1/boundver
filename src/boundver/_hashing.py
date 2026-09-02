@@ -17,6 +17,7 @@ from ._git import (
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
+    _snapshot_tracked_files,
     _working_tree_mode,
 )
 from ._utils import (
@@ -60,15 +61,32 @@ class _ModeAwareBytes(bytes):
         content: bytes,
         git_mode: str,
         git_object_type: str = "blob",
+        *,
+        source_size: Optional[int] = None,
     ):
+        if source_size is None:
+            source_size = len(content)
+        if isinstance(source_size, bool) or not isinstance(source_size, int):
+            raise TypeError("Source byte size must be an integer")
+        if source_size < 0:
+            raise ValueError("Source byte size must be non-negative")
         value = super().__new__(cls, content)
         value.git_mode = git_mode
         value.git_object_type = git_object_type
+        # Newline normalization can shrink the bytes used for fingerprints.
+        # Preserve the pre-normalization size so I/O budgets charge the bytes
+        # actually read rather than the smaller canonical representation.
+        value.source_size = source_size
         return value
 
     def replace(self, old: bytes, new: bytes, count: int = -1):
         replaced = bytes(self).replace(old, new, count)
-        return type(self)(replaced, self.git_mode, self.git_object_type)
+        return type(self)(
+            replaced,
+            self.git_mode,
+            self.git_object_type,
+            source_size=self.source_size,
+        )
 
 
 def canonical_json(obj) -> str:
@@ -403,7 +421,12 @@ def _read_path_content(
     _verify_working_tree_ancestors(ancestors, rel)
     _enforce_content_size(raw, rel)
     content = _normalize_hash_content(raw) if normalize else raw
-    return _ModeAwareBytes(content, mode, object_type)
+    return _ModeAwareBytes(
+        content,
+        mode,
+        object_type,
+        source_size=len(raw),
+    )
 
 
 def _files_from_source(
@@ -427,7 +450,7 @@ def _files_from_source(
             )
         files = [
             rel
-            for rel in _snapshot_files(snapshot, path)
+            for rel in _snapshot_tracked_files(snapshot, path)
             if (repo_root / rel).exists() or (repo_root / rel).is_symlink()
         ]
         return files, snapshot
@@ -438,11 +461,11 @@ def _files_from_source(
             raise
         tracking_snapshot = None
     if tracking_snapshot is not None and (
-        tracking_snapshot.entries or tracking_snapshot.head_oid is not None
+        tracking_snapshot.tracked_paths or tracking_snapshot.head_oid is not None
     ):
         files = [
             rel
-            for rel in _snapshot_files(tracking_snapshot, path)
+            for rel in _snapshot_tracked_files(tracking_snapshot, path)
             if (repo_root / rel).exists() or (repo_root / rel).is_symlink()
         ]
         return files, tracking_snapshot

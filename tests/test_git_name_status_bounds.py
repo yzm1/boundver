@@ -77,17 +77,16 @@ class GitNameStatusBoundsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must invoke diff or diff-tree"):
             _git_name_status(Path("repo"), ["status", "--short"])
 
-    def test_changed_from_uses_hardened_diff_runner(self):
-        fields = iter((b"M", b"path.txt"))
+    def test_changed_from_uses_raw_worktree_runner(self):
         with (
             patch(
                 "boundver._git._resolve_git_commit",
                 return_value="a" * 40,
             ) as resolve,
             patch(
-                "boundver._git._iter_git_nul_records",
-                return_value=fields,
-            ) as stream,
+                "boundver._git._working_tree_name_status",
+                return_value=[("M", "path.txt")],
+            ) as worktree_status,
         ):
             self.assertEqual(
                 changed_paths_since_ref(Path("repo"), "base", "working-tree"),
@@ -99,12 +98,11 @@ class GitNameStatusBoundsTests(unittest.TestCase):
             "base",
             label="changed-from",
         )
-        arguments = stream.call_args.args[1]
-        self.assertEqual(arguments[0], "diff")
-        self.assertIn("--no-ext-diff", arguments)
-        self.assertIn("--no-textconv", arguments)
-        self.assertIn("--no-renames", arguments)
-        self.assertIn("--ignore-submodules=dirty", arguments)
+        worktree_status.assert_called_once_with(
+            Path("repo"),
+            "a" * 40,
+            tracking_snapshot=None,
+        )
 
     def test_changed_from_rejects_option_like_ref_before_running_git(self):
         with patch("boundver._git._git_run") as run, self.assertRaisesRegex(

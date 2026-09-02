@@ -543,7 +543,10 @@ def validate_config(
             if _is_git_repository(repo_root):
                 tracking_snapshot_error = str(exc)
         else:
-            if candidate_tracking.entries or candidate_tracking.head_oid is not None:
+            if (
+                candidate_tracking.tracked_paths
+                or candidate_tracking.head_oid is not None
+            ):
                 tracking_snapshot = candidate_tracking
     if tracking_snapshot_error is not None:
         errors.append(
@@ -1242,7 +1245,7 @@ def validate_config(
                             pass
                         elif (
                             tracking_snapshot is not None
-                            and version_repo_path not in tracking_snapshot.entries
+                            and version_repo_path not in tracking_snapshot.tracked_paths
                         ):
                             errors.append(
                                 f"Component '{name}' version_source.file must be "
