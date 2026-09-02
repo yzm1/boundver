@@ -36,6 +36,10 @@ from ._utils import (
 
 MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024
 MAX_GIT_BATCH_BYTES = 256 * 1024 * 1024
+# Repository-wide change reporting spans multiple independently bounded
+# components, so it needs a distinct I/O budget. This cap applies separately
+# to the immutable base stream and local worktree reads.
+MAX_GIT_REPOSITORY_SCAN_BYTES = 16 * 1024 * 1024 * 1024
 MAX_GIT_BATCH_HEADER_BYTES = 64 * 1024
 MAX_GIT_TREE_ENTRIES = 50_000
 MAX_GIT_STATUS_PATHS = 50_000
@@ -911,10 +915,13 @@ def _iter_git_blobs(
     max_total_bytes: int = MAX_GIT_BATCH_BYTES,
     remaining_bytes: Optional[Callable[[], int]] = None,
 ) -> Iterator[Tuple[str, bytes]]:
-    """Yield unique Git blobs under a pre-read aggregate byte ceiling."""
+    """Yield unique Git blobs under caller-specific and absolute ceilings."""
     if max_total_bytes < 0:
         raise ValueError("Git blob aggregate byte limit must be non-negative")
-    effective_total_limit = min(max_total_bytes, MAX_GIT_BATCH_BYTES)
+    effective_total_limit = min(
+        max_total_bytes,
+        MAX_GIT_REPOSITORY_SCAN_BYTES,
+    )
     total_bytes = 0
 
     def remaining_limit() -> int:
@@ -1584,11 +1591,7 @@ def _working_tree_name_status(
         )
 
     # Local import avoids a module cycle: _hashing uses these Git primitives.
-    from ._hashing import (
-        MAX_HASH_TOTAL_BYTES,
-        _normalize_hash_content,
-        _read_path_content,
-    )
+    from ._hashing import _normalize_hash_content, _read_path_content
 
     base_blob_oids = [
         base_entries[path].oid
@@ -1600,7 +1603,11 @@ def _working_tree_name_status(
     base_blobs = _iter_git_blobs(
         repo_root,
         base_blob_oids,
-        max_total_bytes=MAX_HASH_TOTAL_BYTES,
+        # This is a repository change-reporting scan, not one component hash.
+        # The path-count and per-blob ceilings remain in force. The separate
+        # repository reporting budget avoids applying one component's 256 MiB
+        # aggregate ceiling to a large multi-component repository.
+        max_total_bytes=MAX_GIT_REPOSITORY_SCAN_BYTES,
     )
     seen_oids = set()
     duplicate_cache: Dict[str, bytes] = {}
@@ -1625,7 +1632,7 @@ def _working_tree_name_status(
             if base_entry is not None:
                 if base_entry.object_type == "blob":
                     if base_entry.oid in seen_oids:
-                        base_content = duplicate_cache[base_entry.oid]
+                        base_digest = duplicate_cache[base_entry.oid]
                     else:
                         try:
                             streamed_oid, raw_content = next(base_blobs)
@@ -1638,13 +1645,15 @@ def _working_tree_name_status(
                                 "Base blob stream order disagreed with captured tree"
                             )
                         seen_oids.add(base_entry.oid)
-                        base_content = _normalize_hash_content(raw_content)
+                        base_digest = hashlib.sha256(
+                            _normalize_hash_content(raw_content)
+                        ).digest()
                         if oid_counts[base_entry.oid] > 1:
-                            duplicate_cache[base_entry.oid] = base_content
+                            duplicate_cache[base_entry.oid] = base_digest
                     base_identity = (
                         base_entry.mode,
                         base_entry.object_type,
-                        base_content,
+                        base_digest,
                     )
                 else:
                     base_identity = (
@@ -1666,7 +1675,9 @@ def _working_tree_name_status(
                             repo_root,
                             full_path,
                             "working-tree",
-                            max_bytes=MAX_HASH_TOTAL_BYTES - current_total,
+                            max_bytes=(
+                                MAX_GIT_REPOSITORY_SCAN_BYTES - current_total
+                            ),
                             tracked_entry=current_entry,
                             core_filemode=captured.filemode,
                         )
@@ -1674,7 +1685,7 @@ def _working_tree_name_status(
                         current_identity = (
                             content.git_mode,
                             content.git_object_type,
-                            bytes(content),
+                            hashlib.sha256(content).digest(),
                         )
                     else:
                         # Do not recurse into a submodule or invoke its Git.

@@ -514,6 +514,33 @@ class GitBlobStreamingTests(unittest.TestCase):
 
             self.assertEqual(streamed, [(oid, b"identical")])
 
+    def test_reporting_stream_can_use_repository_aggregate_ceiling(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a.txt").write_bytes(b"aaa")
+            (root / "b.txt").write_bytes(b"bbb")
+            _commit_all(root)
+            refs = [
+                _git(root, "rev-parse", "HEAD:a.txt").stdout.strip(),
+                _git(root, "rev-parse", "HEAD:b.txt").stdout.strip(),
+            ]
+
+            with patch("boundver._git.MAX_GIT_BATCH_BYTES", 1):
+                streamed = list(
+                    _iter_git_blobs(root, refs, max_total_bytes=7)
+                )
+
+            self.assertEqual(
+                streamed,
+                [(refs[0], b"aaa"), (refs[1], b"bbb")],
+            )
+            with patch("boundver._git.MAX_GIT_REPOSITORY_SCAN_BYTES", 5):
+                with self.assertRaisesRegex(
+                    GuardrailError, "remaining aggregate"
+                ):
+                    list(_iter_git_blobs(root, refs, max_total_bytes=7))
+
     def test_compatibility_collector_has_aggregate_limit(self):
         fake_stream = iter([("a", b"123"), ("b", b"456")])
         with patch("boundver._git.MAX_GIT_BATCH_BYTES", 5):
@@ -626,6 +653,34 @@ class ChangedPathSelectionTests(unittest.TestCase):
             (root / "root.txt").write_text("dirty\n", encoding="utf-8")
 
             self.assertEqual(dirty_component_paths(root, [".", "svc"]), ["."])
+
+    def test_repository_reporting_does_not_share_component_byte_budget(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _init_repo(root)
+            (root / "a").mkdir()
+            (root / "b").mkdir()
+            (root / "a" / "value.txt").write_bytes(b"aaaa")
+            (root / "b" / "value.txt").write_bytes(b"bbbb")
+            _commit_all(root)
+
+            with patch("boundver._hashing.MAX_HASH_TOTAL_BYTES", 5):
+                self.assertEqual(
+                    changed_components_since_ref(
+                        self._config(), root, "HEAD", source="working-tree"
+                    ),
+                    [],
+                )
+                self.assertEqual(dirty_component_paths(root, ["a", "b"]), [])
+
+                (root / "b" / "value.txt").write_bytes(b"edit")
+                self.assertEqual(
+                    changed_components_since_ref(
+                        self._config(), root, "HEAD", source="working-tree"
+                    ),
+                    ["b"],
+                )
+                self.assertEqual(dirty_component_paths(root, ["a", "b"]), ["b"])
 
     def test_worktree_diagnostics_never_execute_clean_filters(self):
         with (
