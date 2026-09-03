@@ -42,8 +42,8 @@ drift. Do not edit `scripts/requirements/*.lock` or
 - Ensure tests pass before submitting.
 
 For documentation changes, follow the
-[documentation style guide](docs/documentation-style.md), build the site
-strictly, and read the rendered pages you changed:
+[documentation style guide](https://yzm1.github.io/boundver/documentation-style/),
+build the site strictly, and read the rendered pages you changed:
 
 ```bash
 python -m mkdocs build --strict

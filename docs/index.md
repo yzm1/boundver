@@ -121,7 +121,7 @@ being mislabeled as a public-contract change.
 -   **Need exact semantics**
 
     Read the [reference](reference.md), [glossary](glossary.md), and
-    [normative specification](specification.md).
+    [normative specification](https://yzm1.github.io/boundver/specification/).
 
 </div>
 

@@ -2112,6 +2112,16 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(f"exclude docs/{site_only_doc}", manifest)
             self.assertIn(f'docs/{site_only_doc}"', smoke)
+        contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        homepage = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "https://yzm1.github.io/boundver/documentation-style/",
+            contributing,
+        )
+        self.assertIn(
+            "https://yzm1.github.io/boundver/specification/",
+            homepage,
+        )
         self.assertIn("sdist contains repository-only material", smoke)
         for excluded in ("tests", "scripts", ".github", "Dockerfile", "action.yml"):
             self.assertIn(excluded, smoke)
