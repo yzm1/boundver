@@ -134,6 +134,26 @@ def test_cli_rejects_external_paths_without_explicit_opt_in(
     assert "--allow-external-paths" in capsys.readouterr().err
 
 
+def test_bounded_read_binds_to_the_validated_file_before_opening(
+    tmp_path: Path, monkeypatch
+) -> None:
+    validated = tmp_path / "validated.md"
+    replacement = tmp_path / "replacement.md"
+    validated.write_text("Expected.\n", encoding="utf-8")
+    replacement.write_text("Secret replacement.\n", encoding="utf-8")
+
+    def fail_open(*_args, **_kwargs):
+        raise AssertionError("mismatched input must be rejected before open")
+
+    monkeypatch.setattr(checker.os, "open", fail_open)
+    with pytest.raises(ValueError, match="changed before reading"):
+        checker._read_bounded(
+            replacement,
+            "replacement.md",
+            validated.lstat(),
+        )
+
+
 def test_cli_rejects_symlinks_without_reading_the_target(
     tmp_path: Path, capsys
 ) -> None:

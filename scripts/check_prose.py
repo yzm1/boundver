@@ -79,10 +79,16 @@ def _is_plain_file(file_stat: os.stat_result) -> bool:
     return stat.S_ISREG(file_stat.st_mode) and not (attributes & reparse_flag)
 
 
-def _read_bounded(path: Path, display_path: str) -> str:
+def _read_bounded(
+    path: Path,
+    display_path: str,
+    expected_stat: os.stat_result,
+) -> str:
     before_path = path.lstat()
     if not _is_plain_file(before_path):
         raise ValueError(f"{display_path}: is not a regular file")
+    if _file_snapshot(before_path) != _file_snapshot(expected_stat):
+        raise ValueError(f"{display_path}: changed before reading")
     if before_path.st_size > MAX_FILE_BYTES:
         raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
 
@@ -309,7 +315,7 @@ def inspect_paths(
             )
         findings.extend(
             inspect_text(
-                _read_bounded(resolved, display),
+                _read_bounded(resolved, display, resolved_stat),
                 display,
                 max_sentence_words=max_sentence_words,
                 max_findings=MAX_FINDINGS - len(findings),
