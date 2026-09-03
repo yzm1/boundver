@@ -7,6 +7,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,48 @@ def test_finding_count_has_an_operation_budget() -> None:
 
     with pytest.raises(ValueError, match="finding count exceeds"):
         checker.inspect_text(text, "guide.md", max_findings=3)
+
+
+def test_file_snapshot_includes_change_time() -> None:
+    common = {
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_size": 3,
+        "st_mtime_ns": 4,
+    }
+
+    assert checker._file_snapshot(
+        SimpleNamespace(**common, st_ctime_ns=5)
+    ) != checker._file_snapshot(SimpleNamespace(**common, st_ctime_ns=6))
+
+
+def test_markdown_discovery_stops_at_the_file_budget(tmp_path: Path) -> None:
+    for index in range(3):
+        (tmp_path / f"{index}.md").write_text("Text.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="2-file budget"):
+        checker._discover_markdown_paths(tmp_path, max_files=2)
+
+
+def test_markdown_discovery_stops_at_the_entry_budget(tmp_path: Path) -> None:
+    for index in range(3):
+        (tmp_path / f"{index}.txt").write_text("Text.\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="2-entry budget"):
+        checker._discover_markdown_paths(
+            tmp_path,
+            max_files=3,
+            max_entries=2,
+        )
+
+
+def test_inspection_bounds_an_iterable_before_materializing_it() -> None:
+    def paths():
+        for index in range(checker.MAX_FILES + 1):
+            yield Path(f"never-read-{index}.md")
+
+    with pytest.raises(ValueError, match="more than 512 files"):
+        checker.inspect_paths(paths())
 
 
 def test_text_report_escapes_terminal_controls(tmp_path: Path, capsys) -> None:

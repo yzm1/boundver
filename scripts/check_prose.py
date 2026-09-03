@@ -16,6 +16,7 @@ from typing import Iterable, Iterator, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_FILES = 512
+MAX_DISCOVERY_ENTRIES = 10_000
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_FINDINGS = 4096
 MAX_DISPLAY_PATH_BYTES = 1024
@@ -64,12 +65,15 @@ def _file_identity(file_stat: os.stat_result) -> tuple[int, int]:
     return file_stat.st_dev, file_stat.st_ino
 
 
-def _file_snapshot(file_stat: os.stat_result) -> tuple[int, int, int, int]:
+def _file_snapshot(
+    file_stat: os.stat_result,
+) -> tuple[int, int, int, int, int]:
     return (
         file_stat.st_dev,
         file_stat.st_ino,
         file_stat.st_size,
         file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
     )
 
 
@@ -272,8 +276,58 @@ def inspect_text(
     return findings
 
 
+def _discover_markdown_paths(
+    root: Path,
+    *,
+    max_files: int,
+    max_entries: int = MAX_DISCOVERY_ENTRIES,
+) -> list[Path]:
+    if max_files < 0 or max_entries < 1:
+        raise ValueError(
+            "the discovery file budget must be non-negative and the entry "
+            "budget must be positive"
+        )
+    matches: list[Path] = []
+    directories = [root]
+    entry_count = 0
+    while directories:
+        directory = directories.pop()
+        child_directories: list[Path] = []
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                entry_count += 1
+                if entry_count > max_entries:
+                    raise ValueError(
+                        "documentation discovery exceeds the "
+                        f"{max_entries}-entry budget"
+                    )
+                entry_stat = entry.stat(follow_symlinks=False)
+                attributes = getattr(entry_stat, "st_file_attributes", 0)
+                reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                is_reparse = bool(attributes & reparse_flag)
+                if stat.S_ISDIR(entry_stat.st_mode) and not is_reparse:
+                    child_directories.append(Path(entry.path))
+                    continue
+                if not entry.name.endswith(".md"):
+                    continue
+                if len(matches) >= max_files:
+                    raise ValueError(
+                        "documentation discovery exceeds the "
+                        f"{max_files}-file budget"
+                    )
+                matches.append(Path(entry.path))
+        directories.extend(reversed(sorted(child_directories)))
+    return sorted(matches)
+
+
 def _default_paths() -> list[Path]:
-    return [REPO_ROOT / "README.md", *sorted((REPO_ROOT / "docs").rglob("*.md"))]
+    return [
+        REPO_ROOT / "README.md",
+        *_discover_markdown_paths(
+            REPO_ROOT / "docs",
+            max_files=MAX_FILES - 1,
+        ),
+    ]
 
 
 def inspect_paths(
@@ -282,9 +336,11 @@ def inspect_paths(
     max_sentence_words: int = DEFAULT_SENTENCE_WORDS,
     allow_external_paths: bool = False,
 ) -> list[Finding]:
-    materialized = list(paths)
-    if len(materialized) > MAX_FILES:
-        raise ValueError(f"refusing to inspect more than {MAX_FILES} files")
+    materialized: list[Path] = []
+    for path in paths:
+        if len(materialized) >= MAX_FILES:
+            raise ValueError(f"refusing to inspect more than {MAX_FILES} files")
+        materialized.append(path)
     findings: list[Finding] = []
     for path in materialized:
         absolute = Path(os.path.abspath(path))
