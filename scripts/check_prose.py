@@ -12,7 +12,7 @@ import stat
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Iterator, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -348,6 +348,60 @@ def _read_bounded(
         raise ValueError(f"{display_path}: is not valid UTF-8") from exc
 
 
+def _read_discovered_bounded(
+    directory: Path,
+    directory_descriptor: int,
+    name: str,
+    display_path: str,
+    expected_stat: os.stat_result,
+) -> str:
+    if not _is_plain_file(expected_stat):
+        raise ValueError(f"{display_path}: is not a regular file")
+    if expected_stat.st_size > MAX_FILE_BYTES:
+        raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
+
+    path = directory / name
+    if os.name == "nt":
+        before_path = path.lstat()
+        if not _is_plain_file(before_path):
+            raise ValueError(f"{display_path}: is not a regular file")
+        descriptor = _open_read_descriptor(path)
+        expected_open = before_path
+    else:
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+        expected_open = expected_stat
+
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            before_descriptor = os.fstat(stream.fileno())
+            if not _is_plain_file(before_descriptor):
+                raise ValueError(f"{display_path}: is not a regular file")
+            if _file_snapshot(before_descriptor) != _file_snapshot(expected_open):
+                raise ValueError(f"{display_path}: changed while opening")
+            payload = stream.read(MAX_FILE_BYTES + 1)
+            after_descriptor = os.fstat(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    if len(payload) > MAX_FILE_BYTES:
+        raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
+    if (
+        _file_snapshot(before_descriptor) != _file_snapshot(after_descriptor)
+        or after_descriptor.st_size != len(payload)
+    ):
+        raise ValueError(f"{display_path}: changed while reading")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{display_path}: is not valid UTF-8") from exc
+
+
 def _clean_markdown(line: str) -> str:
     text = IMAGE_RE.sub("", line)
     text = LINK_RE.sub(lambda match: match.group(1) or "", text)
@@ -520,19 +574,20 @@ def inspect_text(
     return findings
 
 
-def _discover_markdown_paths(
+def _walk_markdown_paths(
     root: Path,
+    root_descriptor: int,
     *,
     max_files: int,
     max_entries: int = MAX_DISCOVERY_ENTRIES,
     max_depth: int = MAX_DISCOVERY_DEPTH,
+    visit_file: Callable[[Path, int, str, os.stat_result], None] | None = None,
 ) -> list[Path]:
     if max_files < 0 or max_entries < 1 or max_depth < 0:
         raise ValueError(
             "the discovery file budget must be non-negative and the entry "
             "budget must be positive; the depth budget must be non-negative"
         )
-    root = Path(os.path.abspath(root))
     matches: list[Path] = []
     entry_count = 0
 
@@ -545,6 +600,7 @@ def _discover_markdown_paths(
             )
         before_directory = os.fstat(descriptor)
         child_directories: list[tuple[str, os.stat_result]] = []
+        markdown_files: list[tuple[str, os.stat_result]] = []
         scan_target: int | Path = directory if os.name == "nt" else descriptor
         with os.scandir(scan_target) as iterator:
             for entry in iterator:
@@ -566,6 +622,16 @@ def _discover_markdown_paths(
                         f"{max_files}-file budget"
                     )
                 matches.append(directory / entry.name)
+                markdown_files.append((entry.name, entry_stat))
+
+        if visit_file is not None:
+            for file_name, expected_stat in sorted(markdown_files):
+                visit_file(
+                    directory,
+                    descriptor,
+                    file_name,
+                    expected_stat,
+                )
 
         for child_name, expected_stat in sorted(child_directories):
             child = directory / child_name
@@ -585,23 +651,116 @@ def _discover_markdown_paths(
         ):
             raise ValueError(f"{directory}: changed during traversal")
 
-    root_stat = root.lstat()
-    root_descriptor = _open_plain_directory_descriptor(root, root_stat)
-    try:
-        walk(root, root_descriptor, 0)
-    finally:
-        os.close(root_descriptor)
+    walk(root, root_descriptor, 0)
     return sorted(matches)
 
 
-def _default_paths() -> list[Path]:
-    return [
-        REPO_ROOT / "README.md",
-        *_discover_markdown_paths(
-            REPO_ROOT / "docs",
-            max_files=MAX_FILES - 1,
-        ),
-    ]
+def _discover_markdown_paths(
+    root: Path,
+    *,
+    max_files: int,
+    max_entries: int = MAX_DISCOVERY_ENTRIES,
+    max_depth: int = MAX_DISCOVERY_DEPTH,
+) -> list[Path]:
+    root = Path(os.path.abspath(root))
+    root_stat = root.lstat()
+    root_descriptor = _open_plain_directory_descriptor(root, root_stat)
+    try:
+        return _walk_markdown_paths(
+            root,
+            root_descriptor,
+            max_files=max_files,
+            max_entries=max_entries,
+            max_depth=max_depth,
+        )
+    finally:
+        os.close(root_descriptor)
+
+
+def _entry_stat(
+    directory: Path,
+    directory_descriptor: int,
+    name: str,
+) -> os.stat_result:
+    if os.name == "nt":
+        return (directory / name).lstat()
+    return os.stat(
+        name,
+        dir_fd=directory_descriptor,
+        follow_symlinks=False,
+    )
+
+
+def _inspect_default_documentation(
+    *,
+    max_sentence_words: int,
+) -> list[Finding]:
+    findings: list[Finding] = []
+
+    def inspect_discovered(
+        directory: Path,
+        directory_descriptor: int,
+        name: str,
+        expected_stat: os.stat_result,
+    ) -> None:
+        path = directory / name
+        display = path.relative_to(REPO_ROOT).as_posix()
+        if len(display.encode("utf-8")) > MAX_DISPLAY_PATH_BYTES:
+            raise ValueError(
+                f"display path exceeds the {MAX_DISPLAY_PATH_BYTES}-byte limit"
+            )
+        findings.extend(
+            inspect_text(
+                _read_discovered_bounded(
+                    directory,
+                    directory_descriptor,
+                    name,
+                    display,
+                    expected_stat,
+                ),
+                display,
+                max_sentence_words=max_sentence_words,
+                max_findings=MAX_FINDINGS - len(findings),
+            )
+        )
+
+    repository_stat = REPO_ROOT.lstat()
+    repository_descriptor = _open_plain_directory_descriptor(
+        REPO_ROOT,
+        repository_stat,
+    )
+    try:
+        before_repository = os.fstat(repository_descriptor)
+        inspect_discovered(
+            REPO_ROOT,
+            repository_descriptor,
+            "README.md",
+            _entry_stat(REPO_ROOT, repository_descriptor, "README.md"),
+        )
+        docs = REPO_ROOT / "docs"
+        docs_stat = _entry_stat(REPO_ROOT, repository_descriptor, "docs")
+        docs_descriptor = _open_plain_directory_descriptor(
+            docs,
+            docs_stat,
+            parent_descriptor=repository_descriptor,
+            child_name="docs",
+        )
+        try:
+            _walk_markdown_paths(
+                docs,
+                docs_descriptor,
+                max_files=MAX_FILES - 1,
+                visit_file=inspect_discovered,
+            )
+        finally:
+            os.close(docs_descriptor)
+        if _file_snapshot(os.fstat(repository_descriptor)) != _file_snapshot(
+            before_repository
+        ):
+            raise ValueError(f"{REPO_ROOT}: changed during traversal")
+    finally:
+        os.close(repository_descriptor)
+    return sorted(findings, key=lambda item: (item.path, item.line, item.rule))
 
 
 def inspect_paths(
@@ -733,11 +892,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--max-sentence-words must be between 10 and 200", file=sys.stderr)
         return 2
     try:
-        findings = inspect_paths(
-            args.paths or _default_paths(),
-            max_sentence_words=args.max_sentence_words,
-            allow_external_paths=args.allow_external_paths,
-        )
+        if args.paths:
+            findings = inspect_paths(
+                args.paths,
+                max_sentence_words=args.max_sentence_words,
+                allow_external_paths=args.allow_external_paths,
+            )
+        else:
+            findings = _inspect_default_documentation(
+                max_sentence_words=args.max_sentence_words,
+            )
     except (OSError, ValueError) as exc:
         print(
             _bounded_terminal_error(f"prose report failed: {exc}"),

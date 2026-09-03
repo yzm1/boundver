@@ -256,6 +256,49 @@ def test_posix_child_open_does_not_stat_its_path(
         os.close(root_descriptor)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor traversal")
+def test_posix_discovered_file_is_read_without_path_stat(
+    tmp_path: Path, monkeypatch
+) -> None:
+    guide = tmp_path / "guide.md"
+    guide.write_text("Anchored.\n", encoding="utf-8")
+    root_descriptor = checker._open_plain_directory_descriptor(
+        tmp_path,
+        tmp_path.lstat(),
+    )
+    seen: list[str] = []
+    real_lstat = Path.lstat
+
+    def reject_file_stat(path: Path):
+        if path == guide:
+            raise AssertionError("discovered pathname must not be accessed")
+        return real_lstat(path)
+
+    def visit_file(directory, descriptor, name, expected_stat):
+        seen.append(
+            checker._read_discovered_bounded(
+                directory,
+                descriptor,
+                name,
+                "guide.md",
+                expected_stat,
+            )
+        )
+
+    try:
+        monkeypatch.setattr(Path, "lstat", reject_file_stat)
+        checker._walk_markdown_paths(
+            tmp_path,
+            root_descriptor,
+            max_files=1,
+            visit_file=visit_file,
+        )
+    finally:
+        os.close(root_descriptor)
+
+    assert seen == ["Anchored.\n"]
+
+
 def test_markdown_discovery_stops_at_the_depth_budget(
     tmp_path: Path,
 ) -> None:
@@ -421,7 +464,7 @@ def test_failure_diagnostic_escapes_terminal_controls(
     def fail(*_args, **_kwargs):
         raise ValueError(f"unsafe {control} diagnostic")
 
-    monkeypatch.setattr(checker, "inspect_paths", fail)
+    monkeypatch.setattr(checker, "_inspect_default_documentation", fail)
     assert checker.main([]) == 2
     captured = capsys.readouterr()
     assert control not in captured.err
