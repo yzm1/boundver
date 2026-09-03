@@ -41,6 +41,18 @@ drift. Do not edit `scripts/requirements/*.lock` or
 - Update docs when CLI or config behavior changes.
 - Ensure tests pass before submitting.
 
+For documentation changes, follow the
+[documentation style guide](docs/documentation-style.md), build the site
+strictly, and inspect the advisory prose report:
+
+```bash
+python -m mkdocs build --strict
+python scripts/check_prose.py
+```
+
+Prose findings are review prompts and do not fail by default. Prefer a clear,
+accurate exception over rewriting technical meaning to satisfy a heuristic.
+
 ## Versioning philosophy
 
 boundver fingerprints are deterministic and content-addressed. Prefer explicit,

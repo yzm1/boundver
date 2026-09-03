@@ -3,8 +3,9 @@
 This guide takes a Git repository from no configuration to a reviewed v3
 lockfile and a useful pull-request gate.
 
-> This guide describes boundver 0.13's v3/semantic-config-v2 contract. Version
-> 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
+> This guide describes the current v3/semantic-config-v2 contract used by
+> boundver 0.13 and newer. Version 0.11 writes v3/v1 locks and 0.10.x writes
+> v2 locks; see
 > [Upgrading](reference.md#upgrading) before combining an existing lock with
 > these instructions.
 

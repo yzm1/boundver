@@ -27,7 +27,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 
 PROJECT = "boundver"
-SUMMARY = "Classify contract drift and downstream impact across polyglot repositories"
+SUMMARY = "A Git-aware lockfile and CI check for contracts shared across components"
 REQUIRES_PYTHON = ">=3.10"
 DEFAULT_REPOSITORY = "yzm1/boundver"
 DEFAULT_MARKETPLACE_SLUG = "boundver"

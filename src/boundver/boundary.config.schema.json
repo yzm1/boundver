@@ -2,21 +2,25 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.14.1/boundary.config.schema.json",
   "title": "boundver config",
+  "description": "Declares repository components, their contract identities, downstream consumers, and optional slices.",
   "$defs": {
     "relativePath": {
       "type": "string",
       "minLength": 1,
+      "description": "A non-empty repository- or component-relative path using '/' separators, with no absolute or parent traversal.",
       "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!\\s)(?!.*\\s$).+$"
     },
     "consumerGraphIdentifier": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 16384
+      "maxLength": 16384,
+      "description": "A bounded label for a downstream system represented in the consumer graph."
     },
     "componentIdentifier": {
       "type": "string",
       "minLength": 1,
       "maxLength": 16384,
+      "description": "A component name with no comma or leading or trailing whitespace.",
       "pattern": "^(?![\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])(?![\\s\\S]*[\\u0009-\\u000d\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]$)[^,]+$"
     },
     "gitTagPrefix": {
@@ -30,37 +34,61 @@
   "type": "object",
   "required": ["project", "components"],
   "properties": {
-    "$schema": {"type": "string"},
-    "project": {"type": "string", "minLength": 1},
+    "$schema": {
+      "type": "string",
+      "description": "Optional URL used by editors to locate this JSON Schema; it is not fetched by boundver."
+    },
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable name of the repository or contract project."
+    },
     "providers": {
       "type": "array",
       "maxItems": 100,
       "description": "Custom providers. Loading requires an explicit --allow-custom-providers flag or trusted environment opt-in.",
       "items": {
         "type": "object",
+        "description": "One explicitly trusted custom Python provider declaration.",
         "required": ["module", "class"],
         "properties": {
-          "module": {"type": "string", "minLength": 1},
-          "class": {"type": "string", "minLength": 1},
-          "name": {"type": "string", "pattern": "^custom\\..*\\S$"}
+          "module": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Importable Python module containing the provider class."
+          },
+          "class": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Provider class name exported by the declared module."
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^custom\\..*\\S$",
+            "description": "Public provider name, which must begin with 'custom.'."
+          }
         },
         "additionalProperties": false
       }
     },
     "defaults": {
       "type": "object",
+      "description": "Repository-wide compatibility and verification defaults overridden by individual components.",
       "properties": {
         "compat_mode": {
           "type": "string",
-          "enum": ["major", "semver_major", "semver_major_minor"]
+          "enum": ["major", "semver_major", "semver_major_minor"],
+          "description": "How a parsed version is reduced to the compatibility family recorded by the compat facet."
         },
         "verify_facets": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
+          "description": "Facets that fail verification by default when a component does not override the policy.",
           "items": {
             "type": "string",
-            "enum": ["exact", "behavior", "boundary", "compat"]
+            "enum": ["exact", "behavior", "boundary", "compat"],
+            "description": "One component identity to gate during verification."
           }
         }
       },
@@ -70,34 +98,55 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 10000,
+      "description": "Named repository components whose identities and downstream relationships are recorded.",
       "propertyNames": {"$ref": "#/$defs/componentIdentifier"},
       "additionalProperties": {
         "type": "object",
+        "description": "A component root, its available identity inputs, and its downstream consumers.",
         "required": ["path", "boundary"],
         "properties": {
-          "path": {"$ref": "#/$defs/relativePath"},
-          "ecosystem": {"type": "string"},
+          "path": {
+            "$ref": "#/$defs/relativePath",
+            "description": "Repository-relative root containing the component's tracked files."
+          },
+          "ecosystem": {
+            "type": "string",
+            "description": "Human-facing technology or package-ecosystem label; it does not affect semantic configuration identity."
+          },
           "note": {
             "type": "string",
             "description": "Human-facing component context; does not affect semantic configuration identity."
           },
           "version_source": {
+            "description": "Source of the version reduced into the compat facet, or null when the component has no compat identity.",
             "oneOf": [
               {"type": "null"},
               {
                 "type": "object",
+                "description": "Read a version field from a JSON, TOML, or YAML file inside the component.",
                 "required": ["file", "field"],
                 "properties": {
-                  "file": {"$ref": "#/$defs/relativePath"},
-                  "field": {"type": "string", "minLength": 1}
+                  "file": {
+                    "$ref": "#/$defs/relativePath",
+                    "description": "Component-relative manifest file containing the version."
+                  },
+                  "field": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Field path read from the version manifest."
+                  }
                 },
                 "additionalProperties": false
               },
               {
                 "type": "object",
+                "description": "Read the newest matching semantic version from an immutable Git tag.",
                 "required": ["git_tag_prefix"],
                 "properties": {
-                  "git_tag_prefix": {"$ref": "#/$defs/gitTagPrefix"}
+                  "git_tag_prefix": {
+                    "$ref": "#/$defs/gitTagPrefix",
+                    "description": "Literal prefix used to select semantic-version Git tags for this component."
+                  }
                 },
                 "additionalProperties": false
               }
@@ -105,12 +154,18 @@
           },
           "boundary": {
             "type": "object",
+            "description": "The artifact this component publishes and the provider that gives it a deterministic identity.",
             "required": ["provider"],
             "properties": {
-              "provider": {"type": "string", "minLength": 1},
+              "provider": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Registered built-in or explicitly enabled custom provider name."
+              },
               "paths": {
                 "type": "array",
                 "maxItems": 50000,
+                "description": "Component-relative literal paths or case-sensitive glob patterns selected by the provider.",
                 "items": {"$ref": "#/$defs/relativePath"}
               },
               "options": {
@@ -118,7 +173,10 @@
                 "description": "Provider-specific options passed through ProviderContext.",
                 "additionalProperties": true
               },
-              "note": {"type": "string"}
+              "note": {
+                "type": "string",
+                "description": "Human-facing rationale for the boundary declaration; it does not affect semantic configuration identity."
+              }
             },
             "additionalProperties": false
           },
@@ -129,6 +187,7 @@
               "paths": {
                 "type": "array",
                 "maxItems": 50000,
+                "description": "Component-relative paths or patterns for defaults, migrations, configuration, or other observable behavior inputs.",
                 "items": {"$ref": "#/$defs/relativePath"}
               }
             },
@@ -136,6 +195,7 @@
           },
           "vendored_copies": {
             "type": "array",
+            "description": "Component-relative copies that must remain byte-identical to the selected boundary source.",
             "items": {"$ref": "#/$defs/relativePath"}
           },
           "consumers": {
@@ -165,16 +225,26 @@
     },
     "slices": {
       "type": "object",
+      "description": "Named group identities computed from one facet across explicit members or a downstream closure.",
       "propertyNames": {"type": "string", "minLength": 1},
       "additionalProperties": {
         "type": "object",
+        "description": "One named multi-component digest used for verification or cache routing.",
         "properties": {
-          "description": {"type": "string"},
-          "mode": {"type": "string", "enum": ["exact", "behavior", "boundary", "compat"]},
+          "description": {
+            "type": "string",
+            "description": "Human-readable purpose of this slice."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["exact", "behavior", "boundary", "compat"],
+            "description": "Facet contributed by every resolved member to the slice digest."
+          },
           "components": {
             "type": "array",
             "minItems": 1,
             "maxItems": 10000,
+            "description": "Explicit non-empty list of configured component names in this slice.",
             "items": {"$ref": "#/$defs/componentIdentifier"},
             "uniqueItems": true
           },

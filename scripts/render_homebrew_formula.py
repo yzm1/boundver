@@ -42,7 +42,7 @@ def render_formula(version: str, pyz_sha256: str) -> str:
     if SHA256_RE.fullmatch(pyz_sha256) is None:
         raise ValueError("pyz SHA-256 must be 64 lowercase hexadecimal characters")
     formula = f'''class Boundver < Formula
-  desc "Classify contract drift and downstream impact across polyglot repositories"
+  desc "A Git-aware lockfile and CI check for contracts shared across components"
   homepage "https://github.com/yzm1/boundver"
   url "https://github.com/yzm1/boundver/releases/download/v{version}/boundver-{version}.pyz"
   sha256 "{pyz_sha256}"

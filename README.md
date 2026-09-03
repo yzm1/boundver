@@ -6,51 +6,34 @@
   </a>
 </p>
 
-> Know which contracts changed — and which consumers to verify.
+> A Git-aware lockfile and CI check for contracts shared across components.
 
 [![CI](https://github.com/yzm1/boundver/actions/workflows/ci.yml/badge.svg)](https://github.com/yzm1/boundver/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-4051b5)](https://yzm1.github.io/boundver/)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-6674f8)](https://yzm1.github.io/boundver/)
 [![PyPI](https://img.shields.io/pypi/v/boundver)](https://pypi.org/project/boundver/)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-boundver-blue?logo=github)](https://github.com/marketplace/actions/boundver)
 [![GitLab Catalog](https://img.shields.io/badge/GitLab%20Catalog-boundver-FC6D26?logo=gitlab)](https://gitlab.com/boundver-project/boundver)
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
-Boundver answers a practical CI question: **what contract changed, and what
-depends on it?**
+## Did we change something other teams depend on?
 
-Declare your components, contract files, and consumer edges once. Boundver then
-compares Git snapshots and reports whether implementation, behavior, a public
-boundary, or a compatibility family changed. It also names the direct or
-transitive consumers that may need verification.
+Declare what each component publishes and who consumes it. Boundver records
+those declarations in a lockfile committed with the code. In CI, it compares
+that lockfile with an exact Git snapshot and reports:
 
-It does not replace tests or compatibility checkers. It tells CI which ones to
-run. Read the [executive summary](https://yzm1.github.io/boundver/executive-summary/)
-for the two-minute version.
+- what kind of declared contract changed;
+- which direct or transitive consumers may need verification; and
+- enough machine-readable output to route the next check.
 
-[![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
+[![A boundver verification reports boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
-The [reproducible 17-component range-review case
-study](https://yzm1.github.io/boundver/case-study-range-review/) shows an
-implementation-only edit, behavioral drift, and an OpenAPI boundary change
-before and after lock reconciliation, with direct/transitive consumers and
-source-bound structural evidence.
-
-Using or evaluating boundver? [Tell us what your repository needs in the
-adopter discussion](https://github.com/yzm1/boundver/discussions/100). Sharing
-is entirely voluntary; the CLI never reports usage for you.
-
-The built-in boundver CLI is telemetry-free. It never sends source, usage,
-analytics, update checks, or crash reports. See the [privacy
-policy](https://yzm1.github.io/boundver/privacy/).
-
-The install and Action examples below target the exact v0.14.1 release so local
-writers and CI verifiers use the same contract implementation.
+Boundver does not replace a compiler, build graph, compatibility checker, or
+consumer test. It supplies the repository-level signal that connects them.
 
 ## Try it in one minute
 
-For a Git repository with tracked code below `src/`, run from the repository
-root:
+Run this in a Git repository with tracked code:
 
 ```bash
 python -m pip install "boundver[schema,yaml]"
@@ -60,50 +43,56 @@ boundver generate --source working-tree
 boundver verify --source working-tree --facets exact
 ```
 
-Review and commit `boundary.config.json` and `boundary.lock.json` together. If
-you prefer a best-effort scaffold for a manifest-based repository, use
-`boundver init --discover`; it exits without writing when no safe component
-root can be inferred. Either way, review the component path and boundary
-declaration before generation.
-In an unborn repository with an empty index, discovery asks Git for its
-non-ignored bootstrap files; a non-Git directory uses a bounded approximation
-and prints a warning.
-The initial scaffold uses an implicit boundary and no version source, so only
-`exact` is available. Declare a real boundary and version source before gating
-`boundary` or `compat`.
+Review and commit `boundary.config.json` and `boundary.lock.json` together.
+The generated starter config tracks one component exactly. Add a real boundary,
+version source, and consumers before gating those signals.
 
-## What the four facets mean
+For a runnable repository and expected output, use the
+[one-minute demo](https://yzm1.github.io/boundver/demo/).
 
-| Facet | Question | Input |
-|---|---|---|
-| `exact` | Did any tracked component content or file identity change? | Every tracked file below the component path |
-| `behavior` | Did declared observable behavior change? | Declared behavior paths, cryptographically bound to the boundary digest |
-| `boundary` | Did a declared public artifact change? | Output of the configured boundary provider |
-| `compat` | Did the configured compatibility family change? | Component version and compatibility mode |
+## The gap between existing tools
 
-A useful policy for a component that provides both signals is
-`boundary,compat`: internal and behavior-only drift stays visible as
-observations, while public-contract and compatibility drift fails the gate.
-Use `exact` for a pathless implicit component, a leaf without another declared
-signal, or an unversioned component, and as the portable CLI-wide gate over all
-tracked component bytes and file identities. `leaf` suppresses only the
-`boundary` fingerprint: a leaf can still provide `behavior` from
-`behavior.paths` and `compat` from a `version_source`.
+A compiler protects the code it understands. In a repository with a Python
+service, a TypeScript client, generated OpenAPI, and JSON Schema, a shared
+contract can cross language and build-system boundaries.
 
-boundver detects drift in **declared artifacts**. It does not prove semantic or
-backward compatibility, execute consumer tests, or infer every runtime behavior.
-A clean result means the declared inputs and their recorded identities agree.
+Git reports changed files. A build graph schedules known targets. A
+format-specific checker can judge one schema family. Boundver records which
+artifacts form each component's contract and who consumes them, so CI can send
+the changed contract to the appropriate checks.
 
-## Where boundver fits
+## Four signals, one result
 
-| Need | Use | Relationship to boundver |
-|---|---|---|
-| Determine affected projects and tasks from a build graph | Nx, Pants, Bazel | These tools discover build impact; boundver classifies declared contract drift across build systems. |
-| Prove schema-specific compatibility | oasdiff, Buf, GraphQL Inspector | Run these semantic checkers alongside boundver for the formats they understand. |
-| Plan package versions and release notes | Changesets, semantic-release | These automate releases; boundver supplies review and CI signals before promotion. |
-| Detect contract-family drift and route downstream verification | boundver | Language-neutral, Git-aware fingerprints plus an explicit consumer graph. |
+Each component can provide up to four facets. More than one facet can change in
+the same comparison.
 
-See the full [comparison and integration guide](https://yzm1.github.io/boundver/comparison/).
+| Facet | What changed | Exit code when gated |
+|---|---|---:|
+| `exact` | Any tracked component byte or file identity | 1 |
+| `behavior` | A declared runtime-relevant input | 3 |
+| `boundary` | A declared published artifact | 4 |
+| `compat` | The configured compatibility family | 5 |
+
+Exit `0` means the gated facets match. Exit `2` means boundver could not
+complete the check reliably, such as when configuration, history, or declared
+files are missing. When several gated facets drift, the highest applicable
+drift code is returned.
+
+A common policy is to gate `boundary` and `compat`, report the other signals,
+then run a format-specific compatibility check and the affected consumer suites.
+See [exit-code handling](https://yzm1.github.io/boundver/ci-cookbook/#exit-code-aware-automation)
+and the [comparison guide](https://yzm1.github.io/boundver/comparison/).
+
+## What it will not tell you
+
+Boundver reports drift in what you declared. It does not decide whether a
+change breaks a consumer, run consumer tests, or discover dependencies. Files
+left out of a selector are invisible to that facet.
+
+A clean result means the selected snapshot agrees with the committed record.
+It does not prove backward compatibility or guarantee that every consumer is
+safe. Use oasdiff, Buf, GraphQL Inspector, compilers, and consumer tests for the
+judgments they are designed to make.
 
 ## A practical configuration
 
@@ -124,10 +113,7 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
         "paths": ["openapi/**/*.yaml"]
       },
       "behavior": {
-        "paths": [
-          "openapi/**/*.yaml",
-          "config/**/*.json"
-        ]
+        "paths": ["openapi/**/*.yaml", "config/**/*.json"]
       },
       "consumers": ["checkout-web"],
       "external_consumers": ["external-risk-service"]
@@ -149,308 +135,86 @@ See the full [comparison and integration guide](https://yzm1.github.io/boundver/
 }
 ```
 
-Component paths are repository-relative. Boundary, behavior, and version-source
-files are component-relative. Use POSIX `/` separators.
+This records one API boundary, one direct internal consumer, one external
+consumer, and a named slice. Paths are repository-relative for components and
+component-relative inside boundary, behavior, and version declarations.
 
-In v0.13, component `ecosystem`, component `note`, and boundary `note` are
-presentation-only: use them for classification and review rationale, not hidden
-contract selection, and editing them does not rotate `config_digest`.
+The [configuration reference](https://yzm1.github.io/boundver/reference/)
+documents providers, selectors, source modes, facets, and graph limits. The
+[glossary](https://yzm1.github.io/boundver/glossary/) defines the terms used
+throughout the project.
 
-### Glob rules
-
-All raw and canonical path-based providers, behavior selection, validation, and
-explain output use the same case-sensitive grammar:
-
-| Pattern | Matches |
-|---|---|
-| `*.yaml` | YAML files at the component root only |
-| `api/*.yaml` | Direct children of `api` only |
-| `**/*.yaml` | YAML files at the root or any depth |
-| `api/**/*.yaml` | YAML files directly below `api` or deeper |
-
-Within one segment, `*`, `?`, and character classes such as `[ab]` use
-case-sensitive character matching; wildcards may match a leading `.`. A complete
-`**` segment matches zero or more directories. A wildcard-bearing segment is
-limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters; matching is
-budgeted and fails closed if the work limit is exceeded. In addition to the
-100,000-step ceiling on one match, each provider selection, component
-validation expansion, or change-analysis operation has one 10,000,000-step
-aggregate compilation/matching budget. Patterns compile once per operation;
-an aggregate-budget error asks you to reduce wildcard declarations or split
-the component. The complete ceilings are recorded in the
-[reference](docs/reference.md#selector-work-limits). Every
-declared literal or pattern must select at least one file; otherwise strict
-generation fails instead of hashing an empty contract.
-
-### Consumers and behavior
-
-`consumers` contains unique names of **direct downstream configured
-components**. They are validated as graph edges, so a typo cannot silently
-shrink impact. `external_consumers` contains unique opaque terminal labels for
-systems outside this config. Boundary and compatibility drift reports direct
-impact by default; add `--transitive` to `verify` or `why` to walk internal
-edges and include external terminals found along that downstream closure.
-Configured component names cannot contain commas or leading/trailing
-whitespace: the CLI, GitHub Action, and GitLab Catalog use comma-separated
-component filters and trim each token. Existing configs with such a name must
-rename it and update its consumer edges, slice references, and lockfile.
-The machine-output bounds are documented in the
-[reference](docs/reference.md#consumer-graph-limits); validation rejects an
-oversized graph rather than emitting a partial impact closure.
-
-A slice may use an explicit `components` array or
-`"closure_of": "payment-api"`. The latter resolves to the seed plus all configured components
-reachable through `consumers`, and stores the resolved membership in the lock.
-The traversal is deterministic and cycle-safe. Exactly one membership form is
-allowed, and an explicit `components` array must contain at least one configured
-component; an empty slice would be a permanent fingerprint over nothing. Choose
-a slice mode supplied by every resolved member (often `exact` for a
-heterogeneous closure), or use `--allow-partial` only when null member inputs
-are intentional.
-
-`behavior.paths` should list the runtime-relevant contract files reviewers want
-to see, normally including the boundary selectors plus configuration, defaults,
-migrations, or contract tests. In v3 the behavior digest also includes the
-boundary digest, so a configured behavior fingerprint cannot stay unchanged
-when its boundary changes.
-
-## Review and accept intentional drift
+## Review a branch before accepting drift
 
 ```bash
-# Review the committed branch range even after both endpoint locks were reconciled.
+# Compare committed endpoints using pull-request merge-base semantics.
 boundver review origin/main..HEAD --merge-base --transitive
 
-# Emit the versioned CI routing plan and a bounded human summary from the same capture.
-boundver review origin/main..HEAD --merge-base --transitive \
-  --format plan --summary-file boundver-summary.md > boundver-plan.json
-
-# Inspect the matching local snapshot.
+# Verify the candidate snapshot.
 boundver verify --source working-tree
-boundver why payment-api --source working-tree
 
-# After consumer-impact review, update and inspect the lock diff.
+# After review, update the lock and inspect the exact change.
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
 
-`review` compares the four recorded identities in two explicit, immutable Git
-commit trees. It reports changed facets, the conservative union of base and
-target consumer edges, and affected slices; `--transitive` walks the complete
-downstream closure. When an `openapi-canonical` boundary changes, it also lists
-added, removed, and changed structural JSON pointers. Those rows contain types,
-not source values, and explain the digest transition without claiming backward
-compatibility. Raw providers remain byte-opaque and are reported as structurally
-unsupported instead of being reinterpreted. Use `--merge-base` for pull-request
-semantics. Both
-endpoint configs and locks must be present, valid, and reconciled. A complete
-review exits `0` whether or not identities changed; an absent or ambiguous ref,
-missing shallow history, incompatible contract, or stale endpoint lock exits
-`2`. The versioned JSON contract is
-[`boundver-review/v1`](spec/cli-output.review.schema.json).
-CI routing uses the smaller
-[`boundver-plan/v1`](spec/cli-output.plan.schema.json) projection, whose
-changed/impacted/test component and slice arrays remain bound to those same
-captured endpoints.
-Each endpoint is fully recomputed before comparison. Custom Python providers
-remain disabled unless trusted automation explicitly adds
-`--allow-custom-providers`.
-
-Structural completeness is reported separately from range completeness. If an
-optional provider explanation is unsupported or crosses a safety limit, its
-typed report is `complete: false`, contains no partial rows, and does not make
-the already verified facet, consumer, and slice comparison incomplete.
-
-This historical query does not replace `verify`: run `verify` as the integrity
-gate for the current candidate. See the exact endpoint and history rules in the
-[reference](docs/reference.md#historical-range-review).
-
-`--facets` decides which fingerprint mismatches fail and which are reported as
-observations. It does **not** limit which fields are regenerated. `--update`
-writes a coherent component entry containing all four facets and its metadata.
-Without `--components`, it regenerates the complete lock. With
-`--components payment-api`, it updates that component and recomputes all slices
-after proving every unselected entry is already current; otherwise it refuses
-the partial update.
-
-When `--facets` is omitted, policy precedence is component
-`verify_facets`, then `defaults.verify_facets`, then an implicit gate over all
-facets that are available for that component. A CLI `--facets` value overrides
-every component. Explicitly selecting an unavailable facet—for example
-`compat` on a component with no `version_source`, or `boundary` on a `leaf`
-component—is a usage error (exit `2`), not a successful null comparison.
-Add the missing facet input or select only facets the component supplies;
-`--update` cannot manufacture an unavailable facet and leaves the lock
-unchanged.
-
-`generate --allow-partial` is narrower: it permits an intentional null facet
-to appear as a slice input. Missing declared files, provider failures, version
-read errors, and vendored-copy failures remain fatal, so the option cannot
-write a lock that fails verification merely because extraction failed.
-
-## Generated boundary artifacts
-
-boundver currently fingerprints a generated artifact but does not know which
-source or generator produced it. Make freshness an explicit prerequisite:
-
-```bash
-python ci/generate_platform_openapi.py --check
-boundver verify --source head
-```
-
-Run the generator itself before accepting intentional changes. For an index
-baseline, stage the generator source and derived output together with any
-config change, generate from that staged snapshot, then stage the lock:
-
-```bash
-python ci/generate_platform_openapi.py
-git add ci/generate_platform_openapi.py platform/main.yaml \
-  platform/infrastructure/openapi.yaml
-# If changed, stage boundary.config.json in the same step.
-boundver generate --source index
-git add boundary.lock.json
-boundver verify --source index
-```
-
-There is no executable `derived_from` config hook: repository config is not a
-trusted command-execution boundary. Run the generator's deterministic check
-before verifying; see
-[docs/reference.md](docs/reference.md#generated-artifacts-are-not-bound-to-their-generator).
-
-## Source modes
-
-The default source is `head`: committed state, not unstaged local edits. Use
-`head` for committed CI state, `index` for staged pre-commit state, and
-`working-tree` while reviewing local edits. Generate and verify from the same
-source. Source flags apply to one invocation only: a following bare command
-defaults to `head` again, so repeat `--source` across adjacent diagnostics. The
-normative snapshot and tracked-file rules live in the
-[specification](spec/spec.md#source-modes); practical staging examples live in
-the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
+`review` is read-only and compares two immutable Git trees. `verify` remains
+the integrity gate for the current candidate. Generated boundary artifacts need
+their own deterministic freshness check before verification; see
+[troubleshooting](https://yzm1.github.io/boundver/troubleshooting/).
 
 ## GitHub Actions
 
-Pin the Action to the same lock-contract release used by local writers (for
-the latest stable release, `yzm1/boundver@v0.14.1`). The
-[CI cookbook](docs/ci-cookbook.md#github-actions-recommended-contract-gate) is
-the canonical workflow recipe and covers outputs, changed-path reporting,
-GitLab, pre-commit, and caching.
+Pin the Action to the same release used to write the lock:
 
-## Providers
-
-| Provider | Selection and meaning |
-|---|---|
-| `path-hash` | Format-neutral raw bytes from any declared artifact, such as SQL or protobuf files |
-| `openapi` / `openapi-raw` | Raw OpenAPI or Swagger bytes |
-| `openapi-canonical` | Parsed OpenAPI contract with selected documentation noise removed |
-| `json-file` / `json-file-raw` | Raw JSON contract bytes |
-| `json-canonical` | Strictly parsed, deterministic JSON value |
-| `python-exports` | Raw Python export files such as `__init__.py` |
-| `typescript-exports` | Raw declarations or export barrels |
-| `implicit` | Exact tracking before a boundary is declared |
-| `leaf` | An intentional component with no published boundary |
-
-Canonical means less formatting/documentation noise, not compatibility
-analysis. Custom Python providers require explicit trusted-code opt-in; a
-checked-out config cannot authorize imports. See
-[public and custom providers](https://github.com/yzm1/boundver/blob/main/docs/public-vs-custom-providers.md).
-
-## Exit codes
-
-The stable `0` through `5` contract distinguishes clean verification, exact or
-metadata drift, usage errors, and behavior/boundary/compatibility drift. See
-[CI exit-code handling](docs/ci-cookbook.md#exit-code-aware-automation) for the
-authoritative table and shell examples.
-
-## Upgrade to 0.12
-
-Version 0.11's `boundary-lock/v3` uses semantic-config/v1, whose digest meaning
-differs from 0.12's semantic-config/v2. Version 0.10's `boundary-lock/v2` also
-omits identities required by v3. Neither lock can be relabelled safely: upgrade
-writers and verifiers together and regenerate from the snapshot CI will
-verify. Follow the canonical
-[upgrade procedure](docs/reference.md#upgrading).
-
-Regeneration is still mandatory even when its content fingerprints are
-digest-neutral. With the same source bytes and effective selectors, a v3/v1 to
-v3/v2 regeneration and v0.12's built-in provider-metadata updates are expected
-to retain component facet and slice digest values; the semantic-config and
-provider metadata still change. Investigate any facet/slice value change rather
-than treating it as metadata churn. The equivalent raw-provider case for
-`json-file-raw` and `path-hash` is documented in the
-[provider guide](docs/public-vs-custom-providers.md#provider-versions-and-v3-locks).
-The v0.13 `diff` command can compare canonical `boundary-lock/v3`
-semantic-config/v1 and v2 locks read-only so this regeneration remains
-reviewable. Full generation recomputes and emits v2 without trusting the old
-lock; verification and generation paths that reuse an existing lock reject v1.
-
-## Useful commands
-
-The inspection commands include discovery/config comparison, migration
-analysis, verification baselines, and repeatable discovery exclusions.
-
-```bash
-boundver discover
-boundver discover --diff-config --exclude legacy/vendor
-boundver status --format json
-boundver review origin/main..HEAD --merge-base --transitive --format json
-boundver verify --changed-from origin/main --transitive
-boundver verify --components payment-api --update
-boundver diff old.lock.json boundary.lock.json
-boundver migrate-lock --explain --source head --format json
-boundver verify --write-baseline .boundver-verify-baseline.json
-boundver why payment-api --transitive --format json
-boundver slice checkout-contracts --format json
-boundver completions --shell bash
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    fetch-depth: 0
+- uses: yzm1/boundver@v0.14.1
+  with:
+    operation: verify
+    source: head
+    facets: boundary,compat
 ```
 
-## Installation and documentation
+The [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/) covers GitHub,
+GitLab, pre-commit, range review, outputs, and shallow-history failures.
 
-boundver requires Git and Python 3.10 or newer.
+## Install and run
 
-```bash
-python -m pip install boundver
-python -m pip install "boundver[schema,yaml]"  # recommended for strict JSON Schema and YAML
-```
+- PyPI: `python -m pip install "boundver[schema,yaml]"`
+- GitHub Action: [Marketplace](https://github.com/marketplace/actions/boundver)
+- GitLab CI/CD: [Catalog project](https://gitlab.com/boundver-project/boundver)
+- Container: `docker run --rm ghcr.io/yzm1/boundver:0.14.1 --version`
+- Homebrew: `brew install yzm1/boundver/boundver`
+- Standalone archive: download `boundver-0.14.1.pyz` from
+  [GitHub Releases](https://github.com/yzm1/boundver/releases)
 
-For a reused developer environment, system pre-commit hook, or prebuilt
-container, install the repository's exact pin with `--upgrade` and assert the
-imported version before generating or verifying a lock:
-
-```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
-python -c "import boundver; assert boundver.__version__ == '0.14.1', boundver.__version__"
-```
-
-In persistent automation, invoke commands as `python -m boundver ...` with that
-same interpreter so an older executable elsewhere on `PATH` cannot take over.
-
-You can also use the release container, Homebrew tap, or GitLab CI/CD component:
-
-```bash
-docker run --rm --network none --read-only --cap-drop ALL \
-  --security-opt no-new-privileges \
-  -v "$PWD:/repo:ro" -w /repo \
-  ghcr.io/yzm1/boundver:<version> verify --source head
-brew install yzm1/boundver/boundver
-```
-
-Exact-version and digest-pinned examples are in the
+The project supports Python 3.10 or newer and requires Git. Release channels
+and least-privilege container use are documented in the
 [distribution guide](https://yzm1.github.io/boundver/distribution/).
 
-- [Documentation](https://yzm1.github.io/boundver/)
-- [Getting started](https://yzm1.github.io/boundver/getting-started/)
-- [Runnable demo](https://yzm1.github.io/boundver/demo/)
-- [17-component range-review case study](https://yzm1.github.io/boundver/case-study-range-review/)
-- [Examples](https://yzm1.github.io/boundver/examples/)
-- [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/)
-- [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)
-- [Migration inspection and verification ratchets](https://yzm1.github.io/boundver/migration-and-ratcheting/)
-- [Why boundver?](https://yzm1.github.io/boundver/WHY_BOUNDVER/)
-- [Privacy and telemetry](https://yzm1.github.io/boundver/privacy/)
-- [Using boundver? Join the adopter discussion](https://github.com/yzm1/boundver/discussions/100)
-- [Lockfile merge strategy](https://yzm1.github.io/boundver/LOCKFILE_MERGE/)
-- [Maintainer release runbook](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md)
-- [Changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md)
-- [Support](https://github.com/yzm1/boundver/blob/main/SUPPORT.md), [contributing](https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md), and [security](https://github.com/yzm1/boundver/blob/main/SECURITY.md)
+## Trust and privacy
 
-MIT licensed.
+The built-in boundver CLI is telemetry-free. It does not send source, usage,
+analytics, update checks, or crash reports anywhere. Custom Python providers
+are explicitly enabled trusted code and are outside that built-in guarantee.
+
+Read the [privacy policy](https://yzm1.github.io/boundver/privacy/), the
+[security model](https://yzm1.github.io/boundver/security-model/), and the
+[normative specification](https://yzm1.github.io/boundver/specification/).
+
+Using or evaluating boundver? You can identify yourself voluntarily in the
+[adopter discussion](https://github.com/yzm1/boundver/discussions/100).
+
+## Project
+
+Boundver is beta software under the MIT license. Issues and pull requests are
+welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md); maintainers should use
+the checked-in [release process](docs/RELEASING.md).
+
+The [changelog](CHANGELOG.md) records user-visible changes. The v0.15 line is
+focused on historical range review, security hardening, and making the public
+documentation easier to use. Semantic-provider implementation remains
+separately gated work for a later release.

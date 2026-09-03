@@ -917,6 +917,10 @@ try:
     for internal in (
         f"{prefix}/docs/PROJECT_REVIEW.md",
         f"{prefix}/docs/RELEASING.md",
+        f"{prefix}/docs/documentation-style.md",
+        f"{prefix}/docs/hashing-contract.md",
+        f"{prefix}/docs/specification.md",
+        f"{prefix}/docs/support.md",
         f"{prefix}/tests",
         f"{prefix}/scripts",
         f"{prefix}/.github",

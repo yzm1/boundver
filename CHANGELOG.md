@@ -95,6 +95,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Reworked the README and hosted landing page around the familiar lockfile and
+  CI-check category, a short decision path, an early statement of limits, and
+  responsive, self-hosted styling. Package, Action, container, Homebrew, and
+  release-verifier summaries now share the same product description.
+- Published the canonical specification and hashing contract in the searchable
+  documentation without copying their source, and added a glossary, security
+  model, symptom-led troubleshooting guide, and documentation style guide.
+  Every user-facing configuration field now has editor help in both
+  byte-identical JSON Schema copies.
+- Added a deterministic, bounded prose report for long sentences and a small
+  set of avoidable phrases. It remains advisory by default, documents expected
+  false positives, and requires an explicit opt-in before findings affect an
+  exit status.
 - Decoupled v0.15 development and release from semantic-provider proposal
   acceptance. v0.15 contains no semantic-provider implementation and continues
   through the ordinary exact-candidate release controls; the independent

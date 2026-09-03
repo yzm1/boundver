@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "boundver"
 version = "0.14.1"
-description = "Classify contract drift and downstream impact across polyglot repositories"
+description = "A Git-aware lockfile and CI check for contracts shared across components"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

@@ -1,7 +1,7 @@
 # Executive summary
 
-boundver is a command-line tool for repositories with several components. It
-answers two questions in CI:
+Boundver is a Git-aware lockfile and CI check for contracts shared across
+components. It answers two questions:
 
 1. Which declared contracts changed?
 2. Which components depend on them?
@@ -28,8 +28,8 @@ component:
 - `compat`: the configured compatibility family changed.
 
 `boundver verify` compares the lock with a chosen Git snapshot and reports the
-changed identities and affected consumers. The result is deterministic and can
-be reproduced locally.
+changed identities and affected consumers. Several identities can change in
+one comparison. The result is deterministic and can be reproduced locally.
 
 ## What it does not do
 

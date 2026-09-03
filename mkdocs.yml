@@ -1,5 +1,5 @@
 site_name: boundver
-site_description: Classify contract drift and downstream impact across polyglot repositories.
+site_description: A Git-aware lockfile and CI check for contracts shared across components.
 site_url: https://yzm1.github.io/boundver/
 repo_url: https://github.com/yzm1/boundver
 repo_name: yzm1/boundver
@@ -14,9 +14,7 @@ theme:
   custom_dir: docs/overrides
   logo: assets/logo.svg
   favicon: assets/logo.svg
-  font:
-    text: Inter
-    code: JetBrains Mono
+  font: false
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -35,33 +33,43 @@ theme:
   features:
     - content.code.copy
     - navigation.instant
+    - navigation.path
     - navigation.sections
+    - navigation.tabs
     - navigation.top
     - search.highlight
     - search.suggest
+    - toc.follow
 
 nav:
   - Home: index.md
-  - Executive summary: executive-summary.md
-  - Start here:
+  - Start:
+      - Executive summary: executive-summary.md
       - One-minute demo: demo.md
-      - Range-review case study: case-study-range-review.md
       - Getting started: getting-started.md
       - Gradual adoption: gradual-adoption.md
       - Examples: examples.md
-  - Understand boundver:
+  - Guides:
+      - Range-review case study: case-study-range-review.md
+      - CI cookbook: ci-cookbook.md
+      - Migration and ratcheting: migration-and-ratcheting.md
+      - Lockfile merges: LOCKFILE_MERGE.md
+      - Distribution: distribution.md
+      - Troubleshooting: troubleshooting.md
+  - Reference:
+      - CLI and configuration: reference.md
+      - Glossary: glossary.md
+      - Normative specification: specification.md
+      - Hashing contract: hashing-contract.md
+      - Performance contract: performance.md
+      - Public and custom providers: public-vs-custom-providers.md
+  - Project:
       - Why boundver?: WHY_BOUNDVER.md
       - Comparison and integrations: comparison.md
       - Privacy and telemetry: privacy.md
-      - Public and custom providers: public-vs-custom-providers.md
-  - Operate it:
-      - Reference: reference.md
-      - CI cookbook: ci-cookbook.md
-      - Performance contract: performance.md
-      - Migration and ratcheting: migration-and-ratcheting.md
-      - Distribution: distribution.md
-      - Lockfile merges: LOCKFILE_MERGE.md
-  - Maintainers:
+      - Security model: security-model.md
+      - Support and compatibility: support.md
+      - Documentation style: documentation-style.md
       - Release process: RELEASING.md
       - Design and assurance:
           - Semantic provider RFC: design/semantic-provider-rfc.md
@@ -77,6 +85,10 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
+  - pymdownx.snippets:
+      base_path:
+        - .
+      check_paths: true
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
