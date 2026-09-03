@@ -42,6 +42,7 @@ theme:
 
 nav:
   - Home: index.md
+  - Executive summary: executive-summary.md
   - Start here:
       - One-minute demo: demo.md
       - Range-review case study: case-study-range-review.md
@@ -53,8 +54,6 @@ nav:
       - Comparison and integrations: comparison.md
       - Privacy and telemetry: privacy.md
       - Public and custom providers: public-vs-custom-providers.md
-      - Semantic provider RFC: design/semantic-provider-rfc.md
-      - Semantic provider threat model: design/semantic-provider-threat-model.md
   - Operate it:
       - Reference: reference.md
       - CI cookbook: ci-cookbook.md
@@ -64,6 +63,9 @@ nav:
       - Lockfile merges: LOCKFILE_MERGE.md
   - Maintainers:
       - Release process: RELEASING.md
+      - Design and assurance:
+          - Semantic provider RFC: design/semantic-provider-rfc.md
+          - Semantic provider threat model: design/semantic-provider-threat-model.md
 
 plugins:
   - search

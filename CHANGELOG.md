@@ -76,12 +76,13 @@ All notable changes to this project are documented here. The format follows
   privacy-preserving Search Console ownership metadata for the documentation
   site; platform-side aggregate counters remain outside the CLI.
 - Added a formal, machine-traceable semantic-provider RFC and adversarial
-  threat model. The review-ready proposal keeps implementation and v0.15 work
-  blocked until exact-commit proposal reviews pass, separates future capability-confined
-  WebAssembly providers from legacy trusted in-process Python, and records the
-  mandatory full-source bug, issue, and security gates for v0.15.0 promotion.
-  The v0.15 gate is enforced by the local launcher and tag/publication
-  workflows using fresh external reviews bound to the exact release tree;
+  threat model. The review-ready proposal keeps semantic-provider implementation
+  blocked until exact-commit proposal reviews pass, separates future capability-
+  confined WebAssembly providers from legacy trusted in-process Python, and
+  records mandatory full-source bug, issue, and security gates for the planned
+  v0.16.0 semantic-provider promotion. The semantic-provider release gate is
+  enforced by the local launcher and tag/publication workflows using fresh
+  external reviews bound to the exact release tree;
   self-attested scan booleans or candidate identifiers cannot grant authority.
   Review edits and the earliest proposal/release approval expiry remain bound
   through the final tag-mutation handoff, and GitHub repository/owner numeric
@@ -94,6 +95,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Decoupled v0.15 development and release from semantic-provider proposal
+  acceptance. v0.15 contains no semantic-provider implementation and continues
+  through the ordinary exact-candidate release controls; the independent
+  proposal and release gates remain fail-closed for semantic-provider work and
+  the planned v0.16.0 semantic-provider release.
 - Raised the supported Python floor to 3.10 so every maintained interpreter can
   install an advisory-free automation toolchain. Refreshed every hash-locked
   Action, CI, and release dependency and made live canonical PyPI vulnerability
