@@ -200,7 +200,10 @@ jobs:
           assert os.environ["BOUNDVER_SELECTION_COMPLETE"] == "true"
           changed = json.loads(os.environ["BOUNDVER_CHANGED_COMPONENTS"])
           selected = json.loads(os.environ["BOUNDVER_TEST_COMPONENTS"])
-          assert changed
+          assert isinstance(changed, list)
+          assert all(isinstance(component, str) for component in changed)
+          assert isinstance(selected, list)
+          assert all(isinstance(component, str) for component in selected)
           assert set(changed) <= set(selected)
           assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == []
           plan = json.loads(
@@ -209,6 +212,7 @@ jobs:
           assert plan["schema"] == "boundver-plan/v1"
           assert plan["complete"] is True
           assert plan["selection"]["changed_components"] == changed
+          assert plan["selection"]["test_components"] == selected
           summary = Path(os.environ["BOUNDVER_SUMMARY_FILE"]).read_text(
               encoding="utf-8"
           )
