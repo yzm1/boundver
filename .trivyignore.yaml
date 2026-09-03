@@ -38,6 +38,12 @@ vulnerabilities:
       - pkg:deb/debian/perl-modules-5.40
     expired_at: 2026-09-15
     statement: Boundver uses compiled Git plumbing and never invokes inherited Perl; no Debian fix is available.
+  - id: CVE-2026-16742
+    purls:
+      - pkg:deb/debian/libsystemd0
+      - pkg:deb/debian/libudev1
+    expired_at: 2026-09-15
+    statement: The affected systemd-homed package and executable are absent from the non-root image; no Debian trixie fix is available.
   - id: CVE-2026-41992
     purls:
       - pkg:deb/debian/gzip
