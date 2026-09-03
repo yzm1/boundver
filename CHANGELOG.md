@@ -144,6 +144,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Bound release-preflight diagnostics to the fixed TestPyPI and PyPI entries,
+  and fixed the public Action smoke test for valid reviews that select no
+  configured components.
 - Kept trusted runtime-benchmark fixture setup outside the production CLI's
   read-only Git allowlist while preserving the same bounded, telemetry-disabled
   subprocess environment. Benchmark command attribution and the staged-index
