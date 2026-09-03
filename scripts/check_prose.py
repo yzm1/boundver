@@ -178,13 +178,30 @@ def _open_plain_directory_descriptor(
     parent_descriptor: int | None = None,
     child_name: str | None = None,
 ) -> int:
+    if os.name != "nt" and parent_descriptor is not None:
+        if expected_stat is None:
+            raise ValueError("child directory snapshot is required")
+        descriptor = _open_directory_descriptor_no_follow(
+            path,
+            parent_descriptor=parent_descriptor,
+            child_name=child_name,
+        )
+        try:
+            opened_stat = os.fstat(descriptor)
+            if not _is_plain_directory(opened_stat):
+                raise ValueError(f"{path}: is not a plain directory")
+            if _file_snapshot(opened_stat) != _file_snapshot(expected_stat):
+                raise ValueError(f"{path}: changed while opening for traversal")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
     before_path = path.lstat()
     if not _is_plain_directory(before_path):
         raise ValueError(f"{path}: is not a plain directory")
-    if (
-        expected_stat is not None
-        and os.name != "nt"
-        and _file_snapshot(before_path) != _file_snapshot(expected_stat)
+    if expected_stat is not None and os.name != "nt" and (
+        _file_snapshot(before_path) != _file_snapshot(expected_stat)
     ):
         raise ValueError(f"{path}: changed before traversal")
 

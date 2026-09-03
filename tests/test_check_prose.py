@@ -219,6 +219,43 @@ def test_markdown_discovery_rejects_a_replaced_child(
         checker._discover_markdown_paths(root, max_files=2)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor traversal")
+def test_posix_child_open_does_not_stat_its_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    child = tmp_path / "child"
+    child.mkdir()
+    root_stat = tmp_path.lstat()
+    root_descriptor = checker._open_plain_directory_descriptor(
+        tmp_path,
+        root_stat,
+    )
+    try:
+        with os.scandir(root_descriptor) as entries:
+            expected_stat = next(
+                entry.stat(follow_symlinks=False)
+                for entry in entries
+                if entry.name == "child"
+            )
+        real_lstat = Path.lstat
+
+        def reject_child_stat(path: Path):
+            if path == child:
+                raise AssertionError("child pathname must not be accessed")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", reject_child_stat)
+        child_descriptor = checker._open_plain_directory_descriptor(
+            child,
+            expected_stat,
+            parent_descriptor=root_descriptor,
+            child_name="child",
+        )
+        os.close(child_descriptor)
+    finally:
+        os.close(root_descriptor)
+
+
 def test_markdown_discovery_stops_at_the_depth_budget(
     tmp_path: Path,
 ) -> None:
