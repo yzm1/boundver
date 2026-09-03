@@ -126,3 +126,20 @@ def test_readme_keeps_the_decision_path_short() -> None:
     )
     assert "A Git-aware lockfile and CI check" in readme
     assert "Semantic-provider implementation remains" in readme
+
+
+def test_public_guidance_matches_component_facet_contracts() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    troubleshooting = (
+        REPO_ROOT / "docs" / "troubleshooting.md"
+    ).read_text(encoding="utf-8")
+    glossary = (REPO_ROOT / "docs" / "glossary.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "tracked code under `src/`" in readme
+    assert "boundver init --discover" in readme
+    assert "`implicit` provider with\none or more paths" in troubleshooting
+    assert "An empty implicit boundary has no boundary digest" in troubleshooting
+    assert "its digest includes the boundary digest" in glossary
+    assert "complete\ntracked tree under the component root" in glossary

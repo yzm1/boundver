@@ -33,7 +33,7 @@ consumer test. It supplies the repository-level signal that connects them.
 
 ## Try it in one minute
 
-Run this in a Git repository with tracked code:
+Run this in a Git repository with tracked code under `src/`:
 
 ```bash
 python -m pip install "boundver[schema,yaml]"
@@ -44,7 +44,9 @@ boundver verify --source working-tree --facets exact
 ```
 
 Review and commit `boundary.config.json` and `boundary.lock.json` together.
-The generated starter config tracks one component exactly. Add a real boundary,
+Plain `boundver init` creates a placeholder component rooted at `src/`. For a
+different layout, use `boundver init --discover` and review its proposal, or
+edit the generated component path before validation. Add a real boundary,
 version source, and consumers before gating those signals.
 
 For a runnable repository and expected output, use the

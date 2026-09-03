@@ -41,20 +41,23 @@ changed, not whether the change is safe.
 
 ## Facet
 
-One of four independently computed component identities:
+One of four separately recorded component identities:
 
 - `exact`: all tracked component content and file identities;
 - `behavior`: declared runtime-relevant inputs;
 - `boundary`: the declared published artifact; and
 - `compat`: the configured compatibility family.
 
-Several facets can change in one comparison.
+The identities are not fully independent. When behavior tracking is configured,
+its digest includes the boundary digest, so boundary drift also changes
+`behavior`. Several facets can change in one comparison.
 
 ## Implicit boundary
 
-The starter boundary created by `boundver init`. It provides no separate
-boundary digest, so the component is initially tracked through `exact`.
-Replace it with a declared provider and paths before gating `boundary`.
+The starter boundary created by `boundver init`. With no paths it provides no
+separate boundary digest, so the component is initially tracked through
+`exact`. An implicit boundary with paths hashes those files, or you can replace
+it with a format-aware provider before gating `boundary`.
 
 ## Leaf
 
@@ -93,6 +96,6 @@ The Git view used for one operation: committed `head`, staged `index`, or
 
 ## Vendored copy
 
-A declared in-repository copy whose content must match the component source
-selected by the configuration. Boundver verifies the copy instead of assuming
-that a generated or copied artifact stayed synchronized.
+A repository-relative directory whose tracked tree must match the complete
+tracked tree under the component root. Boundver verifies the mirror instead of
+assuming that a generated or copied tree stayed synchronized.
