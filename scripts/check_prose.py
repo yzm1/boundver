@@ -83,6 +83,61 @@ def _is_plain_file(file_stat: os.stat_result) -> bool:
     return stat.S_ISREG(file_stat.st_mode) and not (attributes & reparse_flag)
 
 
+def _open_read_descriptor(path: Path) -> int:
+    if os.name != "nt":
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        return os.open(path, flags)
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    generic_read = 0x80000000
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    handle = create_file(
+        str(path),
+        generic_read,
+        file_share_read,
+        None,
+        open_existing,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        error_code = ctypes.get_last_error()
+        raise OSError(
+            error_code,
+            "cannot open prose input while excluding concurrent writers",
+        )
+    try:
+        return msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
 def _read_bounded(
     path: Path,
     display_path: str,
@@ -96,9 +151,7 @@ def _read_bounded(
     if before_path.st_size > MAX_FILE_BYTES:
         raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
 
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    descriptor = _open_read_descriptor(path)
     try:
         with os.fdopen(descriptor, "rb") as stream:
             descriptor = -1

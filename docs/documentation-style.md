@@ -36,6 +36,9 @@ bounded. Crossing a limit returns exit `2` without printing a partial report;
 terminal control characters are escaped in human and error output. By default,
 the scanner reads regular files inside this repository and rejects symlinks.
 External regular files require the explicit `--allow-external-paths` opt-in.
+On Windows, the reader also denies concurrent writers and deletion while an
+input is open because Windows exposes creation time rather than POSIX change
+time through `st_ctime_ns`.
 
 `--fail-on-findings` exists for a future, explicitly reviewed ratchet. Do not
 enable it repository-wide until the selected document set has a stable baseline

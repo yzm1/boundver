@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -188,13 +189,23 @@ def test_bounded_read_binds_to_the_validated_file_before_opening(
     def fail_open(*_args, **_kwargs):
         raise AssertionError("mismatched input must be rejected before open")
 
-    monkeypatch.setattr(checker.os, "open", fail_open)
+    monkeypatch.setattr(checker, "_open_read_descriptor", fail_open)
     with pytest.raises(ValueError, match="changed before reading"):
         checker._read_bounded(
             replacement,
             "replacement.md",
             validated.lstat(),
         )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing contract")
+def test_windows_reader_rejects_an_existing_writer(tmp_path: Path) -> None:
+    path = tmp_path / "guide.md"
+    path.write_text("Expected.\n", encoding="utf-8")
+
+    with path.open("r+b"):
+        with pytest.raises(OSError, match="excluding concurrent writers"):
+            checker._open_read_descriptor(path)
 
 
 def test_cli_rejects_symlinks_without_reading_the_target(
