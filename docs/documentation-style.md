@@ -30,6 +30,9 @@ python scripts/check_prose.py README.md docs/index.md --format json
 The report exits `0` by default. Its findings are prompts for review, not
 proof that prose is bad. False positives are expected around technical names,
 lists, and sentences that need exact qualifications.
+File size, file count, retained findings, display paths, and rendered output are
+bounded. Crossing a limit returns exit `2` without printing a partial report;
+terminal control characters are escaped in human output.
 
 `--fail-on-findings` exists for a future, explicitly reviewed ratchet. Do not
 enable it repository-wide until the selected document set has a stable baseline

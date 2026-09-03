@@ -15,6 +15,9 @@ from typing import Iterable, Iterator, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_FILES = 512
 MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_FINDINGS = 4096
+MAX_DISPLAY_PATH_BYTES = 1024
+MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 DEFAULT_SENTENCE_WORDS = 35
 WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
 IMAGE_RE = re.compile(r"!\[[^]]*\]\([^)]*\)")
@@ -151,18 +154,35 @@ def _excerpt(text: str, limit: int = 180) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _retain_finding(
+    findings: list[Finding],
+    finding: Finding,
+    *,
+    max_findings: int,
+) -> None:
+    if len(findings) >= max_findings:
+        raise ValueError(
+            f"prose finding count exceeds the {max_findings}-finding budget"
+        )
+    findings.append(finding)
+
+
 def inspect_text(
     text: str,
     display_path: str,
     *,
     max_sentence_words: int = DEFAULT_SENTENCE_WORDS,
+    max_findings: int = MAX_FINDINGS,
 ) -> list[Finding]:
+    if max_findings < 0:
+        raise ValueError("max_findings must not be negative")
     findings: list[Finding] = []
     for line, paragraph in _paragraphs(text):
         for sentence in SENTENCE_END_RE.split(paragraph):
             word_count = len(WORD_RE.findall(sentence))
             if word_count > max_sentence_words:
-                findings.append(
+                _retain_finding(
+                    findings,
                     Finding(
                         path=display_path,
                         line=line,
@@ -172,18 +192,21 @@ def inspect_text(
                             f"{max_sentence_words}"
                         ),
                         excerpt=_excerpt(sentence),
-                    )
+                    ),
+                    max_findings=max_findings,
                 )
         for pattern, suggestion in DISCOURAGED:
             if pattern.search(paragraph):
-                findings.append(
+                _retain_finding(
+                    findings,
                     Finding(
                         path=display_path,
                         line=line,
                         rule="avoidable-phrase",
                         message=suggestion,
                         excerpt=_excerpt(paragraph),
-                    )
+                    ),
+                    max_findings=max_findings,
                 )
     return findings
 
@@ -208,14 +231,52 @@ def inspect_paths(
             if resolved.is_relative_to(REPO_ROOT)
             else str(resolved)
         )
+        if len(display.encode("utf-8")) > MAX_DISPLAY_PATH_BYTES:
+            raise ValueError(
+                f"display path exceeds the {MAX_DISPLAY_PATH_BYTES}-byte limit"
+            )
         findings.extend(
             inspect_text(
                 _read_bounded(resolved),
                 display,
                 max_sentence_words=max_sentence_words,
+                max_findings=MAX_FINDINGS - len(findings),
             )
         )
     return sorted(findings, key=lambda item: (item.path, item.line, item.rule))
+
+
+def _terminal_safe(value: str) -> str:
+    rendered: list[str] = []
+    for character in value:
+        if character.isprintable():
+            rendered.append(character)
+            continue
+        codepoint = ord(character)
+        escape = "u" if codepoint <= 0xFFFF else "U"
+        width = 4 if escape == "u" else 8
+        rendered.append(f"\\{escape}{codepoint:0{width}x}")
+    return "".join(rendered)
+
+
+def _text_report(findings: Sequence[Finding]) -> str:
+    lines: list[str] = []
+    for finding in findings:
+        lines.extend(
+            (
+                (
+                    f"{_terminal_safe(finding.path)}:{finding.line}: "
+                    f"{_terminal_safe(finding.rule)}: "
+                    f"{_terminal_safe(finding.message)}"
+                ),
+                f"  {_terminal_safe(finding.excerpt)}",
+            )
+        )
+    lines.append(
+        f"Advisory prose report: {len(findings)} finding(s). "
+        "Review judgment is authoritative."
+    )
+    return "\n".join(lines)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -256,28 +317,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     if args.format == "json":
-        print(
-            json.dumps(
-                {
-                    "schema": "boundver-prose-report/v1",
-                    "advisory": True,
-                    "finding_count": len(findings),
-                    "findings": [asdict(finding) for finding in findings],
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        output = json.dumps(
+            {
+                "schema": "boundver-prose-report/v1",
+                "advisory": True,
+                "finding_count": len(findings),
+                "findings": [asdict(finding) for finding in findings],
+            },
+            indent=2,
+            sort_keys=True,
         )
     else:
-        for finding in findings:
-            print(
-                f"{finding.path}:{finding.line}: {finding.rule}: "
-                f"{finding.message}\n  {finding.excerpt}"
-            )
-        print(
-            f"Advisory prose report: {len(findings)} finding(s). "
-            "Review judgment is authoritative."
-        )
+        output = _text_report(findings)
+    if len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
+        print("prose report exceeds its output byte budget", file=sys.stderr)
+        return 2
+    print(output)
     return 1 if findings and args.fail_on_findings else 0
 
 
