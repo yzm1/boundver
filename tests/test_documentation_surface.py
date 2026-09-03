@@ -130,6 +130,9 @@ def test_readme_keeps_the_decision_path_short() -> None:
 
 def test_public_guidance_matches_component_facet_contracts() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    executive_summary = (
+        REPO_ROOT / "docs" / "executive-summary.md"
+    ).read_text(encoding="utf-8")
     troubleshooting = (
         REPO_ROOT / "docs" / "troubleshooting.md"
     ).read_text(encoding="utf-8")
@@ -139,6 +142,9 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
 
     assert "tracked code under `src/`" in readme
     assert "boundver init --discover" in readme
+    normalized_summary = " ".join(executive_summary.split())
+    assert "records up to four identities for each component" in normalized_summary
+    assert "implicit boundary without paths" in normalized_summary
     assert "`implicit` provider with\none or more paths" in troubleshooting
     assert "An empty implicit boundary has no boundary digest" in troubleshooting
     assert "its digest includes the boundary digest" in glossary

@@ -19,13 +19,17 @@ affected consumer suites instead of every test in the repository.
 ## How it works
 
 You define components, contract files, and consumer relationships in
-`boundary.config.json`. A committed lock file records four identities for each
-component:
+`boundary.config.json`. A committed lock file records up to four identities for
+each component:
 
 - `exact`: any tracked file or file identity changed;
 - `behavior`: a runtime-relevant input changed;
 - `boundary`: a declared public artifact changed; and
 - `compat`: the configured compatibility family changed.
+
+Facet availability follows the declaration. `behavior` needs declared behavior
+paths, `compat` needs a version source, and `boundary` is unavailable for a leaf
+or an implicit boundary without paths.
 
 `boundver verify` compares the lock with a chosen Git snapshot and reports the
 changed identities and affected consumers. Several identities can change in
