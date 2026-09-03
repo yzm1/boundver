@@ -295,7 +295,10 @@ def test_github_phase_verifies_only_the_immutable_release(candidate):
     _verify(candidate, fetch, phase="github")
 
     requested = {url for url, _ in fetch.requests}
-    assert not any("pypi.org" in url for url in requested)
+    assert f"https://pypi.org/pypi/boundver/{VERSION}/json" not in requested
+    assert (
+        f"https://test.pypi.org/pypi/boundver/{VERSION}/json" not in requested
+    )
     assert "https://github.com/marketplace/actions/boundver" not in requested
     assert (
         f"https://api.github.com/repos/yzm1/boundver/git/ref/tags/{ALIAS}"

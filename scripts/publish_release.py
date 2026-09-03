@@ -2358,9 +2358,17 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
                 python_dist / distribution.name,
                 copied_bytes=copied_bytes,
             )
-        for api_base, origin in (
-            ("https://test.pypi.org/pypi", "https://test-files.pythonhosted.org"),
-            ("https://pypi.org/pypi", "https://files.pythonhosted.org"),
+        for api_base, origin, registry in (
+            (
+                "https://test.pypi.org/pypi",
+                "https://test-files.pythonhosted.org",
+                "TestPyPI",
+            ),
+            (
+                "https://pypi.org/pypi",
+                "https://files.pythonhosted.org",
+                "PyPI",
+            ),
         ):
             preflight = _run(
                 (
@@ -2383,7 +2391,6 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
                 env=tool_env,
             )
             if "does not exist yet" not in preflight.stdout:
-                registry = "TestPyPI" if "test.pypi.org" in api_base else "PyPI"
                 raise GateError(
                     f"{registry} already has exact or partial files for {tag}; "
                     "resume the original workflow run instead of starting a new one"
