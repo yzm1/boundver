@@ -56,6 +56,21 @@ def test_registry_contract_constants_match_project_metadata():
     assert verifier.REQUIRED_PROJECT_URLS == project["urls"]
 
 
+def test_public_distribution_summaries_share_one_product_category():
+    summary = verifier.SUMMARY
+    action = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
+    mkdocs = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    homebrew = (REPO_ROOT / "scripts" / "render_homebrew_formula.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert f"description: {summary}." in action
+    assert f"site_description: {summary}." in mkdocs
+    assert f'org.opencontainers.image.description="{summary}"' in dockerfile
+    assert f'desc "{summary}"' in homebrew
+
+
 class FakeFetcher:
     def __init__(self, routes: dict[str, Any]):
         self.routes = routes

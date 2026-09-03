@@ -8,6 +8,10 @@ include SUPPORT.md
 include boundary.config.schema.json
 recursive-include docs *.md
 exclude docs/RELEASING.md
+exclude docs/documentation-style.md
+exclude docs/hashing-contract.md
+exclude docs/specification.md
+exclude docs/support.md
 recursive-include examples *.json *.md *.py *.toml *.ts *.yaml
 recursive-include spec *.json *.md
 

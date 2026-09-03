@@ -92,9 +92,10 @@ The selector grammar is conventional and case-sensitive:
 - `**/*.yaml` also includes YAML files at the component root.
 
 Every declaration must match at least one file. Raw and canonical providers use
-the same matcher. Choose a raw provider when every byte-level artifact change is
-significant; choose a canonical provider when its documented normalization is
-appropriate. Neither option proves backward compatibility.
+the same matcher. Choose a raw provider when representation-level artifact
+changes are significant; text CRLF/LF remains equivalent under boundver's
+hashing contract. Choose a canonical provider when its additional documented
+normalization is appropriate. Neither option proves backward compatibility.
 
 ## Stage 3: classify behavioral contracts
 

@@ -3,8 +3,9 @@
 This guide takes a Git repository from no configuration to a reviewed v3
 lockfile and a useful pull-request gate.
 
-> This guide describes boundver 0.13's v3/semantic-config-v2 contract. Version
-> 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; see
+> This guide describes the current v3/semantic-config-v2 contract used by
+> boundver 0.13 and newer. Version 0.11 writes v3/v1 locks and 0.10.x writes
+> v2 locks; see
 > [Upgrading](reference.md#upgrading) before combining an existing lock with
 > these instructions.
 
@@ -161,7 +162,7 @@ The four facets serve different review decisions:
 
 | Facet | Tracks | Typical policy |
 |---|---|---|
-| `exact` | All tracked content and file identities under the component | Observe release hygiene |
+| `exact` | Tracked content, paths, and file identities; text CRLF/LF are equivalent | Observe release hygiene |
 | `behavior` | Declared behavior inputs plus the boundary digest | Gate observable runtime contracts |
 | `boundary` | Declared provider output | Gate consumer-facing artifacts |
 | `compat` | The configured version family | Gate coordinated compatibility changes |
@@ -180,11 +181,10 @@ the internal graph and include external terminals declared along the closure.
 The effective facet gate follows `--facets` (when supplied), then a component's
 `verify_facets`, then `defaults.verify_facets`. With none of those configured,
 boundver gates all facets available for each component. Explicitly selecting a
-facet that cannot exist is a usage error (exit `2`): `compat` needs a
-`version_source`, `behavior` needs behavior inputs, `leaf` never provides a
-boundary digest, and `implicit` provides one only when it declares paths.
-Per-component policy is therefore the right way to combine heterogeneous
-component types in one config.
+facet that cannot exist is a usage error (exit `2`). `compat` needs a
+`version_source`, and `behavior` needs behavior inputs. `leaf` never provides a
+boundary digest; `implicit` provides one only when it declares paths. Use
+per-component policy to combine heterogeneous component types in one config.
 
 ## 4. Validate before hashing
 
@@ -323,10 +323,9 @@ This prevents a focused command from silently blessing unrelated drift.
 You have now used all three sources: `working-tree` for the local baseline and
 `head` for the committed gate. `index` is the third, for pre-commit checks.
 
-The rule that matters most is that you generate and verify with the *same*
-source, and that `head` and `index` read the config and the lock from the
-captured snapshot too — so a staged workflow must stage the lock before it
-verifies.
+Generate and verify with the *same* source. `head` and `index` also read the
+config and lock from their captured snapshots. A staged workflow must therefore
+stage the lock before it verifies.
 
 For the complete source-mode table, the exit-code table, and an exit-code-aware
 CI script, see [reference](reference.md).

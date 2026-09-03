@@ -2104,6 +2104,40 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)
+        for site_only_doc in (
+            "documentation-style.md",
+            "hashing-contract.md",
+            "specification.md",
+            "support.md",
+        ):
+            self.assertIn(f"exclude docs/{site_only_doc}", manifest)
+            self.assertIn(f'docs/{site_only_doc}"', smoke)
+        contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        homepage = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "https://yzm1.github.io/boundver/documentation-style/",
+            contributing,
+        )
+        self.assertIn(
+            "https://yzm1.github.io/boundver/specification/",
+            homepage,
+        )
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md",
+            readme,
+        )
+        self.assertIn(
+            "https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md",
+            readme,
+        )
+        self.assertIn(
+            "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md",
+            readme,
+        )
+        self.assertNotIn("(docs/RELEASING.md)", readme)
+        self.assertNotIn("(CONTRIBUTING.md)", readme)
+        self.assertNotIn("(CHANGELOG.md)", readme)
         self.assertIn("sdist contains repository-only material", smoke)
         for excluded in ("tests", "scripts", ".github", "Dockerfile", "action.yml"):
             self.assertIn(excluded, smoke)

@@ -1,5 +1,5 @@
 name: boundver
-description: Classify contract drift and downstream impact across polyglot repositories.
+description: A Git-aware lockfile and CI check for contracts shared across components.
 author: yzm1
 
 branding:

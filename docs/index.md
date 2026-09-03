@@ -1,28 +1,82 @@
-# Know which contracts changed — and which consumers to verify
+---
+hide:
+  - navigation
+  - toc
+---
 
-Boundver answers one CI question: **what contract changed, and what depends on
-it?** Declare components, contract files, and consumer edges once. Boundver
-compares Git snapshots, classifies the change, and names the consumers that may
-need verification.
+<section class="bv-hero" markdown>
 
-[Start the one-minute demo](demo.md){ .md-button .md-button--primary }
-[Read the executive summary](executive-summary.md){ .md-button }
-[Install boundver](getting-started.md){ .md-button }
-[Using boundver? Tell us](https://github.com/yzm1/boundver/discussions/100){ .md-button }
+<div class="bv-eyebrow">Git-aware contract lockfile</div>
+
+# Did we change something other teams depend on?
+
+Boundver records the contracts shared across components, checks them against an
+exact Git snapshot, and names the consumers that may need to re-test.
+
+<div class="bv-actions" markdown>
+
+[Run the one-minute demo](demo.md){ .md-button .md-button--primary }
+[Read how it works](executive-summary.md){ .md-button }
+
+</div>
 
 ![A boundver verification reports boundary drift and affected consumers](assets/verify-demo.svg)
 
-## What you get
+</section>
 
-| Facet | What it tells reviewers |
-|---|---|
-| `exact` | Some tracked component byte or file identity changed. |
-| `behavior` | A declared observable-behavior input changed. |
-| `boundary` | A declared public artifact changed. |
-| `compat` | The configured compatibility family changed. |
+## One lockfile. Four useful signals.
 
-Boundver stores these identities in `boundary.lock.json`. Later checks compare
-the chosen Git snapshots and report direct or transitive consumers.
+Declare each component, the artifacts it publishes, and its downstream
+consumers. Commit the generated `boundary.lock.json`. Later checks tell you
+which identities moved.
+
+<div class="bv-facet-grid" markdown>
+
+<article markdown>
+
+### `exact`
+
+Tracked component content, path, or file identity changed. Text CRLF and LF are
+equivalent under the hashing contract.
+
+</article>
+
+<article markdown>
+
+### `behavior`
+
+A declared runtime-relevant input changed.
+
+</article>
+
+<article markdown>
+
+### `boundary`
+
+A declared published artifact changed.
+
+</article>
+
+<article markdown>
+
+### `compat`
+
+The configured compatibility family changed.
+
+</article>
+
+</div>
+
+Several facets can change at once. You choose which ones fail CI. Boundary and
+compatibility drift can also identify direct or transitive consumers.
+
+## From Git change to the right check
+
+<ol class="bv-steps">
+  <li><strong>Declare</strong><span>components, published artifacts, and consumer edges</span></li>
+  <li><strong>Compare</strong><span>the committed lock with HEAD, the index, a working tree, or a branch range</span></li>
+  <li><strong>Route</strong><span>format-specific checks and consumer suites using bounded text or JSON output</span></li>
+</ol>
 
 ```bash
 python -m pip install "boundver[schema,yaml]"
@@ -31,40 +85,63 @@ boundver generate --source working-tree
 boundver verify --source working-tree
 ```
 
-## Use it with the tools you already have
+That scaffold expects tracked code under `src/`. For another layout, run
+`boundver init --discover` and review its proposal, or edit the generated
+component path before validation.
+
+## Use it with what you already trust
 
 Boundver does not replace compilers, build graphs, compatibility tools, or
-consumer tests. It supplies the routing signal between them:
+consumer tests. It adds a repository-level contract signal between them.
 
 ```text
-Git snapshot -> boundver drift class -> semantic checker -> affected consumer suites
+Git snapshot -> contract drift -> compatibility check -> affected consumer tests
 ```
 
-For example, boundary drift in an OpenAPI artifact can trigger oasdiff and only
-the consumer suites reachable from that API in the declared graph. See
-[comparison and integrations](comparison.md).
+For example, an OpenAPI boundary change can trigger oasdiff and the suites
+reachable from that API, while an internal refactor remains visible without
+being mislabeled as a public-contract change.
 
-## Private by default
+<div class="bv-route-grid" markdown>
+
+-   **First evaluation**
+
+    Follow [Getting started](getting-started.md) or run the
+    [reproducible demo](demo.md).
+
+-   **Existing monorepo**
+
+    Adopt one component at a time with [Gradual adoption](gradual-adoption.md).
+
+-   **Pull-request routing**
+
+    Use [Historical range review](reference.md#historical-range-review) and the
+    [CI cookbook](ci-cookbook.md).
+
+-   **Need exact semantics**
+
+    Read the [reference](reference.md), [glossary](glossary.md), and
+    [normative specification](https://yzm1.github.io/boundver/specification/).
+
+</div>
+
+## Know the boundary of the answer
+
+Boundver reports drift in what you declared. It does not decide whether a
+change is backward compatible, run consumer tests, or discover dependencies.
+Files omitted from a selector remain outside that identity.
+
+A clean result means no unacknowledged gated drift remains. With a verification
+baseline, acknowledged lock drift can still be present. It does not prove that
+every consumer is safe. Start with
+[What boundver does and does not do](WHY_BOUNDVER.md), or compare it with
+[build graphs and schema-specific tools](comparison.md).
+
+## Local by design
 
 The built-in boundver CLI is telemetry-free. It analyzes local Git state and
-does not collect or transmit usage or analytics data, phone home, check for
-updates, or submit crash reports. Hosting platforms may count page views,
-downloads, or workflow activity independently; those counters are not emitted
-by boundver. Read the [privacy and telemetry policy](privacy.md).
+does not collect or transmit source, usage, analytics, update checks, or crash
+reports. Read the [privacy policy](privacy.md) and [security model](security-model.md).
 
-## Choose your path
-
-- New repository: follow [getting started](getting-started.md).
-- Existing monorepo: use [gradual adoption](gradual-adoption.md).
-- Reviewing a branch: use [historical range review](reference.md#historical-range-review).
-- Evaluating a real branch workflow: run the [17-component case study](case-study-range-review.md).
-- CI integration: copy a recipe from the [CI cookbook](ci-cookbook.md).
-- Runtime expectations: see the reproducible [performance contract](performance.md).
-- Containers, Homebrew, or GitLab: see [distribution](distribution.md).
-- Evaluating the model: read [why boundver](WHY_BOUNDVER.md).
-- Sources, exit codes, facet availability: see [reference](reference.md).
-
-!!! important
-
-    A clean boundver result means declared inputs agree with their recorded
-    identities. It is not proof of semantic or backward compatibility.
+Using or evaluating boundver? You can identify yourself voluntarily in the
+[adopter discussion](https://github.com/yzm1/boundver/discussions/100).

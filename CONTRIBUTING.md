@@ -41,6 +41,16 @@ drift. Do not edit `scripts/requirements/*.lock` or
 - Update docs when CLI or config behavior changes.
 - Ensure tests pass before submitting.
 
+For documentation changes, follow the
+[documentation style guide](https://yzm1.github.io/boundver/documentation-style/),
+build the site strictly, and read the rendered pages you changed:
+
+```bash
+python -m mkdocs build --strict
+```
+
+Prefer clear, accurate technical meaning over writing to a readability score.
+
 ## Versioning philosophy
 
 boundver fingerprints are deterministic and content-addressed. Prefer explicit,
