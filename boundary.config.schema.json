@@ -73,7 +73,7 @@
     },
     "defaults": {
       "type": "object",
-      "description": "Repository-wide compatibility and verification defaults overridden by individual components.",
+      "description": "Repository-wide settings: compat_mode applies to every component, while verify_facets is the fallback policy for components without an override.",
       "properties": {
         "compat_mode": {
           "type": "string",

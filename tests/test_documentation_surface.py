@@ -59,6 +59,15 @@ def test_config_schemas_are_identical_valid_and_fully_described() -> None:
     )
     assert not missing, "schema fields without editor help:\n" + "\n".join(missing)
 
+    defaults_help = schema["properties"]["defaults"]["description"]
+    component_properties = schema["properties"]["components"][
+        "additionalProperties"
+    ]["properties"]
+    assert "compat_mode applies to every component" in defaults_help
+    assert "verify_facets is the fallback policy" in defaults_help
+    assert "compat_mode" not in component_properties
+    assert "verify_facets" in component_properties
+
 
 def test_homepage_is_focused_responsive_and_private_by_default() -> None:
     mkdocs = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
