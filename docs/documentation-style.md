@@ -16,30 +16,16 @@ the question being answered, and the shortest working path.
   the repository cannot substantiate.
 - Do not turn a readability score into a correctness claim.
 
-## Advisory report
+## Review the result
 
-`scripts/check_prose.py` reports sentences above a configurable word count and
-a short list of avoidable filler phrases. It ignores front matter, code fences,
-tables, inline code, links, and HTML tags where practical.
+Build the site with strict link checking, then read each rendered page you
+changed at desktop and narrow widths:
 
 ```bash
-python scripts/check_prose.py
-python scripts/check_prose.py README.md docs/index.md --format json
-python scripts/check_prose.py C:\other\guide.md --allow-external-paths
+python -m mkdocs build --strict
 ```
 
-The report exits `0` by default. Its findings are prompts for review, not
-proof that prose is bad. False positives are expected around technical names,
-lists, and sentences that need exact qualifications.
-File size, file count, retained findings, display paths, and rendered output are
-bounded. Crossing a limit returns exit `2` without printing a partial report;
-terminal control characters are escaped in human and error output. By default,
-the scanner reads regular files inside this repository and rejects symlinks.
-External regular files require the explicit `--allow-external-paths` opt-in.
-On Windows, the reader also denies concurrent writers and deletion while an
-input is open because Windows exposes creation time rather than POSIX change
-time through `st_ctime_ns`.
-
-`--fail-on-findings` exists for a future, explicitly reviewed ratchet. Do not
-enable it repository-wide until the selected document set has a stable baseline
-and contributors can see how to resolve or suppress a false positive.
+Check the opening, headings, code samples, links, and the route to the next
+task. Readability scores can prompt a closer look, but they cannot decide
+whether precise technical prose is good. Boundver does not currently make a
+prose heuristic part of its test or release gates.

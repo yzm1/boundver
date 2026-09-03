@@ -43,15 +43,13 @@ drift. Do not edit `scripts/requirements/*.lock` or
 
 For documentation changes, follow the
 [documentation style guide](docs/documentation-style.md), build the site
-strictly, and inspect the advisory prose report:
+strictly, and read the rendered pages you changed:
 
 ```bash
 python -m mkdocs build --strict
-python scripts/check_prose.py
 ```
 
-Prose findings are review prompts and do not fail by default. Prefer a clear,
-accurate exception over rewriting technical meaning to satisfy a heuristic.
+Prefer clear, accurate technical meaning over writing to a readability score.
 
 ## Versioning philosophy
 

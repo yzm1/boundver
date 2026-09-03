@@ -104,10 +104,6 @@ All notable changes to this project are documented here. The format follows
   model, symptom-led troubleshooting guide, and documentation style guide.
   Every user-facing configuration field now has editor help in both
   byte-identical JSON Schema copies.
-- Added a deterministic, bounded prose report for long sentences and a small
-  set of avoidable phrases. It remains advisory by default, documents expected
-  false positives, and requires an explicit opt-in before findings affect an
-  exit status.
 - Decoupled v0.15 development and release from semantic-provider proposal
   acceptance. v0.15 contains no semantic-provider implementation and continues
   through the ordinary exact-candidate release controls; the independent
