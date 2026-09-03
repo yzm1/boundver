@@ -115,14 +115,20 @@ def test_normative_docs_include_the_canonical_sources() -> None:
     hashing = (
         REPO_ROOT / "docs" / "hashing-contract.md"
     ).read_text(encoding="utf-8")
+    support = (REPO_ROOT / "docs" / "support.md").read_text(encoding="utf-8")
 
     assert "pymdownx.snippets:" in mkdocs
     assert "restrict_base_path: true" in mkdocs
     assert "url_download: false" in mkdocs
     assert workflow.count('- "spec/**"') == 2
     assert workflow.count('- "SUPPORT.md"') == 2
-    assert specification.strip() == '--8<-- "spec/spec.md"'
-    assert hashing.strip() == '--8<-- "spec/HASHING.md"'
+    for wrapper, source in (
+        (specification, "spec/spec.md"),
+        (hashing, "spec/HASHING.md"),
+        (support, "SUPPORT.md"),
+    ):
+        assert re.search(r"^hide:\s*\n\s+- edit\s*$", wrapper, re.MULTILINE)
+        assert wrapper.rstrip().endswith(f'--8<-- "{source}"')
 
 
 def test_readme_keeps_the_decision_path_short() -> None:
