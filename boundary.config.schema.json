@@ -140,12 +140,12 @@
               },
               {
                 "type": "object",
-                "description": "Read the newest matching semantic version from an immutable Git tag.",
+                "description": "Read a version from Git's closest reachable tag matching a prefix; the remaining suffix must be SemVer.",
                 "required": ["git_tag_prefix"],
                 "properties": {
                   "git_tag_prefix": {
                     "$ref": "#/$defs/gitTagPrefix",
-                    "description": "Literal prefix used to select semantic-version Git tags for this component."
+                    "description": "Literal prefix passed to Git tag matching; the suffix of the closest reachable match must be SemVer."
                   }
                 },
                 "additionalProperties": false
@@ -195,7 +195,7 @@
           },
           "vendored_copies": {
             "type": "array",
-            "description": "Repository-relative directories that must remain byte-identical mirrors of the component's complete tracked tree, not only its selected boundary paths.",
+            "description": "Repository-relative directories whose complete tracked trees must match the component under boundver's content-only digest; text CRLF and LF line endings are equivalent.",
             "items": {"$ref": "#/$defs/relativePath"}
           },
           "consumers": {

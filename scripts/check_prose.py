@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 import json
 import os
 import re
@@ -59,6 +60,17 @@ class Finding:
     rule: str
     message: str
     excerpt: str
+
+
+@dataclass(frozen=True)
+class _Paragraph:
+    text: str
+    line_starts: tuple[int, ...]
+    source_lines: tuple[int, ...]
+
+    def source_line(self, offset: int) -> int:
+        index = bisect_right(self.line_starts, offset) - 1
+        return self.source_lines[max(index, 0)]
 
 
 def _file_identity(file_stat: os.stat_result) -> tuple[int, int]:
@@ -207,21 +219,34 @@ def _clean_markdown(line: str) -> str:
     return " ".join(text.split())
 
 
-def _paragraphs(text: str) -> Iterator[tuple[int, str]]:
+def _paragraphs(text: str) -> Iterator[_Paragraph]:
     lines = text.splitlines()
     front_matter = bool(lines and lines[0].strip() == "---")
     in_fence = False
     fence_character = ""
-    pending: list[str] = []
-    start_line = 1
+    pending: list[tuple[int, str]] = []
 
-    def flush() -> tuple[int, str] | None:
+    def flush() -> _Paragraph | None:
         nonlocal pending
         if not pending:
             return None
-        paragraph = " ".join(pending)
+        pieces: list[str] = []
+        line_starts: list[int] = []
+        source_lines: list[int] = []
+        offset = 0
+        for source_line, cleaned_line in pending:
+            if pieces:
+                offset += 1
+            line_starts.append(offset)
+            source_lines.append(source_line)
+            pieces.append(cleaned_line)
+            offset += len(cleaned_line)
         pending = []
-        return start_line, paragraph
+        return _Paragraph(
+            text=" ".join(pieces),
+            line_starts=tuple(line_starts),
+            source_lines=tuple(source_lines),
+        )
 
     for line_number, raw_line in enumerate(lines, start=1):
         stripped = raw_line.strip()
@@ -263,9 +288,7 @@ def _paragraphs(text: str) -> Iterator[tuple[int, str]]:
         cleaned = _clean_markdown(raw_line)
         if not cleaned:
             continue
-        if not pending:
-            start_line = line_number
-        pending.append(cleaned)
+        pending.append((line_number, cleaned))
         if starts_list_item:
             result = flush()
             if result:
@@ -274,6 +297,16 @@ def _paragraphs(text: str) -> Iterator[tuple[int, str]]:
     result = flush()
     if result:
         yield result
+
+
+def _sentence_spans(text: str) -> Iterator[tuple[int, str]]:
+    start = 0
+    for boundary in SENTENCE_END_RE.finditer(text):
+        if boundary.start() > start:
+            yield start, text[start : boundary.start()]
+        start = boundary.end()
+    if start < len(text):
+        yield start, text[start:]
 
 
 def _excerpt(text: str, limit: int = 180) -> str:
@@ -305,15 +338,22 @@ def inspect_text(
     if max_findings < 0:
         raise ValueError("max_findings must not be negative")
     findings: list[Finding] = []
-    for line, paragraph in _paragraphs(text):
-        for sentence in SENTENCE_END_RE.split(paragraph):
-            word_count = len(WORD_RE.findall(sentence))
+    for paragraph in _paragraphs(text):
+        for sentence_start, sentence in _sentence_spans(paragraph.text):
+            word_count = 0
+            overflow_offset = 0
+            for word in WORD_RE.finditer(sentence):
+                word_count += 1
+                if word_count == max_sentence_words + 1:
+                    overflow_offset = word.start()
             if word_count > max_sentence_words:
                 _retain_finding(
                     findings,
                     Finding(
                         path=display_path,
-                        line=line,
+                        line=paragraph.source_line(
+                            sentence_start + overflow_offset
+                        ),
                         rule="long-sentence",
                         message=(
                             f"{word_count} words; consider splitting above "
@@ -324,15 +364,16 @@ def inspect_text(
                     max_findings=max_findings,
                 )
         for pattern, suggestion in DISCOURAGED:
-            if pattern.search(paragraph):
+            match = pattern.search(paragraph.text)
+            if match:
                 _retain_finding(
                     findings,
                     Finding(
                         path=display_path,
-                        line=line,
+                        line=paragraph.source_line(match.start()),
                         rule="avoidable-phrase",
                         message=suggestion,
-                        excerpt=_excerpt(paragraph),
+                        excerpt=_excerpt(paragraph.text),
                     ),
                     max_findings=max_findings,
                 )

@@ -96,6 +96,8 @@ The Git view used for one operation: committed `head`, staged `index`, or
 
 ## Vendored copy
 
-A repository-relative directory whose tracked tree must match the complete
-tracked tree under the component root. Boundver verifies the mirror instead of
-assuming that a generated or copied tree stayed synchronized.
+A repository-relative directory whose complete tracked tree must have the same
+content-only digest as the complete tracked tree under the component root. Text
+CRLF and LF line endings are equivalent under that digest. Boundver verifies
+the mirror instead of assuming that a generated or copied tree stayed
+synchronized.

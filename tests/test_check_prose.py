@@ -69,6 +69,25 @@ def test_long_sentence_threshold_is_explicit() -> None:
     assert "11 words" in findings[0].message
 
 
+def test_report_points_to_the_source_line_containing_the_finding() -> None:
+    findings = checker.inspect_text(
+        "Opening sentence.\nWe do this in order to test.\n",
+        "guide.md",
+    )
+    long_sentence = checker.inspect_text(
+        "One two three four five\nsix seven eight nine ten eleven.\n",
+        "guide.md",
+        max_sentence_words=10,
+    )
+
+    assert [(finding.line, finding.rule) for finding in findings] == [
+        (2, "avoidable-phrase")
+    ]
+    assert [(finding.line, finding.rule) for finding in long_sentence] == [
+        (2, "long-sentence")
+    ]
+
+
 def test_finding_count_has_an_operation_budget() -> None:
     text = "\n\n".join("We do this in order to test." for _ in range(4))
 

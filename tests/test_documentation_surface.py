@@ -152,9 +152,15 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
     assert "tracked code under `src/`" in readme
     assert "boundver init --discover" in readme
     normalized_summary = " ".join(executive_summary.split())
+    normalized_troubleshooting = " ".join(troubleshooting.split())
+    normalized_glossary = " ".join(glossary.split())
     assert "records up to four identities for each component" in normalized_summary
     assert "implicit boundary without paths" in normalized_summary
-    assert "`implicit` provider with\none or more paths" in troubleshooting
-    assert "An empty implicit boundary has no boundary digest" in troubleshooting
-    assert "its digest includes the boundary digest" in glossary
-    assert "complete\ntracked tree under the component root" in glossary
+    assert "`implicit` provider with one or more paths" in normalized_troubleshooting
+    assert "An empty implicit boundary has no boundary digest" in normalized_troubleshooting
+    assert "its digest includes the boundary digest" in normalized_glossary
+    assert (
+        "same content-only digest as the complete tracked tree under the component root"
+        in normalized_glossary
+    )
+    assert "CRLF and LF line endings are equivalent" in normalized_glossary
