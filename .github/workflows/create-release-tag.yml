@@ -462,7 +462,7 @@ env:
 
     semantic_review_authority = None
     semantic_reviewer_ids = set()
-    if release_tag == "v0.15.0":
+    if release_tag == "v0.16.0":
         expected_owner_permissions = {
             "admin": True,
             "maintain": True,
@@ -1554,11 +1554,11 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
-          if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+          if [[ "$RELEASE_TAG" == v0.16.0 ]]; then
             clean_python_cwd=$(mktemp -d)
             (cd "$clean_python_cwd" && python3 -I \
               "$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py" \
-              --gate v0.15-release \
+              --gate semantic-provider-release \
               --release-tag "$RELEASE_TAG" \
               --release-sha "$RELEASE_SHA")
           fi
@@ -1654,10 +1654,10 @@ jobs:
             "$REVIEW_STATE_PROGRAM" \
             "$RELEASE_SHA" "$RELEASE_TAG" "$GITHUB_REPOSITORY")
           bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"
-          if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+          if [[ "$RELEASE_TAG" == v0.16.0 ]]; then
             semantic_review_valid_until=$(cd "$clean_python_cwd" && python3 -I \
               "$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py" \
-              --gate v0.15-release \
+              --gate semantic-provider-release \
               --release-tag "$RELEASE_TAG" \
               --release-sha "$RELEASE_SHA" \
               --format expiry)
@@ -1732,7 +1732,7 @@ jobs:
         run: |
           set -euo pipefail
           require_semantic_review_fresh() {
-            if [[ "$RELEASE_TAG" == v0.15.0 ]]; then
+            if [[ "$RELEASE_TAG" == v0.16.0 ]]; then
               if [[ ! "$SEMANTIC_REVIEW_VALID_UNTIL" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$ ]]; then
                 echo "Semantic-provider review expiry handoff is malformed" >&2
                 exit 1

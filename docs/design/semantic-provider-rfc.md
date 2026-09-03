@@ -2,7 +2,31 @@
 
 <!-- semantic-provider-proposal-status: review-ready -->
 <!-- semantic-provider-implementation-allowed: false -->
-<!-- semantic-provider-v0.15-work-allowed: false -->
+<!-- semantic-provider-work-allowed: false -->
+
+## Executive summary
+
+This is a design record for future semantic providers, not a user setup guide
+and not permission to implement them.
+
+- Small dependency-free providers may remain built into Boundver.
+- Rich language-aware providers must run as pinned WebAssembly components in a
+  separate, capability-limited process.
+- Repository configuration cannot install, discover, or authorize executable
+  provider code.
+- Analysis must not expose ambient files, environment variables, credentials,
+  network access, subprocesses, or host Python imports.
+- Implementation remains blocked until an independent security reviewer and a
+  different product reviewer approve the exact proposal commit.
+
+This proposal does not block v0.15, which contains no semantic-provider
+implementation. The first planned semantic-provider release is v0.16.0.
+
+The rest of this document defines the detailed architecture and acceptance
+conditions. Most Boundver users do not need to read it; start with the
+[project executive summary](../executive-summary.md).
+
+## Proposal record
 
 | Field | Value |
 | --- | --- |
@@ -21,7 +45,7 @@
     existing `custom.*` interface remains explicitly trusted, in-process
     Python; it is not the security model proposed here.
 
-## Decision
+## Architecture decision
 
 Boundver will use three provider classes with deliberately different trust
 claims:
@@ -247,10 +271,10 @@ in `spec/semantic-provider-proposal.json`.
   updated threat/evidence records.
 - **SPC-034 - Release gates consume exact evidence.** Proposal acceptance and
   full-source bug/issue/security audits are machine-checked against the exact
-  reviewed candidate tree before v0.15.0 can be promoted. The external release
-  SHA and its GitHub commit tree must match that reviewed tree. An issue,
-  paragraph, stale report, self-attestation, or green run for another tree is
-  insufficient.
+  reviewed candidate tree before a semantic-provider release can be promoted.
+  The external release SHA and its GitHub commit tree must match that reviewed
+  tree. An issue, paragraph, stale report, self-attestation, or green run for
+  another tree is insufficient.
 - **SPC-035 - Distribution is legally reviewable.** Every first-party/curated
   artifact and transitive dependency has machine-readable license inventory,
   required notices, source availability where required, and an explicit policy
@@ -300,7 +324,8 @@ in `spec/semantic-provider-proposal.json`.
   verifier/broker process after OS containment and hard limits are active.
   Runtime initialization may occur first only when it consumes no
   provider-controlled bytes or metadata.
-- **SPC-043 - v0.15 release authority is external and exact-tree bound.** The
+- **SPC-043 - Semantic-provider release authority is external and exact-tree
+  bound.** The
   proposal declares only immutable requirements. A separate release-candidate
   PR supplies two fresh approvals from the distinct external humans named by
   the pinned public reviewer roster; both approvals contain role-specific
@@ -330,7 +355,7 @@ in `spec/semantic-provider-proposal.json`.
   role-specific exact-head approvals. A roster edit invalidates all older
   approvals.
 - **SPC-045 - Repository mutation authority is owner-exclusive.** The
-  authoritative proposal and v0.15 release snapshots enumerate every
+  authoritative proposal and semantic-provider release snapshots enumerate every
   repository collaborator through GitHub's [collaborator-list
   endpoint](https://docs.github.com/en/rest/collaborators/collaborators#list-repository-collaborators)
   and accept exactly one principal: repository owner account `22440724` with
@@ -848,8 +873,8 @@ The proposal can move from Draft to Accepted only when:
 
 1. The RFC, threat model, and machine-readable traceability record agree and
    pass `python -I scripts/check_semantic_provider_proposal.py`. Exact status,
-   implementation-authority, and v0.15-authority markers in both human
-   documents must match the manifest.
+   implementation-authority, and semantic-provider-work-authority markers in
+   both human documents must match the manifest.
 2. Every in-scope threat has preventive and detective/recovery controls plus a
    named verification plan; critical/high threats have defense in depth.
 3. Red-team findings are closed or explicitly accepted with owner, rationale,
@@ -1035,14 +1060,16 @@ Each Python/TypeScript provider additionally requires:
   scans, and verified provenance; and
 - upgrade, rollback, revocation, and lock-migration demonstrations.
 
-### v0.15 release gate
+### Semantic-provider release gate
 
-This proposal does not authorize a v0.15 release. Before v0.15.0 promotion, the
-entire then-current source, tests, scripts, workflows, Action, container,
-schemas, docs, packaging, and release automation must receive fresh bug, issue,
-and security scans. Every finding must be triaged, release blockers closed, and
-the exact candidate rerun through full supported-platform and publication
-gates.
+This proposal does not govern or block v0.15.0: that release contains no
+semantic-provider implementation and continues through Boundver's ordinary
+exact-candidate release controls. The first planned semantic-provider release
+is v0.16.0. Before that promotion, the entire then-current source, tests,
+scripts, workflows, Action, container, schemas, docs, packaging, and release
+automation must receive fresh bug, issue, and security scans. Every finding
+must be triaged, release blockers closed, and the exact candidate rerun through
+full supported-platform and publication gates.
 
 The release candidate must be the merge result of a separate PR into `main`.
 Its reviewed head tree must be byte-identical to the release commit tree, and
@@ -1055,7 +1082,7 @@ latest decisive review from each designated reviewer must still be an approval.
 The security review body must contain exactly these non-empty lines, in order:
 
 ```text
-semantic-provider-v0.15-release-review/v1
+semantic-provider-v0.16-release-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Full-source-bug-scan: passed
@@ -1070,14 +1097,14 @@ Verdict: approved
 The product review body must contain exactly:
 
 ```text
-semantic-provider-v0.15-product-review/v1
+semantic-provider-v0.16-product-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Verdict: approved
 ```
 
-`scripts/audit_semantic_provider_proposal.py --gate v0.15-release` accepts the
-release tag and SHA as external inputs, captures two identical bounded GitHub
+`scripts/audit_semantic_provider_proposal.py --gate semantic-provider-release`
+accepts the release tag and SHA as external inputs, captures two identical bounded GitHub
 snapshots, and proves the tree/ancestry/review bindings. It never accepts scan
 booleans, reviewer names, or a candidate SHA embedded in the proposal manifest.
 The local release launcher enforces this gate, the tag workflow enforces it

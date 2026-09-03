@@ -1433,6 +1433,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertNotIn('("gh", "auth", "token"', gate)
         self.assertIn("scripts/install_locked_tools.py", gate)
         self.assertIn("scripts/verify_release_candidate.py", gate)
+        self.assertIn('if tag == "v0.16.0":', gate)
+        self.assertIn('"semantic-provider-release"', gate)
+        self.assertNotIn('if tag == "v0.15.0":', gate)
+        self.assertNotIn('"v0.15-release"', gate)
         self.assertNotIn("scripts/packaging_smoke.sh", gate)
         self.assertNotRegex(
             gate,

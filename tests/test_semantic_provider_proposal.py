@@ -54,7 +54,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         *,
         document_status=None,
         document_implementation_allowed=None,
-        document_v0_15_work_allowed=None,
+        document_semantic_provider_work_allowed=None,
         **validation_options,
     ):
         value = self._manifest()
@@ -77,8 +77,8 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 return validate()
             if document_implementation_allowed is None:
                 document_implementation_allowed = document_status == "accepted"
-            if document_v0_15_work_allowed is None:
-                document_v0_15_work_allowed = document_status == "accepted"
+            if document_semantic_provider_work_allowed is None:
+                document_semantic_provider_work_allowed = document_status == "accepted"
             original_reader = _CHECKER._read_document
 
             def read_document(repo, raw, field):
@@ -94,9 +94,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
                         + str(document_implementation_allowed).lower(),
                     )
                     text = text.replace(
-                        "semantic-provider-v0.15-work-allowed: false",
-                        "semantic-provider-v0.15-work-allowed: "
-                        + str(document_v0_15_work_allowed).lower(),
+                        "semantic-provider-work-allowed: false",
+                        "semantic-provider-work-allowed: "
+                        + str(document_semantic_provider_work_allowed).lower(),
                     )
                 return text
 
@@ -111,7 +111,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
     def _mark_accepted(value):
         value["status"] = "accepted"
         value["implementation_allowed"] = True
-        value["v0_15_work_allowed"] = True
+        value["semantic_provider_work_allowed"] = True
         value["red_team"]["status"] = "passed"
         value["red_team"]["residual_risks_accepted"] = True
         for round_record in value["red_team"]["rounds"]:
@@ -132,7 +132,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         return self._manifest()["review_requirements"]
 
     def _release_requirements(self):
-        return self._manifest()["release_gates"]["v0.15.0"]
+        return self._manifest()["release_gates"]["v0.16.0"]
 
     @staticmethod
     def _configured_roster_body(
@@ -397,7 +397,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 self._release_requirements()["security_review_marker"],
                 f"Reviewed-commit: {reviewed_commit}",
                 "Independent-reviewer: confirmed",
-                *_AUDITOR.V015_RELEASE_ATTESTATIONS,
+                *_AUDITOR.SEMANTIC_RELEASE_ATTESTATIONS,
                 "Verdict: approved",
                 "",
             )
@@ -418,7 +418,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
             snapshot,
             self._release_requirements(),
             evaluated_at=self.AUDIT_TIME,
-            attestations=_AUDITOR.V015_RELEASE_ATTESTATIONS,
+            attestations=_AUDITOR.SEMANTIC_RELEASE_ATTESTATIONS,
         )
 
     def _initialize_gate_repository(self, directory):
@@ -472,15 +472,43 @@ class SemanticProviderProposalTests(unittest.TestCase):
         self.assertEqual(result["controls"], 45)
         self.assertEqual(result["verifications"], 38)
         self.assertFalse(result["implementation_allowed"])
-        self.assertFalse(result["v0_15_work_allowed"])
-        self.assertFalse(result["v0_15_release_allowed"])
+        self.assertFalse(result["semantic_provider_work_allowed"])
+        self.assertFalse(result["semantic_provider_release_allowed"])
         self.assertTrue(result["acceptance_blockers"])
+
+    def test_range_release_is_decoupled_while_semantic_release_stays_gated(self):
+        manifest = self._manifest()
+        self.assertEqual(set(manifest["release_gates"]), {"v0.16.0"})
+
+        governed_paths = (
+            ROOT / ".github" / "workflows" / "create-release-tag.yml",
+            ROOT / ".github" / "workflows" / "publish.yml",
+            ROOT / "scripts" / "publish_release.py",
+        )
+        governed_text = "\n".join(
+            path.read_text(encoding="utf-8") for path in governed_paths
+        )
+        self.assertNotIn("v0.15-release", governed_text)
+        self.assertNotIn('if tag == "v0.15.0":', governed_text)
+        self.assertNotIn('[[ "$RELEASE_TAG" == v0.15.0 ]]', governed_text)
+        self.assertIn("--gate semantic-provider-release", governed_text)
+        self.assertIn('if tag == "v0.16.0":', governed_text)
+        self.assertIn('[[ "$RELEASE_TAG" == v0.16.0 ]]', governed_text)
+
+        for parser, arguments in (
+            (_CHECKER._parser(), ["--require-v0-15-release"]),
+            (_AUDITOR._parser(), ["--gate", "v0.15-release"]),
+        ):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(
+                io.StringIO()
+            ), self.assertRaises(SystemExit):
+                parser.parse_args(arguments)
 
     def test_acceptance_work_and_release_modes_are_blocked(self):
         for keyword in (
             "require_accepted",
-            "require_v0_15_work",
-            "require_v0_15_release",
+            "require_semantic_provider_work",
+            "require_semantic_provider_release",
         ):
             with self.subTest(keyword=keyword):
                 with self.assertRaises(_CHECKER.ProposalError):
@@ -489,7 +517,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
     def test_unaccepted_record_cannot_enable_implementation(self):
         def mutate(value):
             value["implementation_allowed"] = True
-            value["v0_15_work_allowed"] = True
+            value["semantic_provider_work_allowed"] = True
 
         with self.assertRaisesRegex(
             _CHECKER.ProposalError,
@@ -499,7 +527,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 mutate,
                 document_status="review-ready",
                 document_implementation_allowed=True,
-                document_v0_15_work_allowed=True,
+                document_semantic_provider_work_allowed=True,
             )
 
     def test_exact_external_authority_unlocks_only_complete_accepted_record(self):
@@ -514,10 +542,10 @@ class SemanticProviderProposalTests(unittest.TestCase):
             document_status="accepted",
             authoritative_review_passed=True,
             require_accepted=True,
-            require_v0_15_work=True,
+            require_semantic_provider_work=True,
         )
         self.assertTrue(result["implementation_allowed"])
-        self.assertTrue(result["v0_15_work_allowed"])
+        self.assertTrue(result["semantic_provider_work_allowed"])
         self.assertEqual(result["acceptance_blockers"], [])
 
         result = self._validate_mutation(
@@ -525,16 +553,16 @@ class SemanticProviderProposalTests(unittest.TestCase):
             document_status="accepted",
             authoritative_review_passed=True,
             authoritative_release_passed=True,
-            require_v0_15_release=True,
+            require_semantic_provider_release=True,
         )
-        self.assertTrue(result["v0_15_release_allowed"])
+        self.assertTrue(result["semantic_provider_release_allowed"])
 
         with self.assertRaisesRegex(_CHECKER.ProposalError, "release is blocked"):
             self._validate_mutation(
                 self._mark_accepted,
                 document_status="accepted",
                 authoritative_review_passed=True,
-                require_v0_15_release=True,
+                require_semantic_provider_release=True,
             )
         with self.assertRaisesRegex(_CHECKER.ProposalError, "cannot bypass"):
             self._validate_mutation(
@@ -772,41 +800,41 @@ class SemanticProviderProposalTests(unittest.TestCase):
             ),
             (
                 "release fields",
-                lambda value: value["release_gates"]["v0.15.0"].update({"extra": True}),
+                lambda value: value["release_gates"]["v0.16.0"].update({"extra": True}),
             ),
             (
                 "release evidence source",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"evidence_source": "manifest-self-attestation/v1"}
                 ),
             ),
             (
                 "release reviewer authority",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"reviewer_authority": "repository-write/v1"}
                 ),
             ),
             (
                 "release reviewer roster",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"review_roster_gist_id": "attacker"}
                 ),
             ),
             (
                 "release distinct roster",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"distinct_roster_reviewers_required": False}
                 ),
             ),
             (
                 "release owner-exclusive mutation authority",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"owner_exclusive_repository_collaborators_required": False}
                 ),
             ),
             (
                 "release owner mutation attestation",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {
                         "owner_exclusive_mutation_authority_attestation_required": False
                     }
@@ -814,25 +842,25 @@ class SemanticProviderProposalTests(unittest.TestCase):
             ),
             (
                 "release product marker",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"product_review_marker": "looks-approved"}
                 ),
             ),
             (
                 "release repository ID",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"repository_id": 1}
                 ),
             ),
             (
                 "release exact tree",
-                lambda value: value["release_gates"]["v0.15.0"].update(
+                lambda value: value["release_gates"]["v0.16.0"].update(
                     {"exact_tree_required": False}
                 ),
             ),
             (
                 "release attestation order",
-                lambda value: value["release_gates"]["v0.15.0"][
+                lambda value: value["release_gates"]["v0.16.0"][
                     "required_attestations"
                 ].reverse(),
             ),
@@ -960,7 +988,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         )
         result = json.loads(completed.stdout)
         self.assertTrue(result["ok"])
-        self.assertFalse(result["v0_15_work_allowed"])
+        self.assertFalse(result["semantic_provider_work_allowed"])
         self.assertEqual(completed.stderr, "")
 
     def test_authoritative_review_snapshot_passes(self):
@@ -1499,12 +1527,12 @@ class SemanticProviderProposalTests(unittest.TestCase):
         for body in (
             "",
             (
-                "semantic-provider-v0.15-product-review/v1\n"
+                "semantic-provider-v0.16-product-review/v1\n"
                 f"Reviewed-commit: {'9' * 40}\n"
                 "Verdict: approved\n"
             ),
             (
-                "semantic-provider-v0.15-product-review/v1\n"
+                "semantic-provider-v0.16-product-review/v1\n"
                 f"Reviewed-commit: {'7' * 40}\n"
                 "Independent-reviewer: confirmed\n"
                 "Verdict: approved\n"
@@ -1545,12 +1573,12 @@ class SemanticProviderProposalTests(unittest.TestCase):
         requirements = _AUDITOR._load_release_requirements(MANIFEST)
         self.assertEqual(
             tuple(requirements["required_attestations"]),
-            _AUDITOR.V015_RELEASE_ATTESTATIONS,
+            _AUDITOR.SEMANTIC_RELEASE_ATTESTATIONS,
         )
         self.assertNotIn("exact_candidate_commit", requirements)
         self.assertNotIn("release_allowed", requirements)
         value = self._manifest()
-        value["release_gates"]["v0.15.0"]["maximum_review_age_days"] = 15
+        value["release_gates"]["v0.16.0"]["maximum_review_age_days"] = 15
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "proposal.json"
             path.write_text(json.dumps(value), encoding="utf-8")
@@ -1561,7 +1589,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         original_reader = _CHECKER._read_document
         mutations = {
             "semantic-provider release-tag gate": (
-                "--gate v0.15-release",
+                "--gate semantic-provider-release",
                 "--gate accepted",
             ),
             "semantic-provider publication gate": (
@@ -1569,7 +1597,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 '--release-sha "$CONTROL_SHA"',
             ),
             "semantic-provider local release gate": (
-                'if tag == "v0.15.0":',
+                'if tag == "v0.16.0":',
                 'if tag == "never":',
             ),
         }
@@ -1911,14 +1939,14 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 ["--manifest", "outside-the-reviewed-tree.json"]
             )
 
-    def test_v015_release_audit_requires_external_tag_and_sha(self):
+    def test_semantic_release_audit_requires_external_tag_and_sha(self):
         for arguments in (
-            ["--gate", "v0.15-release"],
+            ["--gate", "semantic-provider-release"],
             [
                 "--gate",
-                "v0.15-release",
+                "semantic-provider-release",
                 "--release-tag",
-                "v0.15.1",
+                "v0.16.1",
                 "--release-sha",
                 "e" * 40,
             ],
@@ -1931,7 +1959,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertIn("audit failed", stderr.getvalue())
 
-    def test_v015_release_main_double_audits_proposal_and_release_records(self):
+    def test_semantic_release_main_double_audits_proposal_and_release_records(self):
         proposal = self._review_snapshot()
         release = self._release_snapshot()
         now = datetime.now(timezone.utc)
@@ -1995,9 +2023,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
                     "--repo",
                     str(ROOT),
                     "--gate",
-                    "v0.15-release",
+                    "semantic-provider-release",
                     "--release-tag",
-                    "v0.15.0",
+                    "v0.16.0",
                     "--release-sha",
                     "e" * 40,
                     "--format",
@@ -2012,7 +2040,7 @@ class SemanticProviderProposalTests(unittest.TestCase):
         options = checker.validate_proposal.call_args.kwargs
         self.assertTrue(options["authoritative_review_passed"])
         self.assertTrue(options["authoritative_release_passed"])
-        self.assertTrue(options["require_v0_15_release"])
+        self.assertTrue(options["require_semantic_provider_release"])
 
     def test_graphql_review_edit_metadata_is_id_bound_and_bounded(self):
         client = _AUDITOR.GitHubClient(ROOT, gh_executable=sys.executable)
