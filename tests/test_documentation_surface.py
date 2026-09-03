@@ -97,6 +97,9 @@ def test_homepage_is_focused_responsive_and_private_by_default() -> None:
 
 def test_normative_docs_include_the_canonical_sources() -> None:
     mkdocs = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "docs.yml"
+    ).read_text(encoding="utf-8")
     specification = (
         REPO_ROOT / "docs" / "specification.md"
     ).read_text(encoding="utf-8")
@@ -107,6 +110,8 @@ def test_normative_docs_include_the_canonical_sources() -> None:
     assert "pymdownx.snippets:" in mkdocs
     assert "restrict_base_path: true" in mkdocs
     assert "url_download: false" in mkdocs
+    assert workflow.count('- "spec/**"') == 2
+    assert workflow.count('- "SUPPORT.md"') == 2
     assert specification.strip() == '--8<-- "spec/spec.md"'
     assert hashing.strip() == '--8<-- "spec/HASHING.md"'
 

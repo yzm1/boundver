@@ -68,12 +68,22 @@ def _file_identity(file_stat: os.stat_result) -> tuple[int, int]:
 def _file_snapshot(
     file_stat: os.stat_result,
 ) -> tuple[int, int, int, int, int]:
+    # Windows path and CRT descriptor stats expose different st_ctime_ns
+    # semantics on current Python releases.  st_birthtime_ns is the stable
+    # creation field on both; concurrent mutation after opening is prevented
+    # by the non-sharing Windows handle below.  POSIX keeps ctime as its
+    # unforgeable change signal.
+    metadata_time_ns = (
+        getattr(file_stat, "st_birthtime_ns", file_stat.st_ctime_ns)
+        if os.name == "nt"
+        else file_stat.st_ctime_ns
+    )
     return (
         file_stat.st_dev,
         file_stat.st_ino,
         file_stat.st_size,
         file_stat.st_mtime_ns,
-        file_stat.st_ctime_ns,
+        metadata_time_ns,
     )
 
 
@@ -158,7 +168,7 @@ def _read_bounded(
             before_descriptor = os.fstat(stream.fileno())
             if not _is_plain_file(before_descriptor):
                 raise ValueError(f"{display_path}: is not a regular file")
-            if _file_identity(before_descriptor) != _file_identity(before_path):
+            if _file_snapshot(before_descriptor) != _file_snapshot(expected_stat):
                 raise ValueError(f"{display_path}: changed while opening")
             payload = stream.read(MAX_FILE_BYTES + 1)
             after_descriptor = os.fstat(stream.fileno())

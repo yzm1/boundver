@@ -195,7 +195,7 @@
           },
           "vendored_copies": {
             "type": "array",
-            "description": "Component-relative copies that must remain byte-identical to the selected boundary source.",
+            "description": "Repository-relative directories that must remain byte-identical mirrors of the component's complete tracked tree, not only its selected boundary paths.",
             "items": {"$ref": "#/$defs/relativePath"}
           },
           "consumers": {

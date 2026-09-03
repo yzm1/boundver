@@ -76,7 +76,8 @@ def test_finding_count_has_an_operation_budget() -> None:
         checker.inspect_text(text, "guide.md", max_findings=3)
 
 
-def test_file_snapshot_includes_change_time() -> None:
+@pytest.mark.skipif(os.name == "nt", reason="Windows ctime is creation time")
+def test_file_snapshot_includes_change_time_on_posix() -> None:
     common = {
         "st_dev": 1,
         "st_ino": 2,
@@ -87,6 +88,21 @@ def test_file_snapshot_includes_change_time() -> None:
     assert checker._file_snapshot(
         SimpleNamespace(**common, st_ctime_ns=5)
     ) != checker._file_snapshot(SimpleNamespace(**common, st_ctime_ns=6))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows stat semantics")
+def test_file_snapshot_uses_stable_windows_birth_time() -> None:
+    common = {
+        "st_dev": 1,
+        "st_ino": 2,
+        "st_size": 3,
+        "st_mtime_ns": 4,
+        "st_birthtime_ns": 5,
+    }
+
+    assert checker._file_snapshot(
+        SimpleNamespace(**common, st_ctime_ns=6)
+    ) == checker._file_snapshot(SimpleNamespace(**common, st_ctime_ns=7))
 
 
 def test_markdown_discovery_stops_at_the_file_budget(tmp_path: Path) -> None:
@@ -196,6 +212,28 @@ def test_bounded_read_binds_to_the_validated_file_before_opening(
             "replacement.md",
             validated.lstat(),
         )
+
+
+def test_bounded_read_checks_the_full_snapshot_after_open(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "guide.md"
+    path.write_text("First.\n", encoding="utf-8")
+    validated = path.lstat()
+    real_open = checker._open_read_descriptor
+
+    def mutate_then_open(candidate: Path) -> int:
+        candidate.write_text("Other.\n", encoding="utf-8")
+        changed_mtime = validated.st_mtime_ns + 1_000_000_000
+        os.utime(
+            candidate,
+            ns=(validated.st_atime_ns, changed_mtime),
+        )
+        return real_open(candidate)
+
+    monkeypatch.setattr(checker, "_open_read_descriptor", mutate_then_open)
+    with pytest.raises(ValueError, match="changed while opening"):
+        checker._read_bounded(path, "guide.md", validated)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows sharing contract")
