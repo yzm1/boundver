@@ -112,6 +112,9 @@ def _read_bounded(path: Path, display_path: str) -> str:
     if (
         _file_snapshot(before_descriptor) != _file_snapshot(after_descriptor)
         or _file_identity(after_descriptor) != _file_identity(after_path)
+        or after_descriptor.st_size != after_path.st_size
+        or after_descriptor.st_mtime_ns != after_path.st_mtime_ns
+        or after_descriptor.st_size != len(payload)
     ):
         raise ValueError(f"{display_path}: changed while reading")
     try:
