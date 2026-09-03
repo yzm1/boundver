@@ -85,10 +85,10 @@ historical contract returns exit `2`.
 
 ## A facet is unavailable
 
-`boundary` needs either a non-`leaf` provider or an `implicit` provider with
-one or more paths. An empty implicit boundary has no boundary digest. `compat`
-needs a `version_source`, and `behavior` needs declared behavior paths. Either
-add the input or gate only facets the component supplies.
+`boundary` needs either a non-`leaf`, non-`implicit` provider or an `implicit`
+provider with one or more paths. An empty implicit boundary has no boundary
+digest. `compat` needs a `version_source`, and `behavior` needs declared
+behavior paths. Either add the input or gate only facets the component supplies.
 
 `--update` cannot manufacture an unavailable facet.
 

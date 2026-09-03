@@ -216,10 +216,13 @@ Using or evaluating boundver? You can identify yourself voluntarily in the
 ## Project
 
 Boundver is beta software under the MIT license. Issues and pull requests are
-welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md); maintainers should use
+welcome. Start with
+[CONTRIBUTING.md](https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md);
+maintainers should use
 the checked-in [release process](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md).
 
-The [changelog](CHANGELOG.md) records user-visible changes. The v0.15 line is
-focused on historical range review, security hardening, and making the public
-documentation easier to use. Semantic-provider implementation remains
-separately gated work for a later release.
+The [changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md) records
+user-visible changes. The v0.15 line is focused on historical range review,
+security hardening, and making the public documentation easier to use.
+Semantic-provider implementation remains separately gated work for a later
+release.

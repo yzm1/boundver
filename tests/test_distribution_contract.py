@@ -2127,7 +2127,17 @@ print(json.dumps(payload, separators=(",", ":")))
             "https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md",
             readme,
         )
+        self.assertIn(
+            "https://github.com/yzm1/boundver/blob/main/CONTRIBUTING.md",
+            readme,
+        )
+        self.assertIn(
+            "https://github.com/yzm1/boundver/blob/main/CHANGELOG.md",
+            readme,
+        )
         self.assertNotIn("(docs/RELEASING.md)", readme)
+        self.assertNotIn("(CONTRIBUTING.md)", readme)
+        self.assertNotIn("(CHANGELOG.md)", readme)
         self.assertIn("sdist contains repository-only material", smoke)
         for excluded in ("tests", "scripts", ".github", "Dockerfile", "action.yml"):
             self.assertIn(excluded, smoke)

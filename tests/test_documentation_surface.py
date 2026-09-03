@@ -169,6 +169,7 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
     assert "records up to four identities for each component" in normalized_summary
     assert "implicit boundary without paths" in normalized_summary
     assert "`implicit` provider with one or more paths" in normalized_troubleshooting
+    assert "non-`leaf`, non-`implicit` provider" in normalized_troubleshooting
     assert "An empty implicit boundary has no boundary digest" in normalized_troubleshooting
     assert "its digest includes the boundary digest" in normalized_glossary
     assert (
