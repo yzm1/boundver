@@ -1727,14 +1727,14 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             cwd=repo,
             env=audit_env,
         )
-        if tag == "v0.15.0":
+        if tag == "v0.16.0":
             _run(
                 (
                     sys.executable,
                     "-I",
                     "scripts/audit_semantic_provider_proposal.py",
                     "--gate",
-                    "v0.15-release",
+                    "semantic-provider-release",
                     "--release-tag",
                     tag,
                     "--release-sha",

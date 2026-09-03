@@ -1,17 +1,18 @@
 # Know which contracts changed — and which consumers to verify
 
-**boundver classifies declared contract drift and downstream impact across
-polyglot repositories.** It gives CI a portable answer when APIs, schemas,
-generated artifacts, configuration, and package surfaces cross compiler or
-build-system boundaries.
+Boundver answers one CI question: **what contract changed, and what depends on
+it?** Declare components, contract files, and consumer edges once. Boundver
+compares Git snapshots, classifies the change, and names the consumers that may
+need verification.
 
 [Start the one-minute demo](demo.md){ .md-button .md-button--primary }
+[Read the executive summary](executive-summary.md){ .md-button }
 [Install boundver](getting-started.md){ .md-button }
 [Using boundver? Tell us](https://github.com/yzm1/boundver/discussions/100){ .md-button }
 
 ![A boundver verification reports boundary drift and affected consumers](assets/verify-demo.svg)
 
-## Four signals instead of one changed bit
+## What you get
 
 | Facet | What it tells reviewers |
 |---|---|
@@ -20,9 +21,8 @@ build-system boundaries.
 | `boundary` | A declared public artifact changed. |
 | `compat` | The configured compatibility family changed. |
 
-Boundver stores those identities in `boundary.lock.json`. Later verification
-compares the same Git snapshot model, applies per-component policy, and reports
-declared direct or transitive consumers.
+Boundver stores these identities in `boundary.lock.json`. Later checks compare
+the chosen Git snapshots and report direct or transitive consumers.
 
 ```bash
 python -m pip install "boundver[schema,yaml]"
@@ -33,9 +33,8 @@ boundver verify --source working-tree
 
 ## Use it with the tools you already have
 
-Boundver does not replace compilers, affected-build graphs, schema-specific
-compatibility analysis, or consumer tests. It provides the classification and
-routing signal between them:
+Boundver does not replace compilers, build graphs, compatibility tools, or
+consumer tests. It supplies the routing signal between them:
 
 ```text
 Git snapshot -> boundver drift class -> semantic checker -> affected consumer suites

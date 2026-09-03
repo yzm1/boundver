@@ -8,7 +8,7 @@
     "proposal",
     "status",
     "implementation_allowed",
-    "v0_15_work_allowed",
+    "semantic_provider_work_allowed",
     "documents",
     "threats",
     "controls",
@@ -21,13 +21,13 @@
   ],
   "properties": {
     "$schema": {"type": "string"},
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "proposal": {"const": "boundver-semantic-provider-system/v1"},
     "status": {
       "enum": ["draft", "review-ready", "accepted", "rejected", "superseded"]
     },
     "implementation_allowed": {"type": "boolean"},
-    "v0_15_work_allowed": {"type": "boolean"},
+    "semantic_provider_work_allowed": {"type": "boolean"},
     "documents": {
       "type": "object",
       "required": ["rfc", "threat_model"],
@@ -74,9 +74,9 @@
     },
     "release_gates": {
       "type": "object",
-      "required": ["v0.15.0"],
+      "required": ["v0.16.0"],
       "properties": {
-        "v0.15.0": {"$ref": "#/$defs/releaseGate"}
+        "v0.16.0": {"$ref": "#/$defs/releaseGate"}
       },
       "additionalProperties": false
     },
@@ -320,8 +320,8 @@
         "maximum_review_age_days": {"const": 14},
         "security_review_required": {"const": true},
         "product_review_required": {"const": true},
-        "security_review_marker": {"const": "semantic-provider-v0.15-release-review/v1"},
-        "product_review_marker": {"const": "semantic-provider-v0.15-product-review/v1"},
+        "security_review_marker": {"const": "semantic-provider-v0.16-release-review/v1"},
+        "product_review_marker": {"const": "semantic-provider-v0.16-product-review/v1"},
         "reviewer_independence_attestation": {"const": "Independent-reviewer: confirmed"},
         "required_attestations": {
           "type": "array",

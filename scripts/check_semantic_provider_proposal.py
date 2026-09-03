@@ -3,7 +3,7 @@
 
 This checker deliberately uses only the standard library. It validates the
 proposal record as untrusted input, cross-references every threat/control/test,
-and keeps implementation, v0.15 work, and v0.15 release gates fail-closed.
+and keeps semantic-provider implementation and release gates fail-closed.
 """
 
 from __future__ import annotations
@@ -37,8 +37,9 @@ REVIEW_ROSTER_GIST_FILENAME = "semantic-provider-review-roster.txt"
 REVIEWER_INDEPENDENCE_ATTESTATION = "Independent-reviewer: confirmed"
 PROPOSAL_SECURITY_REVIEW_MARKER = "semantic-provider-security-review/v1"
 PROPOSAL_PRODUCT_REVIEW_MARKER = "semantic-provider-product-review/v1"
-V015_SECURITY_REVIEW_MARKER = "semantic-provider-v0.15-release-review/v1"
-V015_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.15-product-review/v1"
+SEMANTIC_RELEASE_TAG = "v0.16.0"
+SEMANTIC_SECURITY_REVIEW_MARKER = "semantic-provider-v0.16-release-review/v1"
+SEMANTIC_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.16-product-review/v1"
 THREAT_RE = re.compile(r"^SPT-[0-9]{3}$")
 CONTROL_RE = re.compile(r"^SPC-[0-9]{3}$")
 VERIFICATION_RE = re.compile(r"^SPV-[0-9]{3}$")
@@ -46,7 +47,7 @@ ROUND_RE = re.compile(r"^RTR-[0-9]{3}$")
 FINDING_RE = re.compile(r"^RTF-[0-9]{3}$")
 URL_RE = re.compile(r"^https://[^\s]+$")
 
-V015_RELEASE_ATTESTATIONS = (
+SEMANTIC_RELEASE_ATTESTATIONS = (
     "Full-source-bug-scan: passed",
     "Full-issue-audit: passed",
     "Full-security-scan: passed",
@@ -61,7 +62,7 @@ ROOT_FIELDS = {
     "proposal",
     "status",
     "implementation_allowed",
-    "v0_15_work_allowed",
+    "semantic_provider_work_allowed",
     "documents",
     "threats",
     "controls",
@@ -285,12 +286,12 @@ def _validate_document_gate_markers(
     *,
     status: str,
     implementation_allowed: bool,
-    v0_15_work_allowed: bool,
+    semantic_provider_work_allowed: bool,
 ) -> None:
     expected = {
         "proposal-status": status,
         "implementation-allowed": str(implementation_allowed).lower(),
-        "v0.15-work-allowed": str(v0_15_work_allowed).lower(),
+        "work-allowed": str(semantic_provider_work_allowed).lower(),
     }
     for name, value in expected.items():
         matches = re.findall(
@@ -309,15 +310,15 @@ def validate_proposal(
     manifest_path: Path,
     *,
     require_accepted: bool = False,
-    require_v0_15_work: bool = False,
-    require_v0_15_release: bool = False,
+    require_semantic_provider_work: bool = False,
+    require_semantic_provider_release: bool = False,
     authoritative_review_passed: bool = False,
     authoritative_release_passed: bool = False,
 ) -> dict[str, Any]:
     for value, field in (
         (require_accepted, "require_accepted"),
-        (require_v0_15_work, "require_v0_15_work"),
-        (require_v0_15_release, "require_v0_15_release"),
+        (require_semantic_provider_work, "require_semantic_provider_work"),
+        (require_semantic_provider_release, "require_semantic_provider_release"),
         (authoritative_review_passed, "authoritative_review_passed"),
         (authoritative_release_passed, "authoritative_release_passed"),
     ):
@@ -337,10 +338,10 @@ def validate_proposal(
     if missing:
         raise ProposalError(f"proposal is missing fields: {', '.join(sorted(missing))}")
     if (
-        manifest.get("schema_version") != 1
+        manifest.get("schema_version") != 2
         or type(manifest.get("schema_version")) is not int
     ):
-        raise ProposalError("schema_version must be integer 1")
+        raise ProposalError("schema_version must be integer 2")
     if manifest.get("proposal") != PROPOSAL_ID:
         raise ProposalError(f"proposal must be {PROPOSAL_ID!r}")
     status = manifest.get("status")
@@ -349,8 +350,9 @@ def validate_proposal(
     implementation_allowed = _exact_bool(
         manifest.get("implementation_allowed"), "implementation_allowed"
     )
-    v0_15_work_allowed = _exact_bool(
-        manifest.get("v0_15_work_allowed"), "v0_15_work_allowed"
+    semantic_provider_work_allowed = _exact_bool(
+        manifest.get("semantic_provider_work_allowed"),
+        "semantic_provider_work_allowed",
     )
 
     schema_path = _safe_repo_path(repo, manifest.get("$schema"), "$schema")
@@ -370,7 +372,7 @@ def validate_proposal(
             field,
             status=status,
             implementation_allowed=implementation_allowed,
-            v0_15_work_allowed=v0_15_work_allowed,
+            semantic_provider_work_allowed=semantic_provider_work_allowed,
         )
     ci_text = _read_document(
         repo,
@@ -423,11 +425,11 @@ def validate_proposal(
         '"$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py"'
     )
     release_audit_arguments = (
-        "--gate v0.15-release",
+        "--gate semantic-provider-release",
         '--release-tag "$RELEASE_TAG"',
         '--release-sha "$RELEASE_SHA"',
     )
-    release_condition = 'if [[ "$RELEASE_TAG" == v0.15.0 ]]; then'
+    release_condition = f'if [[ "$RELEASE_TAG" == {SEMANTIC_RELEASE_TAG} ]]; then'
     regular_review_command = (
         'bash scripts/audit_release_reviews.sh "$RELEASE_SHA" "$RELEASE_TAG"'
     )
@@ -526,7 +528,7 @@ def validate_proposal(
         or create_semantic_positions[-1] >= tag_mutation_position
     ):
         raise ProposalError(
-            "release-tag workflow must enforce the v0.15 exact-tree audit twice before tagging"
+            "release-tag workflow must enforce the semantic-provider exact-tree audit twice before tagging"
         )
     publish_semantic_position = publish_workflow_text.find(release_audit_script)
     publish_review_position = publish_workflow_text.find(regular_review_command)
@@ -549,7 +551,7 @@ def validate_proposal(
         or publish_semantic_position <= publish_review_position
     ):
         raise ProposalError(
-            "publish workflow must enforce the v0.15 exact-tree audit before publication"
+            "publish workflow must enforce the semantic-provider exact-tree audit before publication"
         )
     launcher_audit = '"scripts/audit_semantic_provider_proposal.py",'
     launcher_semantic_position = publish_launcher_text.find(launcher_audit)
@@ -558,7 +560,7 @@ def validate_proposal(
     )
     launcher_tooling_position = publish_launcher_text.find("tooling = Path(temporary)")
     if (
-        publish_launcher_text.count('if tag == "v0.15.0":') != 1
+        publish_launcher_text.count(f'if tag == "{SEMANTIC_RELEASE_TAG}":') != 1
         or publish_launcher_text.count(launcher_audit) != 1
         or launcher_review_position < 0
         or launcher_tooling_position < 0
@@ -566,7 +568,7 @@ def validate_proposal(
         or launcher_semantic_position >= launcher_tooling_position
     ):
         raise ProposalError(
-            "local release launcher must enforce the v0.15 exact-tree audit before candidate checks"
+            "local release launcher must enforce the semantic-provider exact-tree audit before candidate checks"
         )
 
     threats = _unique_ids(
@@ -944,9 +946,12 @@ def validate_proposal(
             raise ProposalError(f"RFC does not contain reference {url}")
 
     release_gates = _object(manifest.get("release_gates"), "release_gates")
-    if set(release_gates) != {"v0.15.0"}:
-        raise ProposalError("release_gates must contain exactly v0.15.0")
-    release = _object(release_gates["v0.15.0"], "release_gates.v0.15.0")
+    if set(release_gates) != {SEMANTIC_RELEASE_TAG}:
+        raise ProposalError(
+            f"release_gates must contain exactly {SEMANTIC_RELEASE_TAG}"
+        )
+    release_field = f"release_gates.{SEMANTIC_RELEASE_TAG}"
+    release = _object(release_gates[SEMANTIC_RELEASE_TAG], release_field)
     release_fields = {
         "repository",
         "repository_id",
@@ -977,7 +982,7 @@ def validate_proposal(
         "authoritative_audit",
     }
     if set(release) != release_fields:
-        raise ProposalError("release_gates.v0.15.0 has unknown or missing fields")
+        raise ProposalError(f"{release_field} has unknown or missing fields")
     expected_release_values = {
         "repository": "yzm1/boundver",
         "repository_id": 1226008327,
@@ -997,8 +1002,8 @@ def validate_proposal(
         "maximum_review_age_days": 14,
         "security_review_required": True,
         "product_review_required": True,
-        "security_review_marker": V015_SECURITY_REVIEW_MARKER,
-        "product_review_marker": V015_PRODUCT_REVIEW_MARKER,
+        "security_review_marker": SEMANTIC_SECURITY_REVIEW_MARKER,
+        "product_review_marker": SEMANTIC_PRODUCT_REVIEW_MARKER,
         "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
         "exact_commit_required": True,
         "exact_tree_required": True,
@@ -1010,15 +1015,15 @@ def validate_proposal(
         if release.get(field) != expected or type(release.get(field)) is not type(
             expected
         ):
-            raise ProposalError(f"release_gates.v0.15.0.{field} is not authoritative")
+            raise ProposalError(f"{release_field}.{field} is not authoritative")
     attestations = _validate_evidence(
         release.get("required_attestations"),
-        "release_gates.v0.15.0.required_attestations",
+        f"{release_field}.required_attestations",
         required=True,
     )
-    if tuple(attestations) != V015_RELEASE_ATTESTATIONS:
+    if tuple(attestations) != SEMANTIC_RELEASE_ATTESTATIONS:
         raise ProposalError(
-            "release_gates.v0.15.0.required_attestations are not authoritative"
+            f"{release_field}.required_attestations are not authoritative"
         )
 
     static_acceptance_blockers = []
@@ -1064,30 +1069,39 @@ def validate_proposal(
             "accepted proposal violates static acceptance gates: "
             + "; ".join(static_acceptance_blockers)
         )
-    if status == "accepted" and (not implementation_allowed or not v0_15_work_allowed):
+    if status == "accepted" and (
+        not implementation_allowed or not semantic_provider_work_allowed
+    ):
         raise ProposalError(
-            "accepted proposal must explicitly allow implementation and v0.15 work"
+            "accepted proposal must explicitly allow semantic-provider implementation and work"
         )
-    if status != "accepted" and (implementation_allowed or v0_15_work_allowed):
+    if status != "accepted" and (
+        implementation_allowed or semantic_provider_work_allowed
+    ):
         raise ProposalError(
-            "unaccepted proposal cannot allow implementation or v0.15 work"
+            "unaccepted proposal cannot allow semantic-provider implementation or work"
         )
-    if implementation_allowed != v0_15_work_allowed:
+    if implementation_allowed != semantic_provider_work_allowed:
         raise ProposalError(
-            "implementation_allowed and v0_15_work_allowed must advance together"
+            "implementation_allowed and semantic_provider_work_allowed must advance together"
         )
 
     if require_accepted and accepted_requirements:
         raise ProposalError(
             "proposal acceptance gate is blocked: " + "; ".join(accepted_requirements)
         )
-    if require_v0_15_work and (not v0_15_work_allowed or accepted_requirements):
+    if require_semantic_provider_work and (
+        not semantic_provider_work_allowed or accepted_requirements
+    ):
         raise ProposalError(
-            "v0.15 work is blocked until the proposal and authoritative review audit pass"
+            "semantic-provider work is blocked until the proposal and authoritative review audit pass"
         )
-    if require_v0_15_release and (not release_allowed or accepted_requirements):
+    if require_semantic_provider_release and (
+        not release_allowed or accepted_requirements
+    ):
         raise ProposalError(
-            "v0.15.0 release is blocked until proposal reviews and full-source release evidence pass"
+            f"{SEMANTIC_RELEASE_TAG} semantic-provider release is blocked until "
+            "proposal reviews and full-source release evidence pass"
         )
 
     return {
@@ -1095,8 +1109,8 @@ def validate_proposal(
         "proposal": PROPOSAL_ID,
         "status": status,
         "implementation_allowed": implementation_allowed,
-        "v0_15_work_allowed": v0_15_work_allowed,
-        "v0_15_release_allowed": release_allowed,
+        "semantic_provider_work_allowed": semantic_provider_work_allowed,
+        "semantic_provider_release_allowed": release_allowed,
         "authoritative_review_passed": authoritative_review_passed,
         "authoritative_release_passed": authoritative_release_passed,
         "threats": len(threats),
@@ -1117,8 +1131,8 @@ def _parser() -> argparse.ArgumentParser:
         default=Path("spec/semantic-provider-proposal.json"),
     )
     parser.add_argument("--require-accepted", action="store_true")
-    parser.add_argument("--require-v0-15-work", action="store_true")
-    parser.add_argument("--require-v0-15-release", action="store_true")
+    parser.add_argument("--require-semantic-provider-work", action="store_true")
+    parser.add_argument("--require-semantic-provider-release", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     return parser
 
@@ -1134,8 +1148,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             repo,
             manifest,
             require_accepted=args.require_accepted,
-            require_v0_15_work=args.require_v0_15_work,
-            require_v0_15_release=args.require_v0_15_release,
+            require_semantic_provider_work=args.require_semantic_provider_work,
+            require_semantic_provider_release=args.require_semantic_provider_release,
         )
     except (OSError, ProposalError, RecursionError) as exc:
         if args.format == "json":
@@ -1154,8 +1168,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             f"Status: {result['status']}; "
             f"implementation={'allowed' if result['implementation_allowed'] else 'blocked'}; "
-            f"v0.15 work={'allowed' if result['v0_15_work_allowed'] else 'blocked'}; "
-            f"v0.15.0 release={'allowed' if result['v0_15_release_allowed'] else 'blocked'}."
+            "semantic-provider work="
+            f"{'allowed' if result['semantic_provider_work_allowed'] else 'blocked'}; "
+            f"{SEMANTIC_RELEASE_TAG} semantic-provider release="
+            f"{'allowed' if result['semantic_provider_release_allowed'] else 'blocked'}."
         )
         for blocker in result["acceptance_blockers"]:
             print(f"Acceptance blocker: {blocker}")

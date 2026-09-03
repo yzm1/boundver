@@ -4,9 +4,10 @@
 The proposal manifest is a declaration, not its own trust root.  This program
 finds the latest commit that changed the governed proposal surface and proves
 that GitHub merged an identical reviewed tree into ``main``.  It then checks
-current, exact-head, non-author review evidence before allowing an acceptance or
-v0.15 work gate to pass.  The v0.15 release gate additionally proves that a
-separate release-candidate pull request reviewed the exact tree being released.
+current, exact-head, non-author review evidence before allowing proposal
+acceptance or semantic-provider work. The semantic-provider release gate
+additionally proves that a separate release-candidate pull request reviewed the
+exact tree being released.
 
 Only bounded Git and ``gh api`` subprocesses are used.  Review bodies are never
 printed or persisted; the successful result contains only reviewer identities
@@ -50,9 +51,9 @@ COMMAND_TIMEOUT_SECONDS = 15
 AUDIT_TIMEOUT_SECONDS = 90
 STREAM_CHUNK_BYTES = 64 * 1024
 CANONICAL_MANIFEST = Path("spec/semantic-provider-proposal.json")
-V015_RELEASE_TAG = "v0.15.0"
-V015_RELEASE_MARKER = "semantic-provider-v0.15-release-review/v1"
-V015_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.15-product-review/v1"
+SEMANTIC_RELEASE_TAG = "v0.16.0"
+SEMANTIC_RELEASE_MARKER = "semantic-provider-v0.16-release-review/v1"
+SEMANTIC_PRODUCT_REVIEW_MARKER = "semantic-provider-v0.16-product-review/v1"
 PROPOSAL_SECURITY_REVIEW_MARKER = "semantic-provider-security-review/v1"
 PROPOSAL_PRODUCT_REVIEW_MARKER = "semantic-provider-product-review/v1"
 REVIEWER_INDEPENDENCE_ATTESTATION = "Independent-reviewer: confirmed"
@@ -70,7 +71,7 @@ REVIEW_ROSTER_FIELDS = {
     "product": "Product-reviewer",
     "security": "Security-reviewer",
 }
-V015_RELEASE_ATTESTATIONS = (
+SEMANTIC_RELEASE_ATTESTATIONS = (
     "Full-source-bug-scan: passed",
     "Full-issue-audit: passed",
     "Full-security-scan: passed",
@@ -1948,9 +1949,11 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
     raw = _read_regular(manifest_path, MAX_JSON_BYTES, "proposal manifest")
     value = _decode_json(raw, "proposal manifest")
     release_gates = value.get("release_gates") if type(value) is dict else None
-    if type(release_gates) is not dict or set(release_gates) != {V015_RELEASE_TAG}:
+    if type(release_gates) is not dict or set(release_gates) != {
+        SEMANTIC_RELEASE_TAG
+    }:
         raise AuditError("proposal manifest has malformed release gates")
-    requirements = release_gates.get(V015_RELEASE_TAG)
+    requirements = release_gates.get(SEMANTIC_RELEASE_TAG)
     expected_fields = {
         "repository",
         "repository_id",
@@ -1981,7 +1984,7 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "authoritative_audit",
     }
     if type(requirements) is not dict or set(requirements) != expected_fields:
-        raise AuditError("v0.15 release-review requirements are malformed")
+        raise AuditError("semantic-provider release-review requirements are malformed")
     expected_values = {
         "repository": "yzm1/boundver",
         "repository_id": 1226008327,
@@ -2001,8 +2004,8 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         "maximum_review_age_days": 14,
         "security_review_required": True,
         "product_review_required": True,
-        "security_review_marker": V015_RELEASE_MARKER,
-        "product_review_marker": V015_PRODUCT_REVIEW_MARKER,
+        "security_review_marker": SEMANTIC_RELEASE_MARKER,
+        "product_review_marker": SEMANTIC_PRODUCT_REVIEW_MARKER,
         "reviewer_independence_attestation": REVIEWER_INDEPENDENCE_ATTESTATION,
         "exact_commit_required": True,
         "exact_tree_required": True,
@@ -2014,15 +2017,17 @@ def _load_release_requirements(manifest_path: Path) -> dict[str, Any]:
         actual = requirements.get(field)
         if actual != expected or type(actual) is not type(expected):
             raise AuditError(
-                f"v0.15 release-review requirement {field} is not authoritative"
+                f"semantic-provider release-review requirement {field} is not authoritative"
             )
     attestations = requirements.get("required_attestations")
     if (
         type(attestations) is not list
         or any(type(item) is not str for item in attestations)
-        or tuple(attestations) != V015_RELEASE_ATTESTATIONS
+        or tuple(attestations) != SEMANTIC_RELEASE_ATTESTATIONS
     ):
-        raise AuditError("v0.15 release-review attestations are not authoritative")
+        raise AuditError(
+            "semantic-provider release-review attestations are not authoritative"
+        )
     return requirements
 
 
@@ -2129,7 +2134,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gate",
-        choices=("accepted", "v0.15-work", "v0.15-release"),
+        choices=("accepted", "semantic-provider-work", "semantic-provider-release"),
         default="accepted",
     )
     parser.add_argument("--release-sha")
@@ -2146,20 +2151,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     repo = args.repo.resolve()
     try:
-        release_gate = args.gate == "v0.15-release"
+        release_gate = args.gate == "semantic-provider-release"
         if args.format == "expiry" and not release_gate:
-            raise AuditError("expiry output is valid only for the v0.15-release gate")
+            raise AuditError(
+                "expiry output is valid only for the semantic-provider-release gate"
+            )
         if release_gate:
-            if args.release_tag != V015_RELEASE_TAG:
+            if args.release_tag != SEMANTIC_RELEASE_TAG:
                 raise AuditError(
-                    f"v0.15 release audit requires --release-tag {V015_RELEASE_TAG}"
+                    "semantic-provider release audit requires --release-tag "
+                    f"{SEMANTIC_RELEASE_TAG}"
                 )
             release_sha = _sha(args.release_sha, "release SHA")
             release_record = _local_release_record(repo, release_sha)
         else:
             if args.release_sha is not None or args.release_tag is not None:
                 raise AuditError(
-                    "release identity arguments are valid only for the v0.15-release gate"
+                    "release identity arguments are valid only for the "
+                    "semantic-provider-release gate"
                 )
             release_record = None
         record_commit, record_parent, local_tree = _local_record(repo)
@@ -2223,14 +2232,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     release_first,
                     release_requirements,
                     evaluated_at=evaluated_at,
-                    attestations=V015_RELEASE_ATTESTATIONS,
+                    attestations=SEMANTIC_RELEASE_ATTESTATIONS,
                 )
                 if (
                     release_review_result["pull_request"]
                     == review_result["pull_request"]
                 ):
                     raise AuditError(
-                        "proposal acceptance and v0.15 release require separate pull requests"
+                        "proposal acceptance and semantic-provider release require "
+                        "separate pull requests"
                     )
             authority_valid_until = review_result["valid_until"]
             if release_review_result is not None and _timestamp_datetime(
@@ -2242,8 +2252,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "authoritative_review_passed": True,
                 "authoritative_release_passed": release_review_result is not None,
                 "require_accepted": args.gate == "accepted",
-                "require_v0_15_work": args.gate == "v0.15-work",
-                "require_v0_15_release": args.gate == "v0.15-release",
+                "require_semantic_provider_work": args.gate
+                == "semantic-provider-work",
+                "require_semantic_provider_release": args.gate
+                == "semantic-provider-release",
             }
             proposal_result = checker.validate_proposal(
                 validation_root,

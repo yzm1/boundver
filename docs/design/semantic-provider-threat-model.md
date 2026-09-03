@@ -2,7 +2,23 @@
 
 <!-- semantic-provider-proposal-status: review-ready -->
 <!-- semantic-provider-implementation-allowed: false -->
-<!-- semantic-provider-v0.15-work-allowed: false -->
+<!-- semantic-provider-work-allowed: false -->
+
+## Executive summary
+
+This document is evidence for security reviewers. It assumes every repository,
+provider artifact, protocol message, cache entry, and diagnostic can be hostile.
+Its purpose is to stop a plugin from inheriting the developer or CI process's
+files, credentials, network, or execution authority.
+
+The design is internally reviewed but not independently accepted. No semantic-
+provider implementation is authorized. v0.15 is separate and contains no such
+implementation; the first planned semantic-provider release is v0.16.0.
+
+Users looking for the product overview should read the [executive
+summary](../executive-summary.md).
+
+## Assurance record
 
 | Field | Value |
 | --- | --- |
@@ -651,12 +667,12 @@ Review Ready or described work as blocked.
 
 **Disposition:** closed by SPC-033 and SPC-040. Both documents contain exactly
 one machine-readable marker for proposal status, implementation authority, and
-v0.15 work authority. The structural checker derives expected values from the
-manifest and rejects a missing, duplicate, malformed, stale, or contradictory
-marker. Acceptance tests mutate all three surfaces together and prove a
-manifest-only transition fails.
+semantic-provider work authority. The structural checker derives expected
+values from the manifest and rejects a missing, duplicate, malformed, stale,
+or contradictory marker. Acceptance tests mutate all three surfaces together
+and prove a manifest-only transition fails.
 
-### RTF-047: v0.15 release evidence is self-referential or never enforced - Critical
+### RTF-047: semantic-provider release evidence is self-referential or never enforced - Critical
 
 The initial release record embedded scan booleans, reviewer evidence, and an
 `exact_candidate_commit` string in the proposal manifest. A release commit
@@ -668,9 +684,9 @@ the documented prohibition could be bypassed by the ordinary release path.
 
 **Disposition:** closed by SPC-034, SPC-040, and SPC-043. The manifest now
 declares only immutable release-review requirements. The authoritative auditor
-accepts the v0.15.0 tag and release SHA externally, requires local `HEAD` and
-the GitHub release record to match, and proves a separate merged release PR's
-reviewed head tree equals the release commit tree. Two fresh, role-marked
+accepts the designated v0.16.0 tag and release SHA externally, requires local
+`HEAD` and the GitHub release record to match, and proves a separate merged
+release PR's reviewed head tree equals the release commit tree. Two fresh, role-marked
 approvals from the distinct external humans in the pinned gist roster,
 resolved threads, no pending requests, and one exact six-assertion security
 attestation are required from two identical bounded GitHub snapshots. The
@@ -692,7 +708,8 @@ approval to cross its 90-day or 14-day limit while the tag job waited.
 review snapshot now cross-binds every REST review ID to GraphQL edit metadata
 and includes `lastEditedAt` in the digest compared before and throughout tag
 mutation. The authoritative auditor computes the latest instant at which a
-qualifying reviewer set and security marker remain valid; for v0.15 it hands
+qualifying reviewer set and security marker remain valid; for the designated
+semantic-provider release it hands
 off the earlier of proposal and release authority expiry. The tag job strictly
 validates that value and rechecks it alongside the mutable-state digest before
 tag creation, authentication, and push. Missing IDs, same-text edits, changed
@@ -710,8 +727,8 @@ necessarily changing its public path, while deletion and recreation can assign
 the old path to a wholly different repository. Text equality alone could make
 old governance requirements appear to authorize a new GitHub object.
 
-**Disposition:** closed by SPC-034 and SPC-040. Proposal and v0.15 release
-requirements now pin GitHub repository ID `1226008327` and owner account ID
+**Disposition:** closed by SPC-034 and SPC-040. Proposal and semantic-provider
+release requirements now pin GitHub repository ID `1226008327` and owner account ID
 `22440724` in addition to the case-normalized full name. Every normalized
 snapshot obtains and validates those numeric identities before review evidence
 is evaluated. A legitimate ownership transfer or repository replacement fails
@@ -898,7 +915,7 @@ table is the human review surface.
 | SPT-040 | Stale, mutable, misattributed, or over-privileged evidence satisfies approval | Governance, supply-chain, and release bypass | SPC-033, SPC-034, SPC-040, SPC-044, SPC-045 | SPV-021, SPV-024, SPV-035, SPV-038 |
 | SPT-041 | Authorized sandboxed provider returns deterministic but false output | False stable or changed boundary | SPC-002, SPC-019, SPC-031, SPC-041 | SPV-016, SPV-026, SPV-036 |
 | SPT-042 | Host parses, compiles, or deserializes provider artifact/evidence before containment | Main-process compromise before sandbox | SPC-008, SPC-009, SPC-021, SPC-042 | SPV-006, SPV-011, SPV-037 |
-| SPT-043 | Self-attested, stale, or unenforced v0.15 release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043, SPC-045 | SPV-024, SPV-035, SPV-038 |
+| SPT-043 | Self-attested, stale, or unenforced semantic-provider release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043, SPC-045 | SPV-024, SPV-035, SPV-038 |
 
 ## Abuse-case test corpus
 
@@ -1006,7 +1023,7 @@ documented ignored and retained construct.
 | SPV-035 | Review self-reference, owner-exclusive repository collaborators and v2 owner attestation, account-owned public-gist roster, immutable-revision binding, exact public-read authority, role markers, canonical-manifest/tool/API-host/blob/mode binding, numeric-parser bounds, merge-mode-safe gate bootstrap, post-merge review edits, scan, expiry, role, canonical ancestry, exact-commit/tree/artifact, API-race/budget, TOCTOU, and evidence-tampering negative matrix passes |
 | SPV-036 | Malicious-valid output, targeted logic-bomb, independent-oracle, differential, and provider-quorum tests pass |
 | SPV-037 | Pre-sandbox manifest/evidence/crypto/decoder/runtime/AOT corpus proves no provider-controlled structure is parsed outside containment |
-| SPV-038 | External exact-tree v0.15 attestation roster/identity/permission/repository-collaborator/owner-delegation/review/age/role-marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
+| SPV-038 | External exact-tree semantic-provider release attestation roster/identity/permission/repository-collaborator/owner-delegation/review/age/role-marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
 
 ## Residual risks
 
