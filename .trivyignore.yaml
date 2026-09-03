@@ -1,6 +1,6 @@
 # Temporary, fail-closed exceptions for the pinned Debian 13.6 runtime image.
 #
-# Trivy reported no fixed Debian package for these IDs on 2026-09-01. The
+# Trivy reported no fixed Debian package for these IDs on 2026-09-03. The
 # container runs as an unprivileged user, strips every set-ID bit, removes its
 # Python build/package managers, and boundver performs local-only Git object
 # reads with lazy fetching disabled. A second CI scan ignores no fixable
@@ -104,6 +104,58 @@ vulnerabilities:
       - pkg:deb/debian/libexpat1
     expired_at: 2026-09-15
     statement: XML parsing through inherited libexpat is outside boundver's runtime path; no Debian fix is available.
+  - id: CVE-2026-76642
+    purls:
+      - pkg:deb/debian/bsdutils
+      - pkg:deb/debian/libblkid1
+      - pkg:deb/debian/liblastlog2-2
+      - pkg:deb/debian/libmount1
+      - pkg:deb/debian/libsmartcols1
+      - pkg:deb/debian/libuuid1
+      - pkg:deb/debian/login
+      - pkg:deb/debian/mount
+      - pkg:deb/debian/util-linux
+    expired_at: 2026-09-15
+    statement: The affected privileged mount post-hook path is unused; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
+  - id: CVE-2026-78408
+    purls:
+      - pkg:deb/debian/bsdutils
+      - pkg:deb/debian/libblkid1
+      - pkg:deb/debian/liblastlog2-2
+      - pkg:deb/debian/libmount1
+      - pkg:deb/debian/libsmartcols1
+      - pkg:deb/debian/libuuid1
+      - pkg:deb/debian/login
+      - pkg:deb/debian/mount
+      - pkg:deb/debian/util-linux
+    expired_at: 2026-09-15
+    statement: Boundver never invokes nsenter or cgroup migration; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
+  - id: CVE-2026-78409
+    purls:
+      - pkg:deb/debian/bsdutils
+      - pkg:deb/debian/libblkid1
+      - pkg:deb/debian/liblastlog2-2
+      - pkg:deb/debian/libmount1
+      - pkg:deb/debian/libsmartcols1
+      - pkg:deb/debian/libuuid1
+      - pkg:deb/debian/login
+      - pkg:deb/debian/mount
+      - pkg:deb/debian/util-linux
+    expired_at: 2026-09-15
+    statement: Boundver never invokes fstab-authorized X-mount.subdir operations; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
+  - id: CVE-2026-78410
+    purls:
+      - pkg:deb/debian/bsdutils
+      - pkg:deb/debian/libblkid1
+      - pkg:deb/debian/liblastlog2-2
+      - pkg:deb/debian/libmount1
+      - pkg:deb/debian/libsmartcols1
+      - pkg:deb/debian/libuuid1
+      - pkg:deb/debian/login
+      - pkg:deb/debian/mount
+      - pkg:deb/debian/util-linux
+    expired_at: 2026-09-15
+    statement: Boundver never invokes restricted bind-mount ownership hooks; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
   - id: CVE-2026-8286
     purls:
       - pkg:deb/debian/libcurl3t64-gnutls
