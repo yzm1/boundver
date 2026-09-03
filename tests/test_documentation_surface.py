@@ -177,5 +177,8 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
         glossary,
     ):
         assert "CRLF" in public_facet_summary
+    assert "no unacknowledged gated facet drift remains" in readme
+    assert "Omitting `facets` applies each component's configured" in readme
+    assert "    facets: boundary,compat" not in readme
     assert "authoritative digest or\ncomparison fails closed" in security_model
     assert "complete: false" in security_model

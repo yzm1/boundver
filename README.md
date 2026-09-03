@@ -75,10 +75,11 @@ the same comparison.
 | `boundary` | A declared published artifact | 4 |
 | `compat` | The configured compatibility family | 5 |
 
-Exit `0` means the gated facets match. Exit `2` means boundver could not
-complete the check reliably, such as when configuration, history, or declared
-files are missing. When several gated facets drift, the highest applicable
-drift code is returned.
+Exit `0` means no unacknowledged gated facet drift remains. With a verification
+baseline, acknowledged drift can still be present. Exit `2` means boundver
+could not complete the check reliably, such as when configuration, history, or
+declared files are missing. When several gated facets drift, the highest
+applicable drift code is returned.
 
 A common policy is to gate `boundary` and `compat`, report the other signals,
 then run a format-specific compatibility check and the affected consumer suites.
@@ -177,8 +178,9 @@ Pin the Action to the same release used to write the lock:
   with:
     operation: verify
     source: head
-    facets: boundary,compat
 ```
+
+Omitting `facets` applies each component's configured `verify_facets` policy.
 
 The [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/) covers GitHub,
 GitLab, pre-commit, range review, outputs, and shallow-history failures.
