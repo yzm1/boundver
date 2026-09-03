@@ -2352,7 +2352,7 @@ def main():
 
     try:
         repo_root = git_root()
-    except (subprocess.CalledProcessError, OSError):
+    except (subprocess.CalledProcessError, OSError, ValueError):
         print("ERROR: Not inside a git repository.", file=sys.stderr)
         print(file=sys.stderr)
         print(

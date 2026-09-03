@@ -108,12 +108,20 @@ class MainCompletionsTests(unittest.TestCase):
 
 
 class MainNotGitRepoTests(unittest.TestCase):
-    def test_non_git_repo_exits_1(self):
-        """main() exits 2 with message when not in a git repo."""
-        with patch("boundver.core.git_root", side_effect=subprocess.CalledProcessError(128, "git")):
-            code, _, err = _run_main("generate")
-        self.assertEqual(code, 2)
-        self.assertIn("git", err.lower())
+    def test_non_git_repo_exits_2_without_a_traceback(self):
+        """Every Git-root discovery failure becomes a stable usage error."""
+        failures = (
+            subprocess.CalledProcessError(128, "git"),
+            ValueError("No Git worktree contains the current directory"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), patch(
+                "boundver.core.git_root", side_effect=failure
+            ):
+                code, _, err = _run_main("generate")
+            self.assertEqual(code, 2)
+            self.assertIn("not inside a git repository", err.lower())
+            self.assertNotIn("traceback", err.lower())
 
 
 class MainGenerateTests(unittest.TestCase):
