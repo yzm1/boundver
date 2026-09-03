@@ -18,8 +18,11 @@ dependency surface.
 Git subprocesses are constrained to local inspection. Boundver disables hooks,
 filters, external diff and text-conversion helpers, filesystem monitors,
 pagers, prompts, signature helpers, trace sinks, and partial-clone lazy fetches.
-Unsupported or over-budget input fails closed with exit `2` instead of
-returning a partial success.
+Unsupported or over-budget input needed for an authoritative digest or
+comparison fails closed with exit `2`. Optional structural explanations from
+range review are separate: an unsupported provider or exhausted explanation
+budget can report `complete: false` without invalidating an otherwise complete
+facet and impact result.
 
 These controls reduce the authority exposed to repository content. They do not
 protect against an attacker who already controls the operating system, Python

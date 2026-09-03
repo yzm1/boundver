@@ -70,7 +70,7 @@ the same comparison.
 
 | Facet | What changed | Exit code when gated |
 |---|---|---:|
-| `exact` | Any tracked component byte or file identity | 1 |
+| `exact` | Tracked content, path, or file identity; text CRLF/LF are equivalent | 1 |
 | `behavior` | A declared runtime-relevant input | 3 |
 | `boundary` | A declared published artifact | 4 |
 | `compat` | The configured compatibility family | 5 |

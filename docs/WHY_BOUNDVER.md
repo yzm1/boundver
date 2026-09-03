@@ -24,7 +24,7 @@ identities in `boundary.lock.json`, and classifies later drift into four facets:
 
 | Facet | Signal |
 |---|---|
-| `exact` | Tracked component bytes or file identities changed. |
+| `exact` | Tracked content, paths, or file identities changed; text CRLF/LF are equivalent. |
 | `behavior` | Declared observable behavior inputs changed. |
 | `boundary` | The configured public artifact changed. |
 | `compat` | The configured compatibility family changed. |

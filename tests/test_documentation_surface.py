@@ -139,8 +139,12 @@ def test_readme_keeps_the_decision_path_short() -> None:
 
 def test_public_guidance_matches_component_facet_contracts() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    homepage = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
     executive_summary = (
         REPO_ROOT / "docs" / "executive-summary.md"
+    ).read_text(encoding="utf-8")
+    security_model = (
+        REPO_ROOT / "docs" / "security-model.md"
     ).read_text(encoding="utf-8")
     troubleshooting = (
         REPO_ROOT / "docs" / "troubleshooting.md"
@@ -151,6 +155,8 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
 
     assert "tracked code under `src/`" in readme
     assert "boundver init --discover" in readme
+    assert "tracked code under `src/`" in homepage
+    assert "boundver init --discover" in homepage
     normalized_summary = " ".join(executive_summary.split())
     normalized_troubleshooting = " ".join(troubleshooting.split())
     normalized_glossary = " ".join(glossary.split())
@@ -164,3 +170,12 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
         in normalized_glossary
     )
     assert "CRLF and LF line endings are equivalent" in normalized_glossary
+    for public_facet_summary in (
+        readme,
+        homepage,
+        executive_summary,
+        glossary,
+    ):
+        assert "CRLF" in public_facet_summary
+    assert "authoritative digest or\ncomparison fails closed" in security_model
+    assert "complete: false" in security_model

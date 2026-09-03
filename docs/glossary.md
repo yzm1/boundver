@@ -43,7 +43,8 @@ changed, not whether the change is safe.
 
 One of four separately recorded component identities:
 
-- `exact`: all tracked component content and file identities;
+- `exact`: tracked component content, paths, and file identities under the
+  hashing contract; text CRLF/LF are equivalent;
 - `behavior`: declared runtime-relevant inputs;
 - `boundary`: the declared published artifact; and
 - `compat`: the configured compatibility family.

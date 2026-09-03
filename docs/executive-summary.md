@@ -22,7 +22,8 @@ You define components, contract files, and consumer relationships in
 `boundary.config.json`. A committed lock file records up to four identities for
 each component:
 
-- `exact`: any tracked file or file identity changed;
+- `exact`: tracked content, path, or file identity changed; text CRLF/LF are
+  equivalent;
 - `behavior`: a runtime-relevant input changed;
 - `boundary`: a declared public artifact changed; and
 - `compat`: the configured compatibility family changed.

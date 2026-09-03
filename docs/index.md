@@ -36,7 +36,8 @@ which identities moved.
 
 ### `exact`
 
-Any tracked component byte or file identity changed.
+Tracked component content, path, or file identity changed. Text CRLF and LF are
+equivalent under the hashing contract.
 
 </article>
 
@@ -83,6 +84,10 @@ boundver init
 boundver generate --source working-tree
 boundver verify --source working-tree
 ```
+
+That scaffold expects tracked code under `src/`. For another layout, run
+`boundver init --discover` and review its proposal, or edit the generated
+component path before validation.
 
 ## Use it with what you already trust
 

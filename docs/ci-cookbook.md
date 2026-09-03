@@ -74,7 +74,7 @@ for the complete workflow and safety constraints.
 |---|---|---|
 | Consumer-facing | `boundary,compat` | Declared public artifact or compatibility-family drift; requires both facets on every selected component |
 | Behavior-sensitive | `behavior,boundary,compat` | Observable behavior, boundary, or compatibility drift; requires all three |
-| Portable tracked-source hygiene | `exact` | Every tracked component byte, path, and file identity; works for leaf and unversioned components |
+| Portable tracked-source hygiene | `exact` | Tracked content, paths, and file identities; text CRLF/LF are equivalent; works for leaf and unversioned components |
 
 Policy can live in configuration:
 
@@ -282,12 +282,11 @@ The exact upgraded install and import assertion are mandatory when the
 environment persists across runs: reused developer virtual environments,
 `language: system` pre-commit hooks, and prebuilt container images must not
 trust an ambient `boundver` executable. Put the install/assert pair in the
-environment or image build, retain the assertion at invocation so a stale
-layer fails before it can write or verify a lock, and invoke
-`python -m boundver` with that same interpreter so `PATH` cannot select a
-different executable. A disposable runner should still use the exact pin; the
-tagged composite Action already binds its bundled implementation to the Action
-tag.
+environment or image build. Retain the assertion at invocation so a stale
+layer fails before it can write or verify a lock. Invoke `python -m boundver`
+with that same interpreter so `PATH` cannot select a different executable. A
+disposable runner should still use the exact pin; the tagged composite Action
+already binds its bundled implementation to the Action tag.
 
 ## Match source mode to the lifecycle
 
@@ -421,7 +420,7 @@ The published hooks above run from the exact `rev` in pre-commit's managed
 environment. If a repository instead uses a local `language: system` hook or a
 shared hook environment, bootstrap it with the exact `--upgrade` install and
 version assertion from [Pin a package instead of the
-Action](#pin-a-package-instead-of-the-action), then invoke it through
+Action](#pin-a-package-instead-of-the-action). Then invoke it through
 `python -m boundver` from that interpreter.
 
 When the staged check finds intentional drift, regenerate from the index and
