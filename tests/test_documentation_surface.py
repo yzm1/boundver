@@ -105,6 +105,8 @@ def test_normative_docs_include_the_canonical_sources() -> None:
     ).read_text(encoding="utf-8")
 
     assert "pymdownx.snippets:" in mkdocs
+    assert "restrict_base_path: true" in mkdocs
+    assert "url_download: false" in mkdocs
     assert specification.strip() == '--8<-- "spec/spec.md"'
     assert hashing.strip() == '--8<-- "spec/HASHING.md"'
 

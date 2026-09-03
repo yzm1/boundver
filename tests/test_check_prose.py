@@ -81,7 +81,7 @@ def test_text_report_escapes_terminal_controls(tmp_path: Path, capsys) -> None:
         encoding="utf-8",
     )
 
-    assert checker.main([str(path)]) == 0
+    assert checker.main([str(path), "--allow-external-paths"]) == 0
     output = capsys.readouterr().out
     assert control not in output
     assert "\\u001b" in output
@@ -95,7 +95,7 @@ def test_output_size_is_checked_before_printing(
     path.write_text("We do this in order to test.\n", encoding="utf-8")
     monkeypatch.setattr(checker, "MAX_OUTPUT_BYTES", 16)
 
-    assert checker.main([str(path)]) == 2
+    assert checker.main([str(path), "--allow-external-paths"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "output byte budget" in captured.err
@@ -110,10 +110,60 @@ def test_cli_is_advisory_unless_failure_is_explicit(
         encoding="utf-8",
     )
 
-    assert checker.main([str(path), "--format", "json"]) == 0
+    assert checker.main(
+        [str(path), "--allow-external-paths", "--format", "json"]
+    ) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema"] == "boundver-prose-report/v1"
     assert payload["advisory"] is True
     assert payload["finding_count"] == 1
 
-    assert checker.main([str(path), "--fail-on-findings"]) == 1
+    assert checker.main(
+        [str(path), "--allow-external-paths", "--fail-on-findings"]
+    ) == 1
+
+
+def test_cli_rejects_external_paths_without_explicit_opt_in(
+    tmp_path: Path, capsys
+) -> None:
+    path = tmp_path / "guide.md"
+    path.write_text("Short and direct.\n", encoding="utf-8")
+
+    assert checker.main([str(path)]) == 2
+    assert "--allow-external-paths" in capsys.readouterr().err
+
+
+def test_cli_rejects_symlinks_without_reading_the_target(
+    tmp_path: Path, capsys
+) -> None:
+    target = tmp_path / "target.md"
+    target.write_text("Secret in order to remain unread.\n", encoding="utf-8")
+    link = REPO_ROOT / "docs" / ".prose-test-link.md"
+    try:
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlinks are unavailable: {exc}")
+        assert checker.main([str(link)]) == 2
+        captured = capsys.readouterr()
+        assert "symlinks and non-regular files are not read" in captured.err
+        assert "Secret" not in captured.out
+        assert "Secret" not in captured.err
+    finally:
+        link.unlink(missing_ok=True)
+
+
+def test_failure_diagnostic_escapes_terminal_controls(
+    monkeypatch, capsys
+) -> None:
+    control = "\x1b]8;;https://evil.invalid\x07"
+
+    def fail(*_args, **_kwargs):
+        raise ValueError(f"unsafe {control} diagnostic")
+
+    monkeypatch.setattr(checker, "inspect_paths", fail)
+    assert checker.main([]) == 2
+    captured = capsys.readouterr()
+    assert control not in captured.err
+    assert "\\u001b" in captured.err
+    assert "\\u0007" in captured.err

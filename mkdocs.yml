@@ -88,6 +88,8 @@ markdown_extensions:
   - pymdownx.snippets:
       base_path:
         - .
+      restrict_base_path: true
+      url_download: false
       check_paths: true
   - pymdownx.superfences
   - pymdownx.tabbed:

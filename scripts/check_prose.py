@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,6 +20,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_FINDINGS = 4096
 MAX_DISPLAY_PATH_BYTES = 1024
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_ERROR_BYTES = 4096
 DEFAULT_SENTENCE_WORDS = 35
 WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*")
 IMAGE_RE = re.compile(r"!\[[^]]*\]\([^)]*\)")
@@ -57,15 +60,64 @@ class Finding:
     excerpt: str
 
 
-def _read_bounded(path: Path) -> str:
-    with path.open("rb") as stream:
-        payload = stream.read(MAX_FILE_BYTES + 1)
+def _file_identity(file_stat: os.stat_result) -> tuple[int, int]:
+    return file_stat.st_dev, file_stat.st_ino
+
+
+def _file_snapshot(file_stat: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+    )
+
+
+def _is_plain_file(file_stat: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(file_stat, "st_file_attributes", 0)
+    return stat.S_ISREG(file_stat.st_mode) and not (attributes & reparse_flag)
+
+
+def _read_bounded(path: Path, display_path: str) -> str:
+    before_path = path.lstat()
+    if not _is_plain_file(before_path):
+        raise ValueError(f"{display_path}: is not a regular file")
+    if before_path.st_size > MAX_FILE_BYTES:
+        raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            before_descriptor = os.fstat(stream.fileno())
+            if not _is_plain_file(before_descriptor):
+                raise ValueError(f"{display_path}: is not a regular file")
+            if _file_identity(before_descriptor) != _file_identity(before_path):
+                raise ValueError(f"{display_path}: changed while opening")
+            payload = stream.read(MAX_FILE_BYTES + 1)
+            after_descriptor = os.fstat(stream.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
     if len(payload) > MAX_FILE_BYTES:
-        raise ValueError(f"{path}: exceeds {MAX_FILE_BYTES} bytes")
+        raise ValueError(f"{display_path}: exceeds {MAX_FILE_BYTES} bytes")
+
+    after_path = path.lstat()
+    if not _is_plain_file(after_path):
+        raise ValueError(f"{display_path}: changed while reading")
+    if (
+        _file_snapshot(before_descriptor) != _file_snapshot(after_descriptor)
+        or _file_identity(after_descriptor) != _file_identity(after_path)
+    ):
+        raise ValueError(f"{display_path}: changed while reading")
     try:
         return payload.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ValueError(f"{path}: is not valid UTF-8") from exc
+        raise ValueError(f"{display_path}: is not valid UTF-8") from exc
 
 
 def _clean_markdown(line: str) -> str:
@@ -219,16 +271,33 @@ def inspect_paths(
     paths: Iterable[Path],
     *,
     max_sentence_words: int = DEFAULT_SENTENCE_WORDS,
+    allow_external_paths: bool = False,
 ) -> list[Finding]:
     materialized = list(paths)
     if len(materialized) > MAX_FILES:
         raise ValueError(f"refusing to inspect more than {MAX_FILES} files")
     findings: list[Finding] = []
     for path in materialized:
-        resolved = path.resolve(strict=True)
+        absolute = Path(os.path.abspath(path))
+        supplied_stat = absolute.lstat()
+        if not _is_plain_file(supplied_stat):
+            raise ValueError(f"{path}: symlinks and non-regular files are not read")
+        resolved = absolute.resolve(strict=True)
+        inside_repository = resolved.is_relative_to(REPO_ROOT)
+        if not inside_repository and not allow_external_paths:
+            raise ValueError(
+                f"{path}: resolves outside the repository; "
+                "pass --allow-external-paths to inspect it explicitly"
+            )
+        resolved_stat = resolved.lstat()
+        if (
+            not _is_plain_file(resolved_stat)
+            or _file_identity(supplied_stat) != _file_identity(resolved_stat)
+        ):
+            raise ValueError(f"{path}: changed or resolved through a symlink")
         display = (
             resolved.relative_to(REPO_ROOT).as_posix()
-            if resolved.is_relative_to(REPO_ROOT)
+            if inside_repository
             else str(resolved)
         )
         if len(display.encode("utf-8")) > MAX_DISPLAY_PATH_BYTES:
@@ -237,7 +306,7 @@ def inspect_paths(
             )
         findings.extend(
             inspect_text(
-                _read_bounded(resolved),
+                _read_bounded(resolved, display),
                 display,
                 max_sentence_words=max_sentence_words,
                 max_findings=MAX_FINDINGS - len(findings),
@@ -279,6 +348,18 @@ def _text_report(findings: Sequence[Finding]) -> str:
     return "\n".join(lines)
 
 
+def _bounded_terminal_error(value: str) -> str:
+    safe = _terminal_safe(value)
+    encoded = safe.encode("utf-8")
+    if len(encoded) <= MAX_ERROR_BYTES:
+        return safe
+    suffix = b"..."
+    prefix = encoded[: MAX_ERROR_BYTES - len(suffix)].decode(
+        "utf-8", errors="ignore"
+    )
+    return prefix + suffix.decode("ascii")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path)
@@ -299,6 +380,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Opt into a non-zero exit; this is deliberately not the default.",
     )
+    parser.add_argument(
+        "--allow-external-paths",
+        action="store_true",
+        help="Allow explicit regular-file inputs outside the repository.",
+    )
     return parser
 
 
@@ -311,9 +397,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         findings = inspect_paths(
             args.paths or _default_paths(),
             max_sentence_words=args.max_sentence_words,
+            allow_external_paths=args.allow_external_paths,
         )
     except (OSError, ValueError) as exc:
-        print(f"prose report failed: {exc}", file=sys.stderr)
+        print(
+            _bounded_terminal_error(f"prose report failed: {exc}"),
+            file=sys.stderr,
+        )
         return 2
 
     if args.format == "json":
