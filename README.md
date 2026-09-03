@@ -16,32 +16,27 @@
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
-**boundver classifies declared contract drift and downstream impact across
-polyglot repositories.** It records four identities per component—exact,
-behavior, boundary, and compatibility family—then tells CI what changed and
-which declared consumers may need re-verification.
+Boundver answers a practical CI question: **what contract changed, and what
+depends on it?**
 
-Use it when APIs, schemas, generated contracts, configuration, or package
-surfaces cross language and build-system boundaries. Internal refactors stay
-visible without being confused with public-contract changes.
+Declare your components, contract files, and consumer edges once. Boundver then
+compares Git snapshots and reports whether implementation, behavior, a public
+boundary, or a compatibility family changed. It also names the direct or
+transitive consumers that may need verification.
 
-Compilers, schema checkers, affected-build graphs, tests, and release tools each
-answer one part of that workflow. Boundver supplies the portable, Git-backed
-evidence between them: which declared contract family drifted and which direct
-or transitive consumers should be re-verified. It complements those tools
-rather than replacing them; see the [comparison and integration
-guide](https://yzm1.github.io/boundver/comparison/).
-
-**Privacy:** the built-in boundver CLI is telemetry-free. It does not collect
-or transmit usage or analytics data, phone home, check for updates, or submit
-crash reports. See the [privacy and telemetry
-policy](https://yzm1.github.io/boundver/privacy/).
+It does not replace tests or compatibility checkers. It tells CI which ones to
+run. Read the [executive summary](https://yzm1.github.io/boundver/executive-summary/)
+for the two-minute version.
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
 Using or evaluating boundver? [Tell us what your repository needs in the
 adopter discussion](https://github.com/yzm1/boundver/discussions/100). Sharing
 is entirely voluntary; the CLI never reports usage for you.
+
+The built-in boundver CLI is telemetry-free. It never sends source, usage,
+analytics, update checks, or crash reports. See the [privacy
+policy](https://yzm1.github.io/boundver/privacy/).
 
 The install and Action examples below target the exact v0.14.1 release so local
 writers and CI verifiers use the same contract implementation.
