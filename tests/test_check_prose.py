@@ -124,6 +124,22 @@ def test_file_snapshot_uses_stable_windows_birth_time() -> None:
     ) == checker._file_snapshot(SimpleNamespace(**common, st_ctime_ns=7))
 
 
+def test_plain_directory_rejects_windows_reparse_metadata(monkeypatch) -> None:
+    reparse_flag = 0x00000400
+    monkeypatch.setattr(
+        checker.stat,
+        "FILE_ATTRIBUTE_REPARSE_POINT",
+        reparse_flag,
+        raising=False,
+    )
+    directory = SimpleNamespace(
+        st_mode=checker.stat.S_IFDIR,
+        st_file_attributes=reparse_flag,
+    )
+
+    assert checker._is_plain_directory(directory) is False
+
+
 def test_markdown_discovery_stops_at_the_file_budget(tmp_path: Path) -> None:
     for index in range(3):
         (tmp_path / f"{index}.md").write_text("Text.\n", encoding="utf-8")
@@ -141,6 +157,78 @@ def test_markdown_discovery_stops_at_the_entry_budget(tmp_path: Path) -> None:
             tmp_path,
             max_files=3,
             max_entries=2,
+        )
+
+
+def test_markdown_discovery_rejects_a_symlinked_root(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "outside.md").write_text("External.\n", encoding="utf-8")
+    link = tmp_path / "linked-docs"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="not a plain directory"):
+        checker._discover_markdown_paths(link, max_files=2)
+
+
+def test_markdown_discovery_does_not_follow_child_symlinks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "docs"
+    root.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    outside = external / "outside.md"
+    outside.write_text("External.\n", encoding="utf-8")
+    link = root / "linked"
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    assert checker._discover_markdown_paths(root, max_files=2) == []
+
+
+def test_markdown_discovery_rejects_a_replaced_child(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "docs"
+    child = root / "child"
+    child.mkdir(parents=True)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    (replacement / "outside.md").write_text("External.\n", encoding="utf-8")
+    displaced = tmp_path / "displaced"
+    real_open = checker._open_directory_descriptor_no_follow
+
+    def replace_then_open(path, **kwargs):
+        if path == child:
+            child.rename(displaced)
+            replacement.rename(child)
+        return real_open(path, **kwargs)
+
+    monkeypatch.setattr(
+        checker,
+        "_open_directory_descriptor_no_follow",
+        replace_then_open,
+    )
+    with pytest.raises((OSError, ValueError)):
+        checker._discover_markdown_paths(root, max_files=2)
+
+
+def test_markdown_discovery_stops_at_the_depth_budget(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "one" / "two").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="1-directory depth budget"):
+        checker._discover_markdown_paths(
+            tmp_path,
+            max_files=2,
+            max_depth=1,
         )
 
 

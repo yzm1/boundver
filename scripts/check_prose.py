@@ -18,6 +18,7 @@ from typing import Iterable, Iterator, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MAX_FILES = 512
 MAX_DISCOVERY_ENTRIES = 10_000
+MAX_DISCOVERY_DEPTH = 64
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_FINDINGS = 4096
 MAX_DISPLAY_PATH_BYTES = 1024
@@ -103,6 +104,128 @@ def _is_plain_file(file_stat: os.stat_result) -> bool:
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
     attributes = getattr(file_stat, "st_file_attributes", 0)
     return stat.S_ISREG(file_stat.st_mode) and not (attributes & reparse_flag)
+
+
+def _is_plain_directory(directory_stat: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(directory_stat, "st_file_attributes", 0)
+    return stat.S_ISDIR(directory_stat.st_mode) and not (
+        attributes & reparse_flag
+    )
+
+
+def _open_windows_directory_descriptor(path: Path) -> int:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_flag_open_reparse_point = 0x00200000
+    file_flag_backup_semantics = 0x02000000
+    handle = create_file(
+        str(path),
+        0,
+        file_share_read,
+        None,
+        open_existing,
+        file_flag_open_reparse_point | file_flag_backup_semantics,
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        error_code = ctypes.get_last_error()
+        raise OSError(
+            error_code,
+            "cannot open documentation directory without following reparse points",
+        )
+    try:
+        descriptor = msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        close_handle(handle)
+        raise
+    try:
+        if not _is_plain_directory(os.fstat(descriptor)):
+            raise ValueError(f"{path}: is not a plain directory")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_plain_directory_descriptor(
+    path: Path,
+    expected_stat: os.stat_result | None,
+    *,
+    parent_descriptor: int | None = None,
+    child_name: str | None = None,
+) -> int:
+    before_path = path.lstat()
+    if not _is_plain_directory(before_path):
+        raise ValueError(f"{path}: is not a plain directory")
+    if (
+        expected_stat is not None
+        and os.name != "nt"
+        and _file_snapshot(before_path) != _file_snapshot(expected_stat)
+    ):
+        raise ValueError(f"{path}: changed before traversal")
+
+    descriptor = _open_directory_descriptor_no_follow(
+        path,
+        parent_descriptor=parent_descriptor,
+        child_name=child_name,
+    )
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not _is_plain_directory(opened_stat):
+            raise ValueError(f"{path}: is not a plain directory")
+        if _file_snapshot(opened_stat) != _file_snapshot(before_path):
+            raise ValueError(f"{path}: changed while opening for traversal")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_directory_descriptor_no_follow(
+    path: Path,
+    *,
+    parent_descriptor: int | None,
+    child_name: str | None,
+) -> int:
+    if os.name == "nt":
+        return _open_windows_directory_descriptor(path)
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    if parent_descriptor is None:
+        return os.open(path, flags)
+    if child_name is None:
+        raise ValueError("child directory name is required")
+    return os.open(
+        child_name,
+        flags,
+        dir_fd=parent_descriptor,
+    )
 
 
 def _open_read_descriptor(path: Path) -> int:
@@ -385,19 +508,28 @@ def _discover_markdown_paths(
     *,
     max_files: int,
     max_entries: int = MAX_DISCOVERY_ENTRIES,
+    max_depth: int = MAX_DISCOVERY_DEPTH,
 ) -> list[Path]:
-    if max_files < 0 or max_entries < 1:
+    if max_files < 0 or max_entries < 1 or max_depth < 0:
         raise ValueError(
             "the discovery file budget must be non-negative and the entry "
-            "budget must be positive"
+            "budget must be positive; the depth budget must be non-negative"
         )
+    root = Path(os.path.abspath(root))
     matches: list[Path] = []
-    directories = [root]
     entry_count = 0
-    while directories:
-        directory = directories.pop()
-        child_directories: list[Path] = []
-        with os.scandir(directory) as iterator:
+
+    def walk(directory: Path, descriptor: int, depth: int) -> None:
+        nonlocal entry_count
+        if depth > max_depth:
+            raise ValueError(
+                "documentation discovery exceeds the "
+                f"{max_depth}-directory depth budget"
+            )
+        before_directory = os.fstat(descriptor)
+        child_directories: list[tuple[str, os.stat_result]] = []
+        scan_target: int | Path = directory if os.name == "nt" else descriptor
+        with os.scandir(scan_target) as iterator:
             for entry in iterator:
                 entry_count += 1
                 if entry_count > max_entries:
@@ -406,11 +538,8 @@ def _discover_markdown_paths(
                         f"{max_entries}-entry budget"
                     )
                 entry_stat = entry.stat(follow_symlinks=False)
-                attributes = getattr(entry_stat, "st_file_attributes", 0)
-                reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-                is_reparse = bool(attributes & reparse_flag)
-                if stat.S_ISDIR(entry_stat.st_mode) and not is_reparse:
-                    child_directories.append(Path(entry.path))
+                if _is_plain_directory(entry_stat):
+                    child_directories.append((entry.name, entry_stat))
                     continue
                 if not entry.name.endswith(".md"):
                     continue
@@ -419,8 +548,32 @@ def _discover_markdown_paths(
                         "documentation discovery exceeds the "
                         f"{max_files}-file budget"
                     )
-                matches.append(Path(entry.path))
-        directories.extend(reversed(sorted(child_directories)))
+                matches.append(directory / entry.name)
+
+        for child_name, expected_stat in sorted(child_directories):
+            child = directory / child_name
+            child_descriptor = _open_plain_directory_descriptor(
+                child,
+                expected_stat,
+                parent_descriptor=descriptor,
+                child_name=child_name,
+            )
+            try:
+                walk(child, child_descriptor, depth + 1)
+            finally:
+                os.close(child_descriptor)
+
+        if _file_snapshot(os.fstat(descriptor)) != _file_snapshot(
+            before_directory
+        ):
+            raise ValueError(f"{directory}: changed during traversal")
+
+    root_stat = root.lstat()
+    root_descriptor = _open_plain_directory_descriptor(root, root_stat)
+    try:
+        walk(root, root_descriptor, 0)
+    finally:
+        os.close(root_descriptor)
     return sorted(matches)
 
 
