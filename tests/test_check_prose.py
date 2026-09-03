@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -138,10 +139,12 @@ def test_cli_rejects_symlinks_without_reading_the_target(
 ) -> None:
     target = tmp_path / "target.md"
     target.write_text("Secret in order to remain unread.\n", encoding="utf-8")
-    link = REPO_ROOT / "docs" / ".prose-test-link.md"
+    link = REPO_ROOT / "docs" / f".prose-test-link-{uuid.uuid4().hex}.md"
+    created = False
     try:
         try:
             link.symlink_to(target)
+            created = True
         except OSError as exc:
             pytest.skip(f"symlinks are unavailable: {exc}")
         assert checker.main([str(link)]) == 2
@@ -150,7 +153,8 @@ def test_cli_rejects_symlinks_without_reading_the_target(
         assert "Secret" not in captured.out
         assert "Secret" not in captured.err
     finally:
-        link.unlink(missing_ok=True)
+        if created:
+            link.unlink(missing_ok=True)
 
 
 def test_failure_diagnostic_escapes_terminal_controls(
