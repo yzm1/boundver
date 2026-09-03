@@ -45,6 +45,7 @@ nav:
   - Executive summary: executive-summary.md
   - Start here:
       - One-minute demo: demo.md
+      - Range-review case study: case-study-range-review.md
       - Getting started: getting-started.md
       - Gradual adoption: gradual-adoption.md
       - Examples: examples.md
@@ -56,6 +57,7 @@ nav:
   - Operate it:
       - Reference: reference.md
       - CI cookbook: ci-cookbook.md
+      - Performance contract: performance.md
       - Migration and ratcheting: migration-and-ratcheting.md
       - Distribution: distribution.md
       - Lockfile merges: LOCKFILE_MERGE.md

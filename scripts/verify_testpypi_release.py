@@ -16,12 +16,15 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import re
+import ssl
 import struct
 import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,6 +52,15 @@ MAX_METADATA_BYTES = 4 * 1024 * 1024
 MAX_INDEX_FILES = 256
 MAX_DISTRIBUTION_FILENAME_BYTES = 1024
 MAX_JSON_INTEGER_DIGITS = 4300
+MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
+_WINDOWS_RESERVED_ARCHIVE_STEMS = {
+    "aux",
+    "con",
+    "nul",
+    "prn",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PROJECT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -64,6 +76,40 @@ class ReleaseIncompleteError(RuntimeError):
 
 class ReleaseNetworkError(RuntimeError):
     """A remote request failed and may succeed on a later attempt."""
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep package-index requests on their validated first origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _public_tls_context() -> ssl.SSLContext:
+    """Load host trust without environment-selected CAs or TLS key logging."""
+    removed: dict[str, str] = {}
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
+        value = os.environ.pop(name, None)
+        if value is not None:
+            removed[name] = value
+    try:
+        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    finally:
+        os.environ.update(removed)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+_NO_PROXY_HANDLER = urllib.request.ProxyHandler({})
+_PUBLIC_OPENER = urllib.request.build_opener(
+    _NO_PROXY_HANDLER,
+    urllib.request.HTTPSHandler(context=_public_tls_context()),
+    _RejectRedirects(),
+)
+
+
+def _open_public_url(request: urllib.request.Request, *, timeout: int):
+    return _PUBLIC_OPENER.open(request, timeout=timeout)
 
 
 def _bounded_json_int(value: str) -> int:
@@ -85,6 +131,10 @@ def _bounded_json_int(value: str) -> int:
 
 
 def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError(
+            f"JSON number exceeds the {MAX_JSON_NUMBER_CHARS}-character limit"
+        )
     result = float(value)
     if not math.isfinite(result):
         raise ValueError("non-finite JSON number is not supported")
@@ -173,7 +223,8 @@ def _sha256_file(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _validate_archive_path(name: str, archive_name: str) -> None:
+def _validate_archive_path(name: str, archive_name: str) -> str:
+    """Validate one portable member name and return its collision key."""
     try:
         encoded_length = len(name.encode("utf-8"))
     except UnicodeEncodeError as error:
@@ -188,10 +239,18 @@ def _validate_archive_path(name: str, archive_name: str) -> None:
         or PurePosixPath(name).is_absolute()
         or "\\" in name
         or any(part in ("", ".", "..") for part in parts)
+        or any(":" in part for part in parts)
+        or any(part.endswith((" ", ".")) for part in parts)
+        or any(
+            part.split(".", 1)[0].casefold() in _WINDOWS_RESERVED_ARCHIVE_STEMS
+            for part in parts
+        )
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
     ):
         raise ReleaseVerificationError(
             f"{archive_name} contains an unsafe or overlong archive path: {name!r}"
         )
+    return unicodedata.normalize("NFC", stripped).casefold()
 
 
 def _filename_within_limit(name: str) -> bool:
@@ -277,6 +336,8 @@ def _preflight_zip(path: Path) -> None:
             central_end = central_offset + central_size
             stream.seek(central_offset)
             total_uncompressed = 0
+            names: set[str] = set()
+            portable_names: set[str] = set()
             for _ in range(total_entries):
                 header = _read_exact_file_bytes(
                     stream, 46, f"ZIP central directory in {path.name}"
@@ -313,7 +374,17 @@ def _preflight_zip(path: Path) -> None:
                     raise ReleaseVerificationError(
                         f"{path.name} contains an invalid archive path"
                     ) from error
-                _validate_archive_path(filename, path.name)
+                portable_name = _validate_archive_path(filename, path.name)
+                if filename in names:
+                    raise ReleaseVerificationError(
+                        f"{path.name} contains duplicate archive member: {filename}"
+                    )
+                if portable_name in portable_names:
+                    raise ReleaseVerificationError(
+                        f"{path.name} contains a non-portable archive path collision"
+                    )
+                names.add(filename)
+                portable_names.add(portable_name)
                 if uncompressed_size > MAX_ARCHIVE_MEMBER_BYTES:
                     raise ReleaseVerificationError(
                         f"{path.name} contains an oversized archive member: {filename}"
@@ -487,14 +558,21 @@ def _metadata_identity(path: Path) -> tuple[str, str]:
                     )
                 aggregate = 0
                 names: set[str] = set()
+                portable_names: set[str] = set()
                 for info in infos:
-                    _validate_archive_path(info.filename, path.name)
+                    portable_name = _validate_archive_path(info.filename, path.name)
                     if info.filename in names:
                         raise ReleaseVerificationError(
                             f"{path.name} contains duplicate archive member: "
                             f"{info.filename}"
                         )
+                    if portable_name in portable_names:
+                        raise ReleaseVerificationError(
+                            f"{path.name} contains a non-portable archive path "
+                            "collision"
+                        )
                     names.add(info.filename)
+                    portable_names.add(portable_name)
                     if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
                         raise ReleaseVerificationError(
                             f"{path.name} contains an oversized archive member: "
@@ -535,6 +613,7 @@ def _metadata_identity(path: Path) -> tuple[str, str]:
                     count = 0
                     aggregate = 0
                     names: set[str] = set()
+                    portable_names: set[str] = set()
                     for member in archive:
                         count += 1
                         if count > MAX_ARCHIVE_MEMBERS:
@@ -542,13 +621,19 @@ def _metadata_identity(path: Path) -> tuple[str, str]:
                                 f"{path.name} exceeds the "
                                 f"{MAX_ARCHIVE_MEMBERS}-member archive limit"
                             )
-                        _validate_archive_path(member.name, path.name)
+                        portable_name = _validate_archive_path(member.name, path.name)
                         if member.name in names:
                             raise ReleaseVerificationError(
                                 f"{path.name} contains duplicate archive member: "
                                 f"{member.name}"
                             )
+                        if portable_name in portable_names:
+                            raise ReleaseVerificationError(
+                                f"{path.name} contains a non-portable archive path "
+                                "collision"
+                            )
                         names.add(member.name)
+                        portable_names.add(portable_name)
                         if member.islnk() or member.issym():
                             _validate_archive_path(member.linkname, path.name)
                         if member.size > MAX_ARCHIVE_MEMBER_BYTES:
@@ -795,7 +880,7 @@ def _fetch_provenance(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_public_url(request, timeout=30) as response:
             if response.geturl() != url:
                 raise ReleaseVerificationError(
                     "TestPyPI provenance request redirected"
@@ -816,7 +901,7 @@ def _request_json(url: str) -> Mapping[str, Any] | None:
         headers={"Accept": "application/json", "User-Agent": USER_AGENT},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_public_url(request, timeout=30) as response:
             requested = urllib.parse.urlsplit(url)
             final = urllib.parse.urlsplit(response.geturl())
             if final.scheme != requested.scheme or final.netloc != requested.netloc:
@@ -995,7 +1080,7 @@ def _download_and_verify(
         digest = hashlib.sha256()
         size = 0
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with _open_public_url(request, timeout=60) as response:
                 _validate_download_url(response.geturl(), download_origin)
                 declared = _declared_content_length(
                     response, f"package-index file {filename}"
@@ -1124,8 +1209,10 @@ def _verify(args: argparse.Namespace) -> None:
         sdist = next(
             item for item in remote.values() if item.filename.endswith(".tar.gz")
         )
-        assert wheel.url is not None  # narrowed by a complete remote release
-        assert sdist.url is not None
+        if wheel.url is None or sdist.url is None:
+            raise ReleaseVerificationError(
+                "complete package-index metadata omitted a distribution URL"
+            )
         _write_output(
             args.github_output, "wheel-url", f"{wheel.url}#sha256={wheel.sha256}"
         )

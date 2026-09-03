@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata as importlib_metadata
+import importlib.util
 import os
 import re
 import stat
@@ -38,6 +39,24 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Optional
 from zipfile import ZIP_STORED, ZipFile, ZipInfo
+
+
+def _load_release_platform():
+    """Load the exact adjacent output-safety helper under isolated startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_standalone_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_release_platform = _load_release_platform()
+prepare_plain_output_file = _release_platform.prepare_plain_output_file
+revalidate_plain_output_file = _release_platform.revalidate_plain_output_file
 
 
 _ZIP_MIN_EPOCH = 315532800  # 1980-01-01T00:00:00Z
@@ -790,8 +809,12 @@ def build(output: Path) -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         sys.exit(f"ERROR: cannot preflight standalone sources: {exc}")
 
-    output = output.resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output, output_ancestor_identities = prepare_plain_output_file(
+            output, "standalone archive output"
+        )
+    except (OSError, ValueError) as exc:
+        sys.exit(f"ERROR: unsafe standalone output: {exc}")
     # Stage and build on the destination filesystem so os.replace is atomic.
     with tempfile.TemporaryDirectory(
         dir=output.parent, prefix=".boundver-standalone-"
@@ -841,6 +864,14 @@ def build(output: Path) -> None:
 
         archive = temp_root / output.name
         _write_archive(archive, stage_manifest)
+        try:
+            revalidate_plain_output_file(
+                output,
+                output_ancestor_identities,
+                "standalone archive output",
+            )
+        except (OSError, ValueError) as exc:
+            sys.exit(f"ERROR: unsafe standalone output: {exc}")
         os.replace(archive, output)
 
     size_kb = output.stat().st_size // 1024

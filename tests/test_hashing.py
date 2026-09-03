@@ -15,6 +15,7 @@ from boundver.core import (
     git_root,
     _recompute_slice_entry,
     _lockfile_structure_issues,
+    ConfigError,
     discover_components,
 )
 from tests._repo_fixtures import init_git_repo
@@ -360,15 +361,18 @@ class DiscoverComponentsTests(unittest.TestCase):
             self.assertIn("svc", found)
             self.assertIn("svc-2", found)
 
-    def test_skips_git_directory(self):
-        """Files inside .git are not returned as components."""
+    def test_malformed_git_metadata_fails_closed_before_crawl(self):
+        """An unreadable .git marker cannot be reinterpreted as plain files."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             git_pkg = root / ".git" / "svc"
             git_pkg.mkdir(parents=True)
             (git_pkg / "package.json").write_text('{"version":"1.0"}')
-            found = discover_components(root)
-            self.assertEqual(found, {})
+            with self.assertRaisesRegex(
+                ConfigError,
+                "refusing a filesystem approximation",
+            ):
+                discover_components(root)
 
 
 class HeadIndexDigestTests(unittest.TestCase):

@@ -469,7 +469,19 @@ class AutomationContractTests(unittest.TestCase):
         script = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("rm -rf -- dist build src/boundver.egg-info", script)
+        guard = script.index(
+            'if [[ "$invocation_root" != "$repository_root" ]]'
+        )
+        install = script.index(
+            "python -I scripts/install_locked_tools.py release"
+        )
+        delete = script.index(
+            "python -I scripts/build_release_artifacts.py --clean"
+        )
+        self.assertLess(guard, install)
+        self.assertLess(install, delete)
+        self.assertNotIn("rm -rf -- dist build", script)
+        self.assertIn('if [[ -L "$script_source" || ! -f "$script_source" ]]', script)
 
     def test_release_workflow_orders_marketplace_before_production_and_uses_explicit_alias(self):
         import yaml
@@ -801,6 +813,10 @@ class AutomationContractTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "42\n")
         self.assertIn("not visible yet", diagnostic.getvalue())
         self.assertEqual(popen.call_count, 2)
+        for invocation in popen.call_args_list:
+            command_environment = invocation.kwargs["env"]
+            self.assertEqual(command_environment["GH_HOST"], "github.com")
+            self.assertTrue(command_environment["GH_CONFIG_DIR"])
         sleep.assert_called_once_with(2)
 
     def test_elevated_registry_and_release_jobs_isolate_code_execution(self):
@@ -1524,11 +1540,17 @@ class AutomationContractTests(unittest.TestCase):
         )["run"]
         for check in (
             "actions/artifacts/$artifact_id/zip",
+            "https://api.github.com/repos/yzm1/boundver/",
+            '--oauth2-bearer "$GH_TOKEN"',
+            "--max-redirs 5",
             "verify-archive",
             '--digest "$expected_digest"',
             '"$RUNNER_TEMP/release_workflow.py"',
         ):
             self.assertIn(check, archive_gate)
+        self.assertNotIn('Authorization: Bearer $GH_TOKEN', archive_gate)
+        self.assertNotIn("$GITHUB_API_URL", archive_gate)
+        self.assertNotIn("$GITHUB_REPOSITORY", archive_gate)
         for check in (
             "artifact archive is not a unique flat file set",
             "MAX_ARCHIVE_METADATA_BYTES = 1024 * 1024",
@@ -1939,7 +1961,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertNotIn(".[schema,yaml]", dockerfile)
         self.assertIn("COPY scripts/requirements/action.lock", dockerfile)
         self.assertNotIn("python -m pip", dockerfile)
-        self.assertEqual(dockerfile.count("python -I -m pip"), 5)
+        self.assertEqual(dockerfile.count("python -I -m pip"), 6)
         self.assertIn("python -I -m pip download", dockerfile)
         self.assertIn("--index-url https://pypi.org/simple", dockerfile)
         self.assertGreaterEqual(dockerfile.count("--isolated"), 5)
@@ -1949,7 +1971,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1785715200"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1787529600"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2029,10 +2051,10 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         base = (
             "python:3.12.14-slim-trixie@"
-            "sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a"
+            "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20260803T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20260824T000000Z", dockerfile)
         snapshot_stamps = set(
             re.findall(
                 r"snapshot\.debian\.org/archive/(?:debian|debian-security)/"
@@ -2040,7 +2062,7 @@ print(json.dumps(payload, separators=(",", ":")))
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20260803T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20260824T000000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2050,10 +2072,35 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertGreaterEqual(dockerfile.count("grep -Fqx"), 2)
         self.assertIn('Acquire::Check-Valid-Until "false"', dockerfile)
         self.assertIn("git=1:2.47.3-0+deb13u1", dockerfile)
+        self.assertIn(
+            "python -I -m pip uninstall --yes pip setuptools wheel",
+            dockerfile,
+        )
+        self.assertIn("find / -xdev -type f -perm /6000 -exec chmod a-s {} +", dockerfile)
         self.assertNotIn("COPY . .", dockerfile)
         self.assertIn("COPY src ./src", dockerfile)
         for ignored in ("tests/", "scripts/*", ".github/"):
             self.assertIn(ignored, dockerignore)
+        for credential in (
+            ".netrc",
+            "_netrc",
+            ".git-credentials",
+            ".ssh/",
+            ".aws/",
+            ".azure/",
+            ".config/gcloud/",
+            ".kube/",
+            "id_rsa",
+            "id_ed25519",
+            "*.p12",
+            "*.pfx",
+            "*.jks",
+            "*.keystore",
+            "*.kdbx",
+            "terraform.tfstate",
+            "*.tfvars",
+        ):
+            self.assertIn(credential, dockerignore)
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)
@@ -2098,6 +2145,10 @@ print(json.dumps(payload, separators=(",", ":")))
         matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
         self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
         self.assertEqual(
+            matrix["python-version"],
+            ["3.10", "3.11", "3.12", "3.13", "3.14"],
+        )
+        self.assertEqual(
             matrix["include"],
             [
                 {"os": "macos-15-intel", "python-version": "3.12"},
@@ -2129,9 +2180,11 @@ print(json.dumps(payload, separators=(",", ":")))
 
         for relative in (
             ".github/workflows/ci.yml",
+            ".github/workflows/codeql.yml",
             ".github/workflows/create-release-tag.yml",
             ".github/workflows/publish.yml",
             ".github/workflows/advance-release-alias.yml",
+            ".github/workflows/publish-container.yml",
         ):
             with self.subTest(workflow=relative):
                 workflow = yaml.safe_load(
@@ -2149,6 +2202,143 @@ print(json.dumps(payload, separators=(",", ":")))
                                 False,
                             )
                 self.assertGreater(checkout_count, 0)
+
+    def test_codeql_preserves_exact_commit_analysis(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/codeql.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(
+            workflow["concurrency"]["group"],
+            "codeql-${{ github.event_name }}-${{ github.sha }}",
+        )
+        self.assertIs(workflow["concurrency"]["cancel-in-progress"], False)
+        analyze = workflow["jobs"]["analyze"]
+        self.assertEqual(
+            analyze["permissions"],
+            {"contents": "read", "security-events": "write"},
+        )
+        self.assertEqual(analyze["timeout-minutes"], 45)
+        init = next(
+            step
+            for step in analyze["steps"]
+            if str(step.get("uses", "")).startswith("github/codeql-action/init@")
+        )
+        self.assertEqual(init["with"]["languages"], "python")
+        self.assertEqual(init["with"]["queries"], "security-extended")
+
+    def test_every_executing_github_job_has_an_explicit_wall_clock_limit(self):
+        for path in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+            workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+            for job_name, job in workflow.get("jobs", {}).items():
+                if "uses" in job:
+                    # Reusable-workflow callers inherit limits from their jobs.
+                    continue
+                with self.subTest(workflow=path.name, job=job_name):
+                    timeout = job.get("timeout-minutes")
+                    self.assertIs(type(timeout), int)
+                    self.assertGreater(timeout, 0)
+                    self.assertLessEqual(timeout, 120)
+
+    def test_privileged_release_workflows_pin_git_and_github_transport(self):
+        import yaml
+
+        expected = {
+            "BASH_ENV": "",
+            "CDPATH": "",
+            "ENV": "",
+            "GCM_INTERACTIVE": "never",
+            "GLOBIGNORE": "",
+            "GH_HOST": "github.com",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+        for relative in (
+            ".github/workflows/create-release-tag.yml",
+            ".github/workflows/publish.yml",
+            ".github/workflows/advance-release-alias.yml",
+            ".github/workflows/publish-container.yml",
+        ):
+            with self.subTest(workflow=relative):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / relative).read_text(encoding="utf-8")
+                )
+                for name, value in expected.items():
+                    self.assertEqual(workflow["env"][name], value)
+
+    def test_container_publication_is_serialized_per_exact_tag(self):
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish-container.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            workflow["concurrency"]["group"],
+            "boundver-release-container-${{ inputs.release_tag }}",
+        )
+        self.assertFalse(workflow["concurrency"]["cancel-in-progress"])
+
+    def test_container_vulnerability_policy_is_pinned_expiring_and_fail_closed(self):
+        import datetime
+        import yaml
+
+        scanner = (
+            "ghcr.io/aquasecurity/trivy@"
+            "sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c"
+        )
+        for relative in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/publish-container.yml",
+        ):
+            with self.subTest(workflow=relative):
+                workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn(scanner, workflow)
+                self.assertIn(
+                    "--ignorefile /policy/.trivyignore.yaml --exit-code 1",
+                    workflow,
+                )
+                self.assertIn("--ignore-unfixed --exit-code 1", workflow)
+                self.assertIn("--severity HIGH,CRITICAL", workflow)
+
+        ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--scanners misconfig,secret", ci_workflow)
+        self.assertIn("--skip-dirs /workspace/.git", ci_workflow)
+        for runtime_control in (
+            "--network none",
+            "--read-only",
+            "--cap-drop ALL",
+            "--security-opt no-new-privileges",
+        ):
+            self.assertGreaterEqual(ci_workflow.count(runtime_control), 2)
+
+        container = (
+            REPO_ROOT / ".github/workflows/publish-container.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("for platform in linux/amd64 linux/arm64", container)
+
+        policy = yaml.safe_load(
+            (REPO_ROOT / ".trivyignore.yaml").read_text(encoding="utf-8")
+        )
+        exceptions = policy["vulnerabilities"]
+        identifiers = [entry["id"] for entry in exceptions]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+        self.assertGreaterEqual(len(identifiers), 1)
+        for entry in exceptions:
+            self.assertRegex(entry["id"], r"^CVE-[0-9]{4}-[0-9]+$")
+            self.assertIs(type(entry["expired_at"]), datetime.date)
+            self.assertTrue(entry["statement"].strip())
+            self.assertGreaterEqual(len(entry["purls"]), 1)
+            self.assertEqual(len(entry["purls"]), len(set(entry["purls"])))
+            for purl in entry["purls"]:
+                self.assertRegex(purl, r"^pkg:deb/debian/[A-Za-z0-9.+-]+$")
 
     def test_packaging_smoke_resolves_posix_and_windows_venv_layouts(self):
         smoke = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
@@ -2184,6 +2374,9 @@ print(json.dumps(payload, separators=(",", ":")))
         import yaml
 
         action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        component_description = action["inputs"]["components"]["description"]
+        self.assertIn("cannot contain commas", component_description)
+        self.assertIn("surrounding whitespace", component_description)
         self.assertEqual(action["inputs"]["facets"]["default"], "")
         self.assertEqual(action["inputs"]["transitive"]["default"], "false")
         self.assertEqual(
@@ -2198,7 +2391,10 @@ print(json.dumps(payload, separators=(",", ":")))
             action["outputs"]["result-file"]["value"],
             "${{ steps.verify.outputs.result-file }}",
         )
-        script = action["runs"]["steps"][-1]["run"]
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
+        script = verify_step["run"]
         self.assertIn('if [[ -n "$BOUNDVER_FACETS" ]]', script)
         self.assertIn('command+=(--facets "$BOUNDVER_FACETS")', script)
         self.assertIn('command+=(--transitive)', script)
@@ -2210,6 +2406,16 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         self.assertNotIn("boundver-result.XXXXXX.json", script)
         self.assertNotIn('echo "consumer-impact=', script)
+
+    def test_gitlab_component_filter_documents_addressable_names(self):
+        template = yaml.safe_load(
+            (REPO_ROOT / "templates" / "boundver.yml").read_text(
+                encoding="utf-8"
+            ).split("---", 1)[0]
+        )
+        description = template["spec"]["inputs"]["components"]["description"]
+        self.assertIn("cannot contain commas", description)
+        self.assertIn("surrounding whitespace", description)
 
     def test_action_baseline_input_is_read_only_and_opt_in(self):
         import yaml
@@ -2225,14 +2431,16 @@ print(json.dumps(payload, separators=(",", ":")))
                 "default": "",
             },
         )
-        verify_step = action["runs"]["steps"][-1]
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
         self.assertEqual(
             verify_step["env"]["BOUNDVER_BASELINE"], "${{ inputs.baseline }}"
         )
         script = verify_step["run"]
-        baseline_block = """if [[ -n "$BOUNDVER_BASELINE" ]]; then
-  command+=(--baseline "$BOUNDVER_BASELINE")
-fi"""
+        baseline_block = """  if [[ -n "$BOUNDVER_BASELINE" ]]; then
+    command+=(--baseline "$BOUNDVER_BASELINE")
+  fi"""
         self.assertEqual(script.count(baseline_block), 1)
         self.assertNotIn("--write-baseline", script)
         self.assertNotIn("--update-baseline", script)
@@ -2254,15 +2462,21 @@ fi"""
         probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
         base_environment = {
             **os.environ,
+            "BOUNDVER_OPERATION": "verify",
             "BOUNDVER_CONFIG": "boundary.config.json",
             "BOUNDVER_LOCK": "boundary.lock.json",
             "BOUNDVER_SOURCE": "head",
             "BOUNDVER_FACETS": "",
             "BOUNDVER_COMPONENTS": "",
             "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_BASE": "",
+            "BOUNDVER_TARGET": "",
+            "BOUNDVER_MERGE_BASE": "false",
             "BOUNDVER_TRANSITIVE": "false",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_UPLOAD_ARTIFACT": "false",
+            "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         }
         expected = [
             "python",
@@ -2294,6 +2508,124 @@ fi"""
                     text=True,
                 )
                 self.assertEqual(result.stdout.splitlines(), expected + suffix)
+
+    def test_action_review_operation_is_explicit_source_bound_and_artifact_ready(self):
+        import yaml
+
+        action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
+        self.assertEqual(action["inputs"]["operation"]["default"], "verify")
+        self.assertEqual(action["inputs"]["base"]["default"], "")
+        self.assertEqual(action["inputs"]["target"]["default"], "")
+        self.assertEqual(action["inputs"]["merge-base"]["default"], "false")
+        self.assertEqual(action["inputs"]["upload-artifact"]["default"], "false")
+        for output in (
+            "result-schema",
+            "transport-complete",
+            "selection-complete",
+            "changed-components",
+            "impacted-components",
+            "external-consumers",
+            "test-components",
+            "changed-slices",
+            "impacted-slices",
+            "test-slices",
+            "summary-file",
+            "artifact-id",
+            "artifact-url",
+        ):
+            self.assertIn(output, action["outputs"])
+
+        verify_step = next(
+            step for step in action["runs"]["steps"] if step.get("id") == "verify"
+        )
+        script = verify_step["run"]
+        self.assertIn('command+=(--summary-file "$summary_file")', script)
+        self.assertIn('cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"', script)
+        self.assertIn("actions/checkout with fetch-depth: 0", script)
+        self.assertIn("GitLab GIT_DEPTH: 0", script)
+        self.assertNotIn('echo "$BOUNDVER_BASE"', script)
+        self.assertNotIn('echo "$BOUNDVER_TARGET"', script)
+
+        upload = next(
+            step
+            for step in action["runs"]["steps"]
+            if step.get("id") == "upload-review"
+        )
+        self.assertEqual(
+            upload["uses"],
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        )
+        self.assertEqual(
+            upload["if"],
+            "${{ always() && inputs.operation == 'review' && inputs.upload-artifact == 'true' }}",
+        )
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+
+        bash = shutil.which("bash")
+        if os.name == "nt":
+            git = shutil.which("git")
+            git_bash = (
+                Path(git).resolve().parent.parent / "bin" / "bash.exe"
+                if git is not None
+                else None
+            )
+            if git_bash is not None and git_bash.is_file():
+                bash = str(git_bash)
+        if bash is None:  # pragma: no cover
+            self.skipTest("Bash is required to exercise the composite Action script")
+        assembly = script.split("result_file=$(mktemp", 1)[0]
+        probe = assembly + '\nprintf "%s\\n" "${command[@]}"\n'
+        environment = {
+            **os.environ,
+            "BOUNDVER_OPERATION": "review",
+            "BOUNDVER_CONFIG": "boundary.config.json",
+            "BOUNDVER_LOCK": "boundary.lock.json",
+            "BOUNDVER_BASELINE": "",
+            "BOUNDVER_SOURCE": "head",
+            "BOUNDVER_FACETS": "boundary",
+            "BOUNDVER_COMPONENTS": "",
+            "BOUNDVER_CHANGED_FROM": "",
+            "BOUNDVER_BASE": "refs/remotes/origin/main",
+            "BOUNDVER_TARGET": "HEAD",
+            "BOUNDVER_MERGE_BASE": "true",
+            "BOUNDVER_TRANSITIVE": "true",
+            "BOUNDVER_FAIL_FAST": "false",
+            "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_UPLOAD_ARTIFACT": "true",
+            "BOUNDVER_ARTIFACT_NAME": "review-plan",
+        }
+        result = subprocess.run(
+            [bash, "-c", probe],
+            cwd=REPO_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "python",
+                "-I",
+                "-m",
+                "boundver",
+                "review",
+                "--base",
+                "refs/remotes/origin/main",
+                "--target",
+                "HEAD",
+                "--config",
+                "boundary.config.json",
+                "--lock",
+                "boundary.lock.json",
+                "--format",
+                "plan",
+                "--merge-base",
+                "--facets",
+                "boundary",
+                "--transitive",
+            ],
+        )
 
     def test_pre_commit_and_pre_push_use_matching_snapshots_and_portable_exact_gate(self):
         import yaml
@@ -2469,8 +2801,8 @@ class TestPyPIReleaseVerificationTests(unittest.TestCase):
                 payload, url, [str(len(payload))]
             )
             with mock.patch.object(
-                self.verifier.urllib.request,
-                "urlopen",
+                self.verifier,
+                "_open_public_url",
                 return_value=response,
             ) as urlopen:
                 self.verifier._fetch_provenance(
@@ -2522,8 +2854,8 @@ class TestPyPIReleaseVerificationTests(unittest.TestCase):
             for index, (response, message) in enumerate(cases):
                 output = root / f"statement-{index}.json"
                 with mock.patch.object(
-                    self.verifier.urllib.request,
-                    "urlopen",
+                    self.verifier,
+                    "_open_public_url",
                     return_value=response,
                 ), self.assertRaises(
                     (

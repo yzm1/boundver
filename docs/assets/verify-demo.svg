@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 390" role="img" aria-labelledby="title desc">
   <title id="title">boundver consumer-impact demo</title>
-  <desc id="desc">A terminal shows boundary drift in payments-api and the transitive consumers checkout-web, mobile-app, and payments-sdk.</desc>
+  <desc id="desc">A terminal shows boundary drift in payments-api and separate component and external transitive consumers.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1040" y2="390" gradientUnits="userSpaceOnUse">
       <stop stop-color="#11162c"/>
@@ -21,7 +21,7 @@
     <text x="58" y="164" fill="#ffcb6b">MISMATCH payments-api.boundary</text>
     <text x="58" y="206" fill="#a6accd">lockfile=9cf4bb1be668...</text>
     <text x="58" y="242" fill="#ffcb6b">current=d734da4251c8...</text>
-    <text x="58" y="294" fill="#82aaff">AFFECTED CONSUMERS (TRANSITIVE)</text>
-    <text x="58" y="330" fill="#c3e88d">checkout-web, mobile-app, payments-sdk</text>
+    <text x="58" y="294" fill="#82aaff">Consumer impact: payments-api [boundary; transitive]</text>
+    <text x="58" y="330" fill="#c3e88d">Components: checkout-web, payments-sdk · External: mobile-app</text>
   </g>
 </svg>

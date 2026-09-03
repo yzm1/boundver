@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,58 @@ _AUDITOR_SPEC.loader.exec_module(_AUDITOR)
 
 
 class SemanticProviderProposalTests(unittest.TestCase):
+    def test_reviewed_checker_runs_without_audit_credentials(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            validation_root = Path(temporary)
+            scripts = validation_root / "scripts"
+            scripts.mkdir()
+            checker = scripts / "check_semantic_provider_proposal.py"
+            checker.write_text(
+                """
+import os
+
+def validate_proposal(repo, manifest, **options):
+    forbidden = {
+        'GH_TOKEN',
+        'GITHUB_TOKEN',
+        'BOUNDVER_RELEASE_REVIEW_TOKEN',
+        'AWS_SECRET_ACCESS_KEY',
+    }
+    if forbidden.intersection(os.environ):
+        raise RuntimeError('credential reached isolated checker')
+    return {
+        'ok': True,
+        'proposal': 'boundver-semantic-provider-system/v1',
+        'options': options,
+    }
+""",
+                encoding="utf-8",
+            )
+            manifest = validation_root / "manifest.json"
+            manifest.write_text("{}\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GH_TOKEN": "secret",
+                    "GITHUB_TOKEN": "secret",
+                    "BOUNDVER_RELEASE_REVIEW_TOKEN": "secret",
+                    "AWS_SECRET_ACCESS_KEY": "secret",
+                },
+            ):
+                result = _AUDITOR._run_checker(
+                    ROOT,
+                    validation_root,
+                    manifest,
+                    authoritative_review_passed=True,
+                    authoritative_release_passed=False,
+                    require_accepted=True,
+                    require_semantic_provider_work=False,
+                    require_semantic_provider_release=False,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["options"]["authoritative_review_passed"])
+
     AUDIT_TIME = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
 
     def _manifest(self):
@@ -432,6 +485,12 @@ class SemanticProviderProposalTests(unittest.TestCase):
         )
         subprocess.run(
             ["git", "config", "user.email", "proposal@example.invalid"],
+            cwd=root,
+            check=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "config", "core.autocrlf", "false"],
             cwd=root,
             check=True,
             timeout=30,
@@ -1982,8 +2041,8 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 review["submitted_at"] = (
                     (now - timedelta(minutes=index)).isoformat().replace("+00:00", "Z")
                 )
-        checker = mock.Mock()
-        checker.validate_proposal.return_value = {
+        checker_result = {
+            "ok": True,
             "proposal": "boundver-semantic-provider-system/v1"
         }
         stdout = io.StringIO()
@@ -2015,7 +2074,9 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 "collect_snapshot",
                 side_effect=[proposal, proposal, release, release],
             ) as collect,
-            mock.patch.object(_AUDITOR, "_load_checker", return_value=checker),
+            mock.patch.object(
+                _AUDITOR, "_run_checker", return_value=checker_result
+            ) as run_checker,
             contextlib.redirect_stdout(stdout),
         ):
             result = _AUDITOR.main(
@@ -2036,8 +2097,8 @@ class SemanticProviderProposalTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["release_review"]["pull_request"], 95)
         self.assertEqual(collect.call_count, 4)
-        checker.validate_proposal.assert_called_once()
-        options = checker.validate_proposal.call_args.kwargs
+        run_checker.assert_called_once()
+        options = run_checker.call_args.kwargs
         self.assertTrue(options["authoritative_review_passed"])
         self.assertTrue(options["authoritative_release_passed"])
         self.assertTrue(options["require_semantic_provider_release"])
@@ -2399,6 +2460,99 @@ class SemanticProviderProposalTests(unittest.TestCase):
                 cwd=ROOT,
                 timeout=1,
             )
+
+    def test_bounded_subprocess_pipe_close_uses_one_shared_deadline(self):
+        readers = []
+
+        class NeverClosingReader:
+            def __init__(self, *args, **kwargs):
+                self.join_timeouts = []
+                readers.append(self)
+
+            def start(self):
+                return None
+
+            def join(self, timeout=None):
+                self.join_timeouts.append(timeout)
+
+            def is_alive(self):
+                return True
+
+        class ExitedProcess:
+            stdout = object()
+            stderr = object()
+
+            def __init__(self):
+                self.kill_calls = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                self.kill_calls += 1
+
+        process = ExitedProcess()
+        with mock.patch.object(
+            _AUDITOR.subprocess,
+            "Popen",
+            return_value=process,
+        ), mock.patch.object(
+            _AUDITOR.threading,
+            "Thread",
+            NeverClosingReader,
+        ), mock.patch.object(
+            _AUDITOR.time,
+            "monotonic",
+            side_effect=(100.0, 103.0, 106.0),
+        ), self.assertRaisesRegex(
+            _AUDITOR.AuditError,
+            "output pipes did not close",
+        ):
+            _AUDITOR._run_bounded(["checker"], cwd=ROOT)
+
+        self.assertEqual(
+            [reader.join_timeouts for reader in readers],
+            [[2.0], [0.0]],
+        )
+        self.assertEqual(process.kill_calls, 1)
+
+    def test_gate_json_shape_is_rejected_before_decoder_allocation(self):
+        raw = b'{"items":[0,0,0]}'
+        with mock.patch.object(
+            _AUDITOR, "MAX_JSON_TOKENS", 2
+        ), mock.patch.object(
+            _AUDITOR.json,
+            "loads",
+            side_effect=AssertionError("decoder must not run"),
+        ), self.assertRaisesRegex(_AUDITOR.AuditError, "structural limit"):
+            _AUDITOR._decode_json(raw, "hostile evidence")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "hostile.json"
+            path.write_bytes(raw)
+            with mock.patch.object(
+                _CHECKER, "MAX_JSON_TOKENS", 2
+            ), mock.patch.object(
+                _CHECKER.json,
+                "loads",
+                side_effect=AssertionError("decoder must not run"),
+            ), self.assertRaisesRegex(_CHECKER.ProposalError, "structural limit"):
+                _CHECKER._load_json(path)
+
+    def test_audit_git_reads_disable_replacements_hooks_and_lazy_fetch(self):
+        with mock.patch.object(
+            _AUDITOR, "_trusted_tool", return_value="trusted-git"
+        ), mock.patch.object(
+            _AUDITOR, "_run_bounded", return_value=b""
+        ) as run:
+            _AUDITOR._git(ROOT, "rev-parse", "HEAD")
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
 
     def test_gate_json_parsers_reject_unbounded_or_ambiguous_numbers(self):
         hostile_values = (

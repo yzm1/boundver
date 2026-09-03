@@ -5,6 +5,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Delay routine version churn long enough for ecosystem compromise reports
+    # to surface. GitHub does not apply cooldowns to security updates.
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
@@ -14,6 +18,8 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       python-toolchain:
         patterns:
@@ -23,3 +29,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

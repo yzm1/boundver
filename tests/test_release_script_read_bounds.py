@@ -131,6 +131,26 @@ def test_changelog_cli_does_not_parse_or_write_an_oversized_file(
     assert not output.exists()
 
 
+def test_changelog_output_replaces_regular_files_but_refuses_symlinks(
+    tmp_path: Path,
+) -> None:
+    regular = tmp_path / "notes.md"
+    regular.write_text("old", encoding="utf-8")
+    changelog._write_output_atomic(regular, "new\n")
+    assert regular.read_text(encoding="utf-8") == "new\n"
+
+    target = tmp_path / "outside.md"
+    target.write_text("outside", encoding="utf-8")
+    link = tmp_path / "linked-notes.md"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:  # pragma: no cover - host policy dependent
+        pytest.skip(f"symlinks unavailable: {exc}")
+    with pytest.raises(ValueError, match="not a regular file"):
+        changelog._write_output_atomic(link, "replacement\n")
+    assert target.read_text(encoding="utf-8") == "outside"
+
+
 def test_standalone_preflight_bounds_metadata_and_lazy_tree_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -329,3 +349,32 @@ def test_release_json_rejects_duplicates_and_nonfinite_numbers() -> None:
         for token in ("NaN", "Infinity", "-Infinity", "1e9999"):
             with pytest.raises(ValueError, match="non-finite"):
                 parser('{"value":' + token + "}")
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    (
+        "lock_release_tools",
+        "publish_release",
+        "verify_release_surfaces",
+        "verify_testpypi_release",
+    ),
+)
+def test_release_json_float_tokens_have_a_lexical_bound(script_name: str) -> None:
+    module = _load_script(script_name)
+    token = "1." + ("0" * (module.MAX_JSON_NUMBER_CHARS + 1))
+    with pytest.raises(ValueError, match="character limit"):
+        module._strict_json_loads('{"value":' + token + "}")
+
+
+def test_readiness_json_shape_is_rejected_before_decoder_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(readiness, "MAX_JSON_TOKENS", 2)
+    monkeypatch.setattr(
+        readiness.json,
+        "loads",
+        lambda *_args, **_kwargs: pytest.fail("decoder must not run"),
+    )
+    with pytest.raises(ValueError, match="structural limit"):
+        readiness._load_json("[0,0,0]")

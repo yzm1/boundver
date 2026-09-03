@@ -4,12 +4,31 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
 import sys
 import tempfile
 from pathlib import Path
 from typing import Sequence
+
+
+def _load_release_platform():
+    """Load the exact adjacent output-safety helper under isolated startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_homebrew_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_release_platform = _load_release_platform()
+prepare_plain_output_file = _release_platform.prepare_plain_output_file
+revalidate_plain_output_file = _release_platform.revalidate_plain_output_file
 
 
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -49,7 +68,9 @@ end
 
 
 def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path, ancestor_identities = prepare_plain_output_file(
+        path, "Homebrew formula output"
+    )
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
     )
@@ -59,6 +80,9 @@ def _atomic_write(path: Path, content: str) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
+        revalidate_plain_output_file(
+            path, ancestor_identities, "Homebrew formula output"
+        )
         os.replace(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -77,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         formula = render_formula(args.version, args.pyz_sha256)
-        _atomic_write(args.output.resolve(), formula)
+        _atomic_write(args.output, formula)
     except (OSError, ValueError) as error:
         print(f"Homebrew formula error: {error}", file=sys.stderr)
         return 1

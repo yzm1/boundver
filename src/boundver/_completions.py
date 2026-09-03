@@ -5,7 +5,7 @@ three scripts are rendered from those tables so adding an option cannot update
 one shell while silently leaving another behind.
 """
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from ._utils import SOURCE_MODES
 
@@ -15,6 +15,7 @@ _SOURCE_CHOICES = " ".join(SOURCE_MODES)
 _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "generate": "Generate or update the lockfile",
     "verify": "Check selected facets against the lockfile",
+    "review": "Compare facets and impact across a Git range",
     "diff": "Diff two lockfiles",
     "slice": "Show a slice fingerprint",
     "validate-config": "Validate configuration",
@@ -56,6 +57,11 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--update", "--baseline", "--write-baseline", "--update-baseline",
         "--format", "--allow-custom-providers",
     ),
+    "review": (
+        "-h", "--help", "--base", "--target", "--merge-base", "--config",
+        "--lock", "--facets", "--transitive", "--format", "--summary-file",
+        "--allow-custom-providers",
+    ),
     "diff": ("-h", "--help", "--format"),
     "slice": ("-h", "--help", "--lock", "--format"),
     "validate-config": (
@@ -67,7 +73,9 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--allow-custom-providers",
     ),
     "init": ("-h", "--help", "--out", "--force", "--discover"),
-    "add": ("-h", "--help", "--provider", "--paths", "--config"),
+    "add": (
+        "-h", "--help", "--provider", "--paths", "--boundary-path", "--config",
+    ),
     "remove": ("-h", "--help", "--config"),
     "status": (
         "-h", "--help", "--config", "--lock", "--source", "--format",
@@ -104,9 +112,13 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--dry-run": "Preview without writing",
     "--components": "Comma-separated component names",
     "--format": "Output format",
+    "--summary-file": "Bounded Markdown plan summary",
     "--allow-custom-providers": "Allow external provider modules",
     "--lock": "Lockfile",
     "--changed-from": "Git base ref",
+    "--base": "Review base Git ref",
+    "--target": "Review target Git ref",
+    "--merge-base": "Use the unique merge base",
     "--fail-fast": "Report only the highest-severity mismatch",
     "--facets": "Comma-separated gate facets",
     "--transitive": "Include transitive downstream consumers",
@@ -118,6 +130,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--discover": "Auto-discover components",
     "--provider": "Boundary provider",
     "--paths": "Comma-separated boundary paths",
+    "--boundary-path": "One repeatable boundary path (commas preserved)",
     "--strict": "Exit non-zero on warnings or drift",
     "--base-ref": "Git base ref",
     "--diff-config": "Compare discovery with configured roots",
@@ -133,12 +146,16 @@ _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
     "--out": ("file", "_files"),
     "--source": ("source", f"({_SOURCE_CHOICES})"),
     "--components": ("components", ""),
-    "--format": ("format", "(text json)"),
+    "--format": ("format", ""),
+    "--summary-file": ("file", "_files"),
     "--lock": ("file", "_files"),
     "--changed-from": ("Git ref", ""),
+    "--base": ("Git ref", ""),
+    "--target": ("Git ref", ""),
     "--facets": ("facets", ""),
     "--provider": ("provider", ""),
     "--paths": ("paths", ""),
+    "--boundary-path": ("path", "_files"),
     "--base-ref": ("Git ref", ""),
     "--exclude": ("path", "_files -/"),
     "--baseline": ("file", "_files"),
@@ -153,14 +170,19 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
     "--shell": ("bash", "zsh", "fish"),
 }
 
+_COMMAND_OPTION_CHOICES: Dict[Tuple[str, str], Tuple[str, ...]] = {
+    ("review", "--format"): ("json", "text", "plan"),
+}
+
 _FILE_OPTIONS = (
     "--config", "--lock", "--out", "--baseline", "--write-baseline",
-    "--update-baseline",
+    "--update-baseline", "--boundary-path", "--summary-file",
 )
 
 # zsh can describe positional arguments without custom parsing functions.
 _COMMAND_POSITIONALS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "diff": (("old lock", "_files"), ("new lock", "_files")),
+    "review": (("BASE..TARGET", ""),),
     "slice": (("slice", ""),),
     "add": (("name", ""), ("path", "_files")),
     "remove": (("name", ""),),
@@ -172,6 +194,37 @@ _COMMAND_POSITIONALS: Dict[str, Tuple[Tuple[str, str], ...]] = {
 def _options_after_command(command: str) -> Tuple[str, ...]:
     """Return every option accepted in post-command position."""
     return _COMMAND_OPTIONS[command] + _POST_COMMAND_GLOBAL_OPTIONS
+
+
+def _choices_for(command: Optional[str], option: str) -> Optional[Tuple[str, ...]]:
+    if command is not None:
+        specific = _COMMAND_OPTION_CHOICES.get((command, option))
+        if specific is not None:
+            return specific
+    return _OPTION_CHOICES.get(option)
+
+
+def _bash_choice_assignment(option: str, indent: str) -> str:
+    default = _OPTION_CHOICES.get(option, ())
+    overrides = sorted(
+        (command, choices)
+        for (command, candidate), choices in _COMMAND_OPTION_CHOICES.items()
+        if candidate == option
+    )
+    if not overrides:
+        return f'{indent}options="{" ".join(default)}"'
+    lines = [f'{indent}case "$command" in']
+    for command, choices in overrides:
+        lines.append(
+            f'{indent}  {command}) options="{" ".join(choices)}" ;;'
+        )
+    lines.extend(
+        (
+            f'{indent}  *) options="{" ".join(default)}" ;;',
+            f"{indent}esac",
+        )
+    )
+    return "\n".join(lines)
 
 
 def _render_bash() -> str:
@@ -198,22 +251,28 @@ def _render_bash() -> str:
         if option not in _OPTION_CHOICES and option not in file_options
     )
     choice_cases = "\n".join(
-        '        {0}) options="{1}" ;;'.format(
-            option, " ".join(choices)
+        "        {0})\n{1}\n            ;;".format(
+            option,
+            _bash_choice_assignment(option, "            "),
         )
-        for option, choices in _OPTION_CHOICES.items()
+        for option in _OPTION_CHOICES
     )
     choice_equals_cases = "\n".join(
         """        {option}=*)
             option_prefix="${{cur%%=*}}="
             value="${{cur#*=}}"
+{choice_assignment}
             COMPREPLY=()
             while IFS= read -r reply; do
                 COMPREPLY+=("${{option_prefix}}${{reply}}")
             done < <(compgen -W "{choices}" -- "$value")
             return
-            ;;""".format(option=option, choices=" ".join(choices))
-        for option, choices in _OPTION_CHOICES.items()
+            ;;""".format(
+            option=option,
+            choice_assignment=_bash_choice_assignment(option, "            "),
+            choices="${options}",
+        )
+        for option in _OPTION_CHOICES
     )
     file_position_pattern = "|".join(
         "{0}:{1}".format(command, index)
@@ -360,11 +419,14 @@ complete -F _boundver_completions boundver
     )
 
 
-def _zsh_option(option: str) -> str:
+def _zsh_option(option: str, command: Optional[str] = None) -> str:
     spec = "{0}[{1}]".format(option, _OPTION_DESCRIPTIONS[option])
     argument = _OPTION_ARGUMENTS.get(option)
     if argument is not None:
         label, action = argument
+        choices = _choices_for(command, option)
+        if choices is not None:
+            action = "({0})".format(" ".join(choices))
         spec += ":{0}:{1}".format(label, action)
     return "'{0}'".format(spec)
 
@@ -381,7 +443,10 @@ def _render_zsh() -> str:
 
     command_cases: List[str] = []
     for command in _COMMANDS:
-        specs = [_zsh_option(option) for option in _options_after_command(command)]
+        specs = [
+            _zsh_option(option, command)
+            for option in _options_after_command(command)
+        ]
         for index, (label, action) in enumerate(
             _COMMAND_POSITIONALS.get(command, ()), start=1
         ):
@@ -440,7 +505,7 @@ def _fish_option(command: str, option: str) -> str:
         parts.append("-r")
     if option in _FILE_OPTIONS:
         parts.append("-F")
-    choices = _OPTION_CHOICES.get(option)
+    choices = _choices_for(command, option)
     if choices:
         parts.append("-a '{0}'".format(" ".join(choices)))
     parts.append("-d '{0}'".format(_OPTION_DESCRIPTIONS[option]))

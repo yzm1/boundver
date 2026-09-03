@@ -41,11 +41,37 @@ site/
 # Local credentials and environment files must never enter image layers
 .env
 .env.*
+.netrc
+_netrc
+.git-credentials
+.gitconfig
+.ssh/
+.aws/
+.azure/
+.config/gcloud/
+.kube/
 .npmrc
 .pypirc
 .pyirc
+id_dsa
+id_dsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+id_rsa
+id_rsa.*
 *.key
 *.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+terraform.tfstate
+terraform.tfstate.*
+*.tfvars
+*.tfvars.json
 
 # Editor / OS noise
 .DS_Store
@@ -75,6 +101,7 @@ scripts/requirements/*
 # Repository-only release and integration surfaces
 .gitattributes
 .gitignore
+.trivyignore.yaml
 .pre-commit-hooks.yaml
 CHANGELOG.md
 CODE_OF_CONDUCT.md

@@ -10,6 +10,59 @@ fi
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 python_command=${PYTHON:-python3}
 
+# Review history must be the exact local object graph.  Never let replace refs,
+# lazy promisor fetches, interactive helpers, or an alternate gh host redefine
+# the commits and GitHub repository being authorized for release.
+while IFS='=' read -r variable _; do
+  case "$variable" in
+    GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_TRACE*) unset "$variable" ;;
+  esac
+done < <(env)
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_ALLOW_PROTOCOL GIT_ASKPASS \
+  GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_CONFIG_PARAMETERS \
+  GIT_CURL_VERBOSE GIT_DIFF_OPTS GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM \
+  GIT_EXEC_PATH GIT_EXTERNAL_DIFF GIT_FLUSH GIT_GLOB_PATHSPECS \
+  GIT_GRAFT_FILE GIT_ICASE_PATHSPECS GIT_INDEX_FILE GIT_LITERAL_PATHSPECS \
+  GIT_NOGLOB_PATHSPECS GIT_NAMESPACE GIT_OBJECT_DIRECTORY \
+  GIT_PROTOCOL_FROM_USER GIT_QUARANTINE_PATH GIT_REDIRECT_STDERR \
+  GIT_REPLACE_REF_BASE GIT_SHALLOW_FILE GIT_SSH GIT_SSH_COMMAND \
+  GIT_SSH_VARIANT GIT_SSL_NO_VERIFY GIT_TEMPLATE_DIR GIT_WORK_TREE \
+  SSH_ASKPASS || true
+export GIT_ATTR_NOSYSTEM=1
+export GIT_CONFIG_COUNT=2
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_KEY_0=core.hooksPath
+export GIT_CONFIG_VALUE_0=/dev/null
+export GIT_CONFIG_KEY_1=core.fsmonitor
+export GIT_CONFIG_VALUE_1=false
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_NO_LAZY_FETCH=1
+export GIT_NO_REPLACE_OBJECTS=1
+export GIT_OPTIONAL_LOCKS=0
+export GIT_PAGER=cat
+export GIT_TERMINAL_PROMPT=0
+export GCM_INTERACTIVE=never
+
+# An earlier step must not redirect an authenticated GitHub request through a
+# repository-controlled socket, proxy, trust root, config file, or debug sink.
+unset ALL_PROXY all_proxy BROWSER CLICOLOR_FORCE CURL_CA_BUNDLE CURL_HOME \
+  DEBUG EDITOR GH_ACCESSIBLE_COLORS GH_ACCESSIBLE_PROMPTER GH_BROWSER \
+  GH_DEBUG GH_EDITOR GH_ENTERPRISE_TOKEN GH_FORCE_TTY GH_HTTP_UNIX_SOCKET \
+  GH_MDWIDTH GH_REPO GH_SPINNER_DISABLED GHES_TOKEN GITHUB_API_URL \
+  GITHUB_ENTERPRISE_TOKEN GITHUB_GRAPHQL_URL GITHUB_SERVER_URL GIT_EDITOR \
+  GLAMOUR_STYLE GODEBUG HTTPS_PROXY https_proxy HTTP_PROXY http_proxy \
+  NODE_EXTRA_CA_CERTS NO_PROXY no_proxy REQUESTS_CA_BUNDLE SSL_CERT_DIR \
+  SSL_CERT_FILE SSLKEYLOGFILE VISUAL || true
+export GH_HOST=github.com
+export GH_NO_EXTENSION_UPDATE_NOTIFIER=1
+export GH_NO_UPDATE_NOTIFIER=1
+export GH_PAGER=cat
+export GH_PROMPT_DISABLED=1
+export NO_COLOR=1
+export NO_PROXY=github.com,api.github.com
+export PAGER=cat
+export TERM=dumb
+
 release_sha=$1
 release_tag=$2
 if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then

@@ -13,8 +13,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
+import ssl
+import stat
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,12 +38,12 @@ ARTIFACTS = ROOT / "scripts" / "release-tool-artifacts.json"
 NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 VERSION_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.!+_-]*[A-Za-z0-9])?")
 HASH_RE = re.compile(r"[0-9a-f]{64}")
+ADVISORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 REQUIREMENT_RE = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?P<version>[^;\s]+)"
     r"(?:;\s*(?P<marker>.+))?"
 )
 ALLOWED_MARKERS = {
-    "python_version < '3.10'",
     "python_version < '3.11'",
     "sys_platform == 'linux'",
     "sys_platform == 'win32'",
@@ -50,15 +54,51 @@ MAX_ARTIFACT_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_LOCK_FILE_BYTES = 4 * 1024 * 1024
 MAX_PYPI_METADATA_BYTES = 8 * 1024 * 1024
 MAX_PYPI_FILES = 4096
+MAX_PYPI_VULNERABILITIES = 4096
 MAX_WHEEL_FILENAME_BYTES = 1024
 MAX_REQUIREMENTS = 256
 MAX_TOTAL_WHEELS = 20_000
 MAX_JSON_INTEGER_DIGITS = 4300
+MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
 MAX_TOML_INTEGER_DIGITS = 640
 
 
 class LockError(RuntimeError):
     """The lock policy or generated files are invalid."""
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep PyPI lock metadata reads on the validated first origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _public_tls_context() -> ssl.SSLContext:
+    """Load host trust without environment-selected CAs or TLS key logging."""
+    removed: dict[str, str] = {}
+    for name in ("SSL_CERT_FILE", "SSL_CERT_DIR", "SSLKEYLOGFILE"):
+        value = os.environ.pop(name, None)
+        if value is not None:
+            removed[name] = value
+    try:
+        context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+    finally:
+        os.environ.update(removed)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+_NO_PROXY_HANDLER = urllib.request.ProxyHandler({})
+_PYPI_OPENER = urllib.request.build_opener(
+    _NO_PROXY_HANDLER,
+    urllib.request.HTTPSHandler(context=_public_tls_context()),
+    _RejectRedirects(),
+)
+
+
+def _open_pypi_url(request: urllib.request.Request, *, timeout: int):
+    return _PYPI_OPENER.open(request, timeout=timeout)
 
 
 def _bounded_json_int(value: str) -> int:
@@ -80,6 +120,10 @@ def _bounded_json_int(value: str) -> int:
 
 
 def _bounded_json_float(value: str) -> float:
+    if len(value) > MAX_JSON_NUMBER_CHARS:
+        raise ValueError(
+            f"JSON number exceeds the {MAX_JSON_NUMBER_CHARS}-character limit"
+        )
     result = float(value)
     if not math.isfinite(result):
         raise ValueError("non-finite JSON number is not supported")
@@ -328,12 +372,20 @@ class Profile:
 
 def _read_file_bounded(path: Path, max_bytes: int, label: str) -> bytes:
     try:
-        advertised_size = path.stat().st_size
-        if advertised_size > max_bytes:
+        initial = path.lstat()
+        if not stat.S_ISREG(initial.st_mode):
+            raise LockError(f"{label} is not a regular file: {path}")
+        if initial.st_size > max_bytes:
             raise LockError(f"{label} exceeds the {max_bytes}-byte limit: {path}")
         chunks: list[bytes] = []
         total = 0
         with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _file_identity(initial) != _file_identity(opened)
+            ):
+                raise LockError(f"{label} changed while being opened: {path}")
             while total < max_bytes:
                 requested = min(READ_CHUNK_BYTES, max_bytes - total)
                 chunk = stream.read(requested)
@@ -347,13 +399,30 @@ def _read_file_bounded(path: Path, max_bytes: int, label: str) -> bytes:
                 total += len(chunk)
             if stream.read(1):
                 raise LockError(f"{label} exceeds the {max_bytes}-byte limit: {path}")
+            finished = os.fstat(stream.fileno())
+        current = path.lstat()
     except LockError:
         raise
     except OSError as error:
         raise LockError(f"cannot read {label}: {error}") from error
-    if total != advertised_size:
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or _file_identity(opened) != _file_identity(finished)
+        or _file_identity(finished) != _file_identity(current)
+        or total != finished.st_size
+    ):
         raise LockError(f"{label} changed while being read: {path}")
     return b"".join(chunks)
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+    )
 
 
 def _file_matches(
@@ -367,14 +436,22 @@ def _file_matches(
     if len(expected) > max_bytes:
         raise LockError(f"generated {label} exceeds the {max_bytes}-byte limit")
     try:
-        advertised_size = path.stat().st_size
-        if advertised_size > max_bytes:
+        initial = path.lstat()
+        if not stat.S_ISREG(initial.st_mode):
+            raise LockError(f"{label} is not a regular file: {path}")
+        if initial.st_size > max_bytes:
             raise LockError(f"{label} exceeds the {max_bytes}-byte limit: {path}")
-        if advertised_size != len(expected):
+        if initial.st_size != len(expected):
             return False
         expected_view = memoryview(expected)
         offset = 0
         with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or _file_identity(initial) != _file_identity(opened)
+            ):
+                raise LockError(f"{label} changed while being opened: {path}")
             while offset < len(expected):
                 requested = min(READ_CHUNK_BYTES, len(expected) - offset)
                 chunk = stream.read(requested)
@@ -385,7 +462,16 @@ def _file_matches(
                 if not chunk or chunk != expected_view[offset : offset + len(chunk)]:
                     return False
                 offset += len(chunk)
-            return not stream.read(1)
+            matched = not stream.read(1)
+            finished = os.fstat(stream.fileno())
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or _file_identity(opened) != _file_identity(finished)
+            or _file_identity(finished) != _file_identity(current)
+        ):
+            raise LockError(f"{label} changed while being read: {path}")
+        return matched
     except FileNotFoundError:
         if missing_is_mismatch:
             return False
@@ -452,8 +538,16 @@ def load_manifest(path: Path = MANIFEST) -> tuple[str, dict[str, Profile]]:
             raise LockError(f"invalid profile name {name!r}")
         table = _require_mapping(raw_profile, f"profiles.{name}")
         lock_text = _require_string(table.get("lock"), f"profiles.{name}.lock")
-        lock = (ROOT / lock_text).resolve()
-        if ROOT not in lock.parents or lock.suffix != ".lock":
+        lock = Path(os.path.abspath(ROOT / lock_text))
+        try:
+            relative_lock = lock.relative_to(ROOT)
+        except ValueError:
+            relative_lock = None
+        if (
+            relative_lock is None
+            or not relative_lock.parts
+            or lock.suffix != ".lock"
+        ):
             raise LockError(f"profiles.{name}.lock escapes the repository or is not .lock")
         raw_includes = table.get("includes")
         raw_requirements = table.get("requirements")
@@ -571,6 +665,40 @@ def _read_response_bounded(response: object, max_bytes: int, context: str) -> by
     return b"".join(chunks)
 
 
+def _active_pypi_advisories(
+    payload: Mapping[str, Any],
+    requirement: Requirement,
+) -> list[str]:
+    """Return active advisory IDs from the official version metadata."""
+    raw = payload.get("vulnerabilities")
+    if not isinstance(raw, list) or len(raw) > MAX_PYPI_VULNERABILITIES:
+        raise LockError(
+            f"PyPI returned malformed vulnerability metadata for "
+            f"{requirement.rendered}"
+        )
+    result = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise LockError(
+                f"PyPI returned malformed vulnerability metadata for "
+                f"{requirement.rendered}"
+            )
+        advisory = entry.get("id")
+        withdrawn = entry.get("withdrawn")
+        if (
+            not isinstance(advisory, str)
+            or ADVISORY_RE.fullmatch(advisory) is None
+            or (withdrawn is not None and not isinstance(withdrawn, str))
+        ):
+            raise LockError(
+                f"PyPI returned malformed vulnerability metadata for "
+                f"{requirement.rendered}"
+            )
+        if withdrawn is None:
+            result.append(advisory)
+    return sorted(set(result))
+
+
 def _pypi_release(requirement: Requirement) -> list[dict[str, str]]:
     project = urllib.parse.quote(requirement.name, safe="")
     version = urllib.parse.quote(requirement.version, safe="")
@@ -580,7 +708,18 @@ def _pypi_release(requirement: Requirement) -> list[dict[str, str]]:
         headers={"Accept": "application/json", "User-Agent": "boundver-lock/1"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_pypi_url(request, timeout=30) as response:
+            final_url = urllib.parse.urlsplit(response.geturl())
+            if (
+                final_url.scheme != "https"
+                or final_url.netloc != "pypi.org"
+                or final_url.query
+                or final_url.fragment
+            ):
+                raise LockError(
+                    f"PyPI metadata for {requirement.rendered} redirected "
+                    "outside the canonical PyPI origin"
+                )
             body = _read_response_bounded(
                 response,
                 MAX_PYPI_METADATA_BYTES,
@@ -592,13 +731,19 @@ def _pypi_release(requirement: Requirement) -> list[dict[str, str]]:
                 raise LockError(
                     f"cannot fetch {requirement.rendered} metadata: {error}"
                 ) from error
-    except (
-        OSError,
-        urllib.error.URLError,
-    ) as error:
+    except LockError:
+        raise
+    except (OSError, urllib.error.URLError) as error:
         raise LockError(f"cannot fetch {requirement.rendered} metadata: {error}") from error
     if not isinstance(payload, dict):
         raise LockError(f"PyPI returned malformed metadata for {requirement.rendered}")
+    advisories = _active_pypi_advisories(payload, requirement)
+    if advisories:
+        raise LockError(
+            f"{requirement.rendered} has active PyPI security advisories: "
+            + ", ".join(advisories)
+            + ". Select a fixed version before regenerating automation locks"
+        )
     info = payload.get("info")
     urls = payload.get("urls")
     if not isinstance(info, dict) or info.get("version") != requirement.version:
@@ -825,10 +970,64 @@ def verify() -> None:
             raise LockError(f"{profile.lock.relative_to(ROOT)} differs from its manifest")
 
 
+def _atomic_write(path: Path, content: bytes) -> None:
+    try:
+        root = ROOT.resolve(strict=True)
+        parent = path.parent.resolve(strict=True)
+        parent_identity = path.parent.lstat()
+    except OSError as error:
+        raise LockError(f"cannot inspect generated output path {path}: {error}") from error
+    if (
+        not stat.S_ISDIR(parent_identity.st_mode)
+        or parent != root
+        and root not in parent.parents
+    ):
+        raise LockError(f"generated output parent is unsafe: {path.parent}")
+
+    existing_mode = 0o644
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise LockError(f"cannot inspect generated output {path}: {error}") from error
+    else:
+        if not stat.S_ISREG(current.st_mode):
+            raise LockError(f"generated output is not a regular file: {path}")
+        existing_mode = stat.S_IMODE(current.st_mode)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, existing_mode)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        if os.name != "nt":
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
 def _write(outputs: Mapping[Path, bytes]) -> None:
     for path, content in outputs.items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        _atomic_write(path, content)
         print(f"wrote {path.relative_to(ROOT)}")
 
 

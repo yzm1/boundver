@@ -108,12 +108,20 @@ class MainCompletionsTests(unittest.TestCase):
 
 
 class MainNotGitRepoTests(unittest.TestCase):
-    def test_non_git_repo_exits_1(self):
-        """main() exits 2 with message when not in a git repo."""
-        with patch("boundver.core.git_root", side_effect=subprocess.CalledProcessError(128, "git")):
-            code, _, err = _run_main("generate")
-        self.assertEqual(code, 2)
-        self.assertIn("git", err.lower())
+    def test_non_git_repo_exits_2_without_a_traceback(self):
+        """Every Git-root discovery failure becomes a stable usage error."""
+        failures = (
+            subprocess.CalledProcessError(128, "git"),
+            ValueError("No Git worktree contains the current directory"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), patch(
+                "boundver.core.git_root", side_effect=failure
+            ):
+                code, _, err = _run_main("generate")
+            self.assertEqual(code, 2)
+            self.assertIn("not inside a git repository", err.lower())
+            self.assertNotIn("traceback", err.lower())
 
 
 class MainGenerateTests(unittest.TestCase):
@@ -593,6 +601,22 @@ class MainRemoveIntegrityTests(unittest.TestCase):
         }
         self.assertIn("at least one component", self._assert_remove_refuses_without_writing(config, "a"))
 
+    def test_remove_refuses_to_leave_an_explicit_slice_empty(self):
+        config = {
+            "project": "p",
+            "components": {
+                "a": {"path": "a", "boundary": {"provider": "implicit"}},
+                "b": {"path": "b", "boundary": {"provider": "implicit"}},
+            },
+            "slices": {
+                "only-a": {"mode": "exact", "components": ["a"]},
+            },
+        }
+
+        error = self._assert_remove_refuses_without_writing(config, "a")
+
+        self.assertIn("add a component name or remove the empty slice", error)
+
     def test_add_refuses_invalid_component_without_writing(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -636,6 +660,87 @@ class MainRemoveIntegrityTests(unittest.TestCase):
             self.assertEqual(code, core.EXIT_USAGE)
             self.assertIn("components", err)
             self.assertNotIn("Traceback", err)
+
+    def test_add_rejects_unaddressable_component_names_without_writing(self):
+        for invalid_name in ("svc,prod", " svc", "svc "):
+            with self.subTest(name=invalid_name), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self._repo(root)
+                (root / "existing").mkdir()
+                (root / "existing" / "main.py").write_text("value = 1\n")
+                (root / "new").mkdir()
+                config_path = root / "boundary.config.json"
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "project": "p",
+                            "components": {
+                                "existing": {
+                                    "path": "existing",
+                                    "boundary": {"provider": "implicit"},
+                                }
+                            },
+                            "slices": {},
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                before = config_path.read_bytes()
+
+                code, _out, err = _run_main(
+                    "add", invalid_name, "new", repo_root=root
+                )
+
+                self.assertEqual(code, core.EXIT_USAGE, err)
+                self.assertIn("not addressable", err)
+                self.assertIn("--components", err)
+                self.assertEqual(config_path.read_bytes(), before)
+
+    def test_add_repeatable_boundary_path_preserves_commas(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            (root / "existing").mkdir()
+            (root / "existing" / "main.py").write_text("value = 1\n")
+            (root / "new").mkdir()
+            (root / "new" / "schema,legacy.json").write_text("{}\n")
+            (root / "new" / "other.json").write_text("{}\n")
+            config_path = root / "boundary.config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "project": "p",
+                        "components": {
+                            "existing": {
+                                "path": "existing",
+                                "boundary": {"provider": "implicit"},
+                            }
+                        },
+                        "slices": {},
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+
+            code, _out, err = _run_main(
+                "add",
+                "new",
+                "new",
+                "--boundary-path",
+                "schema,legacy.json",
+                "--boundary-path",
+                "other.json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            written = json.loads(config_path.read_text())
+            self.assertEqual(
+                written["components"]["new"]["boundary"]["paths"],
+                ["schema,legacy.json", "other.json"],
+            )
 
     def test_remove_reports_schema_invalid_slices_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1812,6 +1917,28 @@ class MainInitTests(unittest.TestCase):
             cfg = json.loads((root / "boundary.config.json").read_text())
             self.assertIn("svc", cfg["components"])
 
+    def test_init_discover_honors_gitignore_before_first_commit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+            for relative in ("generated/fake", "packages/real"):
+                component = root / relative
+                component.mkdir(parents=True)
+                (component / "package.json").write_text(
+                    '{"version":"1.0"}', encoding="utf-8"
+                )
+
+            code, _out, err = _run_main(
+                "init", "--discover", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            config = json.loads(
+                (root / "boundary.config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(config["components"]), {"real"})
+
     def test_init_discovery_failure_is_controlled(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1876,6 +2003,26 @@ class MainDiscoverTests(unittest.TestCase):
             payload = json.loads(out)
             self.assertIn("svc", payload["components"])
 
+    def test_discover_honors_gitignore_before_first_commit(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            (root / ".gitignore").write_text("generated/\n", encoding="utf-8")
+            for relative in ("generated/fake", "packages/real"):
+                component = root / relative
+                component.mkdir(parents=True)
+                (component / "package.json").write_text(
+                    '{"version":"1.0"}', encoding="utf-8"
+                )
+
+            code, out, err = _run_main(
+                "discover", "--format", "json", repo_root=root
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            payload = json.loads(out)
+            self.assertEqual(set(payload["components"]), {"real"})
+
     def test_discover_git_failure_is_controlled(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1889,6 +2036,24 @@ class MainDiscoverTests(unittest.TestCase):
             self.assertEqual(code, core.EXIT_USAGE)
             self.assertEqual(out, "")
             self.assertIn("component discovery failed", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_discover_refuses_an_unaddressable_derived_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            component = root / "svc,prod"
+            component.mkdir()
+            (component / "package.json").write_text(
+                '{"version":"1.0"}', encoding="utf-8"
+            )
+
+            code, out, err = _run_main("discover", repo_root=root)
+
+            self.assertEqual(code, core.EXIT_USAGE)
+            self.assertEqual(out, "")
+            self.assertIn("not addressable", err)
+            self.assertIn("configure it manually", err)
             self.assertNotIn("Traceback", err)
 
 

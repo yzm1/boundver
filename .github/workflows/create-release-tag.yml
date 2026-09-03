@@ -26,6 +26,37 @@ concurrency:
 permissions: {}
 
 env:
+  # Keep every direct Git/GitHub CLI use in this workflow non-interactive and
+  # bound to the public GitHub trust domain.  Individual Python helpers add
+  # stricter config isolation around security-sensitive object traversal.
+  ALL_PROXY: ""
+  BASH_ENV: ""
+  CDPATH: ""
+  CURL_CA_BUNDLE: ""
+  CURL_HOME: ""
+  GCM_INTERACTIVE: never
+  GLOBIGNORE: ""
+  GH_NO_EXTENSION_UPDATE_NOTIFIER: "1"
+  GH_NO_UPDATE_NOTIFIER: "1"
+  GH_HOST: github.com
+  GH_PAGER: cat
+  GH_PROMPT_DISABLED: "1"
+  GIT_NO_LAZY_FETCH: "1"
+  GIT_NO_REPLACE_OBJECTS: "1"
+  GIT_OPTIONAL_LOCKS: "0"
+  GIT_PAGER: cat
+  GIT_TERMINAL_PROMPT: "0"
+  HTTPS_PROXY: ""
+  HTTP_PROXY: ""
+  ENV: ""
+  NODE_EXTRA_CA_CERTS: ""
+  NO_COLOR: "1"
+  NO_PROXY: github.com,api.github.com
+  REQUESTS_CA_BUNDLE: ""
+  SSL_CERT_DIR: ""
+  SSL_CERT_FILE: ""
+  SSLKEYLOGFILE: ""
+  TERM: dumb
   # Workflow-defined, isolated code independently snapshots every mutable input
   # used by the full repository audit.  The read-only and mutation jobs compare
   # its digest so candidate scripts never receive a contents-write token.
@@ -41,10 +72,12 @@ env:
     import ssl
     import subprocess
     import sys
+    import tempfile
     import threading
     import urllib.parse
 
     MAX_API_BYTES = 128 * 1024 * 1024
+    MAX_COMMAND_BYTES = 16 * 1024 * 1024
     MAX_STDERR_BYTES = 16 * 1024
     MAX_RECORDS = 50_000
     MAX_PAGES = 500
@@ -91,6 +124,92 @@ env:
     for name, executable in (("gh", gh), ("git", git)):
         if not executable.is_file() or executable == workspace or workspace in executable.parents:
             raise SystemExit(f"trusted {name} executable is unavailable")
+    gh_config_dir = pathlib.Path(
+        tempfile.mkdtemp(prefix="boundver-gh-", dir=runner_temp)
+    ).resolve()
+    command_environment = dict(os.environ)
+    for name in (
+        "ALL_PROXY", "all_proxy", "BROWSER", "CLICOLOR_FORCE",
+        "CURL_CA_BUNDLE", "CURL_HOME", "DEBUG", "EDITOR",
+        "GH_ACCESSIBLE_COLORS", "GH_ACCESSIBLE_PROMPTER", "GH_BROWSER",
+        "GH_DEBUG", "GH_EDITOR", "GH_ENTERPRISE_TOKEN", "GH_FORCE_TTY",
+        "GH_HOST", "GH_HTTP_UNIX_SOCKET", "GH_MDWIDTH", "GH_PAGER",
+        "GH_PROMPT_DISABLED", "GH_REPO", "GH_SPINNER_DISABLED", "GHES_TOKEN",
+        "GITHUB_API_URL", "GITHUB_ENTERPRISE_TOKEN", "GITHUB_GRAPHQL_URL",
+        "GITHUB_SERVER_URL", "GIT_EDITOR", "GLAMOUR_STYLE", "GODEBUG",
+        "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+        "NODE_EXTRA_CA_CERTS", "NO_PROXY", "no_proxy",
+        "REQUESTS_CA_BUNDLE", "SSL_CERT_DIR", "SSL_CERT_FILE",
+        "SSLKEYLOGFILE", "VISUAL",
+    ):
+        command_environment.pop(name, None)
+    for name in tuple(command_environment):
+        canonical = name.upper()
+        if canonical in {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_ALLOW_PROTOCOL",
+            "GIT_ASKPASS",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CURL_VERBOSE",
+            "GIT_DIFF_OPTS",
+            "GIT_DIR",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+            "GIT_EXEC_PATH",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_FLUSH",
+            "GIT_GLOB_PATHSPECS",
+            "GIT_GRAFT_FILE",
+            "GIT_ICASE_PATHSPECS",
+            "GIT_INDEX_FILE",
+            "GIT_LITERAL_PATHSPECS",
+            "GIT_NOGLOB_PATHSPECS",
+            "GIT_NAMESPACE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_PROTOCOL_FROM_USER",
+            "GIT_QUARANTINE_PATH",
+            "GIT_REDIRECT_STDERR",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_SHALLOW_FILE",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH_VARIANT",
+            "GIT_SSL_NO_VERIFY",
+            "GIT_TEMPLATE_DIR",
+            "GIT_WORK_TREE",
+            "SSH_ASKPASS",
+        } or canonical.startswith(
+            ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_", "GIT_TRACE")
+        ):
+            command_environment.pop(name, None)
+    command_environment.update({
+        "GCM_INTERACTIVE": "never",
+        "GH_CONFIG_DIR": str(gh_config_dir),
+        "GH_HOST": "github.com",
+        "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+        "GH_NO_UPDATE_NOTIFIER": "1",
+        "GH_PAGER": "cat",
+        "GH_PROMPT_DISABLED": "1",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_KEY_1": "core.fsmonitor",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_VALUE_0": os.devnull,
+        "GIT_CONFIG_VALUE_1": "false",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "NO_COLOR": "1",
+        "NO_PROXY": "github.com,api.github.com",
+        "PAGER": "cat",
+        "TERM": "dumb",
+    })
 
     def kill_process(process):
         try:
@@ -124,7 +243,7 @@ env:
     def run(command, *, cwd, api=False):
         global consumed_api_bytes
         stdout_limit = (
-            MAX_API_BYTES - consumed_api_bytes if api else MAX_API_BYTES
+            MAX_API_BYTES - consumed_api_bytes if api else MAX_COMMAND_BYTES
         )
         if stdout_limit < 0:
             raise SystemExit("review snapshot API responses exceed the safety limit")
@@ -132,6 +251,7 @@ env:
             process = subprocess.Popen(
                 [str(item) for item in command],
                 cwd=cwd,
+                env=command_environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -985,12 +1105,14 @@ env:
   # and fails closed if GitHub's page, item, or transport ceilings are reached.
   PUBLICATION_RUN_STATE_PROGRAM: |
     import json
+    import math
     import os
     import pathlib
     import re
     import shutil
     import subprocess
     import sys
+    import tempfile
     import threading
 
     MAX_PAGE_BYTES = 8 * 1024 * 1024
@@ -1000,6 +1122,7 @@ env:
     MAX_ITEMS = 10_000
     READ_CHUNK_BYTES = 64 * 1024
     MAX_UINT64 = (1 << 64) - 1
+    MAX_JSON_NUMBER_CHARACTERS = 64
     ACTIVE_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 
     mode, repository, *selection = sys.argv[1:]
@@ -1025,7 +1148,40 @@ env:
     gh = pathlib.Path(shutil.which("gh") or "").resolve()
     if not gh.is_file() or gh == workspace or workspace in gh.parents:
         raise SystemExit("trusted GitHub CLI is unavailable")
-    server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+    if os.environ.get("GITHUB_SERVER_URL") != "https://github.com":
+        raise SystemExit("publication-run lookup requires public GitHub")
+    server_url = "https://github.com"
+    gh_config_dir = pathlib.Path(
+        tempfile.mkdtemp(prefix="boundver-gh-", dir=runner_temp)
+    ).resolve()
+    command_environment = dict(os.environ)
+    for name in (
+        "ALL_PROXY", "all_proxy", "BROWSER", "CLICOLOR_FORCE",
+        "CURL_CA_BUNDLE", "CURL_HOME", "DEBUG", "EDITOR",
+        "GH_ACCESSIBLE_COLORS", "GH_ACCESSIBLE_PROMPTER", "GH_BROWSER",
+        "GH_DEBUG", "GH_EDITOR", "GH_ENTERPRISE_TOKEN", "GH_FORCE_TTY",
+        "GH_HOST", "GH_HTTP_UNIX_SOCKET", "GH_MDWIDTH", "GH_PAGER",
+        "GH_PROMPT_DISABLED", "GH_REPO", "GH_SPINNER_DISABLED", "GHES_TOKEN",
+        "GITHUB_API_URL", "GITHUB_ENTERPRISE_TOKEN", "GITHUB_GRAPHQL_URL",
+        "GITHUB_SERVER_URL", "GIT_EDITOR", "GLAMOUR_STYLE", "GODEBUG",
+        "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+        "NODE_EXTRA_CA_CERTS", "NO_PROXY", "no_proxy",
+        "REQUESTS_CA_BUNDLE", "SSL_CERT_DIR", "SSL_CERT_FILE",
+        "SSLKEYLOGFILE", "VISUAL",
+    ):
+        command_environment.pop(name, None)
+    command_environment.update({
+        "GH_CONFIG_DIR": str(gh_config_dir),
+        "GH_HOST": "github.com",
+        "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+        "GH_NO_UPDATE_NOTIFIER": "1",
+        "GH_PAGER": "cat",
+        "GH_PROMPT_DISABLED": "1",
+        "NO_COLOR": "1",
+        "NO_PROXY": "github.com,api.github.com",
+        "PAGER": "cat",
+        "TERM": "dumb",
+    })
     consumed_bytes = 0
 
     def kill_process(process):
@@ -1069,6 +1225,14 @@ env:
             raise ValueError("oversized JSON integer")
         return int(value)
 
+    def parse_float(value):
+        if len(value) > MAX_JSON_NUMBER_CHARACTERS:
+            raise ValueError("oversized JSON float")
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError("non-finite JSON float")
+        return result
+
     def reject_constant(_value):
         raise ValueError("non-finite JSON constant")
 
@@ -1082,6 +1246,7 @@ env:
             process = subprocess.Popen(
                 [str(gh), "api", endpoint],
                 cwd=runner_temp,
+                env=command_environment,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -1138,6 +1303,7 @@ env:
             return json.loads(
                 stdout.decode("utf-8", "strict"),
                 object_pairs_hook=unique_object,
+                parse_float=parse_float,
                 parse_int=parse_integer,
                 parse_constant=reject_constant,
             )
@@ -1220,6 +1386,7 @@ jobs:
   verify-candidate:
     name: Verify candidate before tagging
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read
@@ -1600,6 +1767,7 @@ jobs:
   revalidate-release-state:
     name: Revalidate release state without mutation authority
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: verify-candidate
     permissions:
       actions: read
@@ -1626,6 +1794,7 @@ jobs:
           python3 -I scripts/release_changelog.py --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
           python3 -I scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+          python3 -I scripts/lock_release_tools.py check
 
       - name: Revalidate mutable state immediately before the tag job
         id: mutable-state
@@ -1707,6 +1876,7 @@ jobs:
   tag:
     name: Create the exact version tag
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [verify-candidate, revalidate-release-state]
     permissions:
       actions: read
@@ -1837,6 +2007,7 @@ jobs:
   dispatch-publication:
     name: Dispatch publication exactly once
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [verify-candidate, tag]
     permissions:
       actions: write

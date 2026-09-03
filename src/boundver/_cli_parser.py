@@ -177,6 +177,82 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
+    review = sub.add_parser(
+        "review",
+        help="Compare reconciled facet identities across a Git range",
+        description=(
+            "Compare two immutable Git endpoints and report historical facet, "
+            "consumer, and slice impact.\n\n"
+            "A complete review exits 0 whether or not identities changed. "
+            "Missing history, invalid endpoints, or unreconciled config/lock "
+            "state exit 2. Use verify separately as the integrity gate."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  boundver review origin/main..HEAD\n"
+            "  boundver review --base origin/main --target HEAD --merge-base\n"
+            "  boundver review main..feature --transitive --format json\n"
+            "  boundver review main..feature --format plan --summary-file plan.md\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    review.add_argument(
+        "range",
+        nargs="?",
+        metavar="BASE..TARGET",
+        help="Explicit Git endpoint range",
+    )
+    review.add_argument("--base", default=None, help="Explicit base Git ref")
+    review.add_argument("--target", default=None, help="Explicit target Git ref")
+    review.add_argument(
+        "--merge-base",
+        action="store_true",
+        help="Compare the unique merge base of BASE and TARGET to TARGET",
+    )
+    review.add_argument(
+        "--config",
+        default="boundary.config.json",
+        help="Config path at both endpoints",
+    )
+    review.add_argument(
+        "--lock",
+        default="boundary.lock.json",
+        help="Lock path at both endpoints",
+    )
+    review.add_argument(
+        "--facets",
+        default="",
+        help=(
+            "Comma-separated policy override; all four identities are always "
+            "compared"
+        ),
+    )
+    review.add_argument(
+        "--transitive",
+        action="store_true",
+        help="Report the transitive downstream consumer closure",
+    )
+    review.add_argument(
+        "--format",
+        choices=["json", "text", "plan"],
+        default="text",
+        help="Output format; plan is the versioned CI routing projection",
+    )
+    review.add_argument(
+        "--summary-file",
+        default="",
+        metavar="PATH",
+        help="Write a bounded Markdown summary of --format plan",
+    )
+    review.add_argument(
+        "--allow-custom-providers",
+        action="store_true",
+        help=(
+            "Allow trusted custom provider modules while recomputing both "
+            "historical endpoints"
+        ),
+    )
+
     # diff
     dif = sub.add_parser("diff", help="Diff two lockfiles")
     dif.add_argument("old", help="Old lockfile")
@@ -259,7 +335,21 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     add.add_argument(
         "--provider", default="implicit", help="Boundary provider (default: implicit)"
     )
-    add.add_argument("--paths", default="", help="Comma-separated boundary paths")
+    add.add_argument(
+        "--paths",
+        default="",
+        help=(
+            "Comma-separated boundary paths; use repeatable --boundary-path "
+            "when a path contains a comma"
+        ),
+    )
+    add.add_argument(
+        "--boundary-path",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="One boundary path; repeat for multiple paths (commas are preserved)",
+    )
     add.add_argument(
         "--config", default="boundary.config.json", help="Config file path"
     )
@@ -410,8 +500,9 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
             "Normalize a supported current-schema boundary.lock.json in place. "
             "Hash-contract v1/v2 locks and v3 locks carrying semantic-config/v1 "
             "cannot be upgraded safely and are rejected with instructions to "
-            "regenerate from repository content. Use --dry-run "
-            "to print the normalized current lock without writing it."
+            "regenerate from repository content. Use --dry-run to preview "
+            "normalization as JSON, or report that the lock is already "
+            "normalized, without writing it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -424,7 +515,10 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     migrate_mode.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print normalized JSON to stdout without writing the file",
+        help=(
+            "Print prospective normalized JSON, or report a no-op, without "
+            "writing the file"
+        ),
     )
     migrate_mode.add_argument(
         "--explain",

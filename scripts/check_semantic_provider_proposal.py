@@ -24,6 +24,8 @@ MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
 MAX_ITEMS = 1_000
 MAX_TEXT_CHARS = 16_384
 MAX_JSON_INTEGER = (1 << 63) - 1
+MAX_JSON_TOKENS = 100_000
+MAX_JSON_DEPTH = 128
 PROPOSAL_ID = "boundver-semantic-provider-system/v1"
 REVIEW_AUTHORITY_SOURCE = "github-account-owned-public-gist/v1"
 REVIEW_ROSTER_GIST_ID = "0caedb798d168b974f9d9fb63c377f73"
@@ -110,6 +112,45 @@ def _reject_float(value: str) -> None:
     raise ProposalError(f"floating-point JSON number is not allowed: {value}")
 
 
+def _json_shape_within_limits(raw: bytes) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for byte in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:
+                escaped = True
+            elif byte == 0x22:
+                in_string = False
+            continue
+        if byte == 0x22:
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif byte in {0x5B, 0x7B}:
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif byte in {0x5D, 0x7D}:
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif byte in {0x09, 0x0A, 0x0D, 0x20, 0x2C, 0x3A}:
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
+
+
 def _read_regular(path: Path, limit: int) -> bytes:
     try:
         before = path.lstat()
@@ -154,6 +195,8 @@ def _read_regular(path: Path, limit: int) -> bytes:
 
 def _load_json(path: Path) -> dict[str, Any]:
     raw = _read_regular(path, MAX_JSON_BYTES)
+    if not _json_shape_within_limits(raw):
+        raise ProposalError(f"JSON exceeds the structural limit: {path}")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:

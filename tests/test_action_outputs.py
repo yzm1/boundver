@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import tempfile
+import tracemalloc
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
+
+from boundver._utils import DIAGNOSTIC_TRUNCATION_SENTINEL
 
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -45,6 +51,123 @@ def _parse_github_output(path: Path) -> dict[str, str]:
 
 
 class ActionOutputTests(unittest.TestCase):
+    def test_rejects_oversized_numeric_tokens(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            payloads = (
+                b'{"n":'
+                + (b"9" * (exporter.MAX_JSON_INTEGER_DIGITS + 1))
+                + b"}",
+                b'{"n":1.'
+                + (b"0" * (exporter.MAX_JSON_NUMBER_CHARS + 1))
+                + b"}",
+                b'{"n":1e9999}',
+            )
+            for payload in payloads:
+                with self.subTest(size=len(payload)):
+                    path.write_bytes(payload)
+                    value, status = exporter._load_payload(path, 64 * 1024)
+                    self.assertEqual(value, {})
+                    self.assertEqual(status, "invalid-json")
+
+    def test_rejects_wide_or_deep_result_before_json_parser_allocation(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "result.json"
+            path.write_bytes(b"[0,0,0]")
+            with (
+                mock.patch.object(exporter, "MAX_RESULT_JSON_TOKENS", 2),
+                mock.patch.object(
+                    exporter.json,
+                    "loads",
+                    side_effect=AssertionError("parser must not be called"),
+                ) as loads,
+            ):
+                payload, status = exporter._load_payload(path, 1024)
+            self.assertEqual(payload, {})
+            self.assertEqual(status, exporter.SOURCE_OVER_COMPLEX)
+            loads.assert_not_called()
+
+            original = path.read_bytes()
+            with mock.patch.object(exporter, "MAX_RESULT_JSON_TOKENS", 2):
+                exporter.export_outputs(
+                    path,
+                    Path(temporary) / "github-output.txt",
+                )
+            self.assertEqual(path.read_bytes(), original)
+
+            path.write_bytes(b"[[[0]]]")
+            with (
+                mock.patch.object(exporter, "MAX_RESULT_JSON_DEPTH", 2),
+                mock.patch.object(
+                    exporter.json,
+                    "loads",
+                    side_effect=AssertionError("parser must not be called"),
+                ) as loads,
+            ):
+                payload, status = exporter._load_payload(path, 1024)
+            self.assertEqual(payload, {})
+            self.assertEqual(status, exporter.SOURCE_OVER_COMPLEX)
+            loads.assert_not_called()
+
+    def test_bounded_outputs_do_not_materialize_values_beyond_the_limit(self):
+        exporter = _load_script()
+        lines = ["\x1b" * 512] * 1_000
+        tracemalloc.start()
+        try:
+            value, truncated = exporter._bounded_lines(
+                lines,
+                exporter.MAX_VALUE_UTF16_BYTES,
+            )
+            _current, line_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertTrue(truncated)
+        self.assertLessEqual(exporter._utf16_size(value), 64 * 1024)
+        self.assertLess(line_peak, 2 * 1024 * 1024)
+
+        rows = ["x" * 1_024] * 1_000
+        tracemalloc.start()
+        try:
+            value, truncated = exporter._bounded_json_array(
+                rows,
+                exporter.MAX_VALUE_UTF16_BYTES,
+            )
+            _current, json_peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertTrue(truncated)
+        self.assertEqual(value, "[]")
+        self.assertLess(json_peak, 2 * 1024 * 1024)
+
+    def test_exports_validation_truncation_sentinel_as_a_failed_issue(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "issues": [
+                            "first validation failure",
+                            DIAGNOSTIC_TRUNCATION_SENTINEL,
+                        ],
+                        "observations": [],
+                        "consumer_impact": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            truncated = exporter.export_outputs(result, output)
+            values = _parse_github_output(output)
+
+        self.assertEqual(truncated, ())
+        self.assertIn(DIAGNOSTIC_TRUNCATION_SENTINEL, values["issues"])
+
     def test_exports_complete_values_and_result_path(self):
         exporter = _load_script()
         with tempfile.TemporaryDirectory() as temporary:
@@ -294,6 +417,156 @@ class ActionOutputTests(unittest.TestCase):
             self.assertEqual(
                 fallback["action_transport"],
                 {"complete": False, "reason": "empty"},
+            )
+
+    def test_review_plan_exports_machine_selections_summary_and_exact_annotation(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "plan.json"
+            summary = root / "summary.md"
+            output = root / "github-output"
+            commit = "a" * 40
+            payload = {
+                "schema": "boundver-plan/v1",
+                "complete": True,
+                "endpoints": {"target": {"commit": commit}},
+                "consumer_impact": [{"component": "api"}],
+                "selection": {
+                    "changed_components": ["api"],
+                    "impacted_components": ["client"],
+                    "external_consumers": ["mobile"],
+                    "test_components": ["api", "client"],
+                    "changed_slices": ["contracts"],
+                    "impacted_slices": ["frontends"],
+                    "test_slices": ["contracts", "frontends"],
+                },
+                "source_locations": [
+                    {
+                        "component": "api\n::error::forged\x1b[31m",
+                        "path": "svc/api:%\n,contract\x1b[31m.json",
+                        "endpoint": "target",
+                        "commit": commit,
+                    }
+                ],
+            }
+            result.write_text(json.dumps(payload), encoding="utf-8")
+            summary.write_text("summary\n", encoding="utf-8")
+            stderr = io.StringIO()
+
+            with redirect_stderr(stderr):
+                truncated = exporter.export_outputs(
+                    result,
+                    output,
+                    operation="review",
+                    summary_path=summary,
+                    annotation_commit=commit,
+                )
+            values = _parse_github_output(output)
+
+            self.assertEqual(truncated, ())
+            self.assertEqual(values["result-schema"], "boundver-plan/v1")
+            self.assertEqual(values["transport-complete"], "true")
+            self.assertEqual(values["selection-complete"], "true")
+            self.assertEqual(json.loads(values["changed-components"]), ["api"])
+            self.assertEqual(json.loads(values["impacted-components"]), ["client"])
+            self.assertEqual(json.loads(values["test-components"]), ["api", "client"])
+            self.assertEqual(Path(values["summary-file"]), summary.resolve())
+            annotation = stderr.getvalue()
+            self.assertIn(
+                "::notice file=svc/api%3A%25%0A%2Ccontract\\x1b[31m.json",
+                annotation,
+            )
+            self.assertNotIn("\n::error::forged", annotation)
+            self.assertIn("api%0A::error::forged", annotation)
+            self.assertNotIn("\x1b", annotation)
+            self.assertIn("\\x1b[31m", annotation)
+
+    def test_review_plan_bounded_selection_fails_closed_to_empty_array(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "plan.json"
+            output = root / "github-output"
+            payload = {
+                "schema": "boundver-plan/v1",
+                "complete": True,
+                "selection": {
+                    "changed_components": [],
+                    "impacted_components": ["x" * 500],
+                },
+                "consumer_impact": [],
+            }
+            result.write_text(json.dumps(payload), encoding="utf-8")
+
+            truncated = exporter.export_outputs(
+                result,
+                output,
+                operation="review",
+                max_value_utf16_bytes=256,
+            )
+            values = _parse_github_output(output)
+
+            self.assertEqual(values["impacted-components"], "[]")
+            self.assertEqual(values["selection-complete"], "false")
+            self.assertIn("impacted-components", truncated)
+            self.assertIn(
+                "impacted-components",
+                json.loads(values["truncated-outputs"]),
+            )
+            self.assertEqual(Path(values["result-file"]), result.resolve())
+
+    def test_review_operation_rejects_non_plan_result_as_incomplete(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+            truncated = exporter.export_outputs(
+                result,
+                output,
+                operation="review",
+            )
+            values = _parse_github_output(output)
+            fallback = json.loads(result.read_text(encoding="utf-8"))
+
+            self.assertEqual(values["transport-complete"], "false")
+            self.assertEqual(values["selection-complete"], "false")
+            self.assertEqual(values["result-schema"], "")
+            self.assertEqual(
+                set(truncated),
+                set(exporter.SIZED_OUTPUTS) | set(exporter.PLAN_ARRAY_OUTPUTS),
+            )
+            self.assertEqual(
+                fallback["action_transport"],
+                {"complete": False, "reason": "invalid-plan"},
+            )
+
+    def test_review_exporter_cli_returns_usage_error_for_non_plan_result(self):
+        exporter = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = root / "result.json"
+            output = root / "github-output"
+            result.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+            code = exporter.main(
+                [
+                    "--result",
+                    str(result),
+                    "--github-output",
+                    str(output),
+                    "--operation",
+                    "review",
+                ]
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(
+                _parse_github_output(output)["transport-complete"],
+                "false",
             )
 
 

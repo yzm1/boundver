@@ -4,14 +4,32 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import locale
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import BinaryIO, Sequence
+
+
+def _load_release_platform():
+    """Load the exact adjacent helper even under isolated Python startup."""
+    path = Path(__file__).resolve().with_name("_release_platform.py")
+    spec = importlib.util.spec_from_file_location(
+        "_boundver_hygiene_release_platform", path
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - import invariant
+        raise RuntimeError(f"cannot load release platform helper: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+sanitize_git_environment = _load_release_platform().sanitize_git_environment
 
 
 GENERATED_PARTS = {
@@ -58,22 +76,83 @@ MAX_TRACKED_TOTAL_PATH_BYTES = 16 * 1024 * 1024
 MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024
 MAX_TEXT_TOTAL_BYTES = 256 * 1024 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
+MAX_GIT_SECONDS = 120
+
+
+def _trusted_git(repo: Path) -> str:
+    """Resolve host Git without allowing repository-local shadowing."""
+    selected = shutil.which("git")
+    if selected is None:
+        raise RuntimeError("git is required")
+    try:
+        root = repo.resolve(strict=True)
+        raw = Path(os.path.abspath(selected))
+        resolved = Path(selected).resolve(strict=True)
+        identity = resolved.stat()
+    except OSError as error:
+        raise RuntimeError("trusted git executable is unavailable") from error
+    if (
+        not stat.S_ISREG(identity.st_mode)
+        or raw == root
+        or root in raw.parents
+        or resolved == root
+        or root in resolved.parents
+    ):
+        raise RuntimeError("refusing a git executable inside the repository")
+    return str(resolved)
+
+
+def _git_environment() -> dict[str, str]:
+    environment = sanitize_git_environment()
+    environment.update(
+        {
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
 
 
 def _git(repo: Path, *arguments: str) -> bytes:
     """Run Git with bounded, concurrently drained stdout and stderr."""
-    command = ["git", *arguments]
+    command = [
+        _trusted_git(repo),
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "core.fsmonitor=false",
+        "--no-optional-locks",
+        *arguments,
+    ]
     try:
         process = subprocess.Popen(
             command,
             cwd=repo,
+            env=_git_environment(),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as error:
         raise RuntimeError("git is required") from error
-    assert process.stdout is not None
-    assert process.stderr is not None
+    if process.stdout is None or process.stderr is None:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        raise RuntimeError("git command pipes are unavailable")
 
     captured: dict[str, bytes] = {}
     overflows: list[str] = []
@@ -123,7 +202,14 @@ def _git(repo: Path, *arguments: str) -> bytes:
     for reader in readers:
         reader.start()
     try:
-        returncode = process.wait()
+        returncode = process.wait(timeout=MAX_GIT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        raise RuntimeError("git command timed out") from error
     except BaseException:
         terminate()
         process.wait()

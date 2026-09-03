@@ -15,9 +15,11 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "consumer-impact"
-EXPECTED_CONSUMERS = (
-    "AFFECTED CONSUMERS (TRANSITIVE) payments-api: "
-    "checkout-web, mobile-app, payments-sdk"
+EXPECTED_HUMAN_IMPACT = (
+    "Consumer impact:",
+    "payments-api [boundary; transitive]",
+    "Components: checkout-web, payments-sdk",
+    "External consumers: mobile-app",
 )
 EXPECTED_CONSUMER_IMPACT = [
     {
@@ -28,6 +30,7 @@ EXPECTED_CONSUMER_IMPACT = [
         "transitive": True,
     }
 ]
+MAX_DEMO_COMMAND_SECONDS = 300
 
 
 def _run(
@@ -38,14 +41,22 @@ def _run(
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     print(f"$ {' '.join(command)}", flush=True)
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        check=False,
-        capture_output=capture,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=capture,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=MAX_DEMO_COMMAND_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "demo command exceeded the "
+            f"{MAX_DEMO_COMMAND_SECONDS}-second wall-clock limit"
+        ) from exc
 
 
 def _require_success(result: subprocess.CompletedProcess[str], label: str) -> None:
@@ -153,7 +164,7 @@ def main() -> int:
                     "expected boundary-drift exit code 4, got "
                     f"{result.returncode}"
                 )
-            if EXPECTED_CONSUMERS not in combined:
+            if any(marker not in combined for marker in EXPECTED_HUMAN_IMPACT):
                 raise RuntimeError("expected transitive consumer closure was not reported")
 
             structured = _run(

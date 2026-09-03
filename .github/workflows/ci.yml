@@ -16,6 +16,7 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +37,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Reject automation dependencies with current PyPI advisories
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python -I scripts/lock_release_tools.py check
 
       - name: Install dev dependencies
         run: |
@@ -58,40 +63,28 @@ jobs:
           python -I -m coverage run --branch -m pytest -q tests/test_semantic_provider_proposal.py
           python -I -m coverage report --include="scripts/audit_semantic_provider_proposal.py,scripts/check_semantic_provider_proposal.py" --fail-under=75
 
+      - name: Enforce intrinsic runtime contract
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: >-
+          python -I scripts/benchmark_runtime.py --runs 3 --enforce
+          --output runtime_benchmark.json
+
       - name: Print failures
         if: failure()
-        shell: python -I {0}
-        run: |
-          import xml.etree.ElementTree as ET, sys
-          try:
-            tree = ET.parse("pytest_results.xml")
-            root = tree.getroot()
-            failed = []
-            for tc in root.iter("testcase"):
-              for child in tc:
-                if child.tag in ("failure", "error"):
-                  name = tc.attrib.get('name', '?')
-                  msg = child.attrib.get("message", "")[:300]
-                  body = (child.text or "")[:500]
-                  failed.append(name)
-                  print(f"::error title={name}::{msg}")
-                  print(f"FAIL: {name}", flush=True)
-                  print(msg, flush=True)
-                  print(body, flush=True)
-                  print("---")
-            print(f"\nTotal failures: {len(failed)}", flush=True)
-          except Exception as e:
-            print(f"::error title=ParseError::Could not parse XML: {e}", flush=True)
+        run: python -I scripts/report_pytest_failures.py pytest_results.xml
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: pytest_results.xml
+          path: |
+            pytest_results.xml
+            runtime_benchmark.json
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: test
     steps:
       - name: Checkout
@@ -108,6 +101,11 @@ jobs:
         run: python -I scripts/check_semantic_provider_proposal.py
 
       - name: Build package
+        env:
+          BASH_ENV: ""
+          CDPATH: ""
+          ENV: ""
+          GLOBIGNORE: ""
         run: |
           python -I scripts/check_repo_hygiene.py
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA") \
@@ -122,6 +120,7 @@ jobs:
   action:
     name: Public Action contract (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: test
     strategy:
       fail-fast: false
@@ -165,6 +164,56 @@ jobs:
           result = Path(os.environ["BOUNDVER_RESULT_FILE"])
           assert result.is_file()
           assert json.loads(result.read_text(encoding="utf-8"))["ok"] is True
+          PY
+
+      - name: Review an immutable range with the public interface
+        id: boundver-review
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: ./
+        with:
+          operation: review
+          base: HEAD^
+          target: HEAD
+          transitive: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Check CI-native review outputs
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        shell: bash
+        env:
+          BOUNDVER_RESULT_SCHEMA: ${{ steps.boundver-review.outputs.result-schema }}
+          BOUNDVER_TRANSPORT_COMPLETE: ${{ steps.boundver-review.outputs.transport-complete }}
+          BOUNDVER_SELECTION_COMPLETE: ${{ steps.boundver-review.outputs.selection-complete }}
+          BOUNDVER_CHANGED_COMPONENTS: ${{ steps.boundver-review.outputs.changed-components }}
+          BOUNDVER_TEST_COMPONENTS: ${{ steps.boundver-review.outputs.test-components }}
+          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver-review.outputs.truncated-outputs }}
+          BOUNDVER_RESULT_FILE: ${{ steps.boundver-review.outputs.result-file }}
+          BOUNDVER_SUMMARY_FILE: ${{ steps.boundver-review.outputs.summary-file }}
+        run: |
+          python -I - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          assert os.environ["BOUNDVER_RESULT_SCHEMA"] == "boundver-plan/v1"
+          assert os.environ["BOUNDVER_TRANSPORT_COMPLETE"] == "true"
+          assert os.environ["BOUNDVER_SELECTION_COMPLETE"] == "true"
+          changed = json.loads(os.environ["BOUNDVER_CHANGED_COMPONENTS"])
+          selected = json.loads(os.environ["BOUNDVER_TEST_COMPONENTS"])
+          assert changed
+          assert set(changed) <= set(selected)
+          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == []
+          plan = json.loads(
+              Path(os.environ["BOUNDVER_RESULT_FILE"]).read_text(encoding="utf-8")
+          )
+          assert plan["schema"] == "boundver-plan/v1"
+          assert plan["complete"] is True
+          assert plan["selection"]["changed_components"] == changed
+          summary = Path(os.environ["BOUNDVER_SUMMARY_FILE"]).read_text(
+              encoding="utf-8"
+          )
+          assert "Routing evidence only" in summary
+          assert "Presentation complete" in summary
           PY
 
       - name: Exercise pre-JSON Action failure
@@ -216,6 +265,7 @@ jobs:
   public-installations:
     name: Public installation contracts (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     needs: test
     strategy:
       fail-fast: false
@@ -248,15 +298,72 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: python -I scripts/demo_consumer_impact.py
 
+      - name: Run the public historical range-review demo
+        if: matrix.os == 'ubuntu-latest'
+        run: python -I scripts/demo_range_review.py
+
       - name: Build and exercise the public Dockerfile
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           set -euo pipefail
           docker build --tag boundver-ci:${GITHUB_SHA} .
-          docker run --rm boundver-ci:${GITHUB_SHA} --version
           docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            boundver-ci:${GITHUB_SHA} \
+            --version
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
             --volume "$GITHUB_WORKSPACE:/repo:ro" \
             --workdir /repo \
             boundver-ci:${GITHUB_SHA} \
             verify --source head --facets exact
+
+      - name: Reject high-severity repository and container risks
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        env:
+          BASH_ENV: ""
+          CDPATH: ""
+          ENV: ""
+          GLOBIGNORE: ""
+          TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/boundver-ci.tar"
+          cache="$RUNNER_TEMP/trivy-cache"
+          mkdir -m 700 "$cache"
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --volume "$cache:/root/.cache" \
+            "$TRIVY_IMAGE" fs \
+            --scanners misconfig,secret \
+            --severity HIGH,CRITICAL \
+            --skip-dirs /workspace/.git \
+            --no-progress \
+            --skip-version-check \
+            --exit-code 1 \
+            /workspace
+          docker save --output "$archive" "boundver-ci:${GITHUB_SHA}"
+          scan=(
+            docker run --rm
+            --volume "$RUNNER_TEMP:/scan:ro"
+            --volume "$GITHUB_WORKSPACE:/policy:ro"
+            --volume "$cache:/root/.cache"
+            "$TRIVY_IMAGE" image
+            --input /scan/boundver-ci.tar
+            --platform linux/amd64
+            --scanners vuln
+            --severity HIGH,CRITICAL
+            --max-image-size 2GB
+            --no-progress
+            --skip-version-check
+          )
+          "${scan[@]}" --ignorefile /policy/.trivyignore.yaml --exit-code 1
+          "${scan[@]}" --ignore-unfixed --exit-code 1

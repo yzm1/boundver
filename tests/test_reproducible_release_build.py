@@ -83,6 +83,13 @@ class ArchiveCanonicalizationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.builder = _load_script("build_release_artifacts.py")
 
+    def test_epoch_fallback_rejects_repository_local_git(self):
+        fake = REPO_ROOT / "scripts" / "build_release_artifacts.py"
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            self.builder.shutil, "which", return_value=str(fake)
+        ), self.assertRaisesRegex(ValueError, "inside the repository"):
+            self.builder._release_epoch(None)
+
     def test_wheel_canonicalization_removes_order_time_mode_and_compression(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -157,6 +164,64 @@ class ArchiveCanonicalizationTests(unittest.TestCase):
                     self.builder.build_release_artifacts(output, RELEASE_EPOCH)
             self.assertEqual(list(output.iterdir()), [])
 
+    def test_build_steps_fail_closed_at_the_wall_clock_limit(self):
+        timeout = subprocess.TimeoutExpired([sys.executable, "-m", "build"], 1)
+        with mock.patch.object(
+            self.builder.subprocess,
+            "run",
+            side_effect=timeout,
+        ) as run, self.assertRaisesRegex(
+            RuntimeError,
+            "distribution build exceeds the 1800-second wall-clock limit",
+        ):
+            self.builder._run_build_step(
+                [sys.executable, "-m", "build"],
+                environment={},
+                label="distribution build",
+            )
+
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], self.builder.MAX_BUILD_SECONDS
+        )
+        self.assertIs(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+    def test_backend_cleanup_rejects_non_directory_targets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            unexpected = root / "build"
+            unexpected.write_text("caller-owned", encoding="utf-8")
+
+            with mock.patch.object(self.builder, "REPO_ROOT", root), self.assertRaisesRegex(
+                ValueError, "refusing to recursively remove"
+            ):
+                self.builder._clear_backend_state()
+
+            self.assertEqual(
+                unexpected.read_text(encoding="utf-8"), "caller-owned"
+            )
+
+    def test_packaging_cleanup_removes_only_exact_plain_generated_directories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in ("dist", "build", "src/boundver.egg-info"):
+                generated = root / relative
+                generated.mkdir(parents=True)
+                (generated / "generated.txt").write_text(
+                    "generated", encoding="utf-8"
+                )
+            caller_owned = root / "src" / "caller-owned.txt"
+            caller_owned.write_text("preserve", encoding="utf-8")
+
+            with mock.patch.object(self.builder, "REPO_ROOT", root):
+                self.builder._clear_packaging_state()
+
+            for relative in ("dist", "build", "src/boundver.egg-info"):
+                self.assertFalse((root / relative).exists())
+            self.assertEqual(
+                caller_owned.read_text(encoding="utf-8"), "preserve"
+            )
+
 
 class ReproducibleBuildContractTests(unittest.TestCase):
     def test_standalone_honors_source_date_epoch(self):
@@ -192,6 +257,64 @@ class ReproducibleBuildContractTests(unittest.TestCase):
                 self.assertTrue(
                     all(item.compress_type == ZIP_STORED for item in archive.infolist())
                 )
+
+    def test_standalone_refuses_to_follow_an_existing_output_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.pyz"
+            target.write_text("caller-owned", encoding="utf-8")
+            output = root / "boundver.pyz"
+            try:
+                output.symlink_to(target)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "build_standalone.py"),
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsafe standalone output", result.stderr)
+            self.assertEqual(target.read_text(encoding="utf-8"), "caller-owned")
+
+    def test_homebrew_renderer_refuses_to_follow_an_output_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.rb"
+            target.write_text("caller-owned", encoding="utf-8")
+            output = root / "boundver.rb"
+            try:
+                output.symlink_to(target)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "scripts" / "render_homebrew_formula.py"),
+                    "--version",
+                    CURRENT_VERSION,
+                    "--pyz-sha256",
+                    "a" * 64,
+                    "--output",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("regular file", result.stderr)
+            self.assertEqual(target.read_text(encoding="utf-8"), "caller-owned")
 
     def test_build_toolchain_and_double_build_are_explicit(self):
         pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

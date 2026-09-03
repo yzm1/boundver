@@ -31,6 +31,34 @@ concurrency:
 permissions: {}
 
 env:
+  ALL_PROXY: ""
+  BASH_ENV: ""
+  CDPATH: ""
+  CURL_CA_BUNDLE: ""
+  CURL_HOME: ""
+  GCM_INTERACTIVE: never
+  GLOBIGNORE: ""
+  GH_NO_EXTENSION_UPDATE_NOTIFIER: "1"
+  GH_NO_UPDATE_NOTIFIER: "1"
+  GH_HOST: github.com
+  GH_PAGER: cat
+  GH_PROMPT_DISABLED: "1"
+  GIT_NO_LAZY_FETCH: "1"
+  GIT_NO_REPLACE_OBJECTS: "1"
+  GIT_OPTIONAL_LOCKS: "0"
+  GIT_PAGER: cat
+  GIT_TERMINAL_PROMPT: "0"
+  HTTPS_PROXY: ""
+  HTTP_PROXY: ""
+  ENV: ""
+  NODE_EXTRA_CA_CERTS: ""
+  NO_COLOR: "1"
+  NO_PROXY: github.com,api.github.com
+  REQUESTS_CA_BUNDLE: ""
+  SSL_CERT_DIR: ""
+  SSL_CERT_FILE: ""
+  SSLKEYLOGFILE: ""
+  TERM: dumb
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
@@ -39,6 +67,7 @@ env:
 jobs:
   verify-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -485,6 +514,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --output "$RUNNER_TEMP/release-notes.md"
           python3 -I scripts/verify_release_readiness.py --tag "$RELEASE_TAG"
+          python3 -I scripts/lock_release_tools.py check
 
       - name: Install hash-locked release verification tools
         if: inputs.resume_run_id == ''
@@ -670,15 +700,17 @@ jobs:
             local expected_digest=$2
             local output_path=$3
             local extracted_path=$4
-            curl --fail-with-body --location --silent --show-error \
+            curl --disable --fail-with-body --location --silent --show-error \
               --connect-timeout 15 --max-time 180 \
+              --max-redirs 5 \
               --max-filesize "$MAX_RECOVERED_ARCHIVE_BYTES" \
-              --proto '=https' --tlsv1.2 \
+              --noproxy '*' --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --cacert /etc/ssl/certs/ca-certificates.crt \
+              --oauth2-bearer "$GH_TOKEN" \
               --header "Accept: application/vnd.github+json" \
-              --header "Authorization: Bearer $GH_TOKEN" \
               --header "X-GitHub-Api-Version: 2022-11-28" \
               --output "$output_path" \
-              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip"
+              "https://api.github.com/repos/yzm1/boundver/actions/artifacts/$artifact_id/zip"
             if [[ ! -f "$output_path" || -L "$output_path" || \
                   "$(wc -c < "$output_path")" -gt "$MAX_RECOVERED_ARCHIVE_BYTES" ]]; then
               echo "Recovered artifact archive is unsafe or oversized" >&2
@@ -742,6 +774,7 @@ jobs:
   testpypi-preflight:
     name: Reject conflicting TestPyPI release state
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: verify-release
     permissions:
       actions: read
@@ -861,6 +894,7 @@ jobs:
   publish-testpypi:
     name: Publish immutable candidate to TestPyPI
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [verify-release, testpypi-preflight]
     environment: testpypi
     permissions:
@@ -890,6 +924,7 @@ jobs:
   verify-testpypi:
     name: Verify and install the exact TestPyPI candidate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [verify-release, publish-testpypi]
     permissions:
       actions: read
@@ -977,6 +1012,7 @@ jobs:
   prepare-release-notes:
     name: Prepare immutable release notes without mutation authority
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [verify-release, verify-testpypi]
     permissions:
       contents: read
@@ -1012,6 +1048,7 @@ jobs:
   prepare-release-draft:
     name: Prepare complete GitHub Release draft
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [verify-release, verify-testpypi, prepare-release-notes]
     permissions:
       actions: read
@@ -1041,12 +1078,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_DRAFT_API_PROGRAM: |
             import json
+            import math
             import os
             import pathlib
             import re
             import shutil
             import subprocess
             import sys
+            import tempfile
             import threading
             import time
 
@@ -1061,6 +1100,7 @@ jobs:
             VISIBILITY_RETRY_SECONDS = 2
             READ_CHUNK_BYTES = 64 * 1024
             MAX_UINT64 = (1 << 64) - 1
+            MAX_JSON_NUMBER_CHARACTERS = 64
 
             mode, repository, *arguments = sys.argv[1:]
             if mode not in {"find", "wait", "capture"}:
@@ -1072,6 +1112,37 @@ jobs:
             gh = pathlib.Path(shutil.which("gh") or "").resolve()
             if not gh.is_file() or gh == workspace or workspace in gh.parents:
                 raise SystemExit("trusted GitHub CLI is unavailable")
+            gh_config_dir = pathlib.Path(
+                tempfile.mkdtemp(prefix="boundver-gh-", dir=runner_temp)
+            ).resolve()
+            command_environment = dict(os.environ)
+            for name in (
+                "ALL_PROXY", "all_proxy", "BROWSER", "CLICOLOR_FORCE",
+                "CURL_CA_BUNDLE", "CURL_HOME", "DEBUG", "EDITOR",
+                "GH_ACCESSIBLE_COLORS", "GH_ACCESSIBLE_PROMPTER", "GH_BROWSER",
+                "GH_DEBUG", "GH_EDITOR", "GH_ENTERPRISE_TOKEN", "GH_FORCE_TTY",
+                "GH_HOST", "GH_HTTP_UNIX_SOCKET", "GH_MDWIDTH", "GH_PAGER",
+                "GH_PROMPT_DISABLED", "GH_REPO", "GH_SPINNER_DISABLED",
+                "GHES_TOKEN", "GITHUB_API_URL", "GITHUB_ENTERPRISE_TOKEN",
+                "GITHUB_GRAPHQL_URL", "GITHUB_SERVER_URL", "GIT_EDITOR",
+                "GLAMOUR_STYLE", "GODEBUG", "HTTPS_PROXY", "https_proxy",
+                "HTTP_PROXY", "http_proxy", "NODE_EXTRA_CA_CERTS", "NO_PROXY",
+                "no_proxy", "REQUESTS_CA_BUNDLE", "SSL_CERT_DIR",
+                "SSL_CERT_FILE", "SSLKEYLOGFILE", "VISUAL",
+            ):
+                command_environment.pop(name, None)
+            command_environment.update({
+                "GH_CONFIG_DIR": str(gh_config_dir),
+                "GH_HOST": "github.com",
+                "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+                "GH_NO_UPDATE_NOTIFIER": "1",
+                "GH_PAGER": "cat",
+                "GH_PROMPT_DISABLED": "1",
+                "NO_COLOR": "1",
+                "NO_PROXY": "github.com,api.github.com",
+                "PAGER": "cat",
+                "TERM": "dumb",
+            })
             consumed_bytes = 0
 
             def kill_process(process):
@@ -1115,6 +1186,14 @@ jobs:
                     raise ValueError("oversized JSON integer")
                 return int(value)
 
+            def parse_float(value):
+                if len(value) > MAX_JSON_NUMBER_CHARACTERS:
+                    raise ValueError("oversized JSON float")
+                result = float(value)
+                if not math.isfinite(result):
+                    raise ValueError("non-finite JSON float")
+                return result
+
             def reject_constant(_value):
                 raise ValueError("non-finite JSON constant")
 
@@ -1128,6 +1207,7 @@ jobs:
                     process = subprocess.Popen(
                         [str(gh), "api", endpoint],
                         cwd=runner_temp,
+                        env=command_environment,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
@@ -1184,6 +1264,7 @@ jobs:
                     payload = json.loads(
                         stdout.decode("utf-8", "strict"),
                         object_pairs_hook=unique_object,
+                        parse_float=parse_float,
                         parse_int=parse_integer,
                         parse_constant=reject_constant,
                     )
@@ -1376,6 +1457,7 @@ jobs:
             "$common_assets" \
             "$draft_state" <<'PY'
           import json
+          import math
           import pathlib
           import sys
 
@@ -1436,6 +1518,14 @@ jobs:
                   raise ValueError("oversized JSON integer")
               return int(value)
 
+          def parse_float(value):
+              if len(value) > 64:
+                  raise ValueError("oversized JSON float")
+              result = float(value)
+              if not math.isfinite(result):
+                  raise ValueError("non-finite JSON float")
+              return result
+
           def reject_constant(_value):
               raise ValueError("non-finite JSON constant")
 
@@ -1445,6 +1535,7 @@ jobs:
                       release_json_path, MAX_RELEASE_JSON_BYTES, "GitHub Release response"
                   ),
                   object_pairs_hook=unique_object,
+                  parse_float=parse_float,
                   parse_int=parse_integer,
                   parse_constant=reject_constant,
               )
@@ -1584,6 +1675,7 @@ jobs:
             "$expected_assets" \
             "$draft_state" <<'PY'
           import json
+          import math
           import pathlib
           import sys
 
@@ -1642,6 +1734,14 @@ jobs:
                   raise ValueError("oversized JSON integer")
               return int(value)
 
+          def parse_float(value):
+              if len(value) > 64:
+                  raise ValueError("oversized JSON float")
+              result = float(value)
+              if not math.isfinite(result):
+                  raise ValueError("non-finite JSON float")
+              return result
+
           def reject_constant(_value):
               raise ValueError("non-finite JSON constant")
 
@@ -1651,6 +1751,7 @@ jobs:
                       release_json_path, MAX_RELEASE_JSON_BYTES, "GitHub Release response"
                   ),
                   object_pairs_hook=unique_object,
+                  parse_float=parse_float,
                   parse_int=parse_integer,
                   parse_constant=reject_constant,
               )
@@ -1742,6 +1843,7 @@ jobs:
   verify-marketplace:
     name: Verify immutable Release and Marketplace publication
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [verify-release, verify-testpypi, prepare-release-draft]
     environment: marketplace
     permissions:
@@ -1821,6 +1923,7 @@ jobs:
   pypi-preflight:
     name: Reject conflicting production PyPI state
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [verify-release, verify-marketplace]
     permissions:
       actions: read
@@ -1865,6 +1968,7 @@ jobs:
   publish-pypi:
     name: Promote verified candidate to PyPI
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [verify-release, verify-marketplace, pypi-preflight]
     environment: pypi
     permissions:
@@ -1897,6 +2001,7 @@ jobs:
   verify-pypi:
     name: Verify PyPI bytes, installation, and provenance
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [verify-release, publish-pypi]
     permissions:
       actions: read
@@ -2054,6 +2159,7 @@ jobs:
   verify-public-surfaces:
     name: Verify every public release surface
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [verify-release, advance-compatibility-alias]
     permissions:
       actions: read

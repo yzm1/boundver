@@ -30,6 +30,12 @@ for the two-minute version.
 
 [![A boundver verification shows boundary drift and affected consumers](https://yzm1.github.io/boundver/assets/verify-demo.svg)](https://yzm1.github.io/boundver/demo/)
 
+The [reproducible 17-component range-review case
+study](https://yzm1.github.io/boundver/case-study-range-review/) shows an
+implementation-only edit, behavioral drift, and an OpenAPI boundary change
+before and after lock reconciliation, with direct/transitive consumers and
+source-bound structural evidence.
+
 Using or evaluating boundver? [Tell us what your repository needs in the
 adopter discussion](https://github.com/yzm1/boundver/discussions/100). Sharing
 is entirely voluntary; the CLI never reports usage for you.
@@ -59,6 +65,9 @@ you prefer a best-effort scaffold for a manifest-based repository, use
 `boundver init --discover`; it exits without writing when no safe component
 root can be inferred. Either way, review the component path and boundary
 declaration before generation.
+In an unborn repository with an empty index, discovery asks Git for its
+non-ignored bootstrap files; a non-Git directory uses a bounded approximation
+and prints a warning.
 The initial scaffold uses an implicit boundary and no version source, so only
 `exact` is available. Declare a real boundary and version source before gating
 `boundary` or `compat`.
@@ -163,7 +172,13 @@ Within one segment, `*`, `?`, and character classes such as `[ab]` use
 case-sensitive character matching; wildcards may match a leading `.`. A complete
 `**` segment matches zero or more directories. A wildcard-bearing segment is
 limited to 4,096 UTF-8 bytes and 256 wildcard metacharacters; matching is
-budgeted and fails closed if the work limit is exceeded. Every
+budgeted and fails closed if the work limit is exceeded. In addition to the
+100,000-step ceiling on one match, each provider selection, component
+validation expansion, or change-analysis operation has one 10,000,000-step
+aggregate compilation/matching budget. Patterns compile once per operation;
+an aggregate-budget error asks you to reduce wildcard declarations or split
+the component. The complete ceilings are recorded in the
+[reference](docs/reference.md#selector-work-limits). Every
 declared literal or pattern must select at least one file; otherwise strict
 generation fails instead of hashing an empty contract.
 
@@ -175,6 +190,10 @@ shrink impact. `external_consumers` contains unique opaque terminal labels for
 systems outside this config. Boundary and compatibility drift reports direct
 impact by default; add `--transitive` to `verify` or `why` to walk internal
 edges and include external terminals found along that downstream closure.
+Configured component names cannot contain commas or leading/trailing
+whitespace: the CLI, GitHub Action, and GitLab Catalog use comma-separated
+component filters and trim each token. Existing configs with such a name must
+rename it and update its consumer edges, slice references, and lockfile.
 The machine-output bounds are documented in the
 [reference](docs/reference.md#consumer-graph-limits); validation rejects an
 oversized graph rather than emitting a partial impact closure.
@@ -183,9 +202,11 @@ A slice may use an explicit `components` array or
 `"closure_of": "payment-api"`. The latter resolves to the seed plus all configured components
 reachable through `consumers`, and stores the resolved membership in the lock.
 The traversal is deterministic and cycle-safe. Exactly one membership form is
-allowed. Choose a slice mode supplied by every resolved member (often `exact`
-for a heterogeneous closure), or use `--allow-partial` only when null member
-inputs are intentional.
+allowed, and an explicit `components` array must contain at least one configured
+component; an empty slice would be a permanent fingerprint over nothing. Choose
+a slice mode supplied by every resolved member (often `exact` for a
+heterogeneous closure), or use `--allow-partial` only when null member inputs
+are intentional.
 
 `behavior.paths` should list the runtime-relevant contract files reviewers want
 to see, normally including the boundary selectors plus configuration, defaults,
@@ -196,6 +217,13 @@ when its boundary changes.
 ## Review and accept intentional drift
 
 ```bash
+# Review the committed branch range even after both endpoint locks were reconciled.
+boundver review origin/main..HEAD --merge-base --transitive
+
+# Emit the versioned CI routing plan and a bounded human summary from the same capture.
+boundver review origin/main..HEAD --merge-base --transitive \
+  --format plan --summary-file boundver-summary.md > boundver-plan.json
+
 # Inspect the matching local snapshot.
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
@@ -204,6 +232,37 @@ boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
+
+`review` compares the four recorded identities in two explicit, immutable Git
+commit trees. It reports changed facets, the conservative union of base and
+target consumer edges, and affected slices; `--transitive` walks the complete
+downstream closure. When an `openapi-canonical` boundary changes, it also lists
+added, removed, and changed structural JSON pointers. Those rows contain types,
+not source values, and explain the digest transition without claiming backward
+compatibility. Raw providers remain byte-opaque and are reported as structurally
+unsupported instead of being reinterpreted. Use `--merge-base` for pull-request
+semantics. Both
+endpoint configs and locks must be present, valid, and reconciled. A complete
+review exits `0` whether or not identities changed; an absent or ambiguous ref,
+missing shallow history, incompatible contract, or stale endpoint lock exits
+`2`. The versioned JSON contract is
+[`boundver-review/v1`](spec/cli-output.review.schema.json).
+CI routing uses the smaller
+[`boundver-plan/v1`](spec/cli-output.plan.schema.json) projection, whose
+changed/impacted/test component and slice arrays remain bound to those same
+captured endpoints.
+Each endpoint is fully recomputed before comparison. Custom Python providers
+remain disabled unless trusted automation explicitly adds
+`--allow-custom-providers`.
+
+Structural completeness is reported separately from range completeness. If an
+optional provider explanation is unsupported or crosses a safety limit, its
+typed report is `complete: false`, contains no partial rows, and does not make
+the already verified facet, consumer, and slice comparison incomplete.
+
+This historical query does not replace `verify`: run `verify` as the integrity
+gate for the current candidate. See the exact endpoint and history rules in the
+[reference](docs/reference.md#historical-range-review).
 
 `--facets` decides which fingerprint mismatches fail and which are reported as
 observations. It does **not** limit which fields are regenerated. `--update`
@@ -262,7 +321,9 @@ before verifying; see
 The default source is `head`: committed state, not unstaged local edits. Use
 `head` for committed CI state, `index` for staged pre-commit state, and
 `working-tree` while reviewing local edits. Generate and verify from the same
-source. The normative snapshot and tracked-file rules live in the
+source. Source flags apply to one invocation only: a following bare command
+defaults to `head` again, so repeat `--source` across adjacent diagnostics. The
+normative snapshot and tracked-file rules live in the
 [specification](spec/spec.md#source-modes); practical staging examples live in
 the [CI cookbook](docs/ci-cookbook.md#match-source-mode-to-the-lifecycle).
 
@@ -331,6 +392,7 @@ analysis, verification baselines, and repeatable discovery exclusions.
 boundver discover
 boundver discover --diff-config --exclude legacy/vendor
 boundver status --format json
+boundver review origin/main..HEAD --merge-base --transitive --format json
 boundver verify --changed-from origin/main --transitive
 boundver verify --components payment-api --update
 boundver diff old.lock.json boundary.lock.json
@@ -365,7 +427,9 @@ same interpreter so an older executable elsewhere on `PATH` cannot take over.
 You can also use the release container, Homebrew tap, or GitLab CI/CD component:
 
 ```bash
-docker run --rm -v "$PWD:/repo:ro" -w /repo \
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges \
+  -v "$PWD:/repo:ro" -w /repo \
   ghcr.io/yzm1/boundver:<version> verify --source head
 brew install yzm1/boundver/boundver
 ```
@@ -376,6 +440,7 @@ Exact-version and digest-pinned examples are in the
 - [Documentation](https://yzm1.github.io/boundver/)
 - [Getting started](https://yzm1.github.io/boundver/getting-started/)
 - [Runnable demo](https://yzm1.github.io/boundver/demo/)
+- [17-component range-review case study](https://yzm1.github.io/boundver/case-study-range-review/)
 - [Examples](https://yzm1.github.io/boundver/examples/)
 - [CI cookbook](https://yzm1.github.io/boundver/ci-cookbook/)
 - [Gradual adoption](https://yzm1.github.io/boundver/gradual-adoption/)

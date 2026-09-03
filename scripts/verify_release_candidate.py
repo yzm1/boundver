@@ -12,6 +12,7 @@ import argparse
 import importlib.util
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -32,7 +33,10 @@ def _load_release_platform():
     return module
 
 
-resolve_bash = _load_release_platform().resolve_bash
+_release_platform = _load_release_platform()
+resolve_bash = _release_platform.resolve_bash
+sanitize_git_environment = _release_platform.sanitize_git_environment
+sanitize_shell_environment = _release_platform.sanitize_shell_environment
 
 
 TAG_RE = re.compile(
@@ -42,6 +46,8 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 MAX_DIST_ENTRIES = 64
 MAX_DIST_NAME_BYTES = 4 * 1024
 MAX_DIST_TOTAL_NAME_BYTES = 64 * 1024
+MAX_COMMAND_SECONDS = 3_600
+MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024
 
 
 class CandidateVerificationError(RuntimeError):
@@ -78,30 +84,109 @@ def _run(
             text=True,
             capture_output=capture_output,
             check=True,
+            stdin=subprocess.DEVNULL,
+            timeout=MAX_COMMAND_SECONDS,
         )
     except FileNotFoundError as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command[0]}"
         ) from error
     except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout or "").strip()
+        detail = (error.stderr or error.stdout or "").strip()[
+            :MAX_CAPTURED_OUTPUT_CHARS
+        ]
         suffix = f": {detail}" if detail else f" (exit {error.returncode})"
         raise CandidateVerificationError(
             f"{' '.join(command)} failed{suffix}"
         ) from error
+    except subprocess.TimeoutExpired as error:
+        raise CandidateVerificationError(
+            f"{' '.join(command)} timed out"
+        ) from error
+
+
+def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
+    """Resolve one executable and reject repository-local selections."""
+    selected = (
+        command
+        if Path(command).is_absolute()
+        else shutil.which(command, path=search_path)
+    )
+    if not selected:
+        raise CandidateVerificationError(
+            f"required command is unavailable: {command}"
+        )
+    try:
+        root = repo.resolve(strict=True)
+        raw = Path(os.path.abspath(selected))
+        resolved = Path(selected).resolve(strict=True)
+        identity = resolved.stat()
+    except OSError as error:
+        raise CandidateVerificationError(
+            f"required command is unavailable: {command}"
+        ) from error
+    if (
+        not stat.S_ISREG(identity.st_mode)
+        or raw == root
+        or root in raw.parents
+        or resolved == root
+        or root in resolved.parents
+    ):
+        raise CandidateVerificationError(
+            f"refusing executable selected from the release repository: {command}"
+        )
+    return str(resolved)
+
+
+def _git_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    result = sanitize_git_environment(environment)
+    result.update(
+        {
+            "GCM_INTERACTIVE": "Never",
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_PAGER": "cat",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return result
 
 
 def _git_output(
     repo: Path,
+    git: str,
     arguments: Sequence[str],
     environment: Mapping[str, str],
 ) -> str:
-    return _run(
-        ("git", *arguments),
+    result = _run(
+        (
+            git,
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "--no-optional-locks",
+            *arguments,
+        ),
         cwd=repo,
-        env=environment,
+        env=_git_environment(environment),
         capture_output=True,
-    ).stdout.strip()
+    )
+    if (
+        len(result.stdout) > MAX_CAPTURED_OUTPUT_CHARS
+        or len(result.stderr) > MAX_CAPTURED_OUTPUT_CHARS
+    ):
+        raise CandidateVerificationError("Git command output exceeds its limit")
+    return result.stdout.strip()
 
 
 def _release_distributions(repo: Path) -> tuple[Path, Path]:
@@ -200,9 +285,14 @@ def _packaging_bash(
     search_path: Optional[str],
     *,
     platform_name: str = os.name,
+    forbidden_root: Optional[Path] = None,
 ) -> Optional[str]:
     """Compatibility wrapper around the shared release-tool resolver."""
-    return resolve_bash(search_path, platform_name=platform_name)
+    return resolve_bash(
+        search_path,
+        platform_name=platform_name,
+        forbidden_root=forbidden_root,
+    )
 
 
 def verify_candidate(
@@ -224,7 +314,7 @@ def verify_candidate(
             "release SHA must be an exact lowercase 40-character commit ID"
         )
 
-    tool_env = dict(os.environ if environment is None else environment)
+    tool_env = sanitize_shell_environment(environment)
     interpreter_dir = str(Path(python).resolve().parent)
     existing_path = tool_env.get("PATH")
     tool_env["PATH"] = (
@@ -233,13 +323,19 @@ def verify_candidate(
         else interpreter_dir
     )
 
-    head = _git_output(repo, ("rev-parse", "--verify", "HEAD"), tool_env)
+    python = _trusted_tool(python, repo, tool_env.get("PATH"))
+    git = _trusted_tool("git", repo, tool_env.get("PATH"))
+
+    head = _git_output(
+        repo, git, ("rev-parse", "--verify", "HEAD"), tool_env
+    )
     if head != release_sha:
         raise CandidateVerificationError(
             f"checked-out commit {head!r} does not match release SHA {release_sha}"
         )
     epoch = _git_output(
         repo,
+        git,
         ("show", "-s", "--format=%ct", release_sha),
         tool_env,
     )
@@ -253,7 +349,7 @@ def verify_candidate(
     )
     _run((python, "-I", "-m", "pytest", "-q"), cwd=repo, env=tool_env)
 
-    bash = _packaging_bash(tool_env.get("PATH"))
+    bash = _packaging_bash(tool_env.get("PATH"), forbidden_root=repo)
     if bash is None:
         raise CandidateVerificationError(
             "bash is required by scripts/packaging_smoke.sh but is unavailable"

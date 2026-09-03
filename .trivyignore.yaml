@@ -1,0 +1,137 @@
+# Temporary, fail-closed exceptions for the pinned Debian 13.6 runtime image.
+#
+# Trivy reported no fixed Debian package for these IDs on 2026-09-01. The
+# container runs as an unprivileged user, strips every set-ID bit, removes its
+# Python build/package managers, and boundver performs local-only Git object
+# reads with lazy fetching disabled. A second CI scan ignores no fixable
+# finding, so an available vendor fix blocks immediately even before these
+# narrow exceptions expire.
+vulnerabilities:
+  - id: CVE-2025-69720
+    purls:
+      - pkg:deb/debian/libncursesw6
+      - pkg:deb/debian/libtinfo6
+      - pkg:deb/debian/ncurses-base
+      - pkg:deb/debian/ncurses-bin
+    expired_at: 2026-09-15
+    statement: Inherited ncurses libraries are not used by the noninteractive boundver entrypoint; no Debian fix is available.
+  - id: CVE-2026-11822
+    purls:
+      - pkg:deb/debian/libsqlite3-0
+    expired_at: 2026-09-15
+    statement: Inherited SQLite library is not used by boundver; no Debian fix is available.
+  - id: CVE-2026-11824
+    purls:
+      - pkg:deb/debian/libsqlite3-0
+    expired_at: 2026-09-15
+    statement: Inherited SQLite library is not used by boundver; no Debian fix is available.
+  - id: CVE-2026-12064
+    purls:
+      - pkg:deb/debian/libcurl3t64-gnutls
+    expired_at: 2026-09-15
+    statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
+  - id: CVE-2026-13221
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver uses compiled Git plumbing and never invokes inherited Perl; no Debian fix is available.
+  - id: CVE-2026-16742
+    purls:
+      - pkg:deb/debian/libsystemd0
+      - pkg:deb/debian/libudev1
+    expired_at: 2026-09-15
+    statement: The affected systemd-homed package and executable are absent from the non-root image; no Debian trixie fix is available.
+  - id: CVE-2026-41992
+    purls:
+      - pkg:deb/debian/gzip
+    expired_at: 2026-09-15
+    statement: Boundver never invokes the inherited gzip executable; no Debian fix is available.
+  - id: CVE-2026-42496
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes Perl archive extraction; Debian has deferred the fix.
+  - id: CVE-2026-42497
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes Perl archive extraction; Debian has deferred the fix.
+  - id: CVE-2026-48962
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes inherited Perl compression modules; no Debian fix is available.
+  - id: CVE-2026-54369
+    purls:
+      - pkg:deb/debian/libacl1
+    expired_at: 2026-09-15
+    statement: The runtime is non-root with set-ID helpers stripped; no Debian libacl fix is available.
+  - id: CVE-2026-57432
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes inherited Perl pack or unpack operations; no Debian fix is available.
+  - id: CVE-2026-57433
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes inherited Perl Storable; no Debian fix is available.
+  - id: CVE-2026-58050
+    purls:
+      - pkg:deb/debian/libssh2-1t64
+    expired_at: 2026-09-15
+    statement: SSH transport is outside boundver's local-only Git path; no Debian libssh2 fix is available.
+  - id: CVE-2026-66046
+    purls:
+      - pkg:deb/debian/libexpat1
+    expired_at: 2026-09-15
+    statement: XML parsing through inherited libexpat is outside boundver's runtime path; no Debian fix is available.
+  - id: CVE-2026-8286
+    purls:
+      - pkg:deb/debian/libcurl3t64-gnutls
+    expired_at: 2026-09-15
+    statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
+  - id: CVE-2026-8376
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes inherited Perl and published images target 64-bit platforms; no Debian fix is available.
+  - id: CVE-2026-8458
+    purls:
+      - pkg:deb/debian/libcurl3t64-gnutls
+    expired_at: 2026-09-15
+    statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
+  - id: CVE-2026-8927
+    purls:
+      - pkg:deb/debian/libcurl3t64-gnutls
+    expired_at: 2026-09-15
+    statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
+  - id: CVE-2026-9538
+    purls:
+      - pkg:deb/debian/libperl5.40
+      - pkg:deb/debian/perl
+      - pkg:deb/debian/perl-base
+      - pkg:deb/debian/perl-modules-5.40
+    expired_at: 2026-09-15
+    statement: Boundver never invokes Perl archive extraction; Debian has deferred the fix.

@@ -84,14 +84,16 @@ class CompletionParserParityTests(unittest.TestCase):
 
     def test_option_arity_and_choices_match_live_parser(self):
         actual_value_options = set()
-        actual_choices = {}
-        for parser in self.subparsers.values():
+        for command, parser in self.subparsers.items():
             for action in parser._actions:
                 if action.nargs != 0:
                     actual_value_options.update(action.option_strings)
                 if action.choices is not None:
                     for option in action.option_strings:
-                        actual_choices[option] = tuple(action.choices)
+                        self.assertEqual(
+                            tuple(action.choices),
+                            _completions._choices_for(command, option),
+                        )
 
         table_options = {
             option
@@ -102,7 +104,11 @@ class CompletionParserParityTests(unittest.TestCase):
             actual_value_options,
             set(_completions._OPTION_ARGUMENTS) & table_options,
         )
-        self.assertEqual(actual_choices, _completions._OPTION_CHOICES)
+        for option, choices in _completions._OPTION_CHOICES.items():
+            self.assertEqual(
+                choices,
+                _completions._choices_for(None, option),
+            )
 
     def test_zsh_positional_specs_match_live_parser(self):
         for command, parser in self.subparsers.items():
@@ -133,7 +139,9 @@ class CompletionParserParityTests(unittest.TestCase):
             zsh_case = zsh[zsh_start:zsh_end]
             with self.subTest(shell="zsh", command=command):
                 for option in options:
-                    self.assertIn(_completions._zsh_option(option), zsh_case)
+                    self.assertIn(
+                        _completions._zsh_option(option, command), zsh_case
+                    )
 
             with self.subTest(shell="fish", command=command):
                 for option in _completions._COMMAND_OPTIONS[command]:

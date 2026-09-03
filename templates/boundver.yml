@@ -2,6 +2,10 @@ spec:
   description: Classify declared contract drift and report downstream consumers.
   component: [version]
   inputs:
+    operation:
+      description: Operation to run (verify or review).
+      default: verify
+      options: [verify, review]
     stage:
       description: Pipeline stage for the verification job.
       default: test
@@ -22,11 +26,21 @@ spec:
       description: Optional comma-separated facet override; empty uses config policy.
       default: ""
     components:
-      description: Optional comma-separated component subset.
+      description: Optional comma-separated component subset; configured names cannot contain commas or surrounding whitespace.
       default: ""
     changed-from:
       description: Optional Git ref used only to report changed components.
       default: ""
+    base:
+      description: Explicit review base Git ref; required for operation review.
+      default: ""
+    target:
+      description: Explicit review target/end Git ref; required for operation review.
+      default: ""
+    merge-base:
+      description: Compare the unique merge base of base and target to target.
+      type: boolean
+      default: false
     transitive:
       description: Include the downstream consumer closure in impact output.
       type: boolean
@@ -35,6 +49,9 @@ spec:
       description: Report only the highest-severity gated issue.
       type: boolean
       default: false
+    history-depth:
+      description: Git fetch depth; operation review should use 0 for complete history.
+      default: "20"
 ---
 "$[[ inputs.job-name ]]":
   stage: $[[ inputs.stage ]]
@@ -42,37 +59,151 @@ spec:
     name: ghcr.io/yzm1/boundver:$[[ component.version ]]
     entrypoint: [""]
   variables:
+    GIT_DEPTH: "$[[ inputs.history-depth ]]"
+    BOUNDVER_OPERATION: "$[[ inputs.operation ]]"
     BOUNDVER_CONFIG: "$[[ inputs.config ]]"
     BOUNDVER_LOCK: "$[[ inputs.lock ]]"
     BOUNDVER_SOURCE: "$[[ inputs.source ]]"
     BOUNDVER_FACETS: "$[[ inputs.facets ]]"
     BOUNDVER_COMPONENTS: "$[[ inputs.components ]]"
     BOUNDVER_CHANGED_FROM: "$[[ inputs.changed-from ]]"
+    BOUNDVER_BASE: "$[[ inputs.base ]]"
+    BOUNDVER_TARGET: "$[[ inputs.target ]]"
+    BOUNDVER_MERGE_BASE: "$[[ inputs.merge-base ]]"
     BOUNDVER_TRANSITIVE: "$[[ inputs.transitive ]]"
     BOUNDVER_FAIL_FAST: "$[[ inputs.fail-fast ]]"
   script:
     - |
       set -eu
       : "${CI_PROJECT_DIR:?CI_PROJECT_DIR is required}"
-      git config --global --add safe.directory "$CI_PROJECT_DIR"
-      set -- boundver verify \
-        --config "$BOUNDVER_CONFIG" \
-        --lock "$BOUNDVER_LOCK" \
-        --source "$BOUNDVER_SOURCE" \
-        --format json
+      result_file=boundver-result.json
+      summary_file=boundver-summary.md
+      # Never follow a repository-controlled symlink when creating CI output.
+      # The files are reserved before any repository content is parsed.
+      python -I - "$result_file" "$summary_file" <<'PY'
+      import os
+      import sys
+
+      flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+      flags |= getattr(os, "O_NOFOLLOW", 0)
+      for value in sys.argv[1:]:
+          try:
+              descriptor = os.open(value, flags, 0o600)
+          except OSError as error:
+              raise SystemExit(
+                  f"refusing unsafe or pre-existing boundver output {value!r}: {error}"
+              ) from None
+          else:
+              os.close(descriptor)
+      PY
+      ensure_boundver_artifacts() {
+        if [ ! -s "$result_file" ]; then
+          printf '%s\n' \
+            '{"ok":false,"ci_transport":{"complete":false,"reason":"command-incomplete"}}' \
+            > "$result_file"
+        fi
+        if [ ! -s "$summary_file" ]; then
+          printf '%s\n' \
+            '# Boundver result incomplete' \
+            '' \
+            'No complete machine result was emitted; inspect the job diagnostics.' \
+            > "$summary_file"
+        fi
+      }
+      trap ensure_boundver_artifacts EXIT
+      case "$BOUNDVER_OPERATION" in
+        verify|review) ;;
+        *) echo "operation must be verify or review" >&2; exit 2 ;;
+      esac
+      case "$BOUNDVER_MERGE_BASE" in
+        true|false) ;;
+        *) echo "merge-base must be true or false" >&2; exit 2 ;;
+      esac
+      case "$BOUNDVER_TRANSITIVE" in
+        true|false) ;;
+        *) echo "transitive must be true or false" >&2; exit 2 ;;
+      esac
+      case "$BOUNDVER_FAIL_FAST" in
+        true|false) ;;
+        *) echo "fail-fast must be true or false" >&2; exit 2 ;;
+      esac
+
+      if [ "$BOUNDVER_OPERATION" = verify ]; then
+        if [ -n "$BOUNDVER_BASE" ] || [ -n "$BOUNDVER_TARGET" ] || [ "$BOUNDVER_MERGE_BASE" = true ]; then
+          echo "base, target, and merge-base are review-only inputs" >&2
+          exit 2
+        fi
+        set -- boundver verify \
+          --config "$BOUNDVER_CONFIG" \
+          --lock "$BOUNDVER_LOCK" \
+          --source "$BOUNDVER_SOURCE" \
+          --format json
+        if [ -n "$BOUNDVER_COMPONENTS" ]; then
+          set -- "$@" --components "$BOUNDVER_COMPONENTS"
+        fi
+        if [ -n "$BOUNDVER_CHANGED_FROM" ]; then
+          set -- "$@" --changed-from "$BOUNDVER_CHANGED_FROM"
+        fi
+        if [ "$BOUNDVER_FAIL_FAST" = true ]; then
+          set -- "$@" --fail-fast
+        fi
+      else
+        if [ -z "$BOUNDVER_BASE" ] || [ -z "$BOUNDVER_TARGET" ]; then
+          echo "operation review requires both base and target" >&2
+          exit 2
+        fi
+        if [ "$BOUNDVER_SOURCE" != head ] || [ -n "$BOUNDVER_COMPONENTS" ] || [ -n "$BOUNDVER_CHANGED_FROM" ] || [ "$BOUNDVER_FAIL_FAST" != false ]; then
+          echo "source, components, changed-from, and fail-fast are verify-only controls" >&2
+          exit 2
+        fi
+        set -- boundver review \
+          --base "$BOUNDVER_BASE" \
+          --target "$BOUNDVER_TARGET" \
+          --config "$BOUNDVER_CONFIG" \
+          --lock "$BOUNDVER_LOCK" \
+          --format plan \
+          --summary-file "$summary_file"
+        if [ "$BOUNDVER_MERGE_BASE" = true ]; then
+          set -- "$@" --merge-base
+        fi
+      fi
       if [ -n "$BOUNDVER_FACETS" ]; then
         set -- "$@" --facets "$BOUNDVER_FACETS"
-      fi
-      if [ -n "$BOUNDVER_COMPONENTS" ]; then
-        set -- "$@" --components "$BOUNDVER_COMPONENTS"
-      fi
-      if [ -n "$BOUNDVER_CHANGED_FROM" ]; then
-        set -- "$@" --changed-from "$BOUNDVER_CHANGED_FROM"
       fi
       if [ "$BOUNDVER_TRANSITIVE" = true ]; then
         set -- "$@" --transitive
       fi
-      if [ "$BOUNDVER_FAIL_FAST" = true ]; then
-        set -- "$@" --fail-fast
+
+      set +e
+      "$@" > "$result_file"
+      code=$?
+      set -e
+      if [ "$BOUNDVER_OPERATION" = review ]; then
+        if [ ! -s "$summary_file" ]; then
+          printf '%s\n' \
+            '# Boundver range review plan' \
+            '' \
+            'Review incomplete. No routing plan was emitted; inspect the job diagnostics and result artifact.' \
+            '' \
+            'History remediation: set GIT_DEPTH: 0 before checkout, or GitHub Actions fetch-depth: 0.' \
+            > "$summary_file"
+        fi
+        cat "$summary_file"
+      else
+        printf '%s\n' \
+          '# Boundver verification' \
+          '' \
+          'The complete machine result is attached as boundver-result.json.' \
+          > "$summary_file"
+        if [ -s "$result_file" ]; then
+          python -I -m json.tool "$result_file"
+        fi
       fi
-      "$@"
+      exit "$code"
+  artifacts:
+    name: "boundver-$CI_JOB_NAME-$CI_COMMIT_SHORT_SHA"
+    when: always
+    expire_in: 1 week
+    paths:
+      - boundver-result.json
+      - boundver-summary.md

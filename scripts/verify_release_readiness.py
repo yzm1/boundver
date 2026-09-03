@@ -68,6 +68,7 @@ RELEASE_DOCS = (
     "README.md",
     "docs/index.md",
     "docs/demo.md",
+    "docs/case-study-range-review.md",
     "docs/getting-started.md",
     "docs/ci-cookbook.md",
     "docs/comparison.md",
@@ -86,6 +87,8 @@ MAX_READINESS_DIAGNOSTIC_CHARS = 4 * 1024
 MAX_READINESS_DIAGNOSTIC_TOTAL_CHARS = 256 * 1024
 MAX_JSON_INTEGER_DIGITS = 4_300
 MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
+MAX_JSON_TOKENS = 250_000
+MAX_JSON_DEPTH = 128
 MAX_TOML_INTEGER_DIGITS = 640
 _READ_CHUNK_BYTES = 64 * 1024
 
@@ -137,6 +140,8 @@ def _reject_json_constant(_value: str) -> object:
 
 
 def _load_json(text: str) -> object:
+    if not _json_shape_within_limits(text):
+        raise ValueError("JSON exceeds the structural limit")
     return json.loads(
         text,
         object_pairs_hook=_unique_json_object,
@@ -144,6 +149,45 @@ def _load_json(text: str) -> object:
         parse_float=_bounded_json_float,
         parse_int=_bounded_json_int,
     )
+
+
+def _json_shape_within_limits(text: str) -> bool:
+    """Reject provably wide or deep JSON before the decoder allocates it."""
+    tokens = 0
+    depth = 0
+    in_string = False
+    escaped = False
+    in_atom = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            tokens += 1
+            in_string = True
+            in_atom = False
+        elif character in "[{":
+            tokens += 1
+            depth += 1
+            in_atom = False
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif character in "]}":
+            depth = max(0, depth - 1)
+            in_atom = False
+        elif character in " \t\r\n,:":
+            in_atom = False
+        elif not in_atom:
+            tokens += 1
+            in_atom = True
+        if tokens > MAX_JSON_TOKENS:
+            return False
+    return True
 
 
 def _bounded_toml_float(value: str) -> float:

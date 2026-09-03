@@ -156,7 +156,8 @@ verification.
 ## Machine-readable CLI output
 
 Canonical schemas live in `spec/cli-output.*.schema.json`. `verify`, `status`,
-`diff`, `discover`, `why`, and `slice` support `--format json`;
+`diff`, `discover`, `why`, `slice`, and historical `review` support
+`--format json`;
 `migrate-lock --explain` also supports a bounded JSON selector audit.
 `discover --diff-config` adds a deterministic registered/unregistered path
 comparison to the discovery payload. Baseline-aware verification adds its
@@ -172,6 +173,26 @@ by the diff output contract are rejected before comparison. Generation and
 verification outputs continue to use semantic-config/v2: full generation
 recomputes it from repository content, while verification and generation paths
 that reuse an existing lock reject semantic-config/v1 input.
+
+Historical range output uses the versioned `boundver-review/v1` contract. It
+binds two reconciled v3/v2 config-lock pairs to explicit immutable commit/tree
+identities, compares every facet, and records conservative base/target consumer
+edge provenance plus slice impact. Boundary transitions also carry a typed,
+provider/version/digest-bound structural report. The first supported report is
+canonical OpenAPI JSON-tree drift: value-free RFC 6901 paths classified as
+added, removed, or changed. Unsupported and over-budget explanations contain no
+partial rows and have their own completeness state; they do not weaken the
+complete facet/impact result. Structural evidence is not a compatibility
+verdict. The command is read-only and returns success for any complete range
+analysis; ordinary verification remains the integrity gate.
+
+`review --format plan` projects that same captured result into the versioned
+`boundver-plan/v1` CI contract. It preserves endpoint provenance, policy,
+changed facets, conservative consumer/slice impact, structural completeness,
+and deterministic changed/impacted/test selections while omitting historical
+fingerprint pairs that a scheduler does not need. Its claim is routing evidence
+only. Bounded human summaries and Action outputs may truncate explicitly; the
+complete plan file never contains a partial closure.
 
 ## Derived artifacts
 

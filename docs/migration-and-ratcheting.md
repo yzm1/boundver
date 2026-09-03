@@ -12,6 +12,17 @@ state, not unstaged local edits. Use `index` for a staged review and
 `working-tree` for tracked files on disk; use the same source when generating
 and verifying a lock.
 
+## Rename delimiter-ambiguous component identifiers
+
+Current configuration rejects component names containing a comma or
+leading/trailing whitespace. Earlier releases accepted those names even though
+`--components`, the GitHub Action, and the GitLab Catalog could not select them
+losslessly: commas split the filter and surrounding whitespace was discarded.
+Rename each affected key, update matching `consumers`, slice `components`, and
+`closure_of` references, then regenerate the lock. Opaque
+`external_consumers` labels do not need renaming. `validate-config` reports the
+specific incompatible spelling and the migration targets.
+
 ## Interpret a 0.12 lock regeneration
 
 This subsection documents released v0.12 migration semantics; it does not make
@@ -93,9 +104,11 @@ boundver discover --diff-config --config boundary.config.yaml --format json
 ```
 
 `--exclude` is repeatable and removes an exact repository-relative prefix plus
-everything below it. Git repositories already use tracked manifests only; the
-option is for tracked trees that are deliberately outside the maintained
-component corpus. The exclusion option is available in v0.14 and later; the
+everything below it. Established Git repositories use indexed manifests; an
+unborn repository with an empty index uses Git's non-ignored bootstrap view.
+The option is for selected trees that are deliberately outside the maintained
+component corpus. A non-Git directory uses a visibly warned bounded filesystem
+approximation. The exclusion option is available in v0.14 and later; the
 comparison itself remains available from v0.13.
 
 The comparison separates:

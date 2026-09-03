@@ -40,15 +40,23 @@ interpreter so an older `boundver` executable on `PATH` cannot be selected.
 
 ## 2. Discover a starting point
 
-Preview tracked manifests before writing anything:
+Preview the Git-selected manifest corpus before writing anything:
 
 ```bash
 boundver discover
 boundver init --discover
 ```
 
-Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. It
-uses Git-tracked paths rather than crawling ignored dependency or build trees.
+Discovery recognizes Python, JavaScript/TypeScript, Rust, and Go manifests. In
+an established repository it uses indexed paths rather than crawling ignored
+dependency or build trees. Before the first commit, when the index is still
+empty, it asks Git for non-ignored bootstrap files; root and nested ignore
+files, negation, global excludes, and embedded repositories therefore retain
+Git's installed-version semantics. A directory that is not a Git repository
+uses a bounded filesystem approximation and prints a warning that ignore
+semantics may differ. If a `.git` marker exists but Git cannot read the
+repository, discovery fails closed instead of treating repository metadata as
+ordinary files.
 Use repeatable repository-relative `--exclude PATH` prefixes when tracked
 legacy, fixture, or vendored manifests are intentionally outside the component
 corpus:
@@ -62,9 +70,9 @@ artifacts truly form your contract, so review every result.
 
 A repository-root manifest is not itself a safe component root because the
 repository lockfile would become part of that component's exact fingerprint.
-For a root manifest, discovery uses one unambiguous tracked Python package or a
-conventional tracked `src`, `lib`, or `app` directory. The root manifest is
-outside that component, so its version source is left unset for manual review.
+For a root manifest, discovery uses one unambiguous Git-selected Python package
+or a conventional selected `src`, `lib`, or `app` directory. The root manifest
+is outside that component, so its version source is left unset for manual review.
 If no safe directory can be inferred, `init --discover` exits without writing
 an invalid config.
 
@@ -137,8 +145,14 @@ Path selectors are case-sensitive:
 `*`, `?`, and character classes stay within one segment and may match a leading
 `.`. A complete `**` segment matches zero or more directories. A
 wildcard-bearing segment is limited to 4,096 UTF-8 bytes and 256 wildcard
-metacharacters; matching is budgeted and fails closed if that work limit is
-exceeded. Raw providers,
+metacharacters. One match is limited to 100,000 compile/match steps, and each
+provider selection, component validation expansion, or change-analysis
+operation has a 10,000,000-step aggregate budget across every pattern and
+candidate. Patterns compile once per operation. Exceeding either limit fails
+closed with guidance to reduce wildcard declarations or split the component.
+See [selector work limits](reference.md#selector-work-limits) for the normative
+contract.
+Raw providers,
 canonical providers, behavior paths, validation, and explain output share this
 grammar. Every
 declaration must match at least one selected file during strict generation.
@@ -273,11 +287,19 @@ change gates through its exact-only override.
 ## Daily review and update
 
 ```bash
+boundver review origin/main..HEAD --merge-base --transitive
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
 ```
+
+The first command answers the branch-history question from reconciled lock
+state at both committed endpoints. It is a query and returns `0` for a complete
+analysis even when facets moved. The following `verify` command remains the
+integrity gate for the source snapshot you are about to accept. See
+[historical range review](reference.md#historical-range-review) for endpoint,
+merge-base, and shallow-history rules.
 
 Facets select the gate and report classification. They are not an update mask:
 an update replaces the complete entry, including all fingerprints and metadata.
@@ -325,9 +347,11 @@ downstream configured-component closure:
 ```
 
 The resolved, sorted, cycle-safe component set is stored in the lock. A slice
-must define exactly one of `components` or `closure_of`. The selected mode must
-be available for every member during strict generation; `exact` is the portable
-choice for heterogeneous closures.
+must define exactly one of `components` or `closure_of`, and an explicit
+`components` array must name at least one configured component. Empty slices
+are rejected because their stable fingerprint would observe no repository
+change. The selected mode must be available for every member during strict
+generation; `exact` is the portable choice for heterogeneous closures.
 
 ## Upgrading
 

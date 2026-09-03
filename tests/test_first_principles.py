@@ -292,6 +292,13 @@ class SegmentAwareGlobTests(unittest.TestCase):
             )
 
             self.assertIsNone(result["error"])
+            # Raw worktree comparison recognizes exact-identity renames without
+            # invoking Git's filter-capable worktree diff machinery. Both path
+            # identities remain visible to boundary classification.
+            self.assertIn(
+                ("R100", "svc/internal/contract.txt"),
+                result["changed"],
+            )
             self.assertIn(
                 ("R100", "svc/api/contract.yaml"),
                 result["boundary_changed"],
@@ -702,6 +709,43 @@ class ConfigWithoutJsonschemaTests(unittest.TestCase):
                     self.assertTrue(
                         any("field 'name'" in error for error in errors), errors
                     )
+
+    def test_component_identifiers_are_addressable_without_jsonschema(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for invalid_name in ("svc,prod", " svc", "svc "):
+                with self.subTest(name=invalid_name):
+                    config = self._minimal_config()
+                    component = config["components"].pop("svc")
+                    config["components"][invalid_name] = component
+
+                    errors = self._validate_without_jsonschema(config, root)
+
+                    self.assertTrue(
+                        any("not addressable" in error for error in errors),
+                        errors,
+                    )
+
+            config = self._minimal_config()
+            config["components"]["target"] = {
+                "path": "target",
+                "boundary": {"provider": "implicit"},
+            }
+            config["components"]["svc"]["consumers"] = ["target,prod"]
+            config["slices"] = {
+                "selected": {"mode": "exact", "components": [" target"]}
+            }
+
+            errors = self._validate_without_jsonschema(config, root)
+
+            self.assertTrue(
+                any("consumer identifier" in error and "not addressable" in error for error in errors),
+                errors,
+            )
+            self.assertTrue(
+                any("Slice 'selected'" in error and "not addressable" in error for error in errors),
+                errors,
+            )
 
     def test_component_path_must_be_a_tracked_directory_in_head_and_index(self):
         with tempfile.TemporaryDirectory() as td:

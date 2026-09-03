@@ -8,6 +8,65 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added `boundver review BASE..TARGET`, with equivalent explicit
+  `--base`/`--target` inputs and opt-in merge-base semantics, for historical
+  exact/behavior/boundary/compat transitions after endpoint locks have been
+  reconciled. The versioned `boundver-review/v1` JSON result binds both
+  immutable commit trees and config/lock inputs, records effective facet
+  policy, reports conservative base/target consumer-edge provenance, supports
+  direct or transitive closure, and maps changed or affected components into
+  slices. Absent or ambiguous refs, missing shallow history, incompatible
+  contracts, incomplete digests, and unreconciled config/lock graphs fail
+  closed. Both immutable endpoints are fully recomputed before comparison;
+  custom Python providers retain their explicit trusted-code opt-in.
+  Successful review is a read-only query and leaves `verify` as the integrity
+  gate.
+- Added a reproducible 20-component intrinsic-runtime benchmark with
+  per-phase timing, Git-process and source-read attribution, first/repeated
+  runs, and enforced Linux CI ceilings for clean HEAD and small staged-change
+  verification.
+- Added bounded provider-aware structural explanations to historical range
+  review. An `openapi-canonical` boundary transition now reports deterministic
+  added, removed, and changed RFC 6901 paths from format-neutral canonical
+  JSON under the versioned `boundver-structural-diff/v1` provider interface,
+  bound to both immutable commit/tree identities, provider versions, and
+  boundary digests. Reports expose JSON types but never source values and are
+  explicitly structural evidence, not a backward-compatibility verdict. Raw
+  and unsupported providers remain byte-opaque. Input, nesting, work, path,
+  row, and output ceilings fail closed into a typed incomplete explanation
+  with no partial rows while leaving the independently complete facet/impact
+  review available.
+- Added a deterministic public range-review demonstration and sanitized field
+  case study modeled on a 17-component, six-slice monorepo. One command now
+  proves implementation-only, behavioral, and OpenAPI-boundary transitions
+  before lock reconciliation, then commits the reconciled target and asserts
+  equivalent historical text/JSON results, exact endpoint provenance,
+  direct/transitive consumers, changed slices, and structural paths. CI binds
+  the checked-in terminal capture to fixed fixture commits. Reported field and
+  per-run timings are labeled as observations rather than benchmark claims,
+  and the case study separates product facts from build-graph,
+  schema-compatibility, generated-artifact, and declared-graph limitations.
+- Added `boundver review --format plan`, a versioned `boundver-plan/v1`
+  downstream-test projection generated from the same immutable endpoint
+  capture as the full review. The maintained GitHub Action and GitLab Catalog
+  component now accept explicit base/target, merge-base, facet-policy, and
+  direct/transitive controls; publish complete result files plus bounded,
+  explicitly truncated summaries; expose fail-closed component/slice selection
+  arrays; diagnose shallow history with platform-specific remediation; and
+  retain exact review artifacts. GitHub source annotations are limited to
+  precise target files whose commit matches the checked-out `HEAD`.
+- Added one stable, fail-closed `required-pr-gate` over the complete supported
+  platform, build, public Action, and public installation CI topology. A
+  default-branch `workflow_run` validates the exact source run and current pull
+  request without executing pull-request code, binds protected-file inspection
+  to the immutable validated base/head comparison, rejects changes to its
+  workflow or gate controls, and alone publishes the required commit status. A
+  checked-in active `main` ruleset requires that exact GitHub Actions status,
+  pull requests, squash-only merges, and resolved conversations while blocking
+  deletion and force pushes. Release promotion compares the complete effective
+  live policy with the checked-in contract and rejects overlapping active
+  rulesets, additive classic branch protection, stale statuses, extra merge
+  methods, review-policy drift, and bypass changes.
 - Declared and enforced a telemetry-free invariant for the built-in CLI. The
   runtime has no outbound-network or telemetry-client imports, and every Git
   subprocess is restricted to a local-command allowlist with prompts, lazy
@@ -28,6 +87,11 @@ All notable changes to this project are documented here. The format follows
   Review edits and the earliest proposal/release approval expiry remain bound
   through the final tag-mutation handoff, and GitHub repository/owner numeric
   identities prevent namespace transfer or recreation from inheriting evidence.
+- Added weekly, push, and pull-request CodeQL analysis with the extended Python
+  security query suite. Release promotion now also requires exact-commit CodeQL
+  evidence, no open code/secret/dependency alerts, private vulnerability
+  reporting, Dependabot security updates, secret-scanning push protection,
+  full-SHA Action enforcement, and a read-only non-approving workflow token.
 
 ### Changed
 
@@ -36,10 +100,30 @@ All notable changes to this project are documented here. The format follows
   through the ordinary exact-candidate release controls; the independent
   proposal and release gates remain fail-closed for semantic-provider work and
   the planned v0.16.0 semantic-provider release.
-- Raised the minimum supported Python version from 3.9 to 3.10 across the
-  package, standalone archive, Action contract, CI matrix, and release checks.
-  Python 3.9 is end-of-life; Python 3.10 is now the oldest version exercised on
-  both Linux and Windows and by the public Action contract.
+- Raised the supported Python floor to 3.10 so every maintained interpreter can
+  install an advisory-free automation toolchain. Refreshed every hash-locked
+  Action, CI, and release dependency and made live canonical PyPI vulnerability
+  metadata a fail-closed lock-generation, CI, and release preflight.
+- Made source scope explicit in ordinary generate, verify, status, explain,
+  and why output, with adjacent-source commands when explain finds no changes.
+  Source flags remain per-invocation and command defaults and JSON provenance
+  are unchanged. Status now separates declared consumer edges from component
+  details, while verify and why render typed direct/transitive consumer impact
+  in a distinct section.
+- Reduced the release-container runtime surface by removing pip, setuptools,
+  wheel, and every set-ID bit after installation. CI now exercises the image
+  without network access or Linux capabilities, with `no-new-privileges`, a
+  read-only root and repository, and no writable temporary filesystem.
+  High/critical repository and two-architecture image scans use a
+  digest-pinned scanner; temporary no-fix Debian exceptions are package-scoped,
+  justified, and expire fail-closed.
+- Made automation-tool installation resolve the complete reviewed hash lock
+  with pip's dependency solver and no cache reuse. Exact pins, wheel-only
+  policy, and checked-in hashes remain mandatory, while incompatible pins now
+  fail before automation runs. Updated `pyOpenSSL` to the advisory-free release
+  compatible with the locked `cryptography` major version, and made the
+  release-only profile reject Python older than its 3.12 toolchain contract
+  before contacting the index.
 
 ### Security
 
@@ -51,6 +135,121 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Kept trusted runtime-benchmark fixture setup outside the production CLI's
+  read-only Git allowlist while preserving the same bounded, telemetry-disabled
+  subprocess environment. Benchmark command attribution and the staged-index
+  process ceiling now account for the deliberate coherent-snapshot checks.
+- Closed fail-late resource-exhaustion paths in JSON/YAML/TOML parsing,
+  capped JSON rendering, structural provider diffs, range-review graph unions,
+  GitHub Action output export, and release-ruleset glob matching. Structural
+  explanations now cap retained canonical endpoint input at 32 MiB and become
+  explicitly unavailable on overflow without weakening the underlying review.
+  Integer and floating-point tokens now share explicit cross-format lexical
+  ceilings before conversion in config, baseline, Action, CI-gate, and release
+  metadata readers.
+- Prevented standalone, Homebrew-formula, and release-artifact outputs from
+  traversing a pre-existing symlink, junction, reparse point, or replaced
+  parent. Packaging cleanup now removes only the repository's exact generated
+  directories, refuses redirected targets, and is an explicit `--clean`
+  operation rather than an unbounded shell deletion.
+- Sanitized malformed YAML diagnostics so an offending config source line is
+  never copied into CLI or CI output. Action-result JSON now also rejects
+  duplicate keys, non-finite numbers, oversized integers, and over-budget
+  line/selection encodings before allocating their expanded representation.
+- Made every runtime Git subprocess non-interactive, local-object-only, free of
+  replacement refs, unable to take optional write locks, and unable to invoke
+  repository-local hooks or fsmonitor callbacks. The CLI rejects a `git`
+  executable selected from inside the inspected repository, closing Windows
+  current-directory executable shadowing. Changed-path diffs additionally
+  disable external helpers, text conversion, rename analysis, and submodule
+  worktree traversal while retaining changed Gitlinks; missing partial-clone
+  objects now fail closed instead of triggering an undeclared fetch.
+- Replaced the temporary-file stderr spool used by streaming Git listings and
+  blob sessions with a concurrent one-byte-sentinel drain. Corrupt repository
+  diagnostics now terminate Git at the fixed diagnostic ceiling instead of
+  consuming unbounded temporary-disk space before truncation, and read-only
+  verification no longer needs a temporary filesystem.
+- Hardened release review and compatibility-alias controls against forged Git
+  ancestry through replacement refs, repository-shadowed `git`/`gh`
+  executables, alternate GitHub CLI hosts, unbounded command output, and hung
+  subprocesses. GitHub recovery, proposal, and alias JSON now receives a
+  lexical width/depth preflight before parser allocation, and the final
+  ruleset matcher no longer delegates star patterns to Python's backtracking
+  `fnmatch` implementation.
+- Isolated the externally reviewed semantic-proposal checker in a bounded
+  child interpreter with a credential-free environment. GitHub review tokens
+  and ambient cloud credentials are no longer present while proposal-owned
+  validation code executes.
+- Applied the same host-tool boundary to repository hygiene, release-candidate
+  verification, reproducible-build timestamp discovery, and the standalone
+  compatibility-alias validator. These paths reject repository-local
+  executables and disable Git hooks, fsmonitor, replacement refs, lazy fetch,
+  optional locks, and interactive credential prompts.
+- Rejected redirects on the authenticated GitHub status-writing API client so
+  its bearer token cannot be replayed to another origin. Both that gate and
+  the composite Action now reject over-wide or over-deep JSON before parser
+  allocation while preserving the original complete result artifact.
+- Refreshed the exact Python 3.12 slim-trixie image digest and deterministic
+  Debian snapshot to the current upstream base while retaining the pinned Git
+  package and non-root runtime contract.
+- Prevented `review --format plan --summary-file` from overwriting either
+  endpoint's config or lock through relative, absolute, normalized, resolved,
+  or existing-file aliases. Structural tree validation now also keeps only
+  nesting-proportional traversal state, so a wide canonical document cannot
+  allocate unbudgeted sibling work before the aggregate work limit rejects it.
+  The executable consumer-impact demo and its documentation now assert the
+  typed component/external rendering introduced by the source-context UX.
+- Made no-op `migrate-lock` runs genuinely non-mutating: current normalized
+  locks retain their exact bytes, mode, modification time, and file identity.
+  Actual current-schema cleanup is reported truthfully, dry-run follows the
+  same decision, and output limits are enforced before any real write.
+- Rejected impossible `git_tag_prefix` declarations during dependency-free
+  config validation and direct generation, before any Git lookup. The schema
+  now documents a bounded literal Git-ref grammar while retaining valid
+  Unicode and slash-separated prefixes; valid prefixes with no reachable tag
+  remain a distinct source-history diagnostic.
+- Made the exported `boundver.load_config` API honor its validation contract.
+  It now validates working-tree, head, or index input before returning; maps
+  missing files, parse/source failures, and semantic invalidity to exported
+  `ConfigError`; and statically checks custom-provider declarations without
+  importing or instantiating repository code.
+- Bounded configuration, generation, and verification diagnostics before
+  rendering to 256 entries and 256 KiB of UTF-8 text, with an 8 KiB per-item
+  ceiling. Long repository identifiers are shortened before interpolation,
+  diagnostic production stops at the budget, and one deterministic
+  `DIAGNOSTICS TRUNCATED` sentinel keeps human, JSON, and GitHub Action results
+  explicitly failed instead of exhausting memory or silently omitting errors.
+- Rejected explicit slices with an empty `components` array in the public and
+  packaged schemas, dependency-free validation, direct generation and
+  verification APIs, and config mutation commands. Existing empty slices now
+  receive guidance to add a configured component or remove the vacuous gate;
+  valid explicit and `closure_of` fingerprints are unchanged.
+- Rejected configured component names containing commas or surrounding
+  whitespace so every valid name remains addressable through scoped CLI,
+  GitHub Action, and GitLab Catalog filters. Validation now gives an actionable
+  rename diagnostic across component keys, consumer edges, and slices;
+  discovery refuses to emit an unaddressable derived name. `boundver add`
+  retains its comma-separated `--paths` input and adds repeatable
+  `--boundary-path` values for losslessly declaring filenames that contain a
+  comma.
+- Made discovery in an unborn repository with an empty index ask Git for its
+  bounded non-ignored bootstrap corpus. Root and nested ignore files, negation,
+  global excludes, ignored directories, and embedded repositories now follow
+  the installed Git exactly; provider inference uses that same filtered set.
+  Operational Git failures inside a real repository fail closed, while the
+  separate bounded non-Git filesystem approximation is explicitly warned.
+- Added a 10-million-step operation-wide glob work budget across built-in
+  provider resolution, boundary/behavior validation expansion, and change
+  diagnostics. Normalized patterns compile once per operation, every candidate
+  transition is charged, matching and non-matching declaration/file
+  cross-products fail closed with one actionable error, and literal paths keep
+  their direct fast path. The existing per-match limit and accepted selector
+  semantics/digests are unchanged.
+- Reused one bounded, operation-scoped `git cat-file --batch` transport for
+  immutable component hashing, provider extraction, behavior, versions, and
+  vendored-copy checks. Full verification no longer starts Git once per
+  component or file; snapshot identity, per-read and aggregate byte budgets,
+  deterministic digests, and fail-closed protocol validation are unchanged.
 - Replaced filter-capable working-tree Git comparisons with bounded raw file
   reads, preserved intent-to-add paths and sparse-checkout skip-worktree state
   in captured index membership, and charged repository scan budgets against
@@ -87,6 +286,42 @@ All notable changes to this project are documented here. The format follows
 - Ran the recovery-control review audit from its checked-out Git repository so
   resumed workflows can validate current `main` before the release checkout
   exists.
+- Rejected `:` in every repository-relative verification-baseline component,
+  preventing an NTFS alternate data stream from masquerading as a tracked
+  `.json` baseline during reads, creation, or reviewed replacement.
+- Bounded semantic-proposal checker pipe shutdown with one shared deadline.
+  A checker descendant can no longer keep inherited output handles open and
+  hold the review gate past its declared subprocess budget.
+- Rejected control characters, NTFS stream syntax, Windows reserved names,
+  trailing dot/space components, and Unicode-normalization or case-folding
+  collisions in wheel, source-distribution, and standalone-archive release
+  validation. Canonicalization and TestPyPI verification now enforce the same
+  portable member-name contract before extraction or publication.
+- Replaced CI's inline JUnit failure printer with a bounded, stable-file,
+  UTF-8-only reporter. Pytest-controlled names, messages, and bodies can no
+  longer inject GitHub runner commands, terminal controls, DTD expansions, or
+  unbounded diagnostics into a failed workflow. Streaming XML element, depth,
+  attribute, and testcase budgets avoid retaining one attacker-sized tree.
+- Neutralized every active repository/worktree Git clean, smudge, and process
+  filter before runtime Git inspection. A prepared local Git config can no
+  longer make `status`, working-tree diffs, or related ordinary operations
+  execute repository-selected commands without the explicit custom-provider
+  trust opt-in; filter-name discovery is bounded and fails closed. Submodule
+  worktrees are now treated as opaque Gitlinks, closing the same execution path
+  through a nested repository's local filter configuration while preserving
+  detection of a changed checked-out Gitlink.
+- Restored trusted runtime-benchmark repository initialization after Git
+  worktree hardening and made process attribution skip the fixed worktree
+  options, so the release performance gate once again measures actual Git
+  subcommands and enforces its committed process ceilings.
+- Removed case-variant duplicate proxy keys from release-workflow environments,
+  which GitHub Actions rejects even though ordinary YAML parsers accept them.
+  Workflow maintenance tests now enforce GitHub's case-insensitive `env` key
+  uniqueness before a workflow reaches hosted validation.
+- Made safe release-output preparation canonicalize only the existing working-
+  directory or Python temporary-directory prefix. This permits macOS's stable
+  `/var` to `/private/var` system alias while continuing to reject every
+  symlink, junction, or reparse point in the output-specific suffix.
 
 ## [0.14.1] - 2026-08-26
 

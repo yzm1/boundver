@@ -38,6 +38,60 @@ _MAJOR, _MINOR, _PATCH = (int(part) for part in CURRENT_VERSION.split("."))
 OTHER_TAG = f"v{_MAJOR}.{_MINOR}.{_PATCH + 1}"
 
 
+def _main_ruleset_contract() -> dict:
+    return json.loads(
+        (REPO_ROOT / ".github" / "rulesets" / "protect-main.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _main_ruleset_detail() -> dict:
+    contract = _main_ruleset_contract()
+    rules = []
+    for rule in contract["rules"]:
+        if rule["type"] != "pull_request":
+            rules.append(rule)
+            continue
+        rules.append(
+            {
+                **rule,
+                "parameters": {
+                    **rule["parameters"],
+                    "required_reviewers": [],
+                    "require_extra_approval_for_unattributed_changes": True,
+                },
+            }
+        )
+    return {
+        **contract,
+        "id": 8,
+        "rules": rules,
+        "source_type": "Repository",
+        "source": "yzm1/boundver",
+        "current_user_can_bypass": "never",
+    }
+
+
+def _main_branch_detail(sha: str = SHA) -> dict:
+    return {
+        "name": "main",
+        "commit": {"sha": sha},
+        "protected": True,
+        "protection": {
+            "enabled": False,
+            "required_status_checks": {
+                "enforcement_level": "off",
+                "contexts": [],
+                "checks": [],
+            },
+        },
+        "protection_url": (
+            "https://api.github.com/repos/yzm1/boundver/branches/main/protection"
+        ),
+    }
+
+
 def _load_script():
     spec = importlib.util.spec_from_file_location("publish_release", SCRIPT)
     if spec is None or spec.loader is None:  # pragma: no cover - import invariant
@@ -249,6 +303,62 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     max_stderr_bytes=8,
                 )
 
+    def test_subprocess_capture_has_a_wall_clock_limit(self):
+        publisher = _load_script()
+        with self.assertRaisesRegex(publisher.GateError, "command timed out"):
+            publisher._run(
+                (sys.executable, "-I", "-c", "import time; time.sleep(2)"),
+                cwd=REPO_ROOT,
+                timeout_seconds=1,
+            )
+
+    def test_release_json_shape_is_rejected_before_decoder_allocation(self):
+        publisher = _load_script()
+        with mock.patch.object(
+            publisher, "MAX_JSON_TOKENS", 2
+        ), mock.patch.object(
+            publisher.json,
+            "loads",
+            side_effect=AssertionError("decoder must not run"),
+        ), self.assertRaisesRegex(ValueError, "structural limit"):
+            publisher._strict_json_loads("[0,0,0]")
+
+    def test_release_tools_cannot_be_shadowed_by_repository_files(self):
+        publisher = _load_script()
+        with mock.patch.object(
+            publisher.shutil, "which", return_value=str(SCRIPT)
+        ), self.assertRaisesRegex(publisher.GateError, "inside the repository"):
+            publisher._trusted_tool("gh", REPO_ROOT)
+
+    def test_release_remote_is_validated_before_any_git_command(self):
+        publisher = _load_script()
+        for remote in ("--upload-pack=malicious", "../remote", "https://example.invalid"):
+            with self.subTest(remote=remote), mock.patch.object(
+                publisher, "_git"
+            ) as git, self.assertRaisesRegex(
+                publisher.GateError,
+                "release remote name is malformed",
+            ):
+                publisher._repo_identity(REPO_ROOT, remote)
+            git.assert_not_called()
+
+    def test_release_git_commands_disable_replacements_hooks_and_prompts(self):
+        publisher = _load_script()
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(publisher, "_run", return_value=completed) as run:
+            publisher._git_result(
+                REPO_ROOT,
+                ("merge-base", "--is-ancestor", "a" * 40, "b" * 40),
+                check=False,
+            )
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(environment["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(environment["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(environment["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(environment["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(environment["GIT_CONFIG_VALUE_0"], os.devnull)
+
     def test_tool_environment_removes_release_credentials(self):
         publisher = _load_script()
         credential_path = "C:/maintainer/credentials"
@@ -335,6 +445,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertEqual(sanitized["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(sanitized["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(sanitized["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(sanitized["GIT_NO_LAZY_FETCH"], "1")
+        self.assertEqual(sanitized["GIT_NO_REPLACE_OBJECTS"], "1")
+        self.assertEqual(sanitized["GIT_OPTIONAL_LOCKS"], "0")
+        self.assertEqual(sanitized["GCM_INTERACTIVE"], "never")
         self.assertEqual(sanitized["GH_HOST"], "github.com")
 
     def test_repository_hygiene_executes_without_maintainer_credentials(self):
@@ -596,10 +710,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "ref": "main",
             "sha": CONTROL_SHA,
         }
-        completed = [
-            subprocess.CompletedProcess([], 0, "", ""),
-            subprocess.CompletedProcess([], 0, "advanced\n", ""),
-        ]
+        completed = [subprocess.CompletedProcess([], 0, "advanced\n", "")]
         with mock.patch.object(
             publisher, "_authenticated_alias_actor", return_value="owner"
         ) as actor, mock.patch.object(
@@ -612,11 +723,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             )
         self.assertEqual(detail, "advanced")
         actor.assert_called_once_with(Path("repo"))
-        self.assertEqual(
-            run.call_args_list[0].args[0],
-            ("gh", "auth", "setup-git", "--hostname", "github.com"),
-        )
-        command = run.call_args_list[1].args[0]
+        command = run.call_args_list[0].args[0]
         self.assertIn("release_alias.py", " ".join(map(str, command)))
         self.assertIn("advance", command)
         self.assertEqual(
@@ -625,7 +732,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         )
         self.assertNotIn("origin", command)
         self.assertNotIn(
-            publisher.REVIEW_TOKEN_ENV, run.call_args_list[1].kwargs["env"]
+            publisher.REVIEW_TOKEN_ENV, run.call_args_list[0].kwargs["env"]
         )
 
     def test_alias_command_advances_only_after_all_checks_pass(self):
@@ -1540,7 +1647,21 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "openapi",
                         "semantic-versioning",
                     ],
+                    "security_and_analysis": {
+                        "dependabot_security_updates": {"status": "enabled"},
+                        "secret_scanning": {"status": "enabled"},
+                        "secret_scanning_push_protection": {"status": "enabled"},
+                    },
                 }
+            if endpoint.endswith("/private-vulnerability-reporting"):
+                return {"enabled": True}
+            if endpoint.endswith("/actions/permissions/workflow"):
+                return {
+                    "default_workflow_permissions": "read",
+                    "can_approve_pull_request_reviews": False,
+                }
+            if endpoint.endswith("/actions/permissions"):
+                return {"enabled": True, "sha_pinning_required": True}
             if endpoint == "repos/yzm1/boundver/pages":
                 return {
                     "build_type": "workflow",
@@ -1590,13 +1711,23 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 }
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
+            if endpoint.endswith("/branches/main"):
+                return _main_branch_detail()
             if endpoint.endswith("/rulesets?includes_parents=true"):
-                return [{"id": 7, "target": "tag", "enforcement": "active"}]
+                return [
+                    {"id": 7, "target": "tag", "enforcement": "active"},
+                    {"id": 8, "target": "branch", "enforcement": "active"},
+                ]
             if endpoint.endswith("/rulesets/7"):
                 return {
+                    "id": 7,
+                    "target": "tag",
+                    "enforcement": "active",
                     "rules": [{"type": "update"}, {"type": "deletion"}],
                     "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*"], "exclude": []}},
                 }
+            if endpoint.endswith("/rulesets/8"):
+                return _main_ruleset_detail()
             if "actions/workflows/ci.yml/runs" in endpoint:
                 return {
                     "workflow_runs": [
@@ -1613,9 +1744,27 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+        rulesets = [
+            {"id": 7, "target": "tag", "enforcement": "active"},
+            {"id": 8, "target": "branch", "enforcement": "active"},
+        ]
 
         def paginated(_repo, endpoint, *, collection=None):
+            if "/code-scanning/analyses?" in endpoint:
+                self.assertIsNone(collection)
+                return [
+                    {
+                        "commit_sha": SHA,
+                        "ref": "refs/heads/main",
+                        "language": "python",
+                        "category": "/language:python",
+                        "tool": {"name": "CodeQL"},
+                        "error": "",
+                    }
+                ]
+            if "/alerts?state=open" in endpoint:
+                self.assertIsNone(collection)
+                return []
             if endpoint.endswith("/environments?per_page=100"):
                 self.assertEqual(collection, "environments")
                 return response(None, None, "repos/yzm1/boundver/environments")[
@@ -1641,6 +1790,48 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ):
             detail = publisher._github_controls(Path("."), SHA, TAG)
         self.assertIn("environments", detail)
+
+        def insecure_response(repo, repository, endpoint):
+            value = response(repo, repository, endpoint)
+            if endpoint == "repos/yzm1/boundver":
+                value = copy.deepcopy(value)
+                value["security_and_analysis"]["secret_scanning"][
+                    "status"
+                ] = "disabled"
+            return value
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=insecure_response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=paginated
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
+        ), self.assertRaisesRegex(publisher.GateError, "secret scanning"):
+            publisher._github_controls(Path("."), SHA, TAG)
+
+        def non_codeql_analysis(_repo, endpoint, *, collection=None):
+            if "/code-scanning/analyses?" in endpoint:
+                self.assertIsNone(collection)
+                return [
+                    {
+                        "commit_sha": SHA,
+                        "ref": "refs/heads/main",
+                        "language": "python",
+                        "category": "/language:python",
+                        "tool": {"name": "another-scanner"},
+                        "error": "",
+                    }
+                ]
+            return paginated(_repo, endpoint, collection=collection)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=non_codeql_analysis
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
+        ), self.assertRaisesRegex(publisher.GateError, "CodeQL security-extended"):
+            publisher._github_controls(Path("."), SHA, TAG)
 
         def alias_paginated(_repo, endpoint, *, collection=None):
             if "actions/workflows/publish.yml/runs" in endpoint:
@@ -1943,11 +2134,19 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     cwd=Path("repo"),
                     max_stdout_bytes=publisher.MAX_GITHUB_HELP_BYTES,
                     max_stderr_bytes=publisher.MAX_GITHUB_HELP_BYTES,
+                    timeout_seconds=publisher.MAX_GITHUB_COMMAND_SECONDS,
                 ),
                 mock.call(
-                    ["gh", "api", "repos/yzm1/boundver/actions/jobs/31/logs"],
+                    [
+                        "gh",
+                        "api",
+                        "--hostname",
+                        "github.com",
+                        "repos/yzm1/boundver/actions/jobs/31/logs",
+                    ],
                     cwd=Path("repo"),
                     max_stdout_bytes=publisher.MAX_JOB_LOG_BYTES,
+                    timeout_seconds=publisher.MAX_GITHUB_COMMAND_SECONDS,
                 ),
             ],
         )
@@ -1968,16 +2167,20 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     cwd=Path("repo"),
                     max_stdout_bytes=publisher.MAX_GITHUB_HELP_BYTES,
                     max_stderr_bytes=publisher.MAX_GITHUB_HELP_BYTES,
+                    timeout_seconds=publisher.MAX_GITHUB_COMMAND_SECONDS,
                 ),
                 mock.call(
                     [
                         "gh",
                         "api",
                         "--allow-escape-sequences",
+                        "--hostname",
+                        "github.com",
                         "repos/yzm1/boundver/actions/jobs/31/logs",
                     ],
                     cwd=Path("repo"),
                     max_stdout_bytes=publisher.MAX_JOB_LOG_BYTES,
+                    timeout_seconds=publisher.MAX_GITHUB_COMMAND_SECONDS,
                 ),
             ],
         )
@@ -2185,7 +2388,21 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         "openapi",
                         "semantic-versioning",
                     ],
+                    "security_and_analysis": {
+                        "dependabot_security_updates": {"status": "enabled"},
+                        "secret_scanning": {"status": "enabled"},
+                        "secret_scanning_push_protection": {"status": "enabled"},
+                    },
                 }
+            if endpoint.endswith("/private-vulnerability-reporting"):
+                return {"enabled": True}
+            if endpoint.endswith("/actions/permissions/workflow"):
+                return {
+                    "default_workflow_permissions": "read",
+                    "can_approve_pull_request_reviews": False,
+                }
+            if endpoint.endswith("/actions/permissions"):
+                return {"enabled": True, "sha_pinning_required": True}
             if endpoint == "repos/yzm1/boundver/pages":
                 return {
                     "build_type": "workflow",
@@ -2235,10 +2452,18 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 }
             if endpoint.endswith("/immutable-releases"):
                 return {"enabled": True}
+            if endpoint.endswith("/branches/main"):
+                return _main_branch_detail()
             if endpoint.endswith("/rulesets?includes_parents=true"):
-                return [{"id": 7, "target": "tag", "enforcement": "active"}]
+                return [
+                    {"id": 7, "target": "tag", "enforcement": "active"},
+                    {"id": 8, "target": "branch", "enforcement": "active"},
+                ]
             if endpoint.endswith("/rulesets/7"):
                 return {
+                    "id": 7,
+                    "target": "tag",
+                    "enforcement": "active",
                     "rules": [{"type": "update"}, {"type": "deletion"}],
                     "conditions": {
                         "ref_name": {
@@ -2247,6 +2472,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         }
                     },
                 }
+            if endpoint.endswith("/rulesets/8"):
+                return _main_ruleset_detail()
             if "actions/workflows/ci.yml/runs" in endpoint:
                 return {
                     "workflow_runs": [
@@ -2263,10 +2490,28 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 return {"workflow_runs": []}
             raise AssertionError(endpoint)
 
-        rulesets = [{"id": 7, "target": "tag", "enforcement": "active"}]
+        rulesets = [
+            {"id": 7, "target": "tag", "enforcement": "active"},
+            {"id": 8, "target": "branch", "enforcement": "active"},
+        ]
         draft_release = {"id": 42, "tag_name": TAG, "draft": True}
 
         def paginated(_repo, endpoint, *, collection=None):
+            if "/code-scanning/analyses?" in endpoint:
+                self.assertIsNone(collection)
+                return [
+                    {
+                        "commit_sha": SHA,
+                        "ref": "refs/heads/main",
+                        "language": "python",
+                        "category": "/language:python",
+                        "tool": {"name": "CodeQL"},
+                        "error": "",
+                    }
+                ]
+            if "/alerts?state=open" in endpoint:
+                self.assertIsNone(collection)
+                return []
             if endpoint.endswith("/environments?per_page=100"):
                 self.assertEqual(collection, "environments")
                 return response(None, None, "repos/yzm1/boundver/environments")[
@@ -2361,6 +2606,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertFalse(
             publisher._ruleset_targets_ref(exact, f"refs/tags/{ALIAS}")
         )
+
         self.assertTrue(
             publisher._ruleset_targets_ref(broad, f"refs/tags/{ALIAS}")
         )
@@ -2382,6 +2628,208 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(publisher.GateError, "creation restriction"):
             publisher._validate_tag_rulesets([scoped, exact_creation], TAG)
+
+    def test_ruleset_ref_matching_rejects_unbounded_patterns(self):
+        publisher = _load_script()
+        with self.assertRaisesRegex(publisher.GateError, "too complex"):
+            publisher._github_ref_pattern_matches(
+                "refs/tags/" + "*" * 5,
+                f"refs/tags/{TAG}",
+            )
+        with self.assertRaisesRegex(publisher.GateError, "too many ref patterns"):
+            publisher._ruleset_targets_ref(
+                {
+                    "include": ["refs/heads/main"]
+                    * (publisher.MAX_RULESET_PATTERNS + 1),
+                    "exclude": [],
+                },
+                "refs/heads/main",
+            )
+
+    def test_ruleset_segment_matcher_is_linear_and_fnmatch_compatible(self):
+        publisher = _load_script()
+        cases = (
+            ("release", "rel*", True),
+            ("abc", "a?c", True),
+            ("abc", "a[bd]c", True),
+            ("abc", "a[!a]c", True),
+            ("a[c", "a[c", True),
+            ("abc", "a[d]c", False),
+        )
+        for candidate, pattern, expected in cases:
+            with self.subTest(candidate=candidate, pattern=pattern):
+                self.assertEqual(
+                    publisher._ruleset_segment_matches(candidate, pattern),
+                    expected,
+                )
+                self.assertEqual(
+                    publisher._ruleset_segment_matches(candidate, pattern),
+                    publisher.fnmatch.fnmatchcase(candidate, pattern),
+                )
+
+        adversarial = "refs/tags/" + ("a" * 4_000)
+        self.assertFalse(
+            publisher._github_ref_pattern_matches(
+                "refs/tags/*a*a*a*ab",
+                adversarial,
+            )
+        )
+
+    def test_main_ruleset_requires_complete_no_bypass_merge_contract(self):
+        publisher = _load_script()
+        valid = _main_ruleset_detail()
+        contract = _main_ruleset_contract()
+        publisher._validate_main_branch_rulesets([valid], contract)
+
+        cases = {
+            "bypass": {**valid, "bypass_actors": [{"actor_id": 5}]},
+            "force push": {
+                **valid,
+                "rules": [
+                    rule
+                    for rule in valid["rules"]
+                    if rule["type"] != "non_fast_forward"
+                ],
+            },
+            "status": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_status_checks": [
+                                {"context": "other", "integration_id": 15368}
+                            ],
+                        },
+                    }
+                    if rule["type"] == "required_status_checks"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+            "extra status": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_status_checks": [
+                                *rule["parameters"]["required_status_checks"],
+                                {"context": "stale", "integration_id": 15368},
+                            ],
+                        },
+                    }
+                    if rule["type"] == "required_status_checks"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+            "extra merge method": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "allowed_merge_methods": ["squash", "merge"],
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+            "approval count": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_approving_review_count": 1,
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+            "required reviewer": {
+                **valid,
+                "rules": [
+                    {
+                        **rule,
+                        "parameters": {
+                            **rule["parameters"],
+                            "required_reviewers": [
+                                {
+                                    "file_patterns": ["**"],
+                                    "minimum_approvals": 1,
+                                    "reviewer": {"id": 1, "type": "Team"},
+                                }
+                            ],
+                        },
+                    }
+                    if rule["type"] == "pull_request"
+                    else rule
+                    for rule in valid["rules"]
+                ],
+            },
+        }
+        for name, value in cases.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                publisher.GateError,
+                "main ruleset",
+            ):
+                publisher._validate_main_branch_rulesets([value], contract)
+
+        inherited = {
+            **valid,
+            "name": "Inherited main policy",
+            "source_type": "Organization",
+            "source": "example-org",
+            "conditions": {
+                "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+            },
+        }
+        with self.assertRaisesRegex(publisher.GateError, "exactly one"):
+            publisher._validate_main_branch_rulesets([valid, inherited], contract)
+        with self.assertRaisesRegex(publisher.GateError, "repository-owned"):
+            publisher._validate_main_branch_rulesets([inherited], contract)
+
+        unrelated = {
+            **inherited,
+            "conditions": {
+                "ref_name": {
+                    "include": ["refs/heads/feature/**"],
+                    "exclude": [],
+                }
+            },
+        }
+        publisher._validate_main_branch_rulesets([valid, unrelated], contract)
+
+    def test_classic_main_protection_must_be_absent(self):
+        publisher = _load_script()
+        valid = _main_branch_detail()
+        publisher._validate_no_classic_main_protection(valid, SHA)
+
+        classic = copy.deepcopy(valid)
+        classic["protection"]["enabled"] = True
+        classic["protection"]["required_status_checks"] = {
+            "enforcement_level": "everyone",
+            "contexts": ["stale"],
+            "checks": [{"context": "stale", "app_id": 15368}],
+        }
+        wrong_sha = copy.deepcopy(valid)
+        wrong_sha["commit"]["sha"] = "f" * 40
+        for name, value in (("classic", classic), ("wrong SHA", wrong_sha)):
+            with self.subTest(name=name), self.assertRaisesRegex(
+                publisher.GateError,
+                "classic main branch protection",
+            ):
+                publisher._validate_no_classic_main_protection(value, SHA)
 
     def test_release_environments_require_real_reviewers(self):
         publisher = _load_script()

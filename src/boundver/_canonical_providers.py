@@ -6,12 +6,14 @@ from typing import Any, Optional
 
 from ._structured_data import StrictJSONError, strict_json_loads
 from ._utils import (
+    MAX_JSON_NUMBER_CHARACTERS,
     GuardrailError,
     ProviderError,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
     _bounded_int_to_decimal,
     _bounded_json_value_issues,
+    _bounded_yaml_compose_node,
     _bounded_yaml_int,
     _iter_bounded_json_values,
     _json_path_child,
@@ -151,7 +153,12 @@ def _parse_yaml_strict(text: str, path_label: str) -> Any:
                 raise ProviderError(
                     "YAML aliases are not supported in canonical OpenAPI inputs"
                 )
-            return super().compose_node(parent, index)
+            return _bounded_yaml_compose_node(
+                self,
+                parent,
+                index,
+                super().compose_node,
+            )
 
     # PyYAML's default resolver follows YAML 1.1 and treats yes/no/on/off as
     # booleans.  OpenAPI uses YAML 1.2 semantics, where only true/false are
@@ -229,6 +236,15 @@ def _parse_yaml_strict(text: str, path_label: str) -> Any:
         except (TypeError, ValueError) as exc:
             raise ProviderError(f"invalid YAML integer: {exc}") from exc
 
+    def construct_float(loader: Any, node: Any) -> float:
+        scalar = loader.construct_scalar(node)
+        if len(scalar) > MAX_JSON_NUMBER_CHARACTERS:
+            raise ProviderError(
+                "YAML number exceeds the "
+                f"{MAX_JSON_NUMBER_CHARACTERS}-character limit"
+            )
+        return yaml.SafeLoader.construct_yaml_float(loader, node)
+
     StrictOpenApiLoader.add_constructor(
         yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
         construct_mapping,
@@ -236,6 +252,10 @@ def _parse_yaml_strict(text: str, path_label: str) -> Any:
     StrictOpenApiLoader.add_constructor(
         "tag:yaml.org,2002:int",
         construct_integer,
+    )
+    StrictOpenApiLoader.add_constructor(
+        "tag:yaml.org,2002:float",
+        construct_float,
     )
     try:
         return yaml.load(text, Loader=StrictOpenApiLoader)
@@ -343,7 +363,7 @@ def _openapi_document_error(document: Any) -> Optional[str]:
         # The generic tree check above normally catches these first. Keep the
         # reference walk independently fail-closed if a mutable direct caller
         # changes the document between validation passes.
-        return str(exc)
+        return _bounded_exception(exc)
     return None
 
 

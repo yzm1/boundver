@@ -35,10 +35,46 @@ on:
 
 permissions: {}
 
+concurrency:
+  # The parent publication holds a repository-wide promotion lock. A separate
+  # exact-tag mutex prevents direct and reusable invocations from racing each
+  # other without deadlocking the parent workflow.
+  group: boundver-release-container-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
 env:
+  ALL_PROXY: ""
+  BASH_ENV: ""
+  CDPATH: ""
+  CURL_CA_BUNDLE: ""
+  CURL_HOME: ""
+  ENV: ""
+  GCM_INTERACTIVE: never
+  GLOBIGNORE: ""
+  GH_NO_EXTENSION_UPDATE_NOTIFIER: "1"
+  GH_NO_UPDATE_NOTIFIER: "1"
+  GH_HOST: github.com
+  GH_PAGER: cat
+  GH_PROMPT_DISABLED: "1"
+  GIT_NO_LAZY_FETCH: "1"
+  GIT_NO_REPLACE_OBJECTS: "1"
+  GIT_OPTIONAL_LOCKS: "0"
+  GIT_PAGER: cat
+  GIT_TERMINAL_PROMPT: "0"
+  HTTPS_PROXY: ""
+  HTTP_PROXY: ""
+  NODE_EXTRA_CA_CERTS: ""
+  NO_COLOR: "1"
+  NO_PROXY: github.com,api.github.com
+  REQUESTS_CA_BUNDLE: ""
+  SSL_CERT_DIR: ""
+  SSL_CERT_FILE: ""
+  SSLKEYLOGFILE: ""
+  TERM: dumb
   RELEASE_TAG: ${{ inputs.release_tag }}
   RELEASE_SHA: ${{ inputs.release_sha }}
   IMAGE: ghcr.io/yzm1/boundver
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
   DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
@@ -103,7 +139,6 @@ jobs:
           echo "name=$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the released commit without credentials
-        if: inputs.reuse_retained_artifact != true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -201,6 +236,39 @@ jobs:
             echo "Prevalidated retained OCI archive is empty or exceeds 2 GiB" >&2
             exit 1
           fi
+
+      - name: Reject new or fixable high-severity container vulnerabilities
+        shell: bash
+        env:
+          REUSE_RETAINED_ARTIFACT: ${{ inputs.reuse_retained_artifact }}
+        run: |
+          set -euo pipefail
+          if [[ "$REUSE_RETAINED_ARTIFACT" == true ]]; then
+            archive=/scan/recovered-container-check/boundver.oci.tar
+          else
+            archive=/scan/boundver.oci.tar
+          fi
+          cache="$RUNNER_TEMP/trivy-cache"
+          mkdir -m 700 "$cache"
+          scan=(
+            docker run --rm
+            --volume "$RUNNER_TEMP:/scan:ro"
+            --volume "$GITHUB_WORKSPACE:/policy:ro"
+            --volume "$cache:/root/.cache"
+            "$TRIVY_IMAGE" image
+            --input "$archive"
+            --scanners vuln
+            --severity HIGH,CRITICAL
+            --max-image-size 2GB
+            --no-progress
+            --skip-version-check
+          )
+          for platform in linux/amd64 linux/arm64; do
+            "${scan[@]}" --platform "$platform" \
+              --ignorefile /policy/.trivyignore.yaml --exit-code 1
+            "${scan[@]}" --platform "$platform" \
+              --ignore-unfixed --exit-code 1
+          done
 
   publish:
     needs: build

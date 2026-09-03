@@ -162,13 +162,16 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
 
     from boundver import _git as git_helpers
 
-    assert git_helpers._offline_git_command(
-        Path("repo"), ["--literal-pathspecs", "ls-files", "-z"]
-    ) == [
-        "git",
-        "--no-pager",
+    repository = Path("repo").resolve(strict=False)
+    command = git_helpers._offline_git_command(
+        repository, ["--literal-pathspecs", "ls-files", "-z"]
+    )
+    assert Path(command[0]).name.casefold() in {"git", "git.exe"}
+    assert command[1:] == [
         "-C",
-        "repo",
+        str(repository),
+        f"--work-tree={repository}",
+        "--no-pager",
         "-c",
         "core.fsmonitor=false",
         "-c",
@@ -236,14 +239,24 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
     }
     with patch.dict("boundver._git.os.environ", environment, clear=True):
         sanitized = git_helpers._offline_git_environment()
-    assert sanitized == {
-        "GIT_NO_LAZY_FETCH": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_TRACE2": "0",
-        "GIT_TRACE2_EVENT": "0",
-        "GIT_TRACE2_PERF": "0",
-        "KEEP_ME": "yes",
-    }
+    assert sanitized["KEEP_ME"] == "yes"
+    assert sanitized["GIT_NO_LAZY_FETCH"] == "1"
+    assert sanitized["GIT_TERMINAL_PROMPT"] == "0"
+    assert sanitized["GIT_TRACE2"] == "0"
+    assert sanitized["GIT_TRACE2_EVENT"] == "0"
+    assert sanitized["GIT_TRACE2_PERF"] == "0"
+    assert sanitized["GIT_CONFIG_GLOBAL"] == git_helpers.os.devnull
+    assert sanitized["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert sanitized["GIT_CONFIG_COUNT"] == "5"
+    assert sanitized["GIT_CONFIG_KEY_0"] == "core.hooksPath"
+    assert sanitized["GIT_CONFIG_VALUE_0"] == git_helpers.os.devnull
+    for hostile_name in {
+        "GIT_EXTERNAL_DIFF",
+        "GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_TRACE",
+    }:
+        assert hostile_name not in sanitized
 
 
 def test_configured_git_trace2_targets_are_explicitly_disabled() -> None:
@@ -258,31 +271,31 @@ def test_configured_git_trace2_targets_are_explicitly_disabled() -> None:
             check=True,
             capture_output=True,
         )
-        global_config = Path(td) / "global.gitconfig"
         targets = {
             "trace2.normalTarget": Path(td) / "trace2-normal.log",
             "trace2.eventTarget": Path(td) / "trace2-event.json",
             "trace2.perfTarget": Path(td) / "trace2-perf.log",
         }
+        setup_environment = dict(git_helpers.os.environ)
+        setup_environment.update(
+            {
+                "GIT_TRACE2": "0",
+                "GIT_TRACE2_EVENT": "0",
+                "GIT_TRACE2_PERF": "0",
+            }
+        )
         for key, target in targets.items():
             subprocess.run(
-                ["git", "config", "--file", str(global_config), key, str(target)],
+                ["git", "-C", str(root), "config", key, str(target)],
                 check=True,
                 capture_output=True,
+                env=setup_environment,
             )
 
-        with patch.dict(
-            "boundver._git.os.environ",
-            {
-                "GIT_CONFIG_GLOBAL": str(global_config),
-                "GIT_CONFIG_NOSYSTEM": "1",
-            },
-            clear=False,
-        ):
-            result = git_helpers._git_run(
-                root,
-                ["rev-parse", "--is-inside-work-tree"],
-            )
+        result = git_helpers._git_run(
+            root,
+            ["rev-parse", "--is-inside-work-tree"],
+        )
 
         assert result.stdout.strip() == "true"
         assert all(not target.exists() for target in targets.values())

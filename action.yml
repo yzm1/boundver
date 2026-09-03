@@ -7,6 +7,10 @@ branding:
   color: purple
 
 inputs:
+  operation:
+    description: Operation to run (verify or review).
+    required: false
+    default: verify
   config:
     description: Path to boundary.config.json.
     required: false
@@ -28,13 +32,25 @@ inputs:
     required: false
     default: ""
   components:
-    description: Optional comma-separated component subset.
+    description: Optional comma-separated component subset; configured names cannot contain commas or surrounding whitespace.
     required: false
     default: ""
   changed-from:
     description: Optional Git ref used to report changed components while verifying the full lock.
     required: false
     default: ""
+  base:
+    description: Explicit review base Git ref; required for operation review.
+    required: false
+    default: ""
+  target:
+    description: Explicit review target/end Git ref; required for operation review.
+    required: false
+    default: ""
+  merge-base:
+    description: Compare the unique merge base of base and target to target.
+    required: false
+    default: "false"
   transitive:
     description: Include the downstream consumer closure in boundary and compatibility impact output.
     required: false
@@ -51,10 +67,18 @@ inputs:
     description: Python version used by the action.
     required: false
     default: "3.12"
+  upload-artifact:
+    description: Upload the complete review plan and bounded summary as a job artifact.
+    required: false
+    default: "false"
+  artifact-name:
+    description: Artifact name used when upload-artifact is true.
+    required: false
+    default: boundver-review-plan
 
 outputs:
   exit-code:
-    description: "0 clean, 1 exact/metadata, 2 usage, 3 behavior, 4 boundary, 5 compatibility."
+    description: "Verify: 0 clean, 1 exact/metadata, 2 usage, 3 behavior, 4 boundary, 5 compatibility. Review: 0 complete or 2 unreliable."
     value: ${{ steps.verify.outputs.exit-code }}
   issues:
     description: Newline-separated gated issues.
@@ -66,11 +90,50 @@ outputs:
     description: Bounded compact JSON array of typed downstream consumer-impact rows.
     value: ${{ steps.verify.outputs.consumer-impact }}
   truncated-outputs:
-    description: Compact JSON array naming outputs that were bounded or unavailable.
+    description: Compact JSON array naming bounded, unavailable, or presentation-only outputs; never ignore it for routing.
     value: ${{ steps.verify.outputs.truncated-outputs }}
   result-file:
-    description: Runner-local verify JSON, or a valid diagnostic JSON when verification emitted no usable result.
+    description: Runner-local verify JSON or complete review-plan JSON; failures receive a valid diagnostic JSON when possible.
     value: ${{ steps.verify.outputs.result-file }}
+  summary-file:
+    description: Runner-local bounded review summary; empty for verification.
+    value: ${{ steps.verify.outputs.summary-file }}
+  result-schema:
+    description: boundver-plan/v1 for a complete review plan; empty for verification or incomplete transport.
+    value: ${{ steps.verify.outputs.result-schema }}
+  transport-complete:
+    description: Whether result-file contains the complete JSON emitted by boundver.
+    value: ${{ steps.verify.outputs.transport-complete }}
+  selection-complete:
+    description: Whether every bounded review selection output is complete and safe for routing.
+    value: ${{ steps.verify.outputs.selection-complete }}
+  changed-components:
+    description: Bounded JSON array of changed component names from a review plan.
+    value: ${{ steps.verify.outputs.changed-components }}
+  impacted-components:
+    description: Bounded JSON array of downstream component names from a review plan.
+    value: ${{ steps.verify.outputs.impacted-components }}
+  external-consumers:
+    description: Bounded JSON array of external consumer names from a review plan.
+    value: ${{ steps.verify.outputs.external-consumers }}
+  test-components:
+    description: Bounded JSON union of changed and impacted component names.
+    value: ${{ steps.verify.outputs.test-components }}
+  changed-slices:
+    description: Bounded JSON array of changed slice names from a review plan.
+    value: ${{ steps.verify.outputs.changed-slices }}
+  impacted-slices:
+    description: Bounded JSON array of impacted slice names from a review plan.
+    value: ${{ steps.verify.outputs.impacted-slices }}
+  test-slices:
+    description: Bounded JSON union of changed and impacted slice names.
+    value: ${{ steps.verify.outputs.test-slices }}
+  artifact-id:
+    description: GitHub artifact ID when a review artifact was requested and uploaded.
+    value: ${{ steps.upload-review.outputs.artifact-id }}
+  artifact-url:
+    description: GitHub artifact URL when a review artifact was requested and uploaded.
+    value: ${{ steps.upload-review.outputs.artifact-url }}
 
 runs:
   using: composite
@@ -96,11 +159,12 @@ runs:
         --no-build-isolation
         "${BOUNDVER_ACTION_PATH}[schema,yaml]"
 
-    - name: Verify declared facets
+    - name: Run boundver verification or range review
       id: verify
       shell: bash
       env:
         BOUNDVER_ACTION_PATH: ${{ github.action_path }}
+        BOUNDVER_OPERATION: ${{ inputs.operation }}
         BOUNDVER_CONFIG: ${{ inputs.config }}
         BOUNDVER_LOCK: ${{ inputs.lock }}
         BOUNDVER_BASELINE: ${{ inputs.baseline }}
@@ -108,12 +172,21 @@ runs:
         BOUNDVER_FACETS: ${{ inputs.facets }}
         BOUNDVER_COMPONENTS: ${{ inputs.components }}
         BOUNDVER_CHANGED_FROM: ${{ inputs.changed-from }}
+        BOUNDVER_BASE: ${{ inputs.base }}
+        BOUNDVER_TARGET: ${{ inputs.target }}
+        BOUNDVER_MERGE_BASE: ${{ inputs.merge-base }}
         BOUNDVER_TRANSITIVE: ${{ inputs.transitive }}
         BOUNDVER_FAIL_FAST: ${{ inputs.fail-fast }}
         BOUNDVER_UPDATE: ${{ inputs.update }}
+        BOUNDVER_UPLOAD_ARTIFACT: ${{ inputs.upload-artifact }}
+        BOUNDVER_ARTIFACT_NAME: ${{ inputs.artifact-name }}
       run: |
         set -euo pipefail
 
+        case "$BOUNDVER_OPERATION" in
+          verify|review) ;;
+          *) echo "operation must be verify or review" >&2; exit 2 ;;
+        esac
         case "$BOUNDVER_SOURCE" in
           head|index|working-tree) ;;
           *) echo "Invalid source input." >&2; exit 2 ;;
@@ -130,49 +203,130 @@ runs:
           true|false) ;;
           *) echo "update must be true or false" >&2; exit 2 ;;
         esac
+        case "$BOUNDVER_MERGE_BASE" in
+          true|false) ;;
+          *) echo "merge-base must be true or false" >&2; exit 2 ;;
+        esac
+        case "$BOUNDVER_UPLOAD_ARTIFACT" in
+          true|false) ;;
+          *) echo "upload-artifact must be true or false" >&2; exit 2 ;;
+        esac
+        if [[ "$BOUNDVER_UPLOAD_ARTIFACT" == true && -z "$BOUNDVER_ARTIFACT_NAME" ]]; then
+          echo "artifact-name must not be empty when upload-artifact is true" >&2
+          exit 2
+        fi
 
-        command=(
-          python -I -m boundver verify
-          --config "$BOUNDVER_CONFIG"
-          --lock "$BOUNDVER_LOCK"
-          --source "$BOUNDVER_SOURCE"
-          --format json
-        )
+        if [[ "$BOUNDVER_OPERATION" == verify ]]; then
+          if [[ -n "$BOUNDVER_BASE" || -n "$BOUNDVER_TARGET" || "$BOUNDVER_MERGE_BASE" == true ]]; then
+            echo "base, target, and merge-base are review-only inputs" >&2
+            exit 2
+          fi
+          command=(
+            python -I -m boundver verify
+            --config "$BOUNDVER_CONFIG"
+            --lock "$BOUNDVER_LOCK"
+            --source "$BOUNDVER_SOURCE"
+            --format json
+          )
+          if [[ -n "$BOUNDVER_COMPONENTS" ]]; then
+            command+=(--components "$BOUNDVER_COMPONENTS")
+          fi
+          if [[ -n "$BOUNDVER_CHANGED_FROM" ]]; then
+            command+=(--changed-from "$BOUNDVER_CHANGED_FROM")
+          fi
+          if [[ -n "$BOUNDVER_BASELINE" ]]; then
+            command+=(--baseline "$BOUNDVER_BASELINE")
+          fi
+          if [[ "$BOUNDVER_FAIL_FAST" == true ]]; then
+            command+=(--fail-fast)
+          fi
+          if [[ "$BOUNDVER_UPDATE" == true ]]; then
+            command+=(--update)
+          fi
+        else
+          if [[ -z "$BOUNDVER_BASE" || -z "$BOUNDVER_TARGET" ]]; then
+            echo "operation review requires both base and target" >&2
+            exit 2
+          fi
+          if [[ "$BOUNDVER_SOURCE" != head || -n "$BOUNDVER_COMPONENTS" || -n "$BOUNDVER_CHANGED_FROM" || -n "$BOUNDVER_BASELINE" || "$BOUNDVER_FAIL_FAST" != false || "$BOUNDVER_UPDATE" != false ]]; then
+            echo "source, components, changed-from, baseline, fail-fast, and update are verify-only controls" >&2
+            exit 2
+          fi
+          command=(
+            python -I -m boundver review
+            --base "$BOUNDVER_BASE"
+            --target "$BOUNDVER_TARGET"
+            --config "$BOUNDVER_CONFIG"
+            --lock "$BOUNDVER_LOCK"
+            --format plan
+          )
+          if [[ "$BOUNDVER_MERGE_BASE" == true ]]; then
+            command+=(--merge-base)
+          fi
+        fi
         if [[ -n "$BOUNDVER_FACETS" ]]; then
           command+=(--facets "$BOUNDVER_FACETS")
         fi
-        if [[ -n "$BOUNDVER_COMPONENTS" ]]; then
-          command+=(--components "$BOUNDVER_COMPONENTS")
-        fi
-        if [[ -n "$BOUNDVER_CHANGED_FROM" ]]; then
-          command+=(--changed-from "$BOUNDVER_CHANGED_FROM")
-        fi
-        if [[ -n "$BOUNDVER_BASELINE" ]]; then
-          command+=(--baseline "$BOUNDVER_BASELINE")
-        fi
         if [[ "$BOUNDVER_TRANSITIVE" == true ]]; then
           command+=(--transitive)
-        fi
-        if [[ "$BOUNDVER_FAIL_FAST" == true ]]; then
-          command+=(--fail-fast)
-        fi
-        if [[ "$BOUNDVER_UPDATE" == true ]]; then
-          command+=(--update)
         fi
 
         # BSD mktemp requires the X run at the end of the template. Keeping the
         # portable form also permits repeated Action invocations in one job.
         result_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-result.XXXXXX")
+        summary_file=$(mktemp "${RUNNER_TEMP:-/tmp}/boundver-summary.XXXXXX")
+        if [[ "$BOUNDVER_OPERATION" == review ]]; then
+          command+=(--summary-file "$summary_file")
+        fi
         set +e
         "${command[@]}" >"$result_file"
         code=$?
         set -e
-        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        # GitHub owns GITHUB_SHA. Using it as the annotation guard avoids a
+        # second, ambient-config-sensitive Git probe after boundver has already
+        # captured and reported the exact target commit itself.
+        annotation_commit=${GITHUB_SHA:-}
+        set +e
         python -I "${BOUNDVER_ACTION_PATH}/scripts/export_action_outputs.py" \
           --result "$result_file" \
-          --github-output "$GITHUB_OUTPUT"
+          --github-output "$GITHUB_OUTPUT" \
+          --operation "$BOUNDVER_OPERATION" \
+          --summary "$summary_file" \
+          --annotation-commit "$annotation_commit"
+        export_code=$?
+        set -e
+        if [[ "$export_code" -ne 0 && "$code" -eq 0 ]]; then
+          code=2
+        fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
-        if [[ -s "$result_file" ]]; then
+        if [[ "$BOUNDVER_OPERATION" == review ]]; then
+          if [[ ! -s "$summary_file" ]]; then
+            printf '%s\n' \
+              '## Boundver range review plan' \
+              '' \
+              'Review incomplete. No routing plan was emitted; inspect the step diagnostics and result-file.' \
+              '' \
+              'History remediation: use actions/checkout with fetch-depth: 0, or GitLab GIT_DEPTH: 0.' \
+              > "$summary_file"
+          fi
+          cat "$summary_file"
+          if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        elif [[ -s "$result_file" ]]; then
           python -I -m json.tool "$result_file"
         fi
         exit "$code"
+
+    - name: Upload complete range-review plan
+      id: upload-review
+      if: ${{ always() && inputs.operation == 'review' && inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ steps.verify.outputs.result-file }}
+          ${{ steps.verify.outputs.summary-file }}
+        if-no-files-found: error
+        retention-days: 7

@@ -32,14 +32,15 @@ class SourceAccessorBoundTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self._repository(root)
-            accessor = _SourceAccessor(root, "head")
+            with _SourceAccessor(root, "head") as accessor:
+                with self.assertRaisesRegex(
+                    GuardrailError, "Git blob too large"
+                ):
+                    accessor.read_file_limited("data.bin", 4)
 
-            with self.assertRaisesRegex(GuardrailError, "Git blob too large"):
-                accessor.read_file_limited("data.bin", 4)
-
-            content = accessor.read_file_limited("data.bin", 8)
-            self.assertEqual(content, b"12345678")
-            self.assertEqual(content.git_mode, "100644")
+                content = accessor.read_file_limited("data.bin", 8)
+                self.assertEqual(content, b"12345678")
+                self.assertEqual(content.git_mode, "100644")
 
     def test_working_tree_read_honors_provider_remaining_budget(self):
         with tempfile.TemporaryDirectory() as temporary:

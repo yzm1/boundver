@@ -8,13 +8,16 @@ from typing import Any, List, Optional
 from ._git import GitSourceSnapshot, _git_cat_blob
 from ._structured_data import strict_json_loads
 from ._utils import (
+    MAX_JSON_NUMBER_CHARACTERS,
     ConfigError,
     GuardrailError,
     _bounded_diagnostic_repr,
+    _bounded_exception_text,
     _bounded_json_value_issues,
+    _bounded_yaml_compose_node,
     _bounded_yaml_int,
     _read_bounded_path_bytes,
-    _toml_has_oversized_numeric_token,
+    _toml_preparse_issues,
 )
 
 CONFIG_CANDIDATES = (
@@ -54,7 +57,9 @@ def parse_config_text(text: str, path: Path) -> dict:
         try:
             result = strict_json_loads(text)
         except (ValueError, RecursionError, OverflowError) as exc:
-            raise ConfigError(f"JSON parse error in {path}: {exc}") from exc
+            raise ConfigError(
+                f"JSON parse error in {path}: {_bounded_exception_text(exc)}"
+            ) from exc
     elif suffix in (".yaml", ".yml"):
         try:
             import yaml  # type: ignore
@@ -65,7 +70,12 @@ def parse_config_text(text: str, path: Path) -> dict:
                         raise ConfigError(
                             "YAML aliases are not supported in boundver config"
                         )
-                    return super().compose_node(parent, index)
+                    return _bounded_yaml_compose_node(
+                        self,
+                        parent,
+                        index,
+                        super().compose_node,
+                    )
 
             def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict:
                 if not isinstance(node, yaml.MappingNode):
@@ -79,7 +89,10 @@ def parse_config_text(text: str, path: Path) -> dict:
                             f"{_bounded_diagnostic_repr(key)}"
                         )
                     if key in mapping:
-                        raise ConfigError(f"duplicate YAML mapping key {key!r}")
+                        raise ConfigError(
+                            "duplicate YAML mapping key "
+                            f"{_bounded_diagnostic_repr(key)}"
+                        )
                     mapping[key] = loader.construct_object(value_node, deep=deep)
                 return mapping
 
@@ -88,7 +101,18 @@ def parse_config_text(text: str, path: Path) -> dict:
                     scalar = loader.construct_scalar(node)
                     return _bounded_yaml_int(scalar)
                 except (TypeError, ValueError) as exc:
-                    raise ConfigError(f"invalid YAML integer: {exc}") from exc
+                    raise ConfigError(
+                        f"invalid YAML integer: {_bounded_exception_text(exc)}"
+                    ) from exc
+
+            def construct_float(loader: Any, node: Any) -> float:
+                scalar = loader.construct_scalar(node)
+                if len(scalar) > MAX_JSON_NUMBER_CHARACTERS:
+                    raise ConfigError(
+                        "YAML number exceeds the "
+                        f"{MAX_JSON_NUMBER_CHARACTERS}-character limit"
+                    )
+                return yaml.SafeLoader.construct_yaml_float(loader, node)
 
             StrictConfigLoader.add_constructor(
                 yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
@@ -97,6 +121,10 @@ def parse_config_text(text: str, path: Path) -> dict:
             StrictConfigLoader.add_constructor(
                 "tag:yaml.org,2002:int",
                 construct_integer,
+            )
+            StrictConfigLoader.add_constructor(
+                "tag:yaml.org,2002:float",
+                construct_float,
             )
             result = yaml.load(text, Loader=StrictConfigLoader)
         except ImportError:
@@ -108,13 +136,32 @@ def parse_config_text(text: str, path: Path) -> dict:
             raise
         except RecursionError as exc:
             raise ConfigError(f"YAML config is nested too deeply in {path}") from exc
+        except yaml.MarkedYAMLError as exc:
+            # PyYAML's string form includes the offending source line. Config
+            # files can accidentally contain credentials, so retain only the
+            # exception kind and coordinates in CLI and Action diagnostics.
+            mark = exc.context_mark or exc.problem_mark
+            location = ""
+            if mark is not None:
+                location = f" at line {mark.line + 1}, column {mark.column + 1}"
+            raise ConfigError(
+                f"YAML parse error in {path}: "
+                f"{exc.__class__.__name__}{location}"
+            ) from exc
         except Exception as exc:
-            raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
+            raise ConfigError(
+                f"YAML parse error in {path}: {_bounded_exception_text(exc)}"
+            ) from exc
     elif suffix == ".toml":
-        if _toml_has_oversized_numeric_token(text):
+        oversized_numeric, oversized_structure = _toml_preparse_issues(text)
+        if oversized_numeric:
             raise ConfigError(
                 f"TOML config contains a numeric token exceeding the "
                 f"cross-runtime safety limit in {path}"
+            )
+        if oversized_structure:
+            raise ConfigError(
+                f"TOML config exceeds the pre-parse structural limit in {path}"
             )
         try:
             import tomllib  # type: ignore
@@ -133,7 +180,9 @@ def parse_config_text(text: str, path: Path) -> dict:
         except RecursionError as exc:
             raise ConfigError(f"TOML config is nested too deeply in {path}") from exc
         except Exception as exc:
-            raise ConfigError(f"TOML parse error in {path}: {exc}") from exc
+            raise ConfigError(
+                f"TOML parse error in {path}: {_bounded_exception_text(exc)}"
+            ) from exc
     else:
         raise ConfigError(
             f"Unsupported config file extension '{suffix}' for {path}. "
@@ -163,7 +212,10 @@ def parse_config_bytes(data: bytes, path: Path, *, max_bytes: int) -> dict:
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ConfigError(f"Config file is not valid UTF-8: {path}: {exc}") from exc
+        raise ConfigError(
+            f"Config file is not valid UTF-8: {path}: "
+            f"{_bounded_exception_text(exc)}"
+        ) from exc
     return parse_config_text(text, path)
 
 
@@ -238,5 +290,7 @@ def load_config_file(
             f"Config file exceeds the {max_bytes}-byte limit at {path}"
         ) from exc
     except (OSError, ValueError) as exc:
-        raise ConfigError(f"Cannot read config file {path}: {exc}") from exc
+        raise ConfigError(
+            f"Cannot read config file {path}: {_bounded_exception_text(exc)}"
+        ) from exc
     return parse_config_bytes(data, path, max_bytes=max_bytes)

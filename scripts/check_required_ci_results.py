@@ -20,7 +20,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 
 EVENT_PATH_ENV = "GITHUB_EVENT_PATH"
@@ -304,7 +304,7 @@ class GitHubClient:
         self,
         method: str,
         endpoint: str,
-        payload: Optional[dict[str, object]] = None,
+        payload: dict[str, object] | None = None,
     ) -> object:
         prefix = f"/repos/{REPOSITORY}/"
         if type(endpoint) is not str or not endpoint.startswith(prefix):
@@ -629,7 +629,7 @@ def evaluate(event: dict[str, Any], fetch: Callable[[str], object]) -> dict[str,
     }
 
 
-def _safe_status_target(event: object) -> Optional[tuple[str, str]]:
+def _safe_status_target(event: object) -> tuple[str, str] | None:
     if type(event) is not dict:
         return None
     run = event.get("workflow_run")
@@ -649,7 +649,7 @@ def _safe_status_target(event: object) -> Optional[tuple[str, str]]:
 
 def main() -> int:
     event: object = None
-    client: Optional[GitHubClient] = None
+    client: GitHubClient | None = None
     try:
         event = _read_event(os.environ.get(EVENT_PATH_ENV, ""))
         client = GitHubClient(os.environ.get(TOKEN_ENV, ""))

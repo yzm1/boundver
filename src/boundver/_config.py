@@ -15,9 +15,12 @@ from ._git import (
 )
 from ._hashing import _read_bounded_path_bytes
 from ._utils import (
+    BoundedDiagnosticList,
+    DIAGNOSTIC_TRUNCATION_SENTINEL,
     FACET_SET,
     SOURCE_MODE_SET,
     _available_component_facets,
+    _bounded_diagnostic_list_preview,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
     _bounded_json_dumps,
@@ -26,8 +29,8 @@ from ._utils import (
     _is_within,
     _iter_bounded_filesystem_paths,
     _iter_bounded_json_values,
-    _match_path_glob,
     _normalize_declared_path,
+    _PathGlobOperation,
     boundary_provider_name,
     ConfigError as ConfigError,
     GuardrailError,
@@ -41,13 +44,14 @@ from .providers import (
     validate_provider_config,
     validate_provider_environment,
 )
-from ._consumer_graph import resolve_slice_components
+from ._consumer_graph import empty_explicit_slice_error, resolve_slice_components
 from ._structured_data import strict_json_loads
 from ._config_contract import (
     BEHAVIOR_FIELDS,
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     DEFAULT_FIELDS,
+    git_tag_prefix_error,
     MAX_CONSUMER_GRAPH_ITEMS,
     MAX_CONSUMER_IDENTIFIER_CHARS,
     PROVIDER_FIELDS,
@@ -56,6 +60,7 @@ from ._config_contract import (
     VERSION_FILE_FIELDS,
     VERSION_SOURCE_FIELDS,
     VERSION_TAG_FIELDS,
+    component_identifier_problem,
 )
 from ._config_io import (
     find_config_file as _find_config_file_impl,
@@ -201,6 +206,8 @@ def _reject_unknown_fields(
     if not isinstance(value, dict):
         return
     for key in value:
+        if isinstance(errors, BoundedDiagnosticList) and errors.truncated:
+            break
         if not isinstance(key, str):
             errors.append(f"{context} field names must be strings")
         elif key not in allowed:
@@ -223,27 +230,41 @@ def _validate_component_path_entries(
         return
 
     component_root = repo_root / component_path
+    component_name_display = _bounded_diagnostic_text(component_name)
+    component_path_display = _bounded_diagnostic_text(component_path)
     for rel in paths:
+        if isinstance(errors, BoundedDiagnosticList) and errors.truncated:
+            break
+        rel_display = _bounded_diagnostic_repr(rel)
         try:
             normalized = _normalize_declared_path(rel)
         except ValueError as exc:
             errors.append(
-                f"Component '{component_name}' {field_name} path {rel!r} {exc}"
+                f"Component '{component_name_display}' {field_name} path "
+                f"{rel_display} {_bounded_diagnostic_text(str(exc))}"
             )
             continue
         if _is_glob(normalized):
             continue
 
         full = component_root / normalized
+        normalized_display = _bounded_diagnostic_text(normalized)
         if not _is_within(component_root, full):
-            errors.append(f"Component '{component_name}' {field_name} path escapes component root: {normalized}")
+            errors.append(
+                f"Component '{component_name_display}' {field_name} path escapes "
+                f"component root: {normalized_display}"
+            )
             continue
         if not _is_within(repo_root, full):
-            errors.append(f"Component '{component_name}' {field_name} path escapes repository root: {normalized}")
+            errors.append(
+                f"Component '{component_name_display}' {field_name} path escapes "
+                f"repository root: {normalized_display}"
+            )
             continue
         if check_exists and not full.exists():
             errors.append(
-                f"Component '{component_name}' {field_name} path not found: {component_path}/{normalized}"
+                f"Component '{component_name_display}' {field_name} path not "
+                f"found: {component_path_display}/{normalized_display}"
                 f" — ensure the file exists before running generate"
             )
 
@@ -254,6 +275,7 @@ def _expand_component_paths(
     paths: List[str],
     source: Optional[str] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
+    _glob_operation: Optional[_PathGlobOperation] = None,
 ) -> Set[str]:
     if component_path is None:
         return set()
@@ -316,6 +338,9 @@ def _expand_component_paths(
             for path in filesystem_files
         ]
     matched: Set[str] = set()
+    glob_operation = _glob_operation or _PathGlobOperation(
+        "Component path expansion"
+    )
 
     for rel in paths:
         try:
@@ -324,8 +349,9 @@ def _expand_component_paths(
             continue
         is_dir_like = rel.endswith("/")
         if _is_glob(rel_norm):
+            glob_operation.prepare(rel_norm)
             for file_rel in all_files:
-                if _match_path_glob(file_rel, rel_norm):
+                if glob_operation.matches(file_rel, rel_norm):
                     matched.add(file_rel)
             continue
 
@@ -433,7 +459,7 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
             f"{_bounded_diagnostic_text(detail)}"
         ]
 
-    errors: List[str] = []
+    errors = BoundedDiagnosticList()
     try:
         for err in validator.iter_errors(schema_instance):
             path = ".".join(
@@ -443,6 +469,8 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
             path = _bounded_diagnostic_text(path)
             message = _bounded_diagnostic_text(err.message)
             errors.append(f"Schema validation error at {path}: {message}")
+            if errors.truncated:
+                break
     except MemoryError:
         raise
     except RecursionError:
@@ -456,6 +484,8 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
             "Schema validation failed safely: "
             f"{_bounded_diagnostic_text(detail)}"
         ]
+    if errors.truncated:
+        return sorted(errors[:-1]) + [DIAGNOSTIC_TRUNCATION_SENTINEL]
     return sorted(errors)
 
 
@@ -466,14 +496,20 @@ def validate_config(
     source: str = "working-tree",
     snapshot: Optional[GitSourceSnapshot] = None,
     require_slice_facets: bool = False,
+    validate_provider_runtime: bool = True,
 ) -> List[str]:
     """Validate a configuration without performing digest computation.
 
     ``require_slice_facets`` applies strict-generation slice availability
     rules.  Its backward-compatible default permits intentional null slice
     inputs for callers that will generate with ``strict=False``.
+
+    ``validate_provider_runtime=False`` is reserved for read-only historical
+    analysis: declarations, paths, graph edges, and slices remain validated,
+    but no custom provider is imported and no host dependency probe can make a
+    committed endpoint depend on the review machine.
     """
-    errors: List[str] = []
+    errors = BoundedDiagnosticList()
     if not isinstance(config, dict):
         return ["Config root must be a JSON object"]
     if source not in SOURCE_MODE_SET:
@@ -487,11 +523,12 @@ def validate_config(
     except RecursionError:
         return ["Config is nested too deeply to validate safely"]
     if json_issues:
-        return [
+        bounded_json_issues = BoundedDiagnosticList(
             "Config contains values that cannot be represented as deterministic JSON: "
-            + issue
+            + _bounded_diagnostic_text(issue)
             for issue in json_issues
-        ]
+        )
+        return list(bounded_json_issues)
 
     # Capture the index membership policy once. An established repository (or
     # an unborn repository with staged entries) has authoritative tracked
@@ -514,11 +551,13 @@ def validate_config(
     if tracking_snapshot_error is not None:
         errors.append(
             "Working-tree Git tracking state cannot be read: "
-            f"{tracking_snapshot_error}"
+            f"{_bounded_diagnostic_text(tracking_snapshot_error)}"
         )
 
     schema = _load_config_schema(repo_root)
     errors.extend(_schema_engine_errors(config, schema))
+    if errors.truncated:
+        return list(errors)
     _reject_unknown_fields(
         errors,
         config,
@@ -563,7 +602,7 @@ def validate_config(
             if invalid:
                 errors.append(
                     "defaults.verify_facets contains unknown facets: "
-                    + ", ".join(invalid)
+                    + _bounded_diagnostic_list_preview(invalid)
                 )
 
     components = config.get("components", {})
@@ -615,6 +654,8 @@ def validate_config(
             # resolve anonymous declarations before references can be checked.
             declared_custom_names_complete = True
             for i, entry in enumerate(providers_list):
+                if errors.truncated:
+                    break
                 if not isinstance(entry, dict):
                     errors.append(f"providers[{i}] must be an object")
                     declared_custom_names_complete = False
@@ -630,7 +671,9 @@ def validate_config(
                 cls_val = entry.get("class", "")
                 if isinstance(cls_val, str) and cls_val.strip() and not cls_val.strip().isidentifier():
                     errors.append(
-                        f"providers[{i}] class name '{cls_val.strip()}' is not a valid Python identifier"
+                        f"providers[{i}] class name "
+                        f"'{_bounded_diagnostic_text(cls_val.strip())}' is not a "
+                        "valid Python identifier"
                     )
                 # Track explicit expected names for static cross-reference.
                 # Without one, the provider instance determines its registered
@@ -660,13 +703,23 @@ def validate_config(
                             f"providers[{i}] field 'name' must start with 'custom.' "
                             "and include a name after the prefix "
                             f"to avoid collisions with built-in providers "
-                            f"(got '{declared_name}', try 'custom.{declared_name}')"
+                            f"(got '{_bounded_diagnostic_text(declared_name)}', try "
+                            f"'custom.{_bounded_diagnostic_text(declared_name)}')"
                         )
                     else:
                         declared_custom_names.add(declared_name)
 
+    if errors.truncated:
+        return list(errors)
+
     all_external_consumers: Set[str] = set()
     for name, comp in components.items():
+        if errors.truncated:
+            break
+        name_problem = component_identifier_problem(
+            name,
+            max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+        )
         if not isinstance(name, str) or not name.strip():
             errors.append("Component names must be non-empty strings")
             continue
@@ -677,6 +730,15 @@ def validate_config(
                 f"limit: {_bounded_diagnostic_repr(name)}"
             )
             continue
+        if name_problem is not None:
+            errors.append(
+                f"Component name {_bounded_diagnostic_repr(name)} is not "
+                f"addressable: {name_problem}. Rename it and update every "
+                "consumer edge, slice reference, and lockfile entry."
+            )
+            continue
+        raw_component_name = name
+        name = _bounded_diagnostic_text(name)
         if not isinstance(comp, dict):
             errors.append(f"Component '{name}' must be an object")
             continue
@@ -694,6 +756,7 @@ def validate_config(
             errors.append(f"Component '{name}' missing required field: path")
             continue
         raw_component_path = comp.get("path")
+        raw_component_path_display = _bounded_diagnostic_repr(raw_component_path)
         component_path: Optional[str] = None
         if not isinstance(raw_component_path, str) or not raw_component_path.strip():
             errors.append(f"Component '{name}' field 'path' must be a non-empty string")
@@ -709,28 +772,33 @@ def validate_config(
                 try:
                     normalized_path = _normalize_declared_path(raw_component_path)
                 except ValueError as exc:
-                    errors.append(f"Component '{name}' path {raw_component_path!r} {exc}")
+                    errors.append(
+                        f"Component '{name}' path {raw_component_path_display} "
+                        f"{_bounded_diagnostic_text(str(exc))}"
+                    )
                     normalized_path = None
             if normalized_path is not None and _is_glob(normalized_path):
                 errors.append(
                     f"Component '{name}' path must be a literal directory, not a glob: "
-                    f"{normalized_path}"
+                    f"{_bounded_diagnostic_text(normalized_path)}"
                 )
                 normalized_path = None
             if normalized_path is not None:
                 component_path = normalized_path
             if component_path is not None and source == "working-tree" and (repo_root / component_path).is_symlink():
                 errors.append(
-                    f"Component '{name}' path must not be a symlink: {component_path}"
+                    f"Component '{name}' path must not be a symlink: "
+                    f"{_bounded_diagnostic_text(component_path)}"
                 )
             elif component_path is not None and source == "working-tree" and not _is_within(repo_root, repo_root / component_path):
                 errors.append(
-                    f"Component '{name}' path escapes the repository: {component_path}"
+                    f"Component '{name}' path escapes the repository: "
+                    f"{_bounded_diagnostic_text(component_path)}"
                 )
             elif component_path is not None and source == "working-tree" and not (repo_root / component_path).is_dir():
                 errors.append(
                     f"Component '{name}' path not found or not a directory: "
-                    f"{component_path}"
+                    f"{_bounded_diagnostic_text(component_path)}"
                 )
             elif component_path is not None and source in {"head", "index"}:
                 try:
@@ -743,7 +811,8 @@ def validate_config(
                     )
                 except (OSError, subprocess.CalledProcessError, ValueError) as exc:
                     errors.append(
-                        f"Component '{name}' path cannot be read at {source}: {exc}"
+                        f"Component '{name}' path cannot be read at {source}: "
+                        f"{_bounded_diagnostic_text(str(exc))}"
                     )
                 else:
                     directory_prefix = component_path.rstrip("/") + "/"
@@ -753,15 +822,17 @@ def validate_config(
                     ):
                         errors.append(
                             f"Component '{name}' path is not a tracked directory "
-                            f"at {source}: {component_path}"
+                            f"at {source}: {_bounded_diagnostic_text(component_path)}"
                         )
             if component_path is not None and component_path in seen_component_paths:
                 other = seen_component_paths[component_path]
                 errors.append(
-                    f"Duplicate component path '{component_path}' used by '{other}' and '{name}'"
+                    "Duplicate component path "
+                    f"'{_bounded_diagnostic_text(component_path)}' used by "
+                    f"'{_bounded_diagnostic_text(other)}' and '{name}'"
                 )
             elif component_path is not None:
-                seen_component_paths[component_path] = name
+                seen_component_paths[component_path] = raw_component_name
         boundary = comp.get("boundary", {})
         if not isinstance(boundary, dict):
             errors.append(f"Component '{name}' boundary must be an object")
@@ -780,7 +851,8 @@ def validate_config(
             errors.append(f"Component '{name}' boundary.provider must not have surrounding whitespace")
         elif boundary["provider"] not in known_providers and not boundary["provider"].startswith("custom."):
             errors.append(
-                f"Component '{name}' has unsupported boundary.provider '{boundary['provider']}' "
+                f"Component '{name}' has unsupported boundary.provider "
+                f"'{_bounded_diagnostic_text(boundary['provider'])}' "
                 "(use a known provider or custom.* namespace)"
             )
         elif boundary["provider"] == "custom.":
@@ -793,7 +865,8 @@ def validate_config(
             provider_name = boundary["provider"]
             if providers_list is None:
                 errors.append(
-                    f"Component '{name}' uses '{provider_name}' but no 'providers' list is "
+                    f"Component '{name}' uses "
+                    f"'{_bounded_diagnostic_text(provider_name)}' but no 'providers' list is "
                     "declared in the config — add a top-level 'providers' array"
                 )
             elif (
@@ -801,8 +874,10 @@ def validate_config(
                 and provider_name not in declared_custom_names
             ):
                 errors.append(
-                    f"Component '{name}' uses '{provider_name}' which is not declared in the "
-                    f"'providers' list — add an entry with \"name\": \"{provider_name}\""
+                    f"Component '{name}' uses "
+                    f"'{_bounded_diagnostic_text(provider_name)}' which is not declared in the "
+                    "'providers' list — add an entry with \"name\": "
+                    f"\"{_bounded_diagnostic_text(provider_name)}\""
                 )
         if "options" in boundary and not isinstance(boundary["options"], dict):
             errors.append(f"Component '{name}' field 'boundary.options' must be an object")
@@ -829,6 +904,8 @@ def validate_config(
             paths,
             check_exists=(source == "working-tree"),
         )
+        if errors.truncated:
+            break
 
         behavior = comp.get("behavior")
         if behavior is not None:
@@ -862,6 +939,10 @@ def validate_config(
                     behavior_paths,
                     check_exists=(source == "working-tree"),
                 )
+                if errors.truncated:
+                    break
+        if errors.truncated:
+            break
         vendored = comp.get("vendored_copies")
         if vendored is not None and not _is_str_list(vendored):
             errors.append(f"Component '{name}' field 'vendored_copies' must be an array of strings")
@@ -869,6 +950,8 @@ def validate_config(
             if len(vendored) != len(set(vendored)):
                 errors.append(f"Component '{name}' field 'vendored_copies' contains duplicates")
             for vendored_path in vendored:
+                if errors.truncated:
+                    break
                 try:
                     normalized_vendored = _normalize_declared_path(vendored_path)
                 except ValueError:
@@ -876,7 +959,8 @@ def validate_config(
                 if normalized_vendored is None or _is_glob(normalized_vendored):
                     errors.append(
                         f"Component '{name}' vendored copy must be a safe repo-relative "
-                        f"path using '/' separators: {vendored_path!r}"
+                        "path using '/' separators: "
+                        f"{_bounded_diagnostic_repr(vendored_path)}"
                     )
                 elif component_path is not None and (
                     normalized_vendored == component_path
@@ -885,17 +969,21 @@ def validate_config(
                 ):
                     errors.append(
                         f"Component '{name}' vendored copy overlaps its source component: "
-                        f"{normalized_vendored}"
+                        f"{_bounded_diagnostic_text(normalized_vendored)}"
                     )
                 elif not _is_within(repo_root, repo_root / normalized_vendored):
                     errors.append(
                         f"Component '{name}' vendored copy must be a safe repo-relative "
-                        f"path within the repository: {normalized_vendored}"
+                        "path within the repository: "
+                        f"{_bounded_diagnostic_text(normalized_vendored)}"
                     )
                 elif source == "working-tree" and not (repo_root / normalized_vendored).exists():
                     errors.append(
-                        f"Component '{name}' vendored copy not found: {normalized_vendored}"
+                        f"Component '{name}' vendored copy not found: "
+                        f"{_bounded_diagnostic_text(normalized_vendored)}"
                     )
+        if errors.truncated:
+            break
         consumers = comp.get("consumers")
         if consumers is not None:
             if not _is_str_list(consumers):
@@ -909,6 +997,12 @@ def validate_config(
                 if len(consumers) != len(set(consumers)):
                     errors.append(f"Component '{name}' field 'consumers' contains duplicates")
                 for consumer in consumers:
+                    if errors.truncated:
+                        break
+                    consumer_problem = component_identifier_problem(
+                        consumer,
+                        max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+                    )
                     if len(consumer) > MAX_CONSUMER_IDENTIFIER_CHARS:
                         errors.append(
                             f"Component '{name}' consumer identifier exceeds the "
@@ -919,15 +1013,27 @@ def validate_config(
                     if not consumer.strip() or consumer != consumer.strip():
                         errors.append(
                             f"Component '{name}' consumer identifiers must be non-empty "
-                            f"and have no surrounding whitespace: {consumer!r}"
+                            "and have no surrounding whitespace: "
+                            f"{_bounded_diagnostic_repr(consumer)}"
                         )
                         continue
-                    if consumer == name:
+                    if consumer_problem is not None:
+                        errors.append(
+                            f"Component '{name}' consumer identifier "
+                            f"{_bounded_diagnostic_repr(consumer)} is not "
+                            f"addressable: {consumer_problem}. Rename the "
+                            "referenced component and update this edge."
+                        )
+                        continue
+                    if consumer == raw_component_name:
                         errors.append(f"Component '{name}' cannot consume its own boundary")
                     elif consumer not in components:
                         errors.append(
-                            f"Component '{name}' references unknown consumer: {consumer}"
+                            f"Component '{name}' references unknown consumer: "
+                            f"{_bounded_diagnostic_text(consumer)}"
                         )
+        if errors.truncated:
+            break
         external_consumers = comp.get("external_consumers")
         if external_consumers is not None:
             if not _is_str_list(external_consumers):
@@ -946,6 +1052,8 @@ def validate_config(
                         f"Component '{name}' field 'external_consumers' contains duplicates"
                     )
                 for consumer in external_consumers:
+                    if errors.truncated:
+                        break
                     if len(consumer) > MAX_CONSUMER_IDENTIFIER_CHARS:
                         errors.append(
                             f"Component '{name}' external consumer identifier "
@@ -957,15 +1065,18 @@ def validate_config(
                         errors.append(
                             f"Component '{name}' external consumer identifiers must "
                             "be non-empty and have no surrounding whitespace: "
-                            f"{consumer!r}"
+                            f"{_bounded_diagnostic_repr(consumer)}"
                         )
                     elif consumer in components:
                         errors.append(
-                            f"Component '{name}' external consumer '{consumer}' is a "
+                            f"Component '{name}' external consumer "
+                            f"'{_bounded_diagnostic_text(consumer)}' is a "
                             "configured component; declare it in 'consumers' instead"
                         )
                     else:
                         all_external_consumers.add(consumer)
+        if errors.truncated:
+            break
         component_verify_facets = comp.get("verify_facets")
         if component_verify_facets is not None:
             if (
@@ -987,7 +1098,8 @@ def validate_config(
                 if invalid_facets:
                     errors.append(
                         f"Component '{name}' field 'verify_facets' contains unknown "
-                        f"facets: {', '.join(invalid_facets)}"
+                        "facets: "
+                        + _bounded_diagnostic_list_preview(invalid_facets)
                     )
 
         # Reject explicit policies that can never produce their selected
@@ -1041,7 +1153,7 @@ def validate_config(
             ):
                 errors.append(
                     f"Component '{name}' explicitly gates 'boundary' but provider "
-                    f"'{boundary_kind}' has no boundary paths"
+                    f"'{_bounded_diagnostic_text(boundary_kind)}' has no boundary paths"
                 )
 
         # Validate version_source — check file exists and has a supported extension.
@@ -1056,8 +1168,14 @@ def validate_config(
                     VERSION_TAG_FIELDS,
                     f"component '{name}' version_source",
                 )
-                if not isinstance(version_source["git_tag_prefix"], str) or not version_source["git_tag_prefix"].strip():
-                    errors.append(f"Component '{name}' version_source.git_tag_prefix must be a non-empty string")
+                prefix_error = git_tag_prefix_error(
+                    version_source["git_tag_prefix"]
+                )
+                if prefix_error is not None:
+                    errors.append(
+                        f"Component '{name}' version_source.git_tag_prefix "
+                        f"{prefix_error}"
+                    )
             elif "file" in version_source:
                 _reject_unknown_fields(
                     errors,
@@ -1066,6 +1184,7 @@ def validate_config(
                     f"component '{name}' version_source",
                 )
                 vs_file = version_source["file"]
+                vs_file_display = _bounded_diagnostic_repr(vs_file)
                 if not isinstance(vs_file, str) or not vs_file.strip():
                     errors.append(f"Component '{name}' version_source.file must be a non-empty string")
                 else:
@@ -1080,13 +1199,16 @@ def validate_config(
                     if not safe_vs_file:
                         errors.append(
                             f"Component '{name}' version_source.file must be a safe "
-                            f"component-relative path using '/' separators: {vs_file!r}"
+                            "component-relative path using '/' separators: "
+                            f"{vs_file_display}"
                         )
                         normalized_vs_file = vs_file
                     _supported_vs_exts = {".json", ".toml", ".yaml", ".yml"}
                     if Path(normalized_vs_file).suffix not in _supported_vs_exts:
                         errors.append(
-                            f"Component '{name}' version_source.file has unsupported extension '{Path(normalized_vs_file).suffix}'"
+                            f"Component '{name}' version_source.file has unsupported "
+                            "extension "
+                            f"'{_bounded_diagnostic_text(Path(normalized_vs_file).suffix)}'"
                             f" — supported: {', '.join(sorted(_supported_vs_exts))}"
                         )
                     vs_full = (
@@ -1102,17 +1224,19 @@ def validate_config(
                     if source == "working-tree" and vs_full is not None and vs_full.is_symlink():
                         errors.append(
                             f"Component '{name}' version_source.file must not be a symlink: "
-                            f"'{vs_file}'"
+                            f"{vs_file_display}"
                         )
                     elif source == "working-tree" and vs_full is not None and not _is_within(repo_root, vs_full):
                         errors.append(
                             f"Component '{name}' version_source.file escapes the repository: "
-                            f"'{vs_file}'"
+                            f"{vs_file_display}"
                         )
                     if source == "working-tree" and vs_full is not None and not vs_full.exists():
                         errors.append(
-                            f"Component '{name}' version_source.file not found: '{vs_file}'"
-                            f" (looked for {component_path}/{vs_file})"
+                            f"Component '{name}' version_source.file not found: "
+                            f"{vs_file_display} (looked for "
+                            f"{_bounded_diagnostic_text(component_path)}/"
+                            f"{_bounded_diagnostic_text(vs_file)})"
                         )
                     elif source == "working-tree" and vs_full is not None:
                         if tracking_snapshot_error is not None:
@@ -1125,7 +1249,7 @@ def validate_config(
                         ):
                             errors.append(
                                 f"Component '{name}' version_source.file must be "
-                                f"tracked in Git: '{vs_file}'"
+                                f"tracked in Git: {vs_file_display}"
                             )
                     elif (
                         source in {"head", "index"}
@@ -1144,13 +1268,14 @@ def validate_config(
                         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
                             errors.append(
                                 f"Component '{name}' version_source.file cannot be "
-                                f"read at {source}: '{vs_file}': {exc}"
+                                f"read at {source}: {vs_file_display}: "
+                                f"{_bounded_diagnostic_text(str(exc))}"
                             )
                         else:
                             if selected_entry is None:
                                 errors.append(
                                     f"Component '{name}' version_source.file not found "
-                                    f"in captured {source} source: '{vs_file}'"
+                                    f"in captured {source} source: {vs_file_display}"
                                 )
                             elif snapshot is not None and (
                                 selected_entry.object_type != "blob"
@@ -1159,7 +1284,7 @@ def validate_config(
                                 errors.append(
                                     f"Component '{name}' version_source.file must be "
                                     f"a regular file in captured {source} source: "
-                                    f"'{vs_file}'"
+                                    f"{vs_file_display}"
                                 )
                     if "field" not in version_source:
                         errors.append(
@@ -1185,6 +1310,9 @@ def validate_config(
                     f"Component '{name}' version_source must have either 'file' or 'git_tag_prefix'"
                 )
 
+    if errors.truncated:
+        return list(errors)
+
     if len(all_external_consumers) > MAX_CONSUMER_GRAPH_ITEMS:
         errors.append(
             "Config declares more than "
@@ -1197,8 +1325,11 @@ def validate_config(
     # selected tracked file sets against the same source view used by hashing;
     # the behavior envelope independently makes boundary changes observable.
     for name, comp in components.items():
+        if errors.truncated:
+            break
         if not isinstance(comp, dict):
             continue
+        name = _bounded_diagnostic_text(name)
         boundary = comp.get("boundary")
         behavior = comp.get("behavior")
         component_path = comp.get("path")
@@ -1212,6 +1343,7 @@ def validate_config(
         behavior_paths = behavior.get("paths", [])
         if not _is_str_list(boundary_paths) or not _is_str_list(behavior_paths):
             continue
+        glob_operation = _PathGlobOperation("Component path expansion")
         try:
             boundary_files = _expand_component_paths(
                 repo_root,
@@ -1219,6 +1351,7 @@ def validate_config(
                 boundary_paths,
                 source=source,
                 snapshot=snapshot,
+                _glob_operation=glob_operation,
             )
             behavior_files = _expand_component_paths(
                 repo_root,
@@ -1226,15 +1359,19 @@ def validate_config(
                 behavior_paths,
                 source=source,
                 snapshot=snapshot,
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             errors.append(
-                f"Component '{name}' path expansion could not be validated: {exc}"
+                f"Component '{name}' path expansion could not be validated: "
+                f"{_bounded_diagnostic_text(str(exc))}"
             )
             continue
         uncovered = sorted(boundary_files - behavior_files)
         if uncovered:
-            preview = ", ".join(uncovered[:3])
+            preview = ", ".join(
+                _bounded_diagnostic_text(path) for path in uncovered[:3]
+            )
             if len(uncovered) > 3:
                 preview += f", +{len(uncovered) - 3} more"
             errors.append(
@@ -1243,12 +1380,18 @@ def validate_config(
             )
 
     for sname, sdef in slices.items():
+        if errors.truncated:
+            break
         if not isinstance(sname, str) or not sname.strip():
             errors.append("Slice names must be non-empty strings")
             continue
+        sname = _bounded_diagnostic_text(sname)
         if not isinstance(sdef, dict):
             errors.append(f"Slice '{sname}' must be an object")
             continue
+        empty_slice_error = empty_explicit_slice_error(sname, sdef)
+        if empty_slice_error is not None:
+            errors.append(empty_slice_error)
         _reject_unknown_fields(
             errors,
             sdef,
@@ -1276,27 +1419,42 @@ def validate_config(
                 )
                 slice_components = []
             else:
-                slice_components = raw_slice_components
-                if len(slice_components) != len(set(slice_components)):
+                slice_components = []
+                if len(raw_slice_components) != len(set(raw_slice_components)):
                     errors.append(
                         f"Slice '{sname}' field 'components' contains duplicates"
                     )
+                for cname in raw_slice_components:
+                    cname_problem = component_identifier_problem(
+                        cname,
+                        max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+                    )
+                    if cname_problem is not None:
+                        errors.append(
+                            f"Slice '{sname}' component identifier "
+                            f"{_bounded_diagnostic_repr(cname)} is not "
+                            f"addressable: {cname_problem}. Rename the "
+                            "component and update this slice."
+                        )
+                        continue
+                    slice_components.append(cname)
         else:
             closure_seed = sdef.get("closure_of")
-            if (
-                not isinstance(closure_seed, str)
-                or not closure_seed.strip()
-                or closure_seed != closure_seed.strip()
-            ):
+            closure_problem = component_identifier_problem(
+                closure_seed,
+                max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+            )
+            if closure_problem is not None:
                 errors.append(
-                    f"Slice '{sname}' field 'closure_of' must be a non-empty "
-                    "component name with no surrounding whitespace"
+                    f"Slice '{sname}' field 'closure_of' is not an addressable "
+                    f"component identifier: {closure_problem}. Rename the "
+                    "component and update this slice."
                 )
                 slice_components = []
             elif closure_seed not in components:
                 errors.append(
                     f"Slice '{sname}' closure_of references unknown component: "
-                    f"{closure_seed}"
+                    f"{_bounded_diagnostic_text(closure_seed)}"
                 )
                 slice_components = []
             else:
@@ -1304,8 +1462,13 @@ def validate_config(
         if "description" in sdef and not isinstance(sdef["description"], str):
             errors.append(f"Slice '{sname}' field 'description' must be a string")
         for cname in slice_components:
+            if errors.truncated:
+                break
             if cname not in components:
-                errors.append(f"Slice '{sname}' references unknown component: {cname}")
+                errors.append(
+                    f"Slice '{sname}' references unknown component: "
+                    f"{_bounded_diagnostic_text(cname)}"
+                )
             elif (
                 require_slice_facets
                 and isinstance(mode, str)
@@ -1325,7 +1488,9 @@ def validate_config(
                             else "unknown"
                         )
                         detail = (
-                            f"provider '{provider}' does not produce a boundary "
+                            "provider "
+                            f"'{_bounded_diagnostic_text(provider)}' does not "
+                            "produce a boundary "
                             "digest from this declaration"
                         )
                     elif mode == "behavior":
@@ -1334,20 +1499,32 @@ def validate_config(
                         detail = "the component has no version_source"
                     errors.append(
                         f"Slice '{sname}' mode '{mode}' requires {mode} digest "
-                        f"from component '{cname}' to supply that facet, but {detail}"
+                        f"from component '{_bounded_diagnostic_text(cname)}' to "
+                        f"supply that facet, but {_bounded_diagnostic_text(detail)}"
                     )
 
-    provider_load_errors = load_custom_providers(
-        config.get("providers", []),
-        allow_custom=allow_custom_providers,
-        registry=registry,
-    )
-    if allow_custom_providers:
-        errors.extend(provider_load_errors)
+    if errors.truncated:
+        return list(errors)
+
+    if validate_provider_runtime:
+        provider_load_errors = load_custom_providers(
+            config.get("providers", []),
+            allow_custom=allow_custom_providers,
+            registry=registry,
+        )
+        if allow_custom_providers:
+            errors.extend(provider_load_errors)
+        if errors.truncated:
+            return list(errors)
     for name, comp in components.items():
-        if not isinstance(name, str) or not name.strip():
-            errors.append("Component names must be non-empty strings")
+        if errors.truncated:
+            break
+        if component_identifier_problem(
+            name,
+            max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+        ) is not None:
             continue
+        name = _bounded_diagnostic_text(name)
         if not isinstance(comp, dict):
             continue
         boundary = comp.get("boundary")
@@ -1359,7 +1536,8 @@ def validate_config(
         if provider is None:
             if allow_custom_providers and provider_name.startswith("custom."):
                 errors.append(
-                    f"Component '{name}' provider '{provider_name}' was not registered "
+                    f"Component '{name}' provider "
+                    f"'{_bounded_diagnostic_text(provider_name)}' was not registered "
                     "by the configured provider module"
                 )
             continue
@@ -1375,29 +1553,42 @@ def validate_config(
                 "explicit boundary provider"
             )
             continue
-        for provider_error in validate_provider_environment(provider, boundary):
-            errors.append(f"Component '{name}': {provider_error}")
-        if source == "working-tree":
+        if validate_provider_runtime:
+            for provider_error in validate_provider_environment(provider, boundary):
+                errors.append(
+                    f"Component '{name}': "
+                    f"{_bounded_diagnostic_text(provider_error)}"
+                )
+                if errors.truncated:
+                    break
+        if validate_provider_runtime and source == "working-tree":
             for provider_error in validate_provider_config(
                 provider, boundary, component_path, repo_root
             ):
-                errors.append(f"Component '{name}': {provider_error}")
+                errors.append(
+                    f"Component '{name}': {_bounded_diagnostic_text(provider_error)}"
+                )
+                if errors.truncated:
+                    break
 
-    return errors
+    return list(errors)
 
 
 def config_warnings(config: dict, repo_root: Path) -> List[str]:
-    warnings: List[str] = []
+    warnings = BoundedDiagnosticList()
     if not isinstance(config, dict):
-        return warnings
+        return list(warnings)
 
     components = config.get("components", {})
     if not isinstance(components, dict):
-        return warnings
+        return list(warnings)
 
     for name, comp in components.items():
+        if warnings.truncated:
+            break
         if not isinstance(comp, dict):
             continue
+        name = _bounded_diagnostic_text(name)
         component_path = comp.get("path") if isinstance(comp.get("path"), str) and comp["path"].strip() else None
         if component_path is None:
             continue
@@ -1414,29 +1605,42 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
         if not boundary_paths:
             continue
 
+        glob_operation = _PathGlobOperation("Component path expansion")
         try:
             boundary_files = _expand_component_paths(
-                repo_root, component_path, boundary_paths, source="working-tree"
+                repo_root,
+                component_path,
+                boundary_paths,
+                source="working-tree",
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             warnings.append(
-                f"Component '{name}' behavior coverage could not be inspected: {exc}"
+                f"Component '{name}' behavior coverage could not be inspected: "
+                f"{_bounded_diagnostic_text(str(exc))}"
             )
             continue
         if not boundary_files:
             continue
         try:
             behavior_files = _expand_component_paths(
-                repo_root, component_path, behavior_paths, source="working-tree"
+                repo_root,
+                component_path,
+                behavior_paths,
+                source="working-tree",
+                _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
             warnings.append(
-                f"Component '{name}' behavior coverage could not be inspected: {exc}"
+                f"Component '{name}' behavior coverage could not be inspected: "
+                f"{_bounded_diagnostic_text(str(exc))}"
             )
             continue
         uncovered = sorted(boundary_files - behavior_files)
         if uncovered:
-            preview = ", ".join(uncovered[:3])
+            preview = ", ".join(
+                _bounded_diagnostic_text(path) for path in uncovered[:3]
+            )
             if len(uncovered) > 3:
                 preview += f", +{len(uncovered) - 3} more"
             warnings.append(
@@ -1444,7 +1648,7 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
                 " — behavior should usually be a superset of boundary"
             )
 
-    return warnings
+    return list(warnings)
 
 
 def discover_components(

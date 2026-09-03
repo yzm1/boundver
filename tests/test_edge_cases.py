@@ -369,7 +369,9 @@ class ChangedComponentsSinceRefTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
             config = {"components": {"svc": {"path": "svc"}}}
-            with self.assertRaisesRegex(ValueError, "Unable to diff"):
+            with self.assertRaisesRegex(
+                ValueError, "Cannot resolve changed-from Git ref"
+            ):
                 changed_components_since_ref(config, root, "nonexistent_ref_xyz")
 
     def test_detects_changed_component(self):

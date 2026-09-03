@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from boundver import _baseline
+from boundver import _baseline, core
 
 
 class BaselineAncestorSafetyTests(unittest.TestCase):
@@ -31,6 +31,28 @@ class BaselineAncestorSafetyTests(unittest.TestCase):
     def _restore_competing_parent(parent: Path, outside: Path, swapped: bool) -> None:
         if swapped:
             parent.replace(outside)
+
+    def test_ntfs_alternate_data_stream_baseline_spelling_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "debt.json:review.json"
+
+            with self.assertRaisesRegex(
+                _baseline.BaselineError,
+                "alternate-data-stream",
+            ):
+                _baseline.write_baseline_create_only(
+                    target,
+                    "reviewed debt\n",
+                    repo_root=root,
+                )
+            with self.assertRaisesRegex(
+                _baseline.BaselineError,
+                "alternate-data-stream",
+            ):
+                core._resolve_baseline_path(root, target.name)
+
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_create_parent_swap_cannot_redirect_publication_outside_repo(self):
         with tempfile.TemporaryDirectory() as td:

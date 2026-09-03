@@ -16,17 +16,22 @@ from ._git import (
     _working_tree_name_status,
 )
 from ._utils import (
+    BoundedDiagnosticList,
     FACETS,
+    GuardrailError,
     SOURCE_MODE_SET,
+    _bounded_diagnostic_list_preview,
+    _bounded_exception_text,
+    _bounded_diagnostic_text,
     _bounded_json_dumps,
     _effective_component_facets,
     _is_glob,
-    _match_path_glob,
     _normalize_declared_path,
+    _PathGlobOperation,
     _short,
     boundary_provider_name,
 )
-from ._consumer_graph import affected_consumer_groups, affected_consumers
+from ._consumer_graph import affected_consumer_groups
 from ._lockfile import MAX_LOCKFILE_BYTES, parse_lockfile_bytes
 
 
@@ -453,13 +458,15 @@ def print_diff(diff: dict) -> None:
         print(f"  SLICES UNCHANGED: {', '.join(slices['unchanged'])}")
 
 
-def print_status(lockfile: dict) -> None:
+def print_status(lockfile: dict, *, source: Optional[str] = None) -> None:
     """Print a summary of the current lockfile state."""
     comps = lockfile.get("components", {})
     slices = lockfile.get("slices", {})
 
     print()
     print(f"  Project: {lockfile.get('project', '?')}")
+    if source is not None:
+        print(f"  Source: {source}")
     print(f"  Components: {len(comps)}")
     print(f"  Slices: {len(slices)}")
 
@@ -481,12 +488,23 @@ def print_status(lockfile: dict) -> None:
             f"{provider}/{state}  exact={_short(fps.get('exact'))}  "
             f"boundary={_short(fps.get('boundary'))}"
         )
+    print()
+    print("  Declared consumer edges (recorded in lock):")
+    consumer_edge_count = 0
+    for name, component in sorted(comps.items()):
         consumers = component.get("consumers", [])
         if consumers:
-            print(f"      consumers: {', '.join(consumers)}")
+            consumer_edge_count += len(consumers)
+            print(f"    {name} -> components: {', '.join(consumers)}")
         external_consumers = component.get("external_consumers", [])
         if external_consumers:
-            print(f"      external consumers: {', '.join(external_consumers)}")
+            consumer_edge_count += len(external_consumers)
+            print(
+                f"    {name} -> external consumers: "
+                f"{', '.join(external_consumers)}"
+            )
+    if not consumer_edge_count:
+        print("    none")
 
     # Boundary coverage
     boundary_kinds: Dict[str, int] = {}
@@ -588,7 +606,7 @@ def analyze_explain_changes(
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            detail = str(exc).strip() or type(exc).__name__
+            detail = _bounded_exception_text(exc)
             return {"error": f"cannot capture {source} source: {detail}"}
 
     component_path = str(comp.get("path", "")).rstrip("/")
@@ -691,7 +709,7 @@ def analyze_explain_changes(
             return {
                 "error": (
                     f"failed to diff '{component_name}' against "
-                    f"{effective_base}: {exc}"
+                    f"{effective_base}: {_bounded_exception_text(exc)}"
                 )
             }
 
@@ -704,18 +722,32 @@ def analyze_explain_changes(
             continue
 
     boundary_changed: List[Tuple[str, str]] = []
-    for status, rel in changed:
-        component_relative = rel
-        if component_relative.startswith(component_prefix):
-            component_relative = component_relative[len(component_prefix):]
-        for bp in normalized_boundary_paths:
-            if _is_glob(bp):
-                if _match_path_glob(component_relative, bp):
+    glob_operation = _PathGlobOperation("Boundary change analysis")
+    try:
+        for boundary_path in normalized_boundary_paths:
+            if _is_glob(boundary_path):
+                glob_operation.prepare(boundary_path)
+        for status, rel in changed:
+            component_relative = rel
+            if component_relative.startswith(component_prefix):
+                component_relative = component_relative[len(component_prefix):]
+            for bp in normalized_boundary_paths:
+                if _is_glob(bp):
+                    if glob_operation.matches(component_relative, bp):
+                        boundary_changed.append((status, rel))
+                        break
+                elif component_relative == bp or component_relative.startswith(
+                    f"{bp}/"
+                ):
                     boundary_changed.append((status, rel))
                     break
-            elif component_relative == bp or component_relative.startswith(f"{bp}/"):
-                boundary_changed.append((status, rel))
-                break
+    except GuardrailError as exc:
+        return {
+            "error": (
+                "boundary glob analysis failed closed: "
+                f"{_bounded_exception_text(exc)}"
+            )
+        }
 
     return {
         "error": None,
@@ -777,6 +809,33 @@ def explain_component_changes(
     if not changed:
         print()
         print("No tracked file changes detected for this component path.")
+        print(
+            "Source scope: `--source` applies only to this invocation; "
+            "it is not shared shell state."
+        )
+        if source == "head":
+            print(
+                "  Inspect staged changes: "
+                "`boundver explain COMPONENT --source index`."
+            )
+            print(
+                "  Inspect staged and unstaged tracked changes: "
+                "`boundver explain COMPONENT --source working-tree`."
+            )
+        elif source == "index":
+            print(
+                "  Inspect staged and unstaged tracked changes: "
+                "`boundver explain COMPONENT --source working-tree`."
+            )
+        else:
+            print(
+                "  Inspect committed state: "
+                "`boundver explain COMPONENT --source head`."
+            )
+            print(
+                "  Inspect staged state: "
+                "`boundver explain COMPONENT --source index`."
+            )
         return 0
 
     print()
@@ -807,11 +866,20 @@ def explain_component_changes(
     return 0
 
 
-def _print_json(data: Any) -> None:
+def _print_json(data: Any, *, max_bytes: Optional[int] = None) -> None:
     # JSON quoting already escapes repository-controlled controls. Write the
     # serialized document directly so trusted pretty-print line breaks retain
     # their machine-readable meaning instead of passing through human output.
-    text = _bounded_json_dumps(data, indent=2, sort_keys=True) + "\n"
+    body_limit = None if max_bytes is None else max(0, max_bytes - 1)
+    text = (
+        _bounded_json_dumps(
+            data,
+            indent=2,
+            sort_keys=True,
+            max_bytes=body_limit,
+        )
+        + "\n"
+    )
     safe = _encoding_safe_text(text, sys.stdout)
     try:
         sys.stdout.write(safe)
@@ -829,6 +897,36 @@ def _parse_components_arg(raw: Optional[str]) -> List[str]:
         return []
     names = [n.strip() for n in raw.split(",") if n.strip()]
     return sorted(set(names))
+
+
+def print_consumer_impact(consumer_impact: List[dict]) -> None:
+    """Render typed direct/transitive consumer impact as a distinct section."""
+    if not consumer_impact:
+        return
+    print()
+    print("Consumer impact:")
+    for row in sorted(
+        consumer_impact,
+        key=lambda item: str(item.get("component", "")),
+    ):
+        component = row.get("component", "?")
+        facets = ", ".join(sorted(row.get("facets", []))) or "unknown facet"
+        reach = "transitive" if row.get("transitive") else "direct"
+        print(f"  {component} [{facets}; {reach}]")
+        components = row.get("components", [])
+        external = row.get("external_consumers", [])
+        if components:
+            print(
+                "    Components: "
+                f"{_bounded_diagnostic_list_preview(components)}"
+            )
+        if external:
+            print(
+                "    External consumers: "
+                f"{_bounded_diagnostic_list_preview(external)}"
+            )
+        if not components and not external:
+            print("    none declared")
 
 
 def why_component(
@@ -885,14 +983,9 @@ def why_component(
         if {"boundary", "compat"} & set(changes)
         else {"components": [], "external_consumers": []}
     )
-    consumers = (
-        affected_consumers(
-            config.get("components", {}),
-            component_name,
-            transitive=transitive_consumers,
-        )
-        if {"boundary", "compat"} & set(changes)
-        else []
+    consumers = sorted(
+        set(consumer_groups["components"])
+        | set(consumer_groups["external_consumers"])
     )
     if output_format == "json":
         _print_json(
@@ -1061,10 +1154,20 @@ def why_component(
             f"({result.get('diagnostic_base_origin') or 'resolved'})"
         )
 
-    if consumers and ({"boundary", "compat"} & set(changes)):
-        qualifier = " (transitive)" if transitive_consumers else ""
-        print()
-        print(f"Affected consumers{qualifier}: {', '.join(consumers)}")
+    if {"boundary", "compat"} & set(changes):
+        print_consumer_impact(
+            [
+                {
+                    "component": component_name,
+                    "facets": sorted({"boundary", "compat"} & set(changes)),
+                    "components": consumer_groups["components"],
+                    "external_consumers": consumer_groups[
+                        "external_consumers"
+                    ],
+                    "transitive": transitive_consumers,
+                }
+            ]
+        )
 
     if has_gated_drift:
         print()
@@ -1159,7 +1262,7 @@ def analyze_component_drift(
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            detail = str(exc).strip() or type(exc).__name__
+            detail = _bounded_exception_text(exc)
             print(
                 f"ERROR: cannot capture {source} source: {detail}",
                 file=sys.stderr,
@@ -1182,7 +1285,11 @@ def analyze_component_drift(
     except (MemoryError, RecursionError, KeyboardInterrupt):
         raise
     except Exception as exc:
-        print(f"ERROR: could not compute current fingerprints: {exc}", file=sys.stderr)
+        print(
+            "ERROR: could not compute current fingerprints: "
+            f"{_bounded_exception_text(exc)}",
+            file=sys.stderr,
+        )
         return None
 
     current_comp = current_lock["components"][component_name]
@@ -1206,14 +1313,20 @@ def analyze_component_drift(
                 "locked": locked_value,
                 "current": current_value,
             }
-    digest_errors = [
-        *(f"current {message}" for message in _generation_errors(
+    bounded_digest_errors = BoundedDiagnosticList()
+    bounded_digest_errors.extend(
+        f"current {_bounded_diagnostic_text(message)}"
+        for message in _generation_errors(
             {"components": {component_name: current_comp}}
-        )),
-        *(f"locked {message}" for message in _generation_errors(
+        )
+    )
+    bounded_digest_errors.extend(
+        f"locked {_bounded_diagnostic_text(message)}"
+        for message in _generation_errors(
             {"components": {component_name: locked_comp}}
-        )),
-    ]
+        )
+    )
+    digest_errors = list(bounded_digest_errors)
 
     if changes:
         summary = _summarize_change(changes)
@@ -1235,22 +1348,24 @@ def analyze_component_drift(
         provider_name = boundary_provider_name(comp_cfg.get("boundary", {}))
         provider = get_provider(provider_name, registry=registry)
         if provider is not None and not load_errors:
-            accessor = _SourceAccessor(repo_root, source, snapshot=snapshot)
-            ctx = ProviderContext(
-                repo_root=repo_root,
-                component_path=comp_cfg.get("path", "").rstrip("/"),
-                boundary_cfg=comp_cfg.get("boundary", {}),
-                source=source,
-                read_file=accessor.read_file,
-                read_file_limited=accessor.read_file_limited,
-                list_files=accessor.list_files,
-            )
-            provider_explanation = explain_provider_diff(
-                provider,
-                locked_comp.get("boundary_metadata"),
-                current_comp.get("boundary_metadata"),
-                ctx,
-            )
+            with _SourceAccessor(
+                repo_root, source, snapshot=snapshot
+            ) as accessor:
+                ctx = ProviderContext(
+                    repo_root=repo_root,
+                    component_path=comp_cfg.get("path", "").rstrip("/"),
+                    boundary_cfg=comp_cfg.get("boundary", {}),
+                    source=source,
+                    read_file=accessor.read_file,
+                    read_file_limited=accessor.read_file_limited,
+                    list_files=accessor.list_files,
+                )
+                provider_explanation = explain_provider_diff(
+                    provider,
+                    locked_comp.get("boundary_metadata"),
+                    current_comp.get("boundary_metadata"),
+                    ctx,
+                )
 
     # Get changed files via git diff
     comp_path = comp_cfg.get("path", "?").rstrip("/")
@@ -1278,7 +1393,7 @@ def analyze_component_drift(
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"
-                changed_files_error = str(exc).strip() or type(exc).__name__
+                changed_files_error = _bounded_exception_text(exc)
         elif source == "index":
             diagnostic_base = diagnostic_base_ref or "HEAD"
             diagnostic_base_origin = (
@@ -1334,7 +1449,7 @@ def analyze_component_drift(
                 except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                     changed_files = []
                     changed_files_status = "error"
-                    changed_files_error = str(exc).strip() or type(exc).__name__
+                    changed_files_error = _bounded_exception_text(exc)
         elif source == "head":
             try:
                 if diagnostic_base_ref:
@@ -1375,7 +1490,7 @@ def analyze_component_drift(
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"
-                changed_files_error = str(exc).strip() or type(exc).__name__
+                changed_files_error = _bounded_exception_text(exc)
 
     # Keep one stable entry per path so JSON and text views expose the same
     # file set even when a tree comparison reports both sides of a rename.

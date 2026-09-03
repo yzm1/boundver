@@ -2003,6 +2003,13 @@ class VerifyBaselineTests(unittest.TestCase):
         self.assertIn("...", unknown_diagnostic)
         self.assertLess(len(unknown_diagnostic), 1024)
 
+    def test_baseline_rejects_oversized_float_tokens_before_validation(self):
+        from boundver._baseline import BaselineError, _parse_baseline_bytes
+
+        raw = ('{"n":1.' + ("0" * 4_400) + "}").encode()
+        with self.assertRaisesRegex(BaselineError, "character limit"):
+            _parse_baseline_bytes(raw, "debt.json")
+
     def test_affected_consumer_identities_preserve_component_colons(self):
         from boundver._baseline import apply_baseline, create_baseline
 

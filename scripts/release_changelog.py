@@ -8,6 +8,7 @@ import datetime as dt
 import os
 import re
 import stat
+import tempfile
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -160,6 +161,47 @@ def _read_changelog(path: Path) -> str:
     return bytes(content).decode("utf-8")
 
 
+def _write_output_atomic(path: Path, text: str) -> None:
+    """Replace one regular output without following a pre-existing symlink."""
+    existing_mode = 0o644
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(current.st_mode) or _is_windows_reparse_point(current):
+            raise ValueError(f"release-note output is not a regular file: {path}")
+        existing_mode = stat.S_IMODE(current.st_mode)
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, existing_mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        if os.name != "nt":
+            directory = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise
+
+
 def extract_release_notes(
     changelog: str, tag: str, *, mode: str = "post-release"
 ) -> str:
@@ -251,7 +293,8 @@ def extract_release_notes(
     )
     if upgrade_contract:
         heading = re.search(r"(?m)^### Upgrade contract\s*$", notes)
-        assert heading is not None
+        if heading is None:  # pragma: no cover - guarded by the heading search
+            raise ValueError("release heading disappeared during parsing")
         following = re.search(r"(?m)^#{2,3} ", notes[heading.end():])
         contract_end = (
             heading.end() + following.start()
@@ -339,7 +382,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.output is None:
         print(notes, end="")
     else:
-        args.output.write_text(notes, encoding="utf-8")
+        try:
+            _write_output_atomic(args.output, notes)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
     return 0
 
 

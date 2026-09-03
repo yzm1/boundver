@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from boundver._git import (
     MAX_GIT_STATUS_FIELDS,
+    changed_paths_since_ref,
     _git_name_status,
     _parse_name_status_entries,
 )
@@ -56,9 +57,60 @@ class GitNameStatusBoundsTests(unittest.TestCase):
 
         stream.assert_called_once()
         self.assertEqual(
+            stream.call_args.args[1],
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--ignore-submodules=dirty",
+                "--name-status",
+                "-z",
+            ],
+        )
+        self.assertEqual(
             stream.call_args.kwargs["max_records"],
             MAX_GIT_STATUS_FIELDS,
         )
+
+    def test_runner_rejects_non_diff_commands(self):
+        with self.assertRaisesRegex(ValueError, "must invoke diff or diff-tree"):
+            _git_name_status(Path("repo"), ["status", "--short"])
+
+    def test_changed_from_uses_raw_worktree_runner(self):
+        with (
+            patch(
+                "boundver._git._resolve_git_commit",
+                return_value="a" * 40,
+            ) as resolve,
+            patch(
+                "boundver._git._working_tree_name_status",
+                return_value=[("M", "path.txt")],
+            ) as worktree_status,
+        ):
+            self.assertEqual(
+                changed_paths_since_ref(Path("repo"), "base", "working-tree"),
+                ["path.txt"],
+            )
+
+        resolve.assert_called_once_with(
+            Path("repo"),
+            "base",
+            label="changed-from",
+        )
+        worktree_status.assert_called_once_with(
+            Path("repo"),
+            "a" * 40,
+            tracking_snapshot=None,
+        )
+
+    def test_changed_from_rejects_option_like_ref_before_running_git(self):
+        with patch("boundver._git._git_run") as run, self.assertRaisesRegex(
+            ValueError,
+            "Invalid changed-from Git ref",
+        ):
+            changed_paths_since_ref(Path("repo"), "--upload-pack=evil")
+        run.assert_not_called()
 
     def test_malformed_or_truncated_records_fail_closed(self):
         cases = (

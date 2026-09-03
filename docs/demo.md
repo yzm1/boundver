@@ -16,7 +16,10 @@ The important result is:
 
 ```text
 MISMATCH payments-api.boundary: lockfile=9cf4bb1be668... current=d734da4251c8...
-AFFECTED CONSUMERS (TRANSITIVE) payments-api: checkout-web, mobile-app, payments-sdk
+Consumer impact:
+  payments-api [boundary; transitive]
+    Components: checkout-web, payments-sdk
+    External consumers: mobile-app
 ```
 
 The process exits successfully only when boundver itself returns boundary-drift
@@ -51,3 +54,8 @@ That is where a tool such as oasdiff belongs. Boundver established that the
 declared boundary changed and identified which consumers may need work.
 
 Continue with [getting started](getting-started.md) to model your own repository.
+
+For the branch-review version of this workflow, including a reproducible
+17-component/six-slice field scenario before and after lock reconciliation, run
+`python scripts/demo_range_review.py` and read the
+[historical range-review case study](case-study-range-review.md).

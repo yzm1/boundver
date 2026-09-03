@@ -6,7 +6,8 @@ import os
 import json
 import io
 import sys
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 
 import boundver.core as boundary_lock
 import boundver
@@ -3189,21 +3190,142 @@ class MigrateLockTests(unittest.TestCase):
             self.assertEqual(p.read_text(), original)
 
     def test_cli_current_v3_dry_run_does_not_write(self):
-        import io, sys as _sys
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
             original = json.dumps(self._minimal_v3(generated_at="ts"))
             p.write_text(original)
-            buf = io.StringIO()
-            old_stdout = _sys.stdout
-            _sys.stdout = buf
-            try:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+                patch(
+                    "boundver.core._write_text_atomic",
+                    wraps=boundary_lock._write_text_atomic,
+                ) as write,
+            ):
                 self._run_migrate_cli(p, ["--dry-run"])
-            finally:
-                _sys.stdout = old_stdout
+            write.assert_not_called()
             self.assertEqual(p.read_text(), original)   # file unchanged
-            self.assertIn('"schema"', buf.getvalue())   # JSON printed to stdout
-            self.assertNotIn("generated_at", buf.getvalue())
+            self.assertIn('"schema"', stdout.getvalue())  # JSON printed to stdout
+            self.assertNotIn("generated_at", stdout.getvalue())
+            self.assertIn("Would normalize", stderr.getvalue())
+            self.assertIn("removed legacy generated_at metadata", stderr.getvalue())
+
+    def test_cli_noop_preserves_compact_pretty_and_reordered_locks(self):
+        value = self._minimal_v3()
+        reordered = dict(reversed(list(value.items())))
+        variants = {
+            "compact": json.dumps(value, separators=(",", ":")).encode("utf-8"),
+            "pretty": (json.dumps(value, indent=4) + "\n").encode("utf-8"),
+            "reordered": (json.dumps(reordered, indent=1) + "\r\n").encode(
+                "utf-8"
+            ),
+        }
+
+        for name, original in variants.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                p = Path(td) / "boundary.lock.json"
+                p.write_bytes(original)
+                if os.name != "nt":
+                    p.chmod(0o640)
+                timestamp_ns = 1_700_000_000_123_456_700
+                os.utime(p, ns=(timestamp_ns, timestamp_ns))
+                before = p.stat()
+                stdout = io.StringIO()
+
+                with (
+                    redirect_stdout(stdout),
+                    patch(
+                        "boundver.core._write_text_atomic",
+                        wraps=boundary_lock._write_text_atomic,
+                    ) as write,
+                ):
+                    rc = self._run_migrate_cli(p)
+
+                after = p.stat()
+                self.assertEqual(rc, 0)
+                write.assert_not_called()
+                self.assertEqual(p.read_bytes(), original)
+                self.assertEqual(after.st_mode, before.st_mode)
+                self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+                self.assertEqual(after.st_ino, before.st_ino)
+                self.assertIn("already normalized", stdout.getvalue())
+                self.assertIn("no changes written", stdout.getvalue())
+
+    def test_cli_noop_dry_run_reports_no_action_without_writing(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "boundary.lock.json"
+            original = json.dumps(self._minimal_v3(), separators=(",", ":"))
+            p.write_text(original)
+            before = p.stat()
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with (
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+                patch(
+                    "boundver.core._write_text_atomic",
+                    wraps=boundary_lock._write_text_atomic,
+                ) as write,
+            ):
+                rc = self._run_migrate_cli(p, ["--dry-run"])
+
+            after = p.stat()
+            self.assertEqual(rc, 0)
+            write.assert_not_called()
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("already normalized", stderr.getvalue())
+            self.assertIn("no changes would be written", stderr.getvalue())
+            self.assertEqual(p.read_text(), original)
+            self.assertEqual(after.st_mode, before.st_mode)
+            self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+            self.assertEqual(after.st_ino, before.st_ino)
+
+    def test_cli_cleanup_writes_once_then_second_run_is_a_true_noop(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "boundary.lock.json"
+            p.write_text(json.dumps(self._minimal_v3(generated_at="legacy")))
+            first_stdout = io.StringIO()
+
+            with (
+                redirect_stdout(first_stdout),
+                patch(
+                    "boundver.core._write_text_atomic",
+                    wraps=boundary_lock._write_text_atomic,
+                ) as first_write,
+            ):
+                first_rc = self._run_migrate_cli(p)
+
+            self.assertEqual(first_rc, 0)
+            first_write.assert_called_once()
+            self.assertNotIn("generated_at", json.loads(p.read_text()))
+            self.assertIn("Normalized", first_stdout.getvalue())
+            self.assertIn(
+                "removed legacy generated_at metadata", first_stdout.getvalue()
+            )
+            normalized = p.read_bytes()
+            before_second = p.stat()
+            second_stdout = io.StringIO()
+
+            with (
+                redirect_stdout(second_stdout),
+                patch(
+                    "boundver.core._write_text_atomic",
+                    wraps=boundary_lock._write_text_atomic,
+                ) as second_write,
+            ):
+                second_rc = self._run_migrate_cli(p)
+
+            after_second = p.stat()
+            self.assertEqual(second_rc, 0)
+            second_write.assert_not_called()
+            self.assertEqual(p.read_bytes(), normalized)
+            self.assertEqual(after_second.st_mode, before_second.st_mode)
+            self.assertEqual(after_second.st_mtime_ns, before_second.st_mtime_ns)
+            self.assertEqual(after_second.st_ino, before_second.st_ino)
+            self.assertIn("already normalized", second_stdout.getvalue())
 
 
 if __name__ == "__main__":

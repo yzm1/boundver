@@ -66,6 +66,37 @@ Canonical providers reduce known representation noise. They do not decide
 whether a schema evolution is backward compatible, resolve remote dependencies,
 or replace an OpenAPI linter and consumer tests.
 
+## Structural range explanations
+
+Historical `boundver review` can ask a provider to explain a changed boundary
+after both immutable endpoint locks have passed ordinary verification. This is
+an optional interface, separate from fingerprint generation. In v0.15,
+`openapi-canonical` is the first built-in implementation. It emits deterministic
+added, removed, and changed JSON-pointer rows from the same canonical trees it
+hashes. JSON and YAML representations therefore produce the same explanation.
+Rows contain structural paths and JSON types but no source values.
+
+The versioned JSON report binds each explanation to both requested refs,
+commits, trees, component paths, provider names/versions, and boundary digests. Raw providers
+do not implement this interface because parsing them during review would change
+their documented byte semantics. Their report is explicitly unavailable.
+
+The optional Python protocol is exported from `boundver.providers` as
+`StructuralDiffProvider.structural_diff`: it receives immutable base/target
+`ProviderContext` values and one host-owned `StructuralDiffBudget`, and returns
+a typed `StructuralDiffResult` composed of `StructuralDocumentDiff` and
+`StructuralChange` values. Implementations declare the exact
+`boundver-structural-diff/v1` interface identity; the host rejects another or
+missing interface version instead of guessing compatibility.
+Implementations must spend the supplied aggregate budget before retaining work
+or rows. On exhaustion, they raise `GuardrailError`; the host discards that
+provider result and emits no partial document rows. Custom implementations are
+still trusted in-process Python and require the existing explicit opt-in.
+
+These rows explain why a fingerprint moved. They do not classify breaking
+changes or prove compatibility. Keep ecosystem-specific compatibility tools
+and consumer tests in the gate.
+
 `openapi` and `openapi-raw` hash bytes and do not require PyYAML.
 `openapi-canonical` requires the `yaml` extra when a selected document needs
 YAML parsing. `validate-config` preflights selectors that explicitly end in

@@ -81,6 +81,35 @@ class RecoverySelectionTests(unittest.TestCase):
     def setUp(self):
         self.release = _load_script()
 
+    def test_github_sidecar_sanitizes_transport_and_output_environment(self):
+        sanitized = self.release._github_environment(
+            {
+                "GH_TOKEN": "preserved",
+                "GH_HOST": "attacker.invalid",
+                "GH_REPO": "attacker/repo",
+                "GH_HTTP_UNIX_SOCKET": "repo/socket",
+                "GH_DEBUG": "api",
+                "HTTPS_PROXY": "https://attacker.invalid",
+                "CURL_HOME": "repo/curl-config",
+                "SSL_CERT_FILE": "repo/ca.pem",
+                "SSLKEYLOGFILE": "repo/tls-keys.log",
+            }
+        )
+        self.assertEqual(sanitized["GH_TOKEN"], "preserved")
+        self.assertEqual(sanitized["GH_HOST"], "github.com")
+        self.assertEqual(sanitized["GH_PROMPT_DISABLED"], "1")
+        self.assertEqual(sanitized["NO_PROXY"], "github.com,api.github.com")
+        for name in (
+            "GH_REPO",
+            "GH_HTTP_UNIX_SOCKET",
+            "GH_DEBUG",
+            "HTTPS_PROXY",
+            "CURL_HOME",
+            "SSL_CERT_FILE",
+            "SSLKEYLOGFILE",
+        ):
+            self.assertNotIn(name, sanitized)
+
     def _select(self, run, jobs, artifacts):
         return self.release.select_recovery_artifacts(
             run,
@@ -290,6 +319,15 @@ class RecoverySelectionTests(unittest.TestCase):
                     self.release.ReleaseWorkflowError, "invalid JSON payload"
                 ):
                     self.release._json_file(payload)
+
+        with mock.patch.object(
+            self.release, "MAX_JSON_TOKENS", 2
+        ), mock.patch.object(
+            self.release.json,
+            "loads",
+            side_effect=AssertionError("decoder must not run"),
+        ), self.assertRaisesRegex(ValueError, "structural limit"):
+            self.release._strict_json_loads("[0,0,0]")
 
 
 class ReleasePolicyEvidenceTests(unittest.TestCase):

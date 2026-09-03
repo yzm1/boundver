@@ -169,7 +169,10 @@ version identities remain possible future extensions; boundver does not invent
 one for an unversioned component.
 
 Tag lookup is evaluated against the commit captured for the operation. A tag on
-an unreachable orphan history cannot become the component version.
+an unreachable orphan history cannot become the component version. Prefixes
+are literal Git tag prefixes rather than wildcard patterns; the exact grammar
+and shallow-clone behavior are documented in
+[reference](reference.md#what-each-facet-needs).
 
 ## Stage 5: declare the consumer graph
 
@@ -202,9 +205,14 @@ Preview manifest-based suggestions:
 boundver discover
 ```
 
-Root manifests need one unambiguous tracked package directory or conventional
-`src`, `lib`, or `app` directory. If none exists, discovery leaves the project
-for manual configuration instead of inventing a root component.
+Established repositories discover indexed manifests. Before the first commit,
+an empty index uses Git's non-ignored bootstrap view, including nested ignore
+files, negation, global excludes, and embedded-repository boundaries. Non-Git
+directories use a bounded approximation and say so on stderr.
+
+Root manifests need one unambiguous Git-selected package directory or
+conventional `src`, `lib`, or `app` directory. If none exists, discovery leaves
+the project for manual configuration instead of inventing a root component.
 
 Add a component manually or with `boundver add`, then update an existing v3
 lock with a focused command:
@@ -213,6 +221,17 @@ lock with a focused command:
 boundver add billing-service services/billing --provider implicit
 boundver validate-config
 boundver generate --components billing-service --source working-tree
+```
+
+Component names cannot contain commas or leading/trailing whitespace because
+scoped CLI and CI filters are comma-separated. The older `add --paths` option
+still accepts an ordinary comma-separated path list. If one boundary filename
+itself contains a comma, use the repeatable lossless form instead:
+
+```bash
+boundver add billing-service services/billing --provider path-hash \
+  --boundary-path 'contracts/schema,legacy.json' \
+  --boundary-path contracts/current.json
 ```
 
 Component-scoped generation is safe only with an existing valid v3 lock. It

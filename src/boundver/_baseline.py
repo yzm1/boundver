@@ -32,6 +32,7 @@ from ._utils import (
     GuardrailError,
     _bounded_diagnostic_repr,
     _bounded_json_dumps,
+    _bounded_json_float,
     _bounded_json_int,
     _bounded_json_value_issues,
     _is_windows_reparse_point,
@@ -50,6 +51,21 @@ MAX_BASELINE_TEXT = 4_096
 
 class BaselineError(ValueError):
     """Raised when a verification baseline is unsafe or incompatible."""
+
+
+def _validate_baseline_relative_path(relative: Path) -> None:
+    """Reject path spellings that cannot identify one portable repository file.
+
+    A colon inside a repository-relative component selects an NTFS alternate
+    data stream on Windows.  Such a stream passes ordinary regular-file and
+    suffix checks but cannot be represented as a tracked Git file, so allowing
+    it would let a baseline be hidden behind another pathname.
+    """
+    if any(":" in part for part in relative.parts):
+        raise BaselineError(
+            "verification baseline paths must not use ':' "
+            "(NTFS alternate-data-stream syntax)"
+        )
 
 
 _COMPONENT_FACET_RE = re.compile(
@@ -326,6 +342,7 @@ def _parse_baseline_bytes(raw: bytes, path_label: object) -> dict:
         value = json.loads(
             text,
             object_pairs_hook=_strict_object,
+            parse_float=_bounded_json_float,
             parse_int=_bounded_json_int,
             parse_constant=_reject_constant,
         )
@@ -800,7 +817,13 @@ class _MutationDirectory:
 
     @staticmethod
     def _validate_name(name: str) -> None:
-        if not name or "\0" in name or name in {".", ".."} or Path(name).name != name:
+        if (
+            not name
+            or "\0" in name
+            or ":" in name
+            or name in {".", ".."}
+            or Path(name).name != name
+        ):
             raise ValueError("baseline mutation requires a sibling filename")
 
     def open_exclusive(self, name: str, mode: int = 0o600) -> int:
@@ -915,6 +938,7 @@ def _mutation_directory(
         relative = lexical_path.relative_to(lexical_root)
         if not relative.parts or relative.name in {"", ".", ".."}:
             raise ValueError("verification baseline path must name a file")
+        _validate_baseline_relative_path(relative)
 
         root_before = lexical_root.lstat()
         root_fd = _open_plain_directory(lexical_root)
