@@ -238,7 +238,7 @@
           "mode": {
             "type": "string",
             "enum": ["exact", "behavior", "boundary", "compat"],
-            "description": "Facet contributed by every resolved member to the slice digest."
+            "description": "Facet contributed by resolved members to the slice digest. With generate --allow-partial, a member that lacks this facet contributes a null marker to the aggregate."
           },
           "components": {
             "type": "array",

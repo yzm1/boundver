@@ -92,10 +92,11 @@ Boundver reports drift in what you declared. It does not decide whether a
 change breaks a consumer, run consumer tests, or discover dependencies. Files
 left out of a selector are invisible to that facet.
 
-A clean result means the selected snapshot agrees with the committed record.
-It does not prove backward compatibility or guarantee that every consumer is
-safe. Use oasdiff, Buf, GraphQL Inspector, compilers, and consumer tests for the
-judgments they are designed to make.
+A clean result means no unacknowledged gated drift remains. With a verification
+baseline, acknowledged lock drift can still be present. It does not prove
+backward compatibility or guarantee that every consumer is safe. Use oasdiff,
+Buf, GraphQL Inspector, compilers, and consumer tests for the judgments they are
+designed to make.
 
 ## A practical configuration
 
@@ -216,7 +217,7 @@ Using or evaluating boundver? You can identify yourself voluntarily in the
 
 Boundver is beta software under the MIT license. Issues and pull requests are
 welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md); maintainers should use
-the checked-in [release process](docs/RELEASING.md).
+the checked-in [release process](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md).
 
 The [changelog](CHANGELOG.md) records user-visible changes. The v0.15 line is
 focused on historical range review, security hardening, and making the public

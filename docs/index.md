@@ -131,8 +131,9 @@ Boundver reports drift in what you declared. It does not decide whether a
 change is backward compatible, run consumer tests, or discover dependencies.
 Files omitted from a selector remain outside that identity.
 
-A clean result means the chosen snapshot agrees with the committed record. It
-does not prove that every consumer is safe. Start with
+A clean result means no unacknowledged gated drift remains. With a verification
+baseline, acknowledged lock drift can still be present. It does not prove that
+every consumer is safe. Start with
 [What boundver does and does not do](WHY_BOUNDVER.md), or compare it with
 [build graphs and schema-specific tools](comparison.md).
 

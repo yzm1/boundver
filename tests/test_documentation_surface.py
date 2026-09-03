@@ -178,7 +178,18 @@ def test_public_guidance_matches_component_facet_contracts() -> None:
     ):
         assert "CRLF" in public_facet_summary
     assert "no unacknowledged gated facet drift remains" in readme
+    assert "no unacknowledged gated drift remains" in readme
+    assert "no unacknowledged gated drift remains" in homepage
+    assert "acknowledged lock drift can still be present" in readme
+    assert "acknowledged lock drift can still be present" in homepage
     assert "Omitting `facets` applies each component's configured" in readme
     assert "    facets: boundary,compat" not in readme
     assert "authoritative digest or\ncomparison fails closed" in security_model
     assert "complete: false" in security_model
+
+    schema = json.loads(ROOT_SCHEMA.read_text(encoding="utf-8"))
+    slice_mode_help = schema["properties"]["slices"]["additionalProperties"][
+        "properties"
+    ]["mode"]["description"]
+    assert "--allow-partial" in slice_mode_help
+    assert "null marker" in slice_mode_help
