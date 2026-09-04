@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -393,6 +394,64 @@ class ConfigAliasSafetyTests(unittest.TestCase):
                 json.loads(output.read_text(encoding="utf-8"))["schema"],
                 core.LOCKFILE_SCHEMA,
             )
+
+    def test_atomic_write_does_not_trust_a_link_selected_as_temp_root(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            outside = root / "outside"
+            outside.mkdir()
+            selected_temp = root / "selected-temp"
+            try:
+                _make_directory_link(selected_temp, outside)
+            except OSError as exc:
+                self.skipTest(f"directory links are unavailable: {exc}")
+            redirected = outside / "boundary.lock.json"
+            redirected.write_text("outside\n", encoding="utf-8")
+
+            # Before this regression fix, gettempdir() made selected_temp a
+            # trusted prefix and resolve() followed the attacker-controlled
+            # link before the ancestor checks could inspect it.
+            with patch.object(tempfile, "tempdir", str(selected_temp)):
+                with self.assertRaisesRegex(
+                    boundver.ConfigError,
+                    "symlink|junction|reparse",
+                ):
+                    core._write_text_atomic(
+                        selected_temp / "boundary.lock.json",
+                        "new\n",
+                    )
+
+            self.assertEqual(redirected.read_text(encoding="utf-8"), "outside\n")
+
+    @unittest.skipIf(os.name == "nt", "POSIX path model required")
+    def test_only_fixed_inspected_macos_root_aliases_are_canonicalized(self):
+        identity = os.stat_result(
+            (stat.S_IFLNK | 0o777, 17, 23, 1, 0, 0, 0, 0, 0, 0)
+        )
+        candidate = Path("/var/folders/build/boundary.lock.json")
+
+        with patch.object(core.sys, "platform", "darwin"), patch.object(
+            Path, "lstat", return_value=identity
+        ) as lstat_path, patch.object(
+            Path, "resolve", side_effect=AssertionError("must not resolve")
+        ), patch.object(core.os, "readlink", return_value="private/var"):
+            canonical = core._canonicalize_trusted_output_prefix(
+                candidate,
+                str(candidate),
+            )
+
+        self.assertEqual(
+            canonical,
+            Path("/private/var/folders/build/boundary.lock.json"),
+        )
+        self.assertEqual(lstat_path.call_count, 2)
+
+        with patch.object(core.sys, "platform", "darwin"), patch.object(
+            Path, "lstat", return_value=identity
+        ), patch.object(core.os, "readlink", return_value="attacker/redirect"):
+            with self.assertRaisesRegex(boundver.ConfigError, "alias is unexpected"):
+                core._canonicalize_trusted_output_prefix(candidate, str(candidate))
+
 
 class VendoredCopyLockSafetyTests(unittest.TestCase):
     def test_cli_generate_rejects_vendored_output_for_every_source(self):

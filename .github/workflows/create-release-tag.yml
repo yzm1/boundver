@@ -61,6 +61,7 @@ env:
   # used by the full repository audit.  The read-only and mutation jobs compare
   # its digest so candidate scripts never receive a contents-write token.
   REVIEW_STATE_PROGRAM: |
+    import datetime
     import hashlib
     import http.client
     import json
@@ -82,8 +83,12 @@ env:
     MAX_RECORDS = 50_000
     MAX_PAGES = 500
     MAX_JSON_NUMBER_DIGITS = 4300
+    MAX_GITHUB_ID = (1 << 64) - 1
     READ_CHUNK_BYTES = 64 * 1024
     GITHUB_REST_API_VERSION = "2022-11-28"
+    PUBLISH_WORKFLOW_NAME = "Promote verified release"
+    PUBLISH_WORKFLOW_FILE = "publish.yml"
+    PUBLISH_WORKFLOW_PATH = ".github/workflows/publish.yml"
     TRUSTED_CODEX_BOT_ID = 199175422
     SEMANTIC_REVIEW_ROSTER_GIST_ID = "0caedb798d168b974f9d9fb63c377f73"
     SEMANTIC_REVIEW_ROSTER_GIST_NODE_ID = (
@@ -103,8 +108,17 @@ env:
         r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})"
     )
     GITHUB_TIMESTAMP_RE = re.compile(
-        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-        r"(?:\.[0-9]{1,9})?Z"
+        r"(?P<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+        r"[0-9]{2}:[0-9]{2}:[0-9]{2})"
+        r"(?:\.(?P<fraction>[0-9]{1,9}))?Z"
+    )
+    PUBLICATION_TITLE_RE = re.compile(
+        r"publish:(?P<tag>v(?:0|[1-9][0-9]{0,17})\."
+        r"(?:0|[1-9][0-9]{0,17})\.(?:0|[1-9][0-9]{0,17}))"
+        r"@(?P<sha>[0-9a-f]{40}):alias="
+        r"(?P<alias>v(?:0|[1-9][0-9]{0,17})\."
+        r"(?:0|[1-9][0-9]{0,17}))"
+        r":resume=(?P<resume>[1-9][0-9]{0,19})?"
     )
     consumed_api_bytes = 0
 
@@ -466,6 +480,37 @@ env:
                 return records
         raise SystemExit("GitHub returned too many review-state pages")
 
+    def workflow_run_records(endpoint):
+        records = []
+        seen_ids = set()
+        expected_total = None
+        separator = "&" if "?" in endpoint else "?"
+        for page_number in range(1, MAX_PAGES + 1):
+            payload = rest(f"{endpoint}{separator}page={page_number}")
+            if not isinstance(payload, dict):
+                raise SystemExit("GitHub returned malformed publication-run metadata")
+            total = payload.get("total_count")
+            page = payload.get("workflow_runs")
+            if (type(total) is not int or total < 0 or total > MAX_RECORDS or
+                    not isinstance(page, list) or len(page) > 100 or
+                    (expected_total is not None and total != expected_total)):
+                raise SystemExit("GitHub returned malformed publication-run metadata")
+            expected_total = total
+            for record in page:
+                run_id = record.get("id") if isinstance(record, dict) else None
+                if (type(run_id) is not int or not 1 <= run_id <= MAX_GITHUB_ID or
+                        run_id in seen_ids):
+                    raise SystemExit("GitHub returned malformed publication-run metadata")
+                seen_ids.add(run_id)
+                records.append(record)
+            if len(records) > total:
+                raise SystemExit("GitHub returned too many publication runs")
+            if len(records) == total:
+                return records
+            if len(page) < 100:
+                raise SystemExit("GitHub publication-run pagination was incomplete")
+        raise SystemExit("GitHub returned too many publication-run pages")
+
     def actor(value):
         if value is None:
             return {"id": None, "login": None, "type": None}
@@ -479,15 +524,128 @@ env:
             raise SystemExit("GitHub returned a malformed actor")
         return {"id": actor_id, "login": login, "type": actor_type}
 
-    def timestamp_key(value):
+    def github_timestamp_parts(value):
+        if not isinstance(value, str):
+            return None
         match = GITHUB_TIMESTAMP_RE.fullmatch(value)
         if match is None:
-            raise SystemExit("GitHub returned a malformed timestamp")
-        base, separator, fraction_and_zone = value.partition(".")
-        fraction = fraction_and_zone[:-1] if separator else ""
-        return base.rstrip("Z"), fraction.ljust(9, "0")
+            return None
+        try:
+            calendar = datetime.datetime.strptime(
+                match.group("base"), "%Y-%m-%dT%H:%M:%S"
+            )
+        except ValueError:
+            return None
+        return calendar, (match.group("fraction") or "").ljust(9, "0")
 
-    def published_release_anchors(records, release_version, merged_tag_names):
+    def timestamp_key(value):
+        parts = github_timestamp_parts(value)
+        if parts is None:
+            raise SystemExit("GitHub returned a malformed timestamp")
+        calendar, fraction = parts
+        return (
+            calendar.year,
+            calendar.month,
+            calendar.day,
+            calendar.hour,
+            calendar.minute,
+            calendar.second,
+            fraction,
+        )
+
+    def trusted_publication_runs(
+        records, workflow_id, repository, merged_commit_names
+    ):
+        # Immutability is not publication provenance.  Only a completed run of
+        # this repository's active publish workflow can authorize an anchor.
+        by_release = {}
+        seen_ids = set()
+        for record in records:
+            if not isinstance(record, dict):
+                raise SystemExit("GitHub returned malformed publication-run metadata")
+            run_id = record.get("id")
+            title = record.get("display_title")
+            status = record.get("status")
+            conclusion = record.get("conclusion")
+            if (type(run_id) is not int or not 1 <= run_id <= MAX_GITHUB_ID or
+                    run_id in seen_ids or not isinstance(title, str) or
+                    status != "completed" or not isinstance(conclusion, str)):
+                raise SystemExit("GitHub returned malformed publication-run metadata")
+            seen_ids.add(run_id)
+            if conclusion != "success":
+                continue
+            match = PUBLICATION_TITLE_RE.fullmatch(title)
+            if match is None:
+                continue
+
+            tag = match.group("tag")
+            tag_sha = match.group("sha")
+            alias = match.group("alias")
+            resume = match.group("resume")
+            attempt = record.get("run_attempt")
+            head_sha = record.get("head_sha")
+            head_branch = record.get("head_branch")
+            created_at = record.get("created_at")
+            updated_at = record.get("updated_at")
+            run_repository = record.get("repository")
+            head_repository = record.get("head_repository")
+            expected_url = f"https://github.com/{repository}/actions/runs/{run_id}"
+            if (alias != tag.rsplit(".", 1)[0] or
+                    (resume is not None and int(resume) > MAX_GITHUB_ID) or
+                    record.get("name") != title or
+                    record.get("path") != PUBLISH_WORKFLOW_PATH or
+                    record.get("event") != "workflow_dispatch" or
+                    record.get("workflow_id") != workflow_id or
+                    type(attempt) is not int or not 1 <= attempt <= MAX_GITHUB_ID or
+                    not isinstance(head_sha, str) or
+                    re.fullmatch(r"[0-9a-f]{40}", head_sha) is None or
+                    head_sha not in merged_commit_names or
+                    not isinstance(head_branch, str) or
+                    not isinstance(run_repository, dict) or
+                    not isinstance(head_repository, dict) or
+                    not isinstance(run_repository.get("full_name"), str) or
+                    run_repository["full_name"].casefold() != repository.casefold() or
+                    not isinstance(head_repository.get("full_name"), str) or
+                    head_repository["full_name"].casefold() != repository.casefold() or
+                    record.get("html_url") != expected_url or
+                    github_timestamp_parts(created_at) is None or
+                    github_timestamp_parts(updated_at) is None or
+                    timestamp_key(created_at) > timestamp_key(updated_at)):
+                raise SystemExit("GitHub returned untrusted publication-run metadata")
+            if resume is None:
+                if head_branch != tag or head_sha != tag_sha:
+                    raise SystemExit("GitHub returned untrusted publication-run metadata")
+            elif head_branch != "main":
+                raise SystemExit("GitHub returned untrusted publication-run metadata")
+
+            provenance = {
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "run_attempt": attempt,
+                "title": title,
+                "control_ref": head_branch,
+                "control_sha": head_sha,
+                "resume_run_id": int(resume) if resume is not None else None,
+                "created_at": created_at,
+                "completed_at": updated_at,
+            }
+            by_release.setdefault((tag, tag_sha), []).append(provenance)
+
+        trusted = {}
+        for key, candidates in by_release.items():
+            candidates.sort(
+                key=lambda item: (
+                    timestamp_key(item["completed_at"]),
+                    item["run_id"],
+                    item["run_attempt"],
+                )
+            )
+            trusted[key] = candidates[-1]
+        return trusted
+
+    def published_release_anchors(
+        records, release_version, merged_tag_names, publication_runs
+    ):
         anchors = []
         seen_ids = set()
         seen_tags = set()
@@ -538,12 +696,18 @@ env:
             ).strip()
             if re.fullmatch(r"[0-9a-f]{40}", tag_sha) is None:
                 raise SystemExit("published release tag resolved ambiguously")
+            publication = publication_runs.get((tag, tag_sha))
+            if (publication is None or
+                    timestamp_key(published_at) >
+                    timestamp_key(publication["completed_at"])):
+                continue
             anchors.append({
                 "version": version,
                 "tag": tag,
                 "id": release_id,
                 "published_at": published_at,
                 "sha": tag_sha,
+                "publication": publication,
             })
         anchors.sort(key=lambda item: (item["version"], item["tag"]))
         return anchors
@@ -594,13 +758,39 @@ env:
         return reviewers
 
     release_version = tuple(map(int, version_match.groups()))
+    merged_commits = git_text("rev-list", release_sha).splitlines()
+    if (not merged_commits or len(merged_commits) > MAX_RECORDS or
+            len(merged_commits) != len(set(merged_commits)) or
+            any(re.fullmatch(r"[0-9a-f]{40}", item) is None
+                for item in merged_commits)):
+        raise SystemExit("release history returned malformed or excessive commits")
+    merged_commit_names = set(merged_commits)
     merged_tag_names = set(
         git_text("tag", "--merged", release_sha).splitlines()
+    )
+    workflow_record = rest(
+        f"repos/{repository}/actions/workflows/{PUBLISH_WORKFLOW_FILE}"
+    )
+    workflow_id = workflow_record.get("id") if isinstance(workflow_record, dict) else None
+    if (type(workflow_id) is not int or not 1 <= workflow_id <= MAX_GITHUB_ID or
+            workflow_record.get("name") != PUBLISH_WORKFLOW_NAME or
+            workflow_record.get("path") != PUBLISH_WORKFLOW_PATH or
+            workflow_record.get("state") != "active"):
+        raise SystemExit("GitHub returned an untrusted publication workflow")
+    publication_runs = trusted_publication_runs(
+        workflow_run_records(
+            f"repos/{repository}/actions/workflows/{PUBLISH_WORKFLOW_FILE}/runs"
+            "?event=workflow_dispatch&status=completed&per_page=100"
+        ),
+        workflow_id,
+        repository,
+        merged_commit_names,
     )
     release_anchors = published_release_anchors(
         rest_records(f"repos/{repository}/releases?per_page=100"),
         release_version,
         merged_tag_names,
+        publication_runs,
     )
     previous_tag = release_anchors[-1]["tag"] if release_anchors else ""
     commit_range = f"{previous_tag}..{release_sha}" if previous_tag else release_sha
@@ -698,10 +888,8 @@ env:
                     record.get("public") is not True or
                     record.get("user") is not None or
                     record.get("truncated") is not False or
-                    not isinstance(roster_created_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(roster_created_at) is None or
-                    not isinstance(roster_updated_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(roster_updated_at) is None or
+                    github_timestamp_parts(roster_created_at) is None or
+                    github_timestamp_parts(roster_updated_at) is None or
                     timestamp_key(roster_created_at) >
                     timestamp_key(roster_updated_at)):
                 raise SystemExit("GitHub returned unsafe semantic review roster gist")
@@ -721,8 +909,7 @@ env:
                     latest.get("url") !=
                     f"https://api.github.com/gists/{SEMANTIC_REVIEW_ROSTER_GIST_ID}/{version}" or
                     revision_owner != repository_owner or
-                    not isinstance(committed_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(committed_at) is None or
+                    github_timestamp_parts(committed_at) is None or
                     timestamp_key(committed_at) > timestamp_key(roster_updated_at) or
                     not isinstance(change_status, dict) or
                     set(change_status) != {"total", "additions", "deletions"} or
@@ -890,7 +1077,8 @@ env:
         if (not isinstance(head_sha, str) or
                 (merge_sha is not None and not isinstance(merge_sha, str)) or
                 pr_state not in {"open", "closed"} or
-                (merged_at is not None and not isinstance(merged_at, str)) or
+                (merged_at is not None and
+                 github_timestamp_parts(merged_at) is None) or
                 not isinstance(base_ref, str) or
                 not isinstance(base_repository, str)):
             raise SystemExit("GitHub returned malformed pull-request commit metadata")
@@ -916,8 +1104,7 @@ env:
             if (type(review_id) is not int or review_id <= 0 or review_id in review_ids or
                     not isinstance(state, str) or
                     (submitted_at is not None and
-                     (not isinstance(submitted_at, str) or
-                      GITHUB_TIMESTAMP_RE.fullmatch(submitted_at) is None)) or
+                     github_timestamp_parts(submitted_at) is None) or
                     (commit_id is not None and not isinstance(commit_id, str)) or
                     (body is not None and not isinstance(body, str))):
                 raise SystemExit("GitHub returned a malformed or duplicate review")
@@ -979,8 +1166,7 @@ env:
                 review_id = int(raw_identifier)
                 if (review_id <= 0 or review_id in review_edit_times or
                         (last_edited_at is not None and
-                         (not isinstance(last_edited_at, str) or
-                          GITHUB_TIMESTAMP_RE.fullmatch(last_edited_at) is None))):
+                         github_timestamp_parts(last_edited_at) is None)):
                     raise SystemExit("GitHub returned a malformed review-edit record")
                 review_edit_times[review_id] = last_edited_at
             has_next = page_info.get("hasNextPage")
@@ -1009,8 +1195,7 @@ env:
             body = comment.get("body")
             if (type(comment_id) is not int or comment_id <= 0 or
                     comment_id in comment_ids or
-                    not isinstance(created_at, str) or
-                    GITHUB_TIMESTAMP_RE.fullmatch(created_at) is None or
+                    github_timestamp_parts(created_at) is None or
                     (body is not None and not isinstance(body, str))):
                 raise SystemExit("GitHub returned a malformed or duplicate issue comment")
             comment_ids.add(comment_id)

@@ -35,9 +35,16 @@ def _review_state_runner() -> dict:
         "MAX_API_BYTES",
         "MAX_COMMAND_BYTES",
         "MAX_STDERR_BYTES",
+        "MAX_RECORDS",
+        "MAX_PAGES",
         "MAX_JSON_NUMBER_DIGITS",
+        "MAX_GITHUB_ID",
         "READ_CHUNK_BYTES",
         "GITHUB_TIMESTAMP_RE",
+        "PUBLICATION_TITLE_RE",
+        "PUBLISH_WORKFLOW_NAME",
+        "PUBLISH_WORKFLOW_FILE",
+        "PUBLISH_WORKFLOW_PATH",
         "consumed_api_bytes",
     }
     functions = {
@@ -48,7 +55,10 @@ def _review_state_runner() -> dict:
         "bounded_json_int",
         "bounded_json_float",
         "reject_json_constant",
+        "workflow_run_records",
+        "github_timestamp_parts",
         "timestamp_key",
+        "trusted_publication_runs",
         "published_release_anchors",
     }
     selected = []
@@ -326,6 +336,10 @@ class CreateTagReviewStateContracts(unittest.TestCase):
             'rest_records(f"repos/{repository}/releases?per_page=100")',
             program,
         )
+        self.assertIn(
+            'actions/workflows/{PUBLISH_WORKFLOW_FILE}/runs',
+            program,
+        )
         self.assertIn('"published_release_anchors": release_anchors', program)
         self.assertNotIn('"merged_semver_tags"', program)
 
@@ -361,6 +375,11 @@ class CreateTagReviewStateContracts(unittest.TestCase):
             records,
             (0, 15, 0),
             {"v0.14.1", "v0.14.2", "v0.14.3", "v0.14.999"},
+            {
+                ("v0.14.1", "1" * 40): {
+                    "completed_at": "2026-08-27T16:05:36Z",
+                }
+            },
         )
 
         self.assertEqual([item["tag"] for item in anchors], ["v0.14.1"])
@@ -376,7 +395,133 @@ class CreateTagReviewStateContracts(unittest.TestCase):
                 [malformed],
                 (0, 15, 0),
                 {"v0.14.1"},
+                {},
             )
+
+    def test_snapshot_requires_exact_successful_publication_provenance(self):
+        helpers = _review_state_runner()
+        tag = "v0.14.1"
+        tag_sha = "1" * 40
+        control_sha = "2" * 40
+        repository = "acme/widget"
+        title = (
+            f"publish:{tag}@{tag_sha}:alias=v0.14:resume=33058238333"
+        )
+        run = {
+            "id": 33112740009,
+            "name": title,
+            "path": ".github/workflows/publish.yml",
+            "display_title": title,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": control_sha,
+            "head_branch": "main",
+            "run_attempt": 1,
+            "workflow_id": 270075259,
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+            "created_at": "2026-08-27T20:19:13Z",
+            "updated_at": "2026-08-29T07:02:04Z",
+            "html_url": (
+                "https://github.com/acme/widget/actions/runs/33112740009"
+            ),
+        }
+
+        trusted = helpers["trusted_publication_runs"](
+            [run], 270075259, repository, {tag_sha, control_sha}
+        )
+        self.assertEqual(trusted[(tag, tag_sha)]["run_id"], 33112740009)
+
+        release = [{
+            "id": 101,
+            "tag_name": tag,
+            "draft": False,
+            "prerelease": False,
+            "immutable": True,
+            "published_at": "2026-08-27T15:05:36Z",
+        }]
+        helpers["git_text"] = lambda *_arguments: tag_sha
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                release, (0, 15, 0), {tag}, trusted
+            )[0]["publication"]["control_sha"],
+            control_sha,
+        )
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                release, (0, 15, 0), {tag}, {}
+            ),
+            [],
+        )
+        postdated = [dict(
+            release[0],
+            published_at="2026-08-30T15:05:36Z",
+        )]
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                postdated, (0, 15, 0), {tag}, trusted
+            ),
+            [],
+        )
+
+        unmerged = dict(run, head_sha="3" * 40)
+        with self.assertRaisesRegex(SystemExit, "untrusted publication-run"):
+            helpers["trusted_publication_runs"](
+                [unmerged], 270075259, repository, {tag_sha, control_sha}
+            )
+
+    def test_snapshot_rejects_calendar_invalid_github_timestamps(self):
+        helpers = _review_state_runner()
+
+        for value in (
+            "2026-02-31T12:00:00Z",
+            "2026-08-27T25:00:00Z",
+            "2026-08-27T15:05:60Z",
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                SystemExit, "malformed timestamp"
+            ):
+                helpers["timestamp_key"](value)
+
+        self.assertLess(
+            helpers["timestamp_key"]("2026-08-27T15:05:36.1Z"),
+            helpers["timestamp_key"]("2026-08-27T15:05:36.2Z"),
+        )
+
+    def test_snapshot_publication_run_pagination_is_complete_and_unique(self):
+        helpers = _review_state_runner()
+        first_page = [{"id": item} for item in range(1, 101)]
+        second_page = [{"id": 101}]
+
+        def complete(endpoint):
+            page = 2 if endpoint.endswith("page=2") else 1
+            return {
+                "total_count": 101,
+                "workflow_runs": first_page if page == 1 else second_page,
+            }
+
+        helpers["rest"] = complete
+        records = helpers["workflow_run_records"]("runs?per_page=100")
+        self.assertEqual([record["id"] for record in records], list(range(1, 102)))
+
+        def duplicate(endpoint):
+            page = 2 if endpoint.endswith("page=2") else 1
+            return {
+                "total_count": 101,
+                "workflow_runs": first_page if page == 1 else [{"id": 100}],
+            }
+
+        helpers["rest"] = duplicate
+        with self.assertRaisesRegex(SystemExit, "malformed publication-run"):
+            helpers["workflow_run_records"]("runs?per_page=100")
+
+        helpers["rest"] = lambda _endpoint: {
+            "total_count": 2,
+            "workflow_runs": [{"id": 1}],
+        }
+        with self.assertRaisesRegex(SystemExit, "pagination was incomplete"):
+            helpers["workflow_run_records"]("runs?per_page=100")
 
     def test_snapshot_commands_use_streaming_preallocation_caps(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]
@@ -599,7 +744,7 @@ class ReviewAuditMergeDestinationTests(unittest.TestCase):
                 """#!/bin/sh
 case "$1" in
   fetch) exit 0 ;;
-  tag) printf '%s\\n' 'v0.10.0' ;;
+  for-each-ref) : ;;
   rev-list) printf '%s\\n' "$FAKE_RELEASE_SHA" ;;
   *) printf '%s\\n' "unexpected git invocation: $*" >&2; exit 90 ;;
 esac
@@ -629,6 +774,10 @@ pathlib.Path(sys.argv[1]).write_text("finished")' "$FAKE_COMPLETION_MARKER"
 fi
 case "$*" in
   *repos/acme/widget/releases?per_page=100*) : ;;
+  *repos/acme/widget/actions/workflows/publish.yml/runs*) : ;;
+  *repos/acme/widget/actions/workflows/publish.yml*)
+    printf '%s\\n' '270075259\tPromote verified release\t.github/workflows/publish.yml\tactive'
+    ;;
   *repos/acme/widget/commits/*/pulls*) printf '%s\\n' '17' ;;
   *repos/acme/widget/pulls/17*) printf '%s\\n' "$FAKE_PR_METADATA" ;;
   *'repos/acme/widget --jq'*) printf '%s\\n' '1|acme|Organization' ;;

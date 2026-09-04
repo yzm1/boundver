@@ -1560,7 +1560,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             '"$python_command" -I - "$release_tag" "$published_releases_file"',
             script,
         )
-        self.assertIn('"$merged_tags_file" "$max_records"', script)
+        self.assertIn(
+            '"$merged_tags_file" "$merged_commits_file" '
+            '"$publication_workflow_file"',
+            script,
+        )
+        self.assertIn(
+            '"$publication_runs_file" "$max_records" "$GITHUB_REPOSITORY"',
+            script,
+        )
         self.assertIn(
             '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"',
             script,

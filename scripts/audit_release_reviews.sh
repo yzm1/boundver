@@ -82,6 +82,9 @@ capture_index=0
 cleanup_capture_temp() {
   local status=$?
   rm -f -- "$capture_temp_dir"/capture-* "$capture_temp_dir/merged-tags" \
+    "$capture_temp_dir/merged-commits" \
+    "$capture_temp_dir/publication-runs" \
+    "$capture_temp_dir/publication-workflow" \
     "$capture_temp_dir/published-releases" "$capture_temp_dir/release-prs"
   rmdir -- "$capture_temp_dir" 2>/dev/null || true
   exit "$status"
@@ -133,6 +136,10 @@ capture_bounded() {
 }
 
 git fetch --force --tags origin
+# GitHub's immutable flag prevents later edits; it does not prove that the
+# release passed this repository's publication workflow.  Keep release, tag,
+# workflow, run, and candidate-history evidence separate until the bounded
+# selector below binds all five identities.
 published_releases_file="$capture_temp_dir/published-releases"
 if ! run_bounded_to_file "$max_capture_bytes" "published GitHub releases" \
     "$published_releases_file" gh api --paginate \
@@ -145,30 +152,233 @@ if ! run_bounded_to_file "$max_capture_bytes" "published GitHub releases" \
 fi
 merged_tags_file="$capture_temp_dir/merged-tags"
 if ! run_bounded_to_file "$max_capture_bytes" "merged release tags" \
-    "$merged_tags_file" git tag --merged "$release_sha"; then
+    "$merged_tags_file" git for-each-ref --merged="$release_sha" \
+    '--format=%(refname:short)%09%(objecttype)%09%(objectname)%09%(*objecttype)%09%(*objectname)' \
+    refs/tags; then
   echo "Git failed while listing merged release tags." >&2
+  exit 1
+fi
+merged_commits_file="$capture_temp_dir/merged-commits"
+if ! run_bounded_to_file "$max_capture_bytes" "merged release commits" \
+    "$merged_commits_file" git rev-list "$release_sha"; then
+  echo "Git failed while listing merged release commits." >&2
+  exit 1
+fi
+publication_workflow_file="$capture_temp_dir/publication-workflow"
+if ! run_bounded_to_file "$max_small_capture_bytes" "publication workflow" \
+    "$publication_workflow_file" gh api \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml" \
+    --jq '[.id, (.name // ""), (.path // ""), (.state // "")] | @tsv'; then
+  echo "GitHub API failed while reading the publication workflow." >&2
+  exit 1
+fi
+publication_runs_file="$capture_temp_dir/publication-runs"
+if ! run_bounded_to_file "$max_capture_bytes" "publication workflow runs" \
+    "$publication_runs_file" gh api --paginate \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?event=workflow_dispatch&status=completed&per_page=100" \
+    --jq '.workflow_runs[] | [(.id | tostring), (.name // ""), (.path // ""), (.display_title // ""), (.event // ""), (.status // ""), (.conclusion // ""), (.head_sha // ""), (.head_branch // ""), (.run_attempt | tostring), (.workflow_id | tostring), (.repository.full_name // ""), (.head_repository.full_name // ""), (.created_at // ""), (.updated_at // ""), (.html_url // "")] | @tsv'; then
+  echo "GitHub API failed while listing publication workflow runs." >&2
   exit 1
 fi
 if ! capture_bounded previous_tag "previous release tag" \
     "$max_small_capture_bytes" \
     "$python_command" -I - "$release_tag" "$published_releases_file" \
-    "$merged_tags_file" "$max_records" <<'PY'
+    "$merged_tags_file" "$merged_commits_file" "$publication_workflow_file" \
+    "$publication_runs_file" "$max_records" "$GITHUB_REPOSITORY" <<'PY'
+import datetime
 from pathlib import Path
 import re
 import sys
 
-release_tag, releases_path, merged_tags_path, max_records_text = sys.argv[1:]
-release_version = tuple(map(int, release_tag.removeprefix("v").split(".")))
+(
+    release_tag,
+    releases_path,
+    merged_tags_path,
+    merged_commits_path,
+    workflow_path,
+    runs_path,
+    max_records_text,
+    repository,
+) = sys.argv[1:]
 max_records = int(max_records_text)
 version_pattern = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+version_match = version_pattern.fullmatch(release_tag)
+if version_match is None:
+    raise SystemExit("release tag is not canonical SemVer")
+release_version = tuple(map(int, version_match.groups()))
 timestamp_pattern = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-    r"(?:\.[0-9]{1,9})?Z"
+    r"(?P<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?:\.(?P<fraction>[0-9]{1,9}))?Z"
 )
-merged_tags = {
-    tag
-    for tag in Path(merged_tags_path).read_text(encoding="utf-8").splitlines()
-    if version_pattern.fullmatch(tag) is not None
+publication_title_pattern = re.compile(
+    r"publish:(?P<tag>v(?:0|[1-9][0-9]{0,17})\."
+    r"(?:0|[1-9][0-9]{0,17})\.(?:0|[1-9][0-9]{0,17}))"
+    r"@(?P<sha>[0-9a-f]{40}):alias="
+    r"(?P<alias>v(?:0|[1-9][0-9]{0,17})\."
+    r"(?:0|[1-9][0-9]{0,17}))"
+    r":resume=(?P<resume>[1-9][0-9]{0,19})?"
+)
+sha_pattern = re.compile(r"[0-9a-f]{40}")
+max_github_id = (1 << 64) - 1
+
+
+def timestamp_key(value):
+    match = timestamp_pattern.fullmatch(value)
+    if match is None:
+        raise SystemExit("GitHub returned a malformed timestamp")
+    try:
+        calendar = datetime.datetime.strptime(
+            match.group("base"), "%Y-%m-%dT%H:%M:%S"
+        )
+    except ValueError as exc:
+        raise SystemExit("GitHub returned a malformed timestamp") from exc
+    return (
+        calendar.year,
+        calendar.month,
+        calendar.day,
+        calendar.hour,
+        calendar.minute,
+        calendar.second,
+        (match.group("fraction") or "").ljust(9, "0"),
+    )
+
+
+def positive_id(value):
+    return (
+        value.isascii()
+        and value.isdecimal()
+        and len(value) <= 20
+        and 1 <= int(value) <= max_github_id
+    )
+
+
+tag_rows = Path(merged_tags_path).read_text(encoding="utf-8").splitlines()
+if len(tag_rows) > max_records:
+    raise SystemExit("Git returned too many merged tag records")
+merged_tags = {}
+for row in tag_rows:
+    fields = row.split("\t")
+    if len(fields) != 5:
+        raise SystemExit("Git returned malformed merged tag metadata")
+    tag, object_type, object_sha, peeled_type, peeled_sha = fields
+    if version_pattern.fullmatch(tag) is None:
+        continue
+    if object_type == "commit" and not peeled_type and not peeled_sha:
+        tag_sha = object_sha
+    elif object_type == "tag" and peeled_type == "commit":
+        tag_sha = peeled_sha
+    else:
+        raise SystemExit("semantic release tag does not resolve to a commit")
+    if sha_pattern.fullmatch(tag_sha) is None or tag in merged_tags:
+        raise SystemExit("Git returned malformed or duplicate merged tag metadata")
+    merged_tags[tag] = tag_sha
+
+merged_commits = Path(merged_commits_path).read_text(encoding="utf-8").splitlines()
+if (
+    not merged_commits
+    or len(merged_commits) > max_records
+    or len(merged_commits) != len(set(merged_commits))
+    or any(sha_pattern.fullmatch(commit) is None for commit in merged_commits)
+):
+    raise SystemExit("Git returned malformed or excessive merged commit metadata")
+merged_commit_names = set(merged_commits)
+
+workflow_rows = Path(workflow_path).read_text(encoding="utf-8").splitlines()
+if len(workflow_rows) != 1:
+    raise SystemExit("GitHub returned malformed publication workflow metadata")
+workflow_fields = workflow_rows[0].split("\t")
+if len(workflow_fields) != 4:
+    raise SystemExit("GitHub returned malformed publication workflow metadata")
+workflow_id, workflow_name, workflow_file, workflow_state = workflow_fields
+if (
+    not positive_id(workflow_id)
+    or workflow_name != "Promote verified release"
+    or workflow_file != ".github/workflows/publish.yml"
+    or workflow_state != "active"
+):
+    raise SystemExit("GitHub returned an untrusted publication workflow")
+
+run_rows = Path(runs_path).read_text(encoding="utf-8").splitlines()
+if len(run_rows) > max_records:
+    raise SystemExit("GitHub returned too many publication runs")
+seen_run_ids = set()
+publication_runs = {}
+for row in run_rows:
+    fields = row.split("\t")
+    if len(fields) != 16:
+        raise SystemExit("GitHub returned malformed publication-run metadata")
+    (
+        run_id,
+        name,
+        run_path,
+        title,
+        event,
+        status,
+        conclusion,
+        head_sha,
+        head_branch,
+        run_attempt,
+        run_workflow_id,
+        run_repository,
+        head_repository,
+        created_at,
+        updated_at,
+        html_url,
+    ) = fields
+    if (
+        not positive_id(run_id)
+        or run_id in seen_run_ids
+        or run_path != ".github/workflows/publish.yml"
+        or event != "workflow_dispatch"
+        or status != "completed"
+        or not conclusion
+    ):
+        raise SystemExit("GitHub returned malformed publication-run metadata")
+    seen_run_ids.add(run_id)
+    if conclusion != "success":
+        continue
+    match = publication_title_pattern.fullmatch(title)
+    if match is None:
+        continue
+    tag = match.group("tag")
+    tag_sha = match.group("sha")
+    alias = match.group("alias")
+    resume = match.group("resume")
+    if (
+        alias != tag.rsplit(".", 1)[0]
+        or (resume is not None and not positive_id(resume))
+        or name != title
+        or run_workflow_id != workflow_id
+        or not positive_id(run_attempt)
+        or sha_pattern.fullmatch(head_sha) is None
+        or head_sha not in merged_commit_names
+        or run_repository.casefold() != repository.casefold()
+        or head_repository.casefold() != repository.casefold()
+        or html_url != f"https://github.com/{repository}/actions/runs/{run_id}"
+        or timestamp_key(created_at) > timestamp_key(updated_at)
+    ):
+        raise SystemExit("GitHub returned untrusted publication-run metadata")
+    if resume is None:
+        if head_branch != tag or head_sha != tag_sha:
+            raise SystemExit("GitHub returned untrusted publication-run metadata")
+    elif head_branch != "main":
+        raise SystemExit("GitHub returned untrusted publication-run metadata")
+    provenance = (
+        timestamp_key(updated_at),
+        int(run_id),
+        int(run_attempt),
+        updated_at,
+    )
+    publication_runs.setdefault((tag, tag_sha), []).append(provenance)
+
+trusted_publications = {
+    key: max(provenance)
+    for key, provenance in publication_runs.items()
 }
 rows = Path(releases_path).read_text(encoding="utf-8").splitlines()
 if len(rows) > max_records:
@@ -185,10 +395,7 @@ for row in rows:
     if match is None:
         continue
     if (
-        not release_id.isascii()
-        or not release_id.isdecimal()
-        or len(release_id) > 20
-        or int(release_id) <= 0
+        not positive_id(release_id)
         or draft not in {"true", "false"}
         or prerelease not in {"true", "false"}
         or immutable not in {"true", "false"}
@@ -200,12 +407,18 @@ for row in rows:
     seen_tags.add(tag)
     if draft == "true" or prerelease == "true" or immutable != "true":
         continue
-    if timestamp_pattern.fullmatch(published_at) is None:
-        raise SystemExit("GitHub returned malformed published release metadata")
+    published_key = timestamp_key(published_at)
     version = tuple(map(int, match.groups()))
-    if version < release_version and tag in merged_tags:
+    tag_sha = merged_tags.get(tag)
+    publication = trusted_publications.get((tag, tag_sha))
+    if (
+        version < release_version
+        and tag_sha is not None
+        and publication is not None
+        and published_key <= publication[0]
+    ):
         candidates.append((version, tag, release_id, published_at))
-print(max(candidates)[1] if candidates else "")
+print(max(candidates, key=lambda item: (item[0], item[1]))[1] if candidates else "")
 PY
 then
   echo "Failed to determine the previous release tag." >&2
@@ -300,7 +513,43 @@ readonly codex_clean_period_status_regex="(Already looking forward to the next d
 readonly codex_clean_question_status_regex='(What shall we delve into next)\?'
 readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}|${codex_clean_question_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
-readonly github_timestamp_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+readonly github_timestamp_regex='^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.([0-9]{1,9}))?Z$'
+
+github_timestamp_key=
+github_timestamp_is_valid() {
+  local value=$1
+  local year month day hour minute second fraction max_day
+  github_timestamp_key=
+  [[ "$value" =~ $github_timestamp_regex ]] || return 1
+  year=$((10#${BASH_REMATCH[1]}))
+  month=$((10#${BASH_REMATCH[2]}))
+  day=$((10#${BASH_REMATCH[3]}))
+  hour=$((10#${BASH_REMATCH[4]}))
+  minute=$((10#${BASH_REMATCH[5]}))
+  second=$((10#${BASH_REMATCH[6]}))
+  fraction=${BASH_REMATCH[8]:-}
+  if (( year < 1 || month < 1 || month > 12 || day < 1 || \
+        hour > 23 || minute > 59 || second > 59 )); then
+    return 1
+  fi
+  case "$month" in
+    1|3|5|7|8|10|12) max_day=31 ;;
+    4|6|9|11) max_day=30 ;;
+    2)
+      max_day=28
+      if (( year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) )); then
+        max_day=29
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+  (( day <= max_day )) || return 1
+  while (( ${#fraction} < 9 )); do
+    fraction+=0
+  done
+  github_timestamp_key=$(printf '%04d%02d%02d%02d%02d%02d%s' \
+    "$year" "$month" "$day" "$hour" "$minute" "$second" "$fraction")
+}
 
 if ! capture_bounded repository_owner "repository ownership" \
   "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" \
@@ -471,12 +720,17 @@ codex_body_is_suggestions_review() {
 record_codex_evidence() {
   local timestamp=$1
   local kind=$2
+  local timestamp_key
+  if ! github_timestamp_is_valid "$timestamp"; then
+    return 1
+  fi
+  timestamp_key=$github_timestamp_key
   if [[ -z "$codex_latest_timestamp" || \
-        "$timestamp" > "$codex_latest_timestamp" ]]; then
-    codex_latest_timestamp=$timestamp
+        "$timestamp_key" > "$codex_latest_timestamp" ]]; then
+    codex_latest_timestamp=$timestamp_key
     codex_latest_kind=$kind
     codex_latest_count=1
-  elif [[ "$timestamp" == "$codex_latest_timestamp" ]]; then
+  elif [[ "$timestamp_key" == "$codex_latest_timestamp" ]]; then
     codex_latest_count=$((codex_latest_count + 1))
   fi
 }
@@ -521,10 +775,13 @@ for pr_number in "${sorted_prs[@]}"; do
         ! "$pending_reviewers" =~ ^[0-9]+$ || \
         ! "$pending_teams" =~ ^[0-9]+$ || \
         ! "$pr_state" =~ ^(open|closed)$ || \
-        ( -n "$pr_merged_at" && \
-          ! "$pr_merged_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$ ) || \
         ! "$pr_base_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || \
         -n "$pr_metadata_extra" ]]; then
+    echo "GitHub API returned malformed metadata for PR #$pr_number." >&2
+    exit 1
+  fi
+  if [[ -n "$pr_merged_at" ]] && \
+      ! github_timestamp_is_valid "$pr_merged_at"; then
     echo "GitHub API returned malformed metadata for PR #$pr_number." >&2
     exit 1
   fi
@@ -612,12 +869,15 @@ for pr_number in "${sorted_prs[@]}"; do
       review_extra <<< "$review_record"
     if [[ ! "$review_state" =~ ^(APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED|PENDING)$ || \
           ! "$review_id" =~ ^[1-9][0-9]*$ || \
-          ( -n "$review_submitted_at" && \
-            ! "$review_submitted_at" =~ $github_timestamp_regex ) || \
           ( -n "$reviewer_id" && ! "$reviewer_id" =~ ^[1-9][0-9]*$ ) || \
           ( -n "$reviewer_login" && ! "$reviewer_login" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ) || \
           ( -n "$reviewer_type" && ! "$reviewer_type" =~ ^(User|Bot)$ ) || \
           -n "$review_extra" ]]; then
+      echo "GitHub API returned malformed review data for PR #$pr_number." >&2
+      exit 1
+    fi
+    if [[ -n "$review_submitted_at" ]] && \
+        ! github_timestamp_is_valid "$review_submitted_at"; then
       echo "GitHub API returned malformed review data for PR #$pr_number." >&2
       exit 1
     fi
@@ -709,11 +969,14 @@ for pr_number in "${sorted_prs[@]}"; do
     IFS='|' read -r comment_id comment_created_at commenter_id commenter_login \
       commenter_type encoded_body comment_extra <<< "$comment_record"
     if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || \
-          ! "$comment_created_at" =~ $github_timestamp_regex || \
           ( -n "$commenter_id" && ! "$commenter_id" =~ ^[1-9][0-9]*$ ) || \
           ( -n "$commenter_login" && ! "$commenter_login" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ) || \
           ( -n "$commenter_type" && ! "$commenter_type" =~ ^(User|Bot)$ ) || \
           -z "$encoded_body" || -n "$comment_extra" ]]; then
+      echo "GitHub API returned malformed issue-comment data for PR #$pr_number." >&2
+      exit 1
+    fi
+    if ! github_timestamp_is_valid "$comment_created_at"; then
       echo "GitHub API returned malformed issue-comment data for PR #$pr_number." >&2
       exit 1
     fi

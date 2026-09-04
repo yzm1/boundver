@@ -33,7 +33,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Dict as Dict
 from typing import List, Optional, Set
@@ -589,39 +588,53 @@ def _ensure_json_mutation_path(path: Path, command: str) -> None:
 
 
 def _canonicalize_trusted_output_prefix(path: Path, label: str) -> Path:
-    """Resolve only an already selected working or temporary root.
+    """Canonicalize only fixed macOS filesystem aliases after inspecting them.
 
-    macOS commonly exposes its temporary directory through the stable ``/var``
-    alias.  Resolving that process-selected prefix keeps ordinary temporary
-    outputs usable without resolving any output-specific component that a
-    repository can control.
+    ``tempfile.gettempdir()`` and the process environment are not trust roots:
+    either may name a repository-controlled symlink or Windows junction.  The
+    only aliases accepted here are the two stable macOS root aliases needed for
+    normal temporary paths.  Every other component remains lexical so the
+    ancestor walk below can reject it without following it.
     """
-    candidates: list[tuple[int, Path, Path]] = []
-    for selected in (Path.cwd(), Path(tempfile.gettempdir())):
-        lexical_root = selected if selected.is_absolute() else Path.cwd() / selected
-        try:
-            relative = path.relative_to(lexical_root)
-        except ValueError:
-            continue
-        candidates.append((len(lexical_root.parts), lexical_root, relative))
-    if not candidates:
+    if sys.platform != "darwin" or path.anchor != "/" or len(path.parts) < 2:
         return path
 
-    _depth, lexical_root, relative = max(candidates, key=lambda item: item[0])
+    aliases = {
+        "var": (Path("/var"), Path("/private/var"), {"private/var", "/private/var"}),
+        "tmp": (Path("/tmp"), Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
+    }
+    selected = aliases.get(path.parts[1])
+    if selected is None:
+        return path
+    alias, canonical, expected_targets = selected
     try:
-        resolved_root = lexical_root.resolve(strict=True)
-        identity = resolved_root.lstat()
+        identity = alias.lstat()
     except OSError as exc:
         raise ConfigError(
-            f"Cannot safely write {label}: selected root is unavailable: "
-            f"{lexical_root}"
+            f"Cannot safely write {label}: platform alias is unavailable: {alias}"
         ) from exc
-    if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+    if not stat.S_ISLNK(identity.st_mode):
+        return path
+    try:
+        target = os.readlink(alias)
+        current = alias.lstat()
+    except OSError as exc:
         raise ConfigError(
-            f"Cannot safely write {label}: selected root is not a plain "
-            f"directory: {lexical_root}"
+            f"Cannot safely write {label}: platform alias cannot be inspected: {alias}"
+        ) from exc
+    if (identity.st_dev, identity.st_ino, identity.st_mode) != (
+        current.st_dev,
+        current.st_ino,
+        current.st_mode,
+    ):
+        raise ConfigError(
+            f"Cannot safely write {label}: platform alias changed: {alias}"
         )
-    return resolved_root.joinpath(*relative.parts)
+    if target not in expected_targets:
+        raise ConfigError(
+            f"Cannot safely write {label}: platform alias is unexpected: {alias}"
+        )
+    return canonical.joinpath(*path.parts[2:])
 
 
 def _prepare_atomic_output(

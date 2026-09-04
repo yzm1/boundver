@@ -307,11 +307,17 @@ diff; it is never accepted implicitly by an install.
 The pre-tag review audit fails closed on API or pagination errors, unresolved
 threads, changes-requested state, and pending human or team review requests.
 Its range begins at the newest lower stable, published, immutable GitHub
-Release whose tag is merged into the candidate. Standalone tags, drafts,
-prereleases, mutable historical releases, and unmerged releases cannot narrow
-the range. The read-only audit and the workflow-owned review-state snapshot
-both derive this anchor from the paginated GitHub Releases API and fetched tag
-graph; malformed or unavailable release state fails closed.
+Release whose tag is merged into the candidate and whose tag and commit match a
+successful run of the repository's active `publish.yml`. That run must bind the
+exact tag, commit, release-line alias, optional recovery source, repository, and
+a workflow control commit in candidate history; the release publication time
+must not postdate that run's successful completion. Standalone tags, drafts,
+prereleases, mutable historical releases, unmerged releases, and releases
+created without that publication provenance cannot narrow the range. The
+read-only audit and the workflow-owned review-state snapshot derive this anchor
+independently from the paginated Releases and Actions APIs plus the fetched Git
+graph. Malformed,
+unavailable, or calendar-invalid timestamps fail closed.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.
@@ -333,7 +339,8 @@ informational footer, pins the bot's numeric account ID, resolves abbreviated
 commit IDs, and snapshots record IDs, timestamps, bodies, threads, and those
 resolutions to detect collisions or drift before mutation. It rejects spoofed
 identities, ambiguous commit IDs or timestamps, unresolved feedback, or stale
-evidence.
+evidence. Every timestamp used for ordering is checked as a real UTC calendar
+instant, including leap-year and fractional-second handling.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
