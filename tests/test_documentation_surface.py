@@ -131,6 +131,33 @@ def test_normative_docs_include_the_canonical_sources() -> None:
         assert wrapper.rstrip().endswith(f'--8<-- "{source}"')
 
 
+def test_release_review_allowlist_is_fully_documented() -> None:
+    audit = (
+        REPO_ROOT / "scripts" / "audit_release_reviews.sh"
+    ).read_text(encoding="utf-8")
+    releasing = (REPO_ROOT / "docs" / "RELEASING.md").read_text(
+        encoding="utf-8"
+    )
+    assignments = {
+        name: value
+        for name, _, value in re.findall(
+            r"(?m)^readonly codex_clean_(bang|period|question)_status_regex="
+            r"(['\"])(.*?)\2$",
+            audit,
+        )
+    }
+
+    assert assignments.keys() == {"bang", "period", "question"}
+    suffixes = {"bang": "!", "period": ".", "question": "?"}
+    endings = {"bang": ")!", "period": r")\.", "question": r")\?"}
+    for name, expression in assignments.items():
+        assert expression.startswith("(")
+        assert expression.endswith(endings[name])
+        choices = expression[1 : -len(endings[name])]
+        for choice in choices.split("|"):
+            assert f"`{choice}{suffixes[name]}`" in releasing
+
+
 def test_readme_keeps_the_decision_path_short() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     words = re.findall(r"\b[\w'-]+\b", readme)
