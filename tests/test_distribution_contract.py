@@ -3827,28 +3827,56 @@ exit 74
         self.assertIn("conflicting or ambiguous", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
-    def test_malformed_security_review_remains_adverse(self):
+    def test_security_evidence_is_independent_and_fails_closed(self):
         head = "c" * 40
         clean = self._comment_record(
             self._codex_comment(head[:10]),
-            timestamp="2026-08-18T12:01:00Z",
-        )
-        malformed = self._codex_security_comment(head[:10]).replace(
-            "No security issues were found",
-            "No important security issues were found",
-        )
-        security = self._comment_record(
-            malformed,
-            record_id="202",
             timestamp="2026-08-18T12:02:00Z",
         )
-        result = self._run_audit(
-            FAKE_HEAD_SHA=head,
-            FAKE_REVIEWS="",
-            FAKE_COMMENTS=f"{clean}\n{security}",
+        valid_security = self._comment_record(
+            self._codex_security_comment(head[:10]),
+            record_id="203",
+            timestamp="2026-08-18T12:03:00Z",
         )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("conflicting or ambiguous", result.stderr)
+        canonical = self._codex_security_comment(head[:10])
+        malformed_bodies = (
+            canonical.replace(
+                "No security issues were found",
+                "No important security issues were found",
+            ),
+            canonical.replace(
+                f"**Reviewed commit:** `{head[:10]}`\n\n",
+                "",
+            ),
+            canonical.replace(
+                f"**Reviewed commit:** `{head[:10]}`",
+                "**Reviewed commit:** `not-a-commit`",
+            ),
+            self._codex_security_comment("e" * 40),
+        )
+        for index, malformed in enumerate(malformed_bodies, start=1):
+            with self.subTest(index=index):
+                adverse_security = self._comment_record(
+                    malformed,
+                    record_id="202",
+                    timestamp="2026-08-18T12:01:00Z",
+                )
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_REVIEWS="",
+                    FAKE_COMMENTS=f"{adverse_security}\n{clean}",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("security-review evidence", result.stderr)
+
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_REVIEWS="",
+                    FAKE_COMMENTS=(
+                        f"{adverse_security}\n{clean}\n{valid_security}"
+                    ),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_security_review_record_requires_matching_body_marker(self):
@@ -3882,7 +3910,20 @@ exit 74
             FAKE_REVIEWS=f"{clean}\n{security}",
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("conflicting or ambiguous", result.stderr)
+        self.assertIn("security-review evidence", result.stderr)
+
+        stale_security = self._review_record(
+            "e" * 40,
+            self._codex_security_comment("e" * 40),
+            record_id="102",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{stale_security}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("security-review evidence", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_exact_codex_suggestions_count_after_every_thread_is_resolved(self):

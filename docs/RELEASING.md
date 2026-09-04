@@ -333,7 +333,8 @@ the positive allowlist `Another round soon, please!`, `Bravo.`, `Breezy!`,
 `Keep them coming!`, `Nice work!`, `Swish!`,
 `Already looking forward to the next diff.`, `Chef's kiss.`,
 `More of your lovely PRs please.`, `What shall we delve into next?`, or
-`You're on a roll.`
+`You're on a roll.`, plus the literal GitHub emoji codes `:rocket:` and
+`:tada:`.
 Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its
 body to the review commit; an issue comment must also contain exactly one
 `**Reviewed commit:**` marker. The audit permits only the bot's recognized
@@ -347,7 +348,9 @@ An authenticated, exact-commit Codex security-review no-findings comment is a
 separate evidence channel: the audit recognizes its complete fixed shape and
 treats it as neutral. It neither satisfies nor supersedes the required code
 review. A malformed, marker-mismatched, or finding-bearing security comment
-remains adverse and fails closed.
+remains adverse and fails closed. Code-review evidence cannot clear adverse
+security evidence; only a later valid security-review result for the same
+current commit can do so.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate

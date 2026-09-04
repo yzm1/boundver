@@ -180,6 +180,9 @@ All notable changes to this project are documented here. The format follows
   marker-mismatched, and finding-bearing comments still fail closed. The
   positive allowlist also recognizes the trusted bot's observed `:rocket:` and
   `:tada:` clean-review suffixes without accepting free-form status text.
+  Security evidence now has independent ordering and conflict state, is
+  classified before commit-marker filtering, and can be cleared only by a
+  later valid security review rather than an unrelated clean code review.
 - Aligned the semantic-provider assurance checker with its schema by requiring
   every threat and control to retain its declared non-empty relationships, and
   validating control-kind shapes before aggregating coverage. Hostile malformed

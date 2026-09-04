@@ -727,6 +727,22 @@ codex_body_is_clean_security_review() {
   [[ "$state" == done && "$footer_state" == closed ]]
 }
 
+codex_body_is_security_review_candidate() {
+  local body=$1
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    case "$line" in
+      "Security review completed."*|"[View security finding report]"*|\
+        "_Only the user who started this review can view the report in Codex._"|\
+        *"About Codex security reviews in GitHub</summary>")
+        return 0
+        ;;
+    esac
+  done <<< "$body"
+  return 1
+}
+
 codex_body_is_suggestions_review() {
   local body=$1
   local state=heading
@@ -787,6 +803,24 @@ record_codex_evidence() {
     codex_latest_count=1
   elif [[ "$timestamp_key" == "$codex_latest_timestamp" ]]; then
     codex_latest_count=$((codex_latest_count + 1))
+  fi
+}
+
+record_security_evidence() {
+  local timestamp=$1
+  local kind=$2
+  local timestamp_key
+  if ! github_timestamp_is_valid "$timestamp"; then
+    return 1
+  fi
+  timestamp_key=$github_timestamp_key
+  if [[ -z "$security_latest_timestamp" || \
+        "$timestamp_key" > "$security_latest_timestamp" ]]; then
+    security_latest_timestamp=$timestamp_key
+    security_latest_kind=$kind
+    security_latest_count=1
+  elif [[ "$timestamp_key" == "$security_latest_timestamp" ]]; then
+    security_latest_count=$((security_latest_count + 1))
   fi
 }
 
@@ -906,6 +940,10 @@ for pr_number in "${sorted_prs[@]}"; do
   codex_latest_kind=
   codex_latest_count=0
   codex_conflict=0
+  security_latest_timestamp=
+  security_latest_kind=
+  security_latest_count=0
+  security_conflict=0
   review_records=()
   if [[ -n "$reviews_output" ]]; then
     while IFS= read -r review_record; do
@@ -972,27 +1010,44 @@ for pr_number in "${sorted_prs[@]}"; do
         echo "GitHub API returned an invalid review body for PR #$pr_number." >&2
         exit 1
       fi
+      security_candidate=0
+      if codex_body_is_security_review_candidate "$review_body"; then
+        security_candidate=1
+      fi
       resolved_evidence_sha=
+      review_evidence_sha=
+      review_evidence_current=0
       if resolve_evidence_sha "$evidence_sha" "$pr_number" && \
           { [[ "$resolved_evidence_sha" == "$pr_head_sha" ]] || \
             { [[ -n "$pr_merge_sha" ]] && \
               [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
+        review_evidence_sha=$resolved_evidence_sha
+        review_evidence_current=1
+      fi
+      if [[ "$security_candidate" -eq 1 ]]; then
+        if [[ -z "$review_submitted_at" ]]; then
+          echo "GitHub API returned a Codex security review without a submission time for PR #$pr_number." >&2
+          exit 1
+        fi
+        security_kind=adverse
+        if [[ "$review_evidence_current" -eq 1 ]] && \
+            codex_body_is_clean_security_review "$review_body"; then
+          marker_sha=$codex_marker_sha
+          resolved_evidence_sha=
+          if resolve_evidence_sha "$marker_sha" "$pr_number" && \
+              [[ "$resolved_evidence_sha" == "$review_evidence_sha" ]]; then
+            security_kind=clean
+          fi
+        fi
+        record_security_evidence "$review_submitted_at" "$security_kind"
+      elif [[ "$review_evidence_current" -eq 1 ]]; then
         if [[ -z "$review_submitted_at" ]]; then
           echo "GitHub API returned a current Codex review without a submission time for PR #$pr_number." >&2
           exit 1
         fi
         if codex_body_is_clean "$review_body" forbidden; then
           record_codex_evidence "$review_submitted_at" clean
-        elif codex_body_is_clean_security_review "$review_body"; then
-          review_evidence_sha=$resolved_evidence_sha
-          marker_sha=$codex_marker_sha
-          resolved_evidence_sha=
-          if ! resolve_evidence_sha "$marker_sha" "$pr_number" || \
-              [[ "$resolved_evidence_sha" != "$review_evidence_sha" ]]; then
-            record_codex_evidence "$review_submitted_at" adverse
-          fi
         elif codex_body_is_suggestions_review "$review_body"; then
-          review_evidence_sha=$resolved_evidence_sha
           marker_sha=$codex_marker_sha
           resolved_evidence_sha=
           if resolve_evidence_sha "$marker_sha" "$pr_number" && \
@@ -1051,7 +1106,20 @@ for pr_number in "${sorted_prs[@]}"; do
     fi
     if [[ "$commenter_id" == "$trusted_codex_bot_id" && \
           "$commenter_type" == "Bot" ]]; then
-      if codex_comment_has_unique_marker "$comment_body"; then
+      if codex_body_is_security_review_candidate "$comment_body"; then
+        security_kind=adverse
+        if codex_body_is_clean_security_review "$comment_body"; then
+          marker_sha=$codex_marker_sha
+          resolved_evidence_sha=
+          if resolve_evidence_sha "$marker_sha" "$pr_number" && \
+              { [[ "$resolved_evidence_sha" == "$pr_head_sha" ]] || \
+              { [[ -n "$pr_merge_sha" ]] && \
+                [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
+            security_kind=clean
+          fi
+        fi
+        record_security_evidence "$comment_created_at" "$security_kind"
+      elif codex_comment_has_unique_marker "$comment_body"; then
         marker_sha=$codex_marker_sha
         resolved_evidence_sha=
         if resolve_evidence_sha "$marker_sha" "$pr_number" && \
@@ -1060,12 +1128,6 @@ for pr_number in "${sorted_prs[@]}"; do
               [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
           if codex_body_is_clean "$comment_body" required; then
             record_codex_evidence "$comment_created_at" clean
-          elif codex_body_is_clean_security_review "$comment_body"; then
-            # Security-review evidence is an independent channel.  A strictly
-            # recognized no-findings result is neutral here: it cannot satisfy
-            # or supersede the required code review.  Any other marker-bearing
-            # body remains adverse and fails closed below.
-            :
           else
             record_codex_evidence "$comment_created_at" adverse
           fi
@@ -1090,6 +1152,12 @@ for pr_number in "${sorted_prs[@]}"; do
       *) codex_conflict=1 ;;
     esac
   fi
+  if [[ "$security_latest_count" -gt 1 ]]; then
+    security_conflict=1
+  elif [[ "$security_latest_count" -eq 1 && \
+          "$security_latest_kind" != clean ]]; then
+    security_conflict=1
+  fi
 
   if [[ "$decision" == "CHANGES_REQUESTED" ]]; then
     echo "PR #$pr_number is not release-ready: reviewDecision=CHANGES_REQUESTED." >&2
@@ -1105,6 +1173,10 @@ for pr_number in "${sorted_prs[@]}"; do
   fi
   if [[ "$codex_conflict" -ne 0 ]]; then
     echo "PR #$pr_number is not release-ready: trusted Codex evidence for the current commit is conflicting or ambiguous." >&2
+    failed=1
+  fi
+  if [[ "$security_conflict" -ne 0 ]]; then
+    echo "PR #$pr_number is not release-ready: trusted Codex security-review evidence is adverse, stale, malformed, conflicting or ambiguous." >&2
     failed=1
   fi
 
