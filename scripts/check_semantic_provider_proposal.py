@@ -265,7 +265,13 @@ def _unique_ids(
     return result
 
 
-def _id_list(value: Any, field: str, pattern: re.Pattern[str]) -> list[str]:
+def _id_list(
+    value: Any,
+    field: str,
+    pattern: re.Pattern[str],
+    *,
+    required: bool = False,
+) -> list[str]:
     raw_items = _list(value, field)
     items: list[str] = []
     for index, raw in enumerate(raw_items):
@@ -275,6 +281,8 @@ def _id_list(value: Any, field: str, pattern: re.Pattern[str]) -> list[str]:
                 f"{field}[{index}] has an invalid identifier: {identifier!r}"
             )
         items.append(identifier)
+    if required and not items:
+        raise ProposalError(f"{field} must be non-empty")
     if len(items) != len(set(items)):
         raise ProposalError(f"{field} contains duplicate identifiers")
     if items != sorted(items):
@@ -628,6 +636,20 @@ def validate_proposal(
     if not threats or not controls or not verifications:
         raise ProposalError("threats, controls, and verifications must be non-empty")
 
+    control_kinds: dict[str, frozenset[str]] = {}
+    for identifier, item in controls.items():
+        if set(item) != {"id", "title", "kinds", "threats", "verifications"}:
+            raise ProposalError(f"{identifier} has unknown or missing fields")
+        _bounded_text(item.get("title"), f"{identifier}.title")
+        kinds = _list(item.get("kinds"), f"{identifier}.kinds")
+        if not kinds or any(
+            type(kind) is not str or kind not in CONTROL_KINDS for kind in kinds
+        ):
+            raise ProposalError(f"{identifier}.kinds is invalid")
+        if len(kinds) != len(set(kinds)):
+            raise ProposalError(f"{identifier}.kinds contains duplicates")
+        control_kinds[identifier] = frozenset(kinds)
+
     for identifier, item in threats.items():
         if set(item) != {"id", "title", "severity", "controls", "verifications"}:
             raise ProposalError(f"{identifier} has unknown or missing fields")
@@ -636,10 +658,16 @@ def validate_proposal(
         if type(severity) is not str or severity not in SEVERITIES:
             raise ProposalError(f"{identifier}.severity is invalid")
         control_ids = _id_list(
-            item.get("controls"), f"{identifier}.controls", CONTROL_RE
+            item.get("controls"),
+            f"{identifier}.controls",
+            CONTROL_RE,
+            required=True,
         )
         verification_ids = _id_list(
-            item.get("verifications"), f"{identifier}.verifications", VERIFICATION_RE
+            item.get("verifications"),
+            f"{identifier}.verifications",
+            VERIFICATION_RE,
+            required=True,
         )
         missing_controls = set(control_ids) - set(controls)
         missing_verifications = set(verification_ids) - set(verifications)
@@ -658,7 +686,7 @@ def validate_proposal(
         kinds = {
             kind
             for control_id in control_ids
-            for kind in controls[control_id].get("kinds", [])
+            for kind in control_kinds[control_id]
         }
         if "preventive" not in kinds or not kinds.intersection(
             {"detective", "recovery"}
@@ -670,19 +698,17 @@ def validate_proposal(
             raise ProposalError(f"threat model does not mention {identifier}")
 
     for identifier, item in controls.items():
-        if set(item) != {"id", "title", "kinds", "threats", "verifications"}:
-            raise ProposalError(f"{identifier} has unknown or missing fields")
-        _bounded_text(item.get("title"), f"{identifier}.title")
-        kinds = _list(item.get("kinds"), f"{identifier}.kinds")
-        if not kinds or any(
-            type(kind) is not str or kind not in CONTROL_KINDS for kind in kinds
-        ):
-            raise ProposalError(f"{identifier}.kinds is invalid")
-        if len(kinds) != len(set(kinds)):
-            raise ProposalError(f"{identifier}.kinds contains duplicates")
-        threat_ids = _id_list(item.get("threats"), f"{identifier}.threats", THREAT_RE)
+        threat_ids = _id_list(
+            item.get("threats"),
+            f"{identifier}.threats",
+            THREAT_RE,
+            required=True,
+        )
         verification_ids = _id_list(
-            item.get("verifications"), f"{identifier}.verifications", VERIFICATION_RE
+            item.get("verifications"),
+            f"{identifier}.verifications",
+            VERIFICATION_RE,
+            required=True,
         )
         if set(threat_ids) - set(threats):
             raise ProposalError(f"{identifier} references unknown threats")

@@ -669,12 +669,28 @@ def validate_proposal(repo, manifest, **options):
                 lambda value: value["threats"][0]["verifications"].append("SPV-999"),
             ),
             (
+                "empty threat controls",
+                lambda value: value["threats"][0].update({"controls": []}),
+            ),
+            (
+                "empty threat verifications",
+                lambda value: value["threats"][0].update({"verifications": []}),
+            ),
+            (
                 "control fields",
                 lambda value: value["controls"][0].update({"extra": True}),
             ),
             (
                 "control kinds",
                 lambda value: value["controls"][0].update({"kinds": []}),
+            ),
+            (
+                "non-list control kinds",
+                lambda value: value["controls"][0].update({"kinds": 1}),
+            ),
+            (
+                "unhashable control kind",
+                lambda value: value["controls"][0].update({"kinds": [{}]}),
             ),
             (
                 "duplicate control kind",
@@ -691,6 +707,14 @@ def validate_proposal(repo, manifest, **options):
                 lambda value: value["controls"][0].update(
                     {"verifications": ["SPV-999"]}
                 ),
+            ),
+            (
+                "empty control threats",
+                lambda value: value["controls"][0].update({"threats": []}),
+            ),
+            (
+                "empty control verifications",
+                lambda value: value["controls"][0].update({"verifications": []}),
             ),
             (
                 "verification fields",

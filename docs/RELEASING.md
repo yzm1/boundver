@@ -343,6 +343,11 @@ resolutions to detect collisions or drift before mutation. It rejects spoofed
 identities, ambiguous commit IDs or timestamps, unresolved feedback, or stale
 evidence. Every timestamp used for ordering is checked as a real UTC calendar
 instant, including leap-year and fractional-second handling.
+An authenticated, exact-commit Codex security-review no-findings comment is a
+separate evidence channel: the audit recognizes its complete fixed shape and
+treats it as neutral. It neither satisfies nor supersedes the required code
+review. A malformed, marker-mismatched, or finding-bearing security comment
+remains adverse and fails closed.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate

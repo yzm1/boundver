@@ -511,8 +511,13 @@ readonly codex_marker_regex='^\*\*Reviewed commit:\*\* `([0-9a-fA-F]{10,40})`$'
 readonly codex_clean_bang_status_regex="(Another round soon, please|Breezy|Can't wait for the next one|Delightful|Hooray|Keep it up|Keep them coming|Nice work|Swish)!"
 readonly codex_clean_period_status_regex="(Already looking forward to the next diff|Bravo|Chef's kiss|More of your lovely PRs please|You're on a roll)\."
 readonly codex_clean_question_status_regex='(What shall we delve into next)\?'
-readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}|${codex_clean_question_status_regex}))?$"
+readonly codex_clean_emoji_status_regex=':(rocket|tada):'
+readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}|${codex_clean_question_status_regex}|${codex_clean_emoji_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
+readonly codex_security_clean_verdict='Security review completed. No security issues were found in this pull request.'
+readonly codex_security_report_regex='^\[View security finding report\]\(https://chatgpt\.com/codex/cloud/tasks/task_[A-Za-z0-9_-]{1,128}\)$'
+readonly codex_security_notice='_Only the user who started this review can view the report in Codex._'
+readonly codex_security_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex security reviews in GitHub</summary>$'
 readonly github_timestamp_regex='^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.([0-9]{1,9}))?Z$'
 
 github_timestamp_key=
@@ -670,6 +675,56 @@ codex_comment_has_unique_marker() {
     fi
   done <<< "$body"
   [[ "$codex_marker_count" -eq 1 ]]
+}
+
+codex_body_is_clean_security_review() {
+  local body=$1
+  local state=verdict
+  local footer_state=outside
+  local line
+  codex_marker_sha=
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line=${line%$'\r'}
+    if [[ "$footer_state" == inside ]]; then
+      if [[ "$line" == "</details>" ]]; then
+        footer_state=closed
+      elif [[ "$line" == "<details>"* ]]; then
+        return 1
+      fi
+      continue
+    fi
+    if [[ "$footer_state" == closed ]]; then
+      [[ "$line" =~ ^[[:space:]]*$ ]] || return 1
+      continue
+    fi
+    [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+    case "$state" in
+      verdict)
+        [[ "$line" == "$codex_security_clean_verdict" ]] || return 1
+        state=marker
+        ;;
+      marker)
+        [[ "$line" =~ $codex_marker_regex ]] || return 1
+        codex_marker_sha=${BASH_REMATCH[1]}
+        state=report
+        ;;
+      report)
+        [[ "$line" =~ $codex_security_report_regex ]] || return 1
+        state=notice
+        ;;
+      notice)
+        [[ "$line" == "$codex_security_notice" ]] || return 1
+        state=footer
+        ;;
+      footer)
+        [[ "$line" =~ $codex_security_footer_open_regex ]] || return 1
+        footer_state=inside
+        state=done
+        ;;
+      *) return 1 ;;
+    esac
+  done <<< "$body"
+  [[ "$state" == done && "$footer_state" == closed ]]
 }
 
 codex_body_is_suggestions_review() {
@@ -928,6 +983,14 @@ for pr_number in "${sorted_prs[@]}"; do
         fi
         if codex_body_is_clean "$review_body" forbidden; then
           record_codex_evidence "$review_submitted_at" clean
+        elif codex_body_is_clean_security_review "$review_body"; then
+          review_evidence_sha=$resolved_evidence_sha
+          marker_sha=$codex_marker_sha
+          resolved_evidence_sha=
+          if ! resolve_evidence_sha "$marker_sha" "$pr_number" || \
+              [[ "$resolved_evidence_sha" != "$review_evidence_sha" ]]; then
+            record_codex_evidence "$review_submitted_at" adverse
+          fi
         elif codex_body_is_suggestions_review "$review_body"; then
           review_evidence_sha=$resolved_evidence_sha
           marker_sha=$codex_marker_sha
@@ -997,6 +1060,12 @@ for pr_number in "${sorted_prs[@]}"; do
               [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
           if codex_body_is_clean "$comment_body" required; then
             record_codex_evidence "$comment_created_at" clean
+          elif codex_body_is_clean_security_review "$comment_body"; then
+            # Security-review evidence is an independent channel.  A strictly
+            # recognized no-findings result is neutral here: it cannot satisfy
+            # or supersede the required code review.  Any other marker-bearing
+            # body remains adverse and fails closed below.
+            :
           else
             record_codex_evidence "$comment_created_at" adverse
           fi
