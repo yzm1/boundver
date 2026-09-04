@@ -8,10 +8,10 @@
   </defs>
   <rect width="500" height="500" fill="#ffffff"/>
   <rect x="500" width="500" height="500" fill="#161c37"/>
-  <text x="28" y="44" fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Grayscale · light</text>
-  <text x="528" y="44" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Grayscale · dark</text>
+  <text x="28" y="44" fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Grayscale &#183; light</text>
+  <text x="528" y="44" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Grayscale &#183; dark</text>
   <image href="../logo.svg" x="110" y="70" width="280" height="280" filter="url(#grayscale)"/>
   <image href="../logo.svg" x="610" y="70" width="280" height="280" filter="url(#grayscale)"/>
-  <text x="250" y="420" fill="#111936" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Geometry—not color—separates the event</text>
-  <text x="750" y="420" fill="#ffffff" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Geometry—not color—separates the event</text>
+  <text x="250" y="420" fill="#111936" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Geometry&#8212;not color&#8212;separates the event</text>
+  <text x="750" y="420" fill="#ffffff" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Geometry&#8212;not color&#8212;separates the event</text>
 </svg>

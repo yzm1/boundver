@@ -109,10 +109,12 @@ All notable changes to this project are documented here. The format follows
 ### Changed
 
 - Refined the Boundver mark without replacing its established B silhouette.
-  The diamond now crosses a purpose-built middle-boundary notch, with separate
-  small-size and monochrome constructions, SVG masters, transparent raster
-  exports, favicons, lockups, archived legacy artwork, and checked light,
-  dark, grayscale, and 16–512px usage proofs.
+  The B now remains continuously curved through both bowls and its waist, with
+  the boundary diamond separated beside it instead of forcing pointed
+  terminals into the silhouette. Separate small-size and monochrome
+  constructions, SVG masters, transparent raster exports, favicons, lockups,
+  archived legacy artwork, and checked light, dark, grayscale, and 16–512px
+  usage proofs complete the production set.
 - Reworked the README and hosted landing page around the familiar lockfile and
   CI-check category, a short decision path, an early statement of limits, and
   responsive, self-hosted styling. Package, Action, container, Homebrew, and
@@ -385,9 +387,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Replaced the generic shield/check branding with a Boundver-specific boundary
-  change mark, aligned README/social/Marketplace presentation, and added a
-  transparent project-avatar asset plus GitLab Catalog metadata.
+- Established a Boundver-specific boundary-change visual identity with
+  tangent-continuous logo geometry, uniform accent clearance, an optically
+  corrected small mark, responsive and monochrome exports, aligned
+  README/social/Marketplace presentation, a transparent project-avatar asset,
+  and GitLab Catalog metadata.
 
 ### Fixed
 

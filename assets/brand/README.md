@@ -18,9 +18,14 @@ SVG is the source of truth. The mark uses flat fills only:
 | `favicon-*.png` | 16px, 32px, and 48px raster favicon fallbacks |
 
 Keep clearspace of at least half the diamond width around the visible mark.
-That is 6.5 viewBox units for the primary mark. Do not stretch, rotate, add
-effects, recolor arbitrarily, or alter the gap between the notch and diamond.
+That is 6 viewBox units for the primary mark. Do not stretch, rotate, add
+effects, recolor arbitrarily, or alter the gap between the B and diamond.
 
 The PNG files are transparent exports rasterized from the corresponding SVG.
-The pre-notch v0.14 mark is retained under `legacy/`; it is archival and
-should not be used for new work.
+The v0.14 mark is retained under `legacy/`; it is archival and should not be
+used for new work.
+
+The B's outer contour is tangent-continuous through both bowls and its waist.
+The primary diamond begins 2.5 viewBox units beyond that waist. Keep that
+separation intact when scaling or exporting the mark; do not approximate the
+curves with polygons.

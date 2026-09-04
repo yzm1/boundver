@@ -2063,10 +2063,13 @@ print(json.dumps(payload, separators=(",", ":")))
 
         brand = REPO_ROOT / "assets" / "brand"
         logo_svg = (brand / "logo.svg").read_text(encoding="utf-8")
-        self.assertIn('viewBox="-4 -4 72 72"', logo_svg)
+        self.assertIn('viewBox="0 -3 72 72"', logo_svg)
         self.assertIn("#6674f8", logo_svg)
         self.assertIn("#08b8d1", logo_svg)
-        self.assertIn("L41 32l8.5 7", logo_svg)
+        self.assertIn(
+            "C54 25.5 46 29.5 46 32c0 2.5 9 6.5 9 15.5",
+            logo_svg,
+        )
         for forbidden in ("gradient", "<filter", "<image", "stroke=", "data:"):
             self.assertNotIn(forbidden, logo_svg.lower())
 
@@ -2106,8 +2109,12 @@ print(json.dumps(payload, separators=(",", ":")))
                     self.assertNotIn(forbidden, text.lower())
 
         small_svg = (brand / "logo-small.svg").read_bytes()
+        self.assertIn(
+            b"C25 12.5 21.5 14.7 21.5 16s4.5 3.5 4.5 6.7",
+            small_svg,
+        )
         favicon_svg = (brand / "favicon.svg").read_text(encoding="utf-8")
-        self.assertIn('viewBox="0 0 32 32"', favicon_svg)
+        self.assertIn('viewBox="0 0 34 32"', favicon_svg)
         self.assertIn("#6674f8", favicon_svg)
         self.assertIn("#08b8d1", favicon_svg)
         small_paths = ET.fromstring(small_svg).findall("svg:path", namespace)
@@ -2129,6 +2136,13 @@ print(json.dumps(payload, separators=(",", ":")))
             (REPO_ROOT / "docs/assets/favicon.svg").read_bytes(),
             (brand / "favicon.svg").read_bytes(),
         )
+
+        for svg_path in (
+            *brand.rglob("*.svg"),
+            *(REPO_ROOT / "docs/assets").glob("*.svg"),
+        ):
+            with self.subTest(asset=svg_path.relative_to(REPO_ROOT).as_posix()):
+                self.assertNotIn("\ufffd", svg_path.read_text(encoding="utf-8"))
 
         for relative, dimensions, max_bytes in (
             ("assets/brand/logo-64.png", (64, 64), 50_000),
@@ -2192,7 +2206,13 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("https://yzm1.github.io/boundver/assets/logo.png", readme)
         self.assertIn("https://gitlab.com/boundver-project/boundver", readme)
         brand_readme = (brand / "README.md").read_text(encoding="utf-8")
-        for contract in ("#6674F8", "#08B8D1", "32px", "logo-small.svg", "6.5"):
+        for contract in (
+            "#6674F8",
+            "#08B8D1",
+            "32px",
+            "logo-small.svg",
+            "2.5 viewBox units",
+        ):
             self.assertIn(contract, brand_readme)
 
     def test_container_and_sdist_exclude_repository_only_material(self):
