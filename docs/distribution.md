@@ -16,7 +16,7 @@ not intended for production installation.
 ## GitHub Action
 
 ```yaml
-- uses: yzm1/boundver@v0.14.1
+- uses: yzm1/boundver@v0.15.0
 ```
 
 Pin the exact patch release used to write the lockfile. The compatibility alias

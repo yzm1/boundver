@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       # Keep the writer and verifier on the repository's lock-contract version.
-      - uses: yzm1/boundver@v0.14.1
+      - uses: yzm1/boundver@v0.15.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -135,7 +135,7 @@ analysis or create a compatibility identity for an unversioned component.
   with:
     fetch-depth: 0
 
-- uses: yzm1/boundver@v0.14.1
+- uses: yzm1/boundver@v0.15.0
   with:
     source: head
     changed-from: origin/${{ github.base_ref }}
@@ -269,8 +269,8 @@ steps:
   - uses: actions/setup-python@v6
     with:
       python-version: "3.12"
-  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
-  - run: python -c "import boundver; assert boundver.__version__ == '0.14.1', boundver.__version__"
+  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
+  - run: python -c "import boundver; assert boundver.__version__ == '0.15.0', boundver.__version__"
   - run: python -m boundver verify --source head
 ```
 
@@ -390,8 +390,8 @@ boundary-verify:
   image: python:3.12-slim
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-    - python -m pip install --upgrade "boundver[schema,yaml]==0.14.1"
-    - python -c "import boundver; assert boundver.__version__ == '0.14.1', boundver.__version__"
+    - python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
+    - python -c "import boundver; assert boundver.__version__ == '0.15.0', boundver.__version__"
   script:
     - python -m boundver verify --source head
   rules:
@@ -410,7 +410,7 @@ not conflated:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/yzm1/boundver
-    rev: v0.14.1
+    rev: v0.15.0
     hooks:
       - id: boundver-verify       # pre-commit: source=index, portable exact gate
       - id: boundver-verify-push  # pre-push: source=head, portable exact gate
