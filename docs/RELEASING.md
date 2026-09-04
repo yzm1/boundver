@@ -55,11 +55,12 @@ The repository owner must configure these controls before starting a release:
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,
-  disable only this ruleset's enforcement, squash-merge that frozen head, and
-  immediately restore the canonical active ruleset from the merged JSON. Verify
-  the live ruleset after restoration and keep the issue open until a subsequent
-  ordinary pull request proves that the base-controlled status is emitted by the
-  GitHub Actions App. Do not add a bypass actor or weaken the tracked contract.
+  temporarily remove only this ruleset's `required_status_checks` rule while
+  keeping enforcement active, squash-merge that frozen head, and immediately
+  restore the canonical active ruleset from the merged JSON. Verify the live
+  ruleset after restoration and keep the issue open until a subsequent ordinary
+  pull request proves that the base-controlled status is emitted by the GitHub
+  Actions App. Do not add a bypass actor or weaken the tracked contract.
 - Enable private vulnerability reporting, Dependabot alerts and security
   updates, secret scanning, and secret-scanning push protection. Keep every
   alert queue at zero before release; the promotion gate checks dependency,

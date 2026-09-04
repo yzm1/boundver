@@ -158,6 +158,20 @@ def test_release_review_allowlist_is_fully_documented() -> None:
             assert f"`{choice}{suffixes[name]}`" in releasing
 
 
+def test_required_gate_maintenance_keeps_ruleset_enforcement_active() -> None:
+    releasing = (REPO_ROOT / "docs" / "RELEASING.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "disable only this ruleset's enforcement" not in releasing
+    assert "temporarily remove only this ruleset's `required_status_checks` rule" in (
+        releasing
+    )
+    assert "Temporarily remove only `required_status_checks`. Keep the ruleset active" in (
+        releasing
+    )
+
+
 def test_readme_keeps_the_decision_path_short() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     words = re.findall(r"\b[\w'-]+\b", readme)
