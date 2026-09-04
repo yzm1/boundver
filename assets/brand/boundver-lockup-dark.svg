@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 112" role="img" aria-labelledby="title desc">
+  <title id="title">Boundver lockup for dark backgrounds</title>
+  <desc id="desc">The Boundver boundary-event mark and wordmark.</desc>
+  <svg x="0" y="0" width="112" height="112" viewBox="0 -3 72 72" aria-hidden="true">
+    <path
+      fill="#6674f8"
+      fill-rule="evenodd"
+      d="M10 5h23C45 5 54 11 54 20.5C54 25.5 46 29.5 46 32c0 2.5 9 6.5 9 15.5C55 57.5 47.2 62 34 62H10V5Zm8 8v16h15c7.2 0 11-2.8 11-8s-3.8-8-11-8H18Zm0 24v17h16c8.1 0 12-2.8 12-8.5S42.1 37 34 37H18Z"
+    />
+    <path fill="#08b8d1" d="M54.5 26 60.5 32l-6 6-6-6 6-6Z" />
+  </svg>
+  <text
+    x="120"
+    y="74"
+    fill="#ffffff"
+    font-family="Inter, Segoe UI, system-ui, sans-serif"
+    font-size="54"
+    font-weight="700"
+    letter-spacing="-1.5"
+  >Boundver</text>
+</svg>

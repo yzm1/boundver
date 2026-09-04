@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://yzm1.github.io/boundver/">
-    <img src="https://yzm1.github.io/boundver/assets/logo.png" alt="boundver logo" width="128">
+    <img src="https://yzm1.github.io/boundver/assets/logo.png" alt="Boundver boundary-event logo" width="128">
   </a>
 </p>
 

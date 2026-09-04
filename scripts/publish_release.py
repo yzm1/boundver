@@ -138,6 +138,7 @@ MAX_COMMAND_DIAGNOSTIC_CHARS = 4_096
 SURFACES = (
     "repository hygiene",
     "README and hosted documentation",
+    "project branding system",
     "changelog and release notes",
     "schema URLs, configs, and locks",
     "CI and review state",
@@ -2420,6 +2421,43 @@ def _surface_inventory(repo: Path) -> str:
             "scripts/demo_range_review.py",
             "examples/range-review/fixture/boundary.config.json",
         ),
+        "project branding system": (
+            "assets/brand/README.md",
+            "assets/brand/logo.svg",
+            "assets/brand/logo-light.svg",
+            "assets/brand/logo-dark.svg",
+            "assets/brand/logo-mono-dark.svg",
+            "assets/brand/logo-mono-light.svg",
+            "assets/brand/logo-small.svg",
+            "assets/brand/favicon.svg",
+            "assets/brand/boundver-lockup.svg",
+            "assets/brand/boundver-lockup-dark.svg",
+            "assets/brand/logo-64.png",
+            "assets/brand/logo-128.png",
+            "assets/brand/logo-256.png",
+            "assets/brand/logo-512.png",
+            "assets/brand/logo-1024.png",
+            "assets/brand/favicon-16x16.png",
+            "assets/brand/favicon-32x32.png",
+            "assets/brand/favicon-48x48.png",
+            "assets/brand/legacy/logo-pre-boundary-notch.svg",
+            "assets/brand/legacy/logo-pre-boundary-notch.png",
+            "assets/brand/previews/backgrounds.svg",
+            "assets/brand/previews/backgrounds.png",
+            "assets/brand/previews/grayscale.svg",
+            "assets/brand/previews/grayscale.png",
+            "assets/brand/previews/lockups.svg",
+            "assets/brand/previews/lockups.png",
+            "assets/brand/previews/monochrome.svg",
+            "assets/brand/previews/monochrome.png",
+            "assets/brand/previews/sizes.svg",
+            "assets/brand/previews/sizes.png",
+            "docs/assets/logo-small.svg",
+            "docs/assets/favicon.svg",
+            "docs/assets/favicon-16x16.png",
+            "docs/assets/favicon-32x32.png",
+            "docs/assets/favicon-48x48.png",
+        ),
         "changelog and release notes": ("CHANGELOG.md", "scripts/release_changelog.py"),
         "schema URLs, configs, and locks": (
             "boundary.config.schema.json",
@@ -2428,7 +2466,11 @@ def _surface_inventory(repo: Path) -> str:
             "spec/cli-output.plan.schema.json",
             "boundary.lock.json",
         ),
-        "CI and review state": (".github/workflows/ci.yml", "scripts/audit_release_reviews.sh"),
+        "CI and review state": (
+            ".github/workflows/ci.yml",
+            "scripts/audit_release_reviews.sh",
+            "scripts/publish_release.ps1",
+        ),
         "reproducible wheel, sdist, and standalone archive": (
             "scripts/verify_release_candidate.py",
             "scripts/packaging_smoke.sh",
@@ -2471,6 +2513,8 @@ def _surface_inventory(repo: Path) -> str:
         ),
         "pre-commit": (".pre-commit-hooks.yaml",),
     }
+    if tuple(required) != SURFACES:
+        raise GateError("release surface inventory labels do not match the public contract")
     missing = [
         f"{surface}: {path}"
         for surface, paths in required.items()

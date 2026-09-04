@@ -12,8 +12,8 @@ strict: true
 theme:
   name: material
   custom_dir: docs/overrides
-  logo: assets/logo.svg
-  favicon: assets/logo.svg
+  logo: assets/logo-small.svg
+  favicon: assets/favicon.svg
   font: false
   palette:
     - media: "(prefers-color-scheme: light)"

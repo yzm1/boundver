@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Boundver responsive size validation</title>
+  <desc id="desc">The production mark rendered at 64, 32, 24, 20, and 16 pixels.</desc>
+  <rect width="1200" height="320" fill="#f5f7ff"/>
+  <text x="40" y="48" fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="24" font-weight="650">Responsive mark at actual pixel sizes</text>
+  <g fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="18" text-anchor="middle">
+    <text x="130" y="260">64px &#183; primary</text>
+    <text x="365" y="260">32px &#183; small</text>
+    <text x="600" y="260">24px &#183; small</text>
+    <text x="835" y="260">20px &#183; small</text>
+    <text x="1070" y="260">16px &#183; small</text>
+  </g>
+  <rect x="66" y="100" width="128" height="128" rx="12" fill="#ffffff"/>
+  <rect x="301" y="100" width="128" height="128" rx="12" fill="#ffffff"/>
+  <rect x="536" y="100" width="128" height="128" rx="12" fill="#ffffff"/>
+  <rect x="771" y="100" width="128" height="128" rx="12" fill="#ffffff"/>
+  <rect x="1006" y="100" width="128" height="128" rx="12" fill="#ffffff"/>
+  <image href="../logo.svg" x="98" y="132" width="64" height="64"/>
+  <image href="../logo-small.svg" x="349" y="148" width="32" height="32"/>
+  <image href="../logo-small.svg" x="588" y="152" width="24" height="24"/>
+  <image href="../logo-small.svg" x="825" y="154" width="20" height="20"/>
+  <image href="../logo-small.svg" x="1062" y="156" width="16" height="16"/>
+</svg>

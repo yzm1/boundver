@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -3 72 72" role="img" aria-labelledby="title desc">
-  <title id="title">Boundver</title>
-  <desc id="desc">A smooth geometric B with a separated cyan boundary diamond.</desc>
+  <title id="title">Boundver monochrome light logo</title>
+  <desc id="desc">A smooth geometric B with a separated boundary diamond.</desc>
   <path
-    fill="#6674f8"
+    fill="#ffffff"
     fill-rule="evenodd"
     d="M10 5h23C45 5 54 11 54 20.5C54 25.5 46 29.5 46 32c0 2.5 9 6.5 9 15.5C55 57.5 47.2 62 34 62H10V5Zm8 8v16h15c7.2 0 11-2.8 11-8s-3.8-8-11-8H18Zm0 24v17h16c8.1 0 12-2.8 12-8.5S42.1 37 34 37H18Z"
   />
-  <path fill="#08b8d1" d="M54.5 26 60.5 32l-6 6-6-6 6-6Z" />
+  <path fill="#ffffff" d="M54.5 26 60.5 32l-6 6-6-6 6-6Z" />
 </svg>

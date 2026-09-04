@@ -12,6 +12,7 @@ import json
 import importlib.util
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2919,6 +2920,51 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertIn("Missing, malformed,\nor alternate values fail closed", runbook)
         self.assertIn("read-only", runbook.lower())
         self.assertNotIn("gh workflow run publish.yml", runbook)
+
+    def test_powershell_launcher_prompts_without_exposing_the_review_token(self):
+        launcher = (REPO_ROOT / "scripts" / "publish_release.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'Read-Host "Read-only release-review token" -AsSecureString',
+            launcher,
+        )
+        self.assertIn("SecureStringToBSTR", launcher)
+        self.assertIn("ZeroFreeBSTR", launcher)
+        self.assertIn('"BOUNDVER_RELEASE_REVIEW_TOKEN"', launcher)
+        self.assertIn('@("check", "start")', launcher)
+        self.assertIn('"-I" $pythonScript @releaseArguments', launcher)
+        self.assertIn("Refusing a Python launcher inside the repository", launcher)
+        self.assertIn("[Environment]::SetEnvironmentVariable", launcher)
+        self.assertNotIn("ConvertFrom-SecureString", launcher)
+        self.assertNotIn("Write-Host $plainToken", launcher)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell wrapper is exercised on Windows")
+    def test_powershell_launcher_help_needs_no_secret(self):
+        powershell = shutil.which("powershell.exe")
+        self.assertIsNotNone(powershell)
+        environment = os.environ.copy()
+        environment.pop("BOUNDVER_RELEASE_REVIEW_TOKEN", None)
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(REPO_ROOT / "scripts" / "publish_release.ps1"),
+                "--help",
+            ],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Gated boundver release", result.stdout)
+        self.assertNotIn("Read-only release-review token", result.stdout)
 
 
 if __name__ == "__main__":  # pragma: no cover
