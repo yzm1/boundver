@@ -173,6 +173,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Kept authenticated Codex security-review no-findings comments independent
+  from required code-review evidence in the release audit. Their exact fixed
+  shape is now recognized as neutral rather than mistaken for later adverse
+  review state; they cannot satisfy or supersede a code review, while malformed,
+  marker-mismatched, and finding-bearing comments still fail closed. The
+  positive allowlist also recognizes the trusted bot's observed `:rocket:` and
+  `:tada:` clean-review suffixes without accepting free-form status text.
+  Security evidence now has independent ordering and conflict state, is
+  classified before commit-marker filtering, and can be cleared only by a
+  later valid security review rather than an unrelated clean code review.
+- Aligned the semantic-provider assurance checker with its schema by requiring
+  every threat and control to retain its declared non-empty relationships, and
+  validating control-kind shapes before aggregating coverage. Hostile malformed
+  manifests now produce bounded proposal errors instead of uncaught type errors.
 - Corrected the release gate to consume GitHub's documented code-scanning
   analysis shape. Exact-main CodeQL evidence is now bound to the immutable
   `codeql.yml:analyze` workflow identity and Python category instead of a

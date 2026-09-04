@@ -3236,6 +3236,29 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             f"{record_id}|{timestamp}|{actor_id}|{login}|{actor_type}|{encoded}"
         )
 
+    def _codex_security_comment(self, commit: str) -> str:
+        return "\n".join(
+            (
+                "Security review completed. No security issues were found in "
+                "this pull request.",
+                "",
+                f"**Reviewed commit:** `{commit}`",
+                "",
+                "[View security finding report](https://chatgpt.com/codex/"
+                "cloud/tasks/task_e_0123456789abcdef)",
+                "",
+                "_Only the user who started this review can view the report "
+                "in Codex._",
+                "",
+                "<details> <summary>â„¹ï¸ About Codex security reviews in "
+                "GitHub</summary>",
+                "<br/>",
+                "",
+                "Security review guidance belongs inside this recognized footer.",
+                "</details>",
+            )
+        )
+
     def _review_record(
         self,
         commit: str,
@@ -3539,6 +3562,8 @@ exit 74
             "More of your lovely PRs please.",
             "Codex Review: Didn't find any major issues. You're on a roll.",
             "Codex Review: Didn't find any major issues. What shall we delve into next?",
+            "Codex Review: Didn't find any major issues. :rocket:",
+            "Codex Review: Didn't find any major issues. :tada:",
         )
         for verdict in verdicts:
             with self.subTest(verdict=verdict):
@@ -3760,6 +3785,145 @@ exit 74
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_clean_security_review_is_neutral_to_required_code_review(self):
+        head = "b" * 40
+        clean = self._comment_record(
+            self._codex_comment(head[:10]),
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        security = self._comment_record(
+            self._codex_security_comment(head[:10]),
+            record_id="202",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=f"{clean}\n{security}",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=security,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no current exact-commit review evidence", result.stderr)
+
+        adverse = self._comment_record(
+            "Codex Review: found a release-blocking issue.\n\n"
+            f"**Reviewed commit:** `{head[:10]}`",
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=f"{adverse}\n{security}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicting or ambiguous", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_security_evidence_is_independent_and_fails_closed(self):
+        head = "c" * 40
+        clean = self._comment_record(
+            self._codex_comment(head[:10]),
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        valid_security = self._comment_record(
+            self._codex_security_comment(head[:10]),
+            record_id="203",
+            timestamp="2026-08-18T12:03:00Z",
+        )
+        canonical = self._codex_security_comment(head[:10])
+        malformed_bodies = (
+            canonical.replace(
+                "No security issues were found",
+                "No important security issues were found",
+            ),
+            canonical.replace(
+                f"**Reviewed commit:** `{head[:10]}`\n\n",
+                "",
+            ),
+            canonical.replace(
+                f"**Reviewed commit:** `{head[:10]}`",
+                "**Reviewed commit:** `not-a-commit`",
+            ),
+            self._codex_security_comment("e" * 40),
+        )
+        for index, malformed in enumerate(malformed_bodies, start=1):
+            with self.subTest(index=index):
+                adverse_security = self._comment_record(
+                    malformed,
+                    record_id="202",
+                    timestamp="2026-08-18T12:01:00Z",
+                )
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_REVIEWS="",
+                    FAKE_COMMENTS=f"{adverse_security}\n{clean}",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("security-review evidence", result.stderr)
+
+                result = self._run_audit(
+                    FAKE_HEAD_SHA=head,
+                    FAKE_REVIEWS="",
+                    FAKE_COMMENTS=(
+                        f"{adverse_security}\n{clean}\n{valid_security}"
+                    ),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_security_review_record_requires_matching_body_marker(self):
+        head = "d" * 40
+        clean = self._review_record(
+            head,
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        security_body = self._codex_security_comment(head[:10])
+        security = self._review_record(
+            head,
+            security_body,
+            record_id="102",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{security}",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        stale_marker = self._codex_security_comment("e" * 40)
+        security = self._review_record(
+            head,
+            stale_marker,
+            record_id="102",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{security}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("security-review evidence", result.stderr)
+
+        stale_security = self._review_record(
+            "e" * 40,
+            self._codex_security_comment("e" * 40),
+            record_id="102",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS=f"{clean}\n{stale_security}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("security-review evidence", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_exact_codex_suggestions_count_after_every_thread_is_resolved(self):
