@@ -98,6 +98,8 @@ MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
 ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 GITHUB_ACTIONS_APP_ID = 15368
+CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
+CODEQL_PYTHON_CATEGORY = "/language:python"
 REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
 MAIN_RULESET_PATH = ".github/rulesets/protect-main.json"
 MAX_MAIN_RULESET_BYTES = 64 * 1024
@@ -1792,8 +1794,8 @@ def _github_controls(
         isinstance(analysis, dict)
         and analysis.get("commit_sha") == sha
         and analysis.get("ref") == "refs/heads/main"
-        and analysis.get("language") == "python"
-        and analysis.get("category") == "/language:python"
+        and analysis.get("analysis_key") == CODEQL_ANALYSIS_KEY
+        and analysis.get("category") == CODEQL_PYTHON_CATEGORY
         and isinstance(analysis.get("tool"), dict)
         and analysis["tool"].get("name") == "CodeQL"
         and analysis.get("error") in (None, "")
