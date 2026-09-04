@@ -462,7 +462,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.14.1/spec/{schema_name}",
+                    f"v0.15.0/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
@@ -1800,6 +1800,11 @@ class AutomationContractTests(unittest.TestCase):
             subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
             subprocess.run(["git", "commit", "-qm", "base"], cwd=repository, check=True)
             subprocess.run(["git", "tag", "v0.10.0"], cwd=repository, check=True)
+            previous_sha = subprocess.check_output(
+                ["git", "rev-parse", "v0.10.0^{commit}"],
+                cwd=repository,
+                text=True,
+            ).strip()
             tracked.write_text("release\n", encoding="utf-8")
             subprocess.run(["git", "commit", "-qam", "release"], cwd=repository, check=True)
             release_sha = subprocess.check_output(
@@ -1817,6 +1822,7 @@ import sys
 
 endpoint = sys.argv[2]
 sha = os.environ["FAKE_RELEASE_SHA"]
+previous_sha = os.environ["FAKE_PREVIOUS_SHA"]
 actor = {"id": 199175422, "login": "codex[bot]", "type": "Bot"}
 if endpoint == "graphql" and any("fullDatabaseId" in item for item in sys.argv):
     edited = os.environ["FAKE_REVIEW_EDIT"] or None
@@ -1834,6 +1840,44 @@ elif endpoint == "graphql":
             "hasNextPage": False, "endCursor": None,
         }},
     }}}}
+elif endpoint.startswith("repos/owner/repository/releases?per_page=100"):
+    payload = [{
+        "id": 10,
+        "tag_name": "v0.10.0",
+        "draft": False,
+        "prerelease": False,
+        "immutable": True,
+        "published_at": "2026-08-17T00:00:00Z",
+    }]
+elif endpoint.startswith("repos/owner/repository/actions/workflows/publish.yml/runs"):
+    title = f"publish:v0.10.0@{previous_sha}:alias=v0.10:resume="
+    payload = {"total_count": 1, "workflow_runs": [{
+        "id": 25274602544,
+        "name": title,
+        "path": ".github/workflows/publish.yml",
+        "display_title": title,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": previous_sha,
+        "head_branch": "v0.10.0",
+        "run_attempt": 1,
+        "workflow_id": 270075259,
+        "repository": {"full_name": "owner/repository"},
+        "head_repository": {"full_name": "owner/repository"},
+        "created_at": "2026-08-17T00:00:00Z",
+        "updated_at": "2026-08-17T01:00:00Z",
+        "html_url": (
+            "https://github.com/owner/repository/actions/runs/25274602544"
+        ),
+    }]}
+elif endpoint == "repos/owner/repository/actions/workflows/publish.yml":
+    payload = {
+        "id": 270075259,
+        "name": "Promote verified release",
+        "path": ".github/workflows/publish.yml",
+        "state": "active",
+    }
 elif endpoint.startswith("repos/owner/repository/commits/") and "/pulls?per_page=100" in endpoint:
     payload = [{"number": 17}]
 elif endpoint.startswith("repos/owner/repository/commits/"):
@@ -1883,6 +1927,7 @@ print(json.dumps(payload, separators=(",", ":")))
                     "GITHUB_WORKSPACE": str(repository),
                     "RUNNER_TEMP": str(root),
                     "FAKE_RELEASE_SHA": release_sha,
+                    "FAKE_PREVIOUS_SHA": previous_sha,
                     "FAKE_REVIEW_BODY": "Codex Review: Didn't find any major issues.",
                     "FAKE_REVIEW_EDIT": "",
                     "FAKE_REVIEW_TIME": "2026-08-18T12:00:00Z",
@@ -3106,6 +3151,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
             encoding="utf-8"
         )
+        publication_alias = overrides.pop("FAKE_PUBLICATION_ALIAS", "v0.14")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "audit_release_reviews.sh").write_bytes(
@@ -3122,6 +3168,21 @@ endpoint=
 for argument in "$@"; do
   if [[ "$argument" == repos/* ]]; then endpoint=$argument; fi
 done
+if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then
+  if [[ "$FAKE_FAILURE" == releases ]]; then exit 73; fi
+  printf '%s' "$FAKE_RELEASES"
+  exit 0
+fi
+if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/runs?event=workflow_dispatch&status=completed&per_page=100" ]]; then
+  if [[ "$FAKE_FAILURE" == publication-runs ]]; then exit 73; fi
+  printf '%s' "$FAKE_PUBLICATION_RUNS"
+  exit 0
+fi
+if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml" ]]; then
+  if [[ "$FAKE_FAILURE" == publication-workflow ]]; then exit 73; fi
+  printf '%s\n' '270075259\tPromote verified release\t.github/workflows/publish.yml\tactive'
+  exit 0
+fi
 if [[ "$endpoint" == */commits/*/pulls ]]; then
   if [[ "$FAKE_FAILURE" == associated ]]; then exit 73; fi
   echo 17
@@ -3191,9 +3252,17 @@ exit 74
                 cwd=root,
                 check=True,
             )
+            (root / "file.txt").write_text("previous\n", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "previous"], cwd=root, check=True)
+            subprocess.run(["git", "tag", "v0.14.1"], cwd=root, check=True)
+            previous_sha = subprocess.check_output(
+                ["git", "rev-parse", "v0.14.1^{commit}"], cwd=root, text=True
+            ).strip()
             (root / "file.txt").write_text("release\n", encoding="utf-8")
             subprocess.run(["git", "add", "file.txt"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "release"], cwd=root, check=True)
+            subprocess.run(["git", "tag", "v0.14.999"], cwd=root, check=True)
             release_sha = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip()
@@ -3212,6 +3281,25 @@ exit 74
                     "GH_TOKEN": "test-token",
                     "GITHUB_REPOSITORY": "owner/repository",
                     "FAKE_FAILURE": "none",
+                    "FAKE_RELEASES": (
+                        "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                        "2026-08-27T15:05:36Z\n"
+                    ),
+                    "FAKE_PUBLICATION_RUNS": (
+                        "33112740009\t"
+                        "publish:v0.14.1@"
+                        f"{previous_sha}:alias={publication_alias}:resume=\t"
+                        ".github/workflows/publish.yml\t"
+                        "publish:v0.14.1@"
+                        f"{previous_sha}:alias={publication_alias}:resume=\t"
+                        "workflow_dispatch\tcompleted\tsuccess\t"
+                        f"{previous_sha}\tv0.14.1\t1\t270075259\t"
+                        "owner/repository\towner/repository\t"
+                        "2026-08-27T14:05:36Z\t"
+                        "2026-08-27T16:05:36Z\t"
+                        "https://github.com/owner/repository/actions/runs/"
+                        "33112740009\n"
+                    ),
                     "FAKE_OWNER_ID": "101",
                     "FAKE_OWNER_LOGIN": "owner",
                     "FAKE_OWNER_TYPE": "User",
@@ -3268,6 +3356,37 @@ exit 74
             FAKE_COMMENTS=comment,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_unpublished_semver_tag_cannot_narrow_the_review_range(self):
+        result = self._run_audit(
+            FAKE_RELEASES=(
+                "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-08-27T15:05:36Z\n"
+                "102\tv0.14.999\tfalse\tfalse\ttrue\t"
+                "2026-08-28T15:05:36Z\n"
+            )
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_accepts_explicit_no_alias_publication(self):
+        result = self._run_audit(FAKE_PUBLICATION_ALIAS="none")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_rejects_calendar_invalid_timestamps(self):
+        result = self._run_audit(
+            FAKE_RELEASES=(
+                "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-02-31T25:05:36Z\n"
+            )
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed timestamp", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_codex_evidence_accepts_observed_clean_verdict_flourishes(self):
@@ -3561,6 +3680,9 @@ exit 74
         self.assertIn("trusted_codex_bot_id=199175422", script)
 
         for failure in (
+            "releases",
+            "publication-workflow",
+            "publication-runs",
             "associated",
             "owner",
             "metadata",
@@ -3582,6 +3704,17 @@ exit 74
         result = self._run_audit(
             FAKE_HEAD_SHA="6" * 40,
             FAKE_REVIEWS=malformed_review,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("malformed review data", result.stderr)
+
+        impossible_review = self._review_record(
+            "6" * 40,
+            timestamp="2026-02-31T25:00:00Z",
+        )
+        result = self._run_audit(
+            FAKE_HEAD_SHA="6" * 40,
+            FAKE_REVIEWS=impossible_review,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("malformed review data", result.stderr)

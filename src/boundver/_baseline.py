@@ -41,7 +41,7 @@ from ._utils import (
 
 BASELINE_SCHEMA = "boundver-verify-baseline/v1"
 BASELINE_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/yzm1/boundver/v0.14.1/"
+    "https://raw.githubusercontent.com/yzm1/boundver/v0.15.0/"
     "spec/verify-baseline.schema.json"
 )
 MAX_BASELINE_BYTES = 2 * 1024 * 1024
@@ -800,6 +800,72 @@ def _open_plain_directory(path: Path) -> int:
     return os.open(str(path), flags)
 
 
+def _open_plain_child_directory(
+    directory_fd: int,
+    name: str,
+    *,
+    create: bool,
+) -> int:
+    """Open or create one plain child relative to a held directory handle."""
+    if (
+        not name
+        or "\0" in name
+        or ":" in name
+        or name in {".", ".."}
+        or Path(name).name != name
+    ):
+        raise ValueError("directory traversal requires a child directory name")
+
+    if os.name == "nt":
+        try:
+            return _open_windows_relative(
+                directory_fd,
+                name,
+                directory=True,
+            )
+        except FileNotFoundError:
+            if not create:
+                raise
+            try:
+                return _open_windows_relative(
+                    directory_fd,
+                    name,
+                    directory=True,
+                    create=True,
+                )
+            except FileExistsError:
+                # Another process won the create race. Re-open without
+                # following a reparse point and validate what now exists.
+                return _open_windows_relative(
+                    directory_fd,
+                    name,
+                    directory=True,
+                )
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        child_fd = os.open(name, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        if not create:
+            raise
+        try:
+            os.mkdir(name, mode=0o777, dir_fd=directory_fd)
+        except FileExistsError:
+            pass
+        child_fd = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        identity = os.fstat(child_fd)
+        if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+            raise ValueError(f"path is not a plain directory: {name}")
+    except BaseException:
+        os.close(child_fd)
+        raise
+    return child_fd
+
+
 def _same_directory_identity(left: os.stat_result, right: os.stat_result) -> bool:
     return (
         stat.S_ISDIR(right.st_mode)
@@ -952,45 +1018,11 @@ def _mutation_directory(
             if part in {"", ".", ".."}:
                 raise ValueError("verification baseline path escapes the repository")
             child_path = current_path / part
-            if os.name == "nt":
-                try:
-                    child_fd = _open_windows_relative(
-                        current_fd,
-                        part,
-                        directory=True,
-                    )
-                except FileNotFoundError:
-                    if not create_parents:
-                        raise
-                    child_fd = _open_windows_relative(
-                        current_fd,
-                        part,
-                        directory=True,
-                        create=True,
-                    )
-            else:
-                flags = os.O_RDONLY
-                flags |= getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_DIRECTORY", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0)
-                try:
-                    child_fd = os.open(part, flags, dir_fd=current_fd)
-                except FileNotFoundError:
-                    if not create_parents:
-                        raise
-                    try:
-                        os.mkdir(part, dir_fd=current_fd)
-                    except FileExistsError:
-                        pass
-                    child_fd = os.open(part, flags, dir_fd=current_fd)
-            identity = os.fstat(child_fd)
-            if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(
-                identity
-            ):
-                os.close(child_fd)
-                raise ValueError(
-                    "symlink, reparse point, or non-directory baseline ancestor"
-                )
+            child_fd = _open_plain_child_directory(
+                current_fd,
+                part,
+                create=create_parents,
+            )
             held_fds.append(child_fd)
             current_path = child_path
             current_fd = child_fd

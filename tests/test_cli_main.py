@@ -2275,6 +2275,140 @@ class MainUtilityTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
             self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
 
+    def test_atomic_write_creates_plain_nested_parents(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "artifacts" / "locks" / "boundary.lock.json"
+
+            core._write_text_atomic(target, "new\n")
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+
+    def test_atomic_write_rejects_symlinked_parent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            outside = root / "outside"
+            outside.mkdir()
+            redirected = outside / "boundary.lock.json"
+            redirected.write_text("outside\n", encoding="utf-8")
+            parent = root / "artifacts"
+            try:
+                parent.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest("directory symlinks are unavailable on this platform")
+
+            with self.assertRaisesRegex(core.ConfigError, "symlink|reparse"):
+                core._write_text_atomic(parent / "boundary.lock.json", "new\n")
+
+            self.assertEqual(
+                redirected.read_text(encoding="utf-8"),
+                "outside\n",
+            )
+
+    def test_atomic_write_rejects_reparse_marked_parent(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            parent = root / "artifacts"
+            parent.mkdir()
+            parent_identity = parent.lstat()
+
+            def marked(identity):
+                return (identity.st_dev, identity.st_ino) == (
+                    parent_identity.st_dev,
+                    parent_identity.st_ino,
+                )
+
+            with patch(
+                "boundver.core._is_windows_reparse_point",
+                side_effect=marked,
+            ), patch(
+                "boundver._baseline._is_windows_reparse_point",
+                side_effect=marked,
+            ), self.assertRaisesRegex(core.ConfigError, "reparse"):
+                core._write_text_atomic(parent / "boundary.lock.json", "new\n")
+
+            self.assertFalse((parent / "boundary.lock.json").exists())
+
+    def test_atomic_write_rejects_symlink_leaf(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            outside = root / "outside.lock.json"
+            outside.write_text("outside\n", encoding="utf-8")
+            target = root / "boundary.lock.json"
+            try:
+                target.symlink_to(outside)
+            except OSError:
+                self.skipTest("file symlinks are unavailable on this platform")
+
+            with self.assertRaisesRegex(core.ConfigError, "regular file"):
+                core._write_text_atomic(target, "new\n")
+
+            self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permits renaming an open directory")
+    def test_atomic_write_creates_nested_parent_through_held_handle(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            parent = root / "artifacts"
+            parent.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            moved = root / "moved-artifacts"
+            original_open_child = core._open_plain_child_directory
+            swapped = False
+
+            def swap_parent(directory_fd, name, *, create):
+                nonlocal swapped
+                if name == "new" and not swapped:
+                    parent.rename(moved)
+                    parent.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                return original_open_child(directory_fd, name, create=create)
+
+            with patch(
+                "boundver.core._open_plain_child_directory",
+                side_effect=swap_parent,
+            ), self.assertRaisesRegex(core.ConfigError, "changed"):
+                core._write_text_atomic(
+                    parent / "new" / "boundary.lock.json",
+                    "secret\n",
+                )
+
+            self.assertTrue(swapped)
+            self.assertFalse((outside / "new").exists())
+            self.assertEqual(list((moved / "new").iterdir()), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permits renaming an open directory")
+    def test_atomic_write_rejects_parent_swap_before_publication(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            parent = root / "artifacts"
+            parent.mkdir()
+            target = parent / "boundary.lock.json"
+            target.write_text("original\n", encoding="utf-8")
+            outside = root / "outside"
+            outside.mkdir()
+            redirected = outside / "boundary.lock.json"
+            redirected.write_text("outside\n", encoding="utf-8")
+            moved = root / "moved-artifacts"
+            original_revalidate = core._revalidate_atomic_output_ancestors
+
+            def swap_parent(ancestors):
+                parent.rename(moved)
+                parent.symlink_to(outside, target_is_directory=True)
+                original_revalidate(ancestors)
+
+            with patch(
+                "boundver.core._revalidate_atomic_output_ancestors",
+                side_effect=swap_parent,
+            ), self.assertRaisesRegex(core.ConfigError, "changed"):
+                core._write_text_atomic(target, "new\n")
+
+            self.assertEqual(
+                (moved / "boundary.lock.json").read_text(encoding="utf-8"),
+                "original\n",
+            )
+            self.assertEqual(redirected.read_text(encoding="utf-8"), "outside\n")
+
 
 class EnvVarAllowCustomProvidersTests(unittest.TestCase):
     """Tests for the BOUNDVER_ALLOW_CUSTOM_PROVIDERS environment variable."""

@@ -55,11 +55,12 @@ The repository owner must configure these controls before starting a release:
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,
-  disable only this ruleset's enforcement, squash-merge that frozen head, and
-  immediately restore the canonical active ruleset from the merged JSON. Verify
-  the live ruleset after restoration and keep the issue open until a subsequent
-  ordinary pull request proves that the base-controlled status is emitted by the
-  GitHub Actions App. Do not add a bypass actor or weaken the tracked contract.
+  temporarily remove only this ruleset's `required_status_checks` rule while
+  keeping enforcement active, squash-merge that frozen head, and immediately
+  restore the canonical active ruleset from the merged JSON. Verify the live
+  ruleset after restoration and keep the issue open until a subsequent ordinary
+  pull request proves that the base-controlled status is emitted by the GitHub
+  Actions App. Do not add a bypass actor or weaken the tracked contract.
 - Enable private vulnerability reporting, Dependabot alerts and security
   updates, secret scanning, and secret-scanning push protection. Keep every
   alert queue at zero before release; the promotion gate checks dependency,
@@ -305,6 +306,19 @@ diff; it is never accepted implicitly by an install.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
 threads, changes-requested state, and pending human or team review requests.
+Its range begins at the newest lower stable, published, immutable GitHub
+Release whose tag is merged into the candidate and whose tag and commit match a
+successful run of the repository's active `publish.yml`. That run must bind the
+exact tag, commit, release-line alias or explicit `none`, optional recovery
+source, repository, and a workflow control commit in candidate history; the
+release publication time must not postdate that run's successful completion.
+Standalone tags, drafts,
+prereleases, mutable historical releases, unmerged releases, and releases
+created without that publication provenance cannot narrow the range. The
+read-only audit and the workflow-owned review-state snapshot derive this anchor
+independently from the paginated Releases and Actions APIs plus the fetched Git
+graph. Malformed,
+unavailable, or calendar-invalid timestamps fail closed.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.
@@ -313,10 +327,12 @@ commit. A standard Codex suggestions review counts only after every review
 thread is resolved. A later exact-commit record supersedes earlier feedback;
 equal timestamps are ambiguous and fail closed. A clean verdict line must be
 exactly `Codex Review: Didn't find any major issues.`, optionally followed by
-the positive allowlist `Another round soon, please!`, `Breezy!`, `Delightful!`,
-`Hooray!`, `Keep it up!`, `Keep them coming!`, `Nice work!`, `Swish!`,
+the positive allowlist `Another round soon, please!`, `Bravo.`, `Breezy!`,
+`Can't wait for the next one!`, `Delightful!`, `Hooray!`, `Keep it up!`,
+`Keep them coming!`, `Nice work!`, `Swish!`,
 `Already looking forward to the next diff.`, `Chef's kiss.`,
-`More of your lovely PRs please.`, or `You're on a roll.`
+`More of your lovely PRs please.`, `What shall we delve into next?`, or
+`You're on a roll.`
 Arbitrary or adverse latest bodies fail closed. A `COMMENTED` review binds its
 body to the review commit; an issue comment must also contain exactly one
 `**Reviewed commit:**` marker. The audit permits only the bot's recognized
@@ -324,7 +340,8 @@ informational footer, pins the bot's numeric account ID, resolves abbreviated
 commit IDs, and snapshots record IDs, timestamps, bodies, threads, and those
 resolutions to detect collisions or drift before mutation. It rejects spoofed
 identities, ambiguous commit IDs or timestamps, unresolved feedback, or stale
-evidence.
+evidence. Every timestamp used for ordering is checked as a real UTC calendar
+instant, including leap-year and fractional-second handling.
 
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate

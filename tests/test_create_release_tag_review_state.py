@@ -35,8 +35,16 @@ def _review_state_runner() -> dict:
         "MAX_API_BYTES",
         "MAX_COMMAND_BYTES",
         "MAX_STDERR_BYTES",
+        "MAX_RECORDS",
+        "MAX_PAGES",
         "MAX_JSON_NUMBER_DIGITS",
+        "MAX_GITHUB_ID",
         "READ_CHUNK_BYTES",
+        "GITHUB_TIMESTAMP_RE",
+        "PUBLICATION_TITLE_RE",
+        "PUBLISH_WORKFLOW_NAME",
+        "PUBLISH_WORKFLOW_FILE",
+        "PUBLISH_WORKFLOW_PATH",
         "consumed_api_bytes",
     }
     functions = {
@@ -47,6 +55,11 @@ def _review_state_runner() -> dict:
         "bounded_json_int",
         "bounded_json_float",
         "reject_json_constant",
+        "workflow_run_records",
+        "github_timestamp_parts",
+        "timestamp_key",
+        "trusted_publication_runs",
+        "published_release_anchors",
     }
     selected = []
     for node in tree.body:
@@ -316,11 +329,215 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         )
         self.assertIn('"semantic_review_authority": semantic_review_authority', program)
 
-    def test_snapshot_normalizes_only_the_local_candidate_tag(self):
+    def test_snapshot_anchors_only_to_immutable_published_releases(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]
 
-        self.assertIn("candidate != release_tag", program)
-        self.assertIn('"merged_semver_tags": [item[1] for item in merged_tags]', program)
+        self.assertIn(
+            'rest_records(f"repos/{repository}/releases?per_page=100")',
+            program,
+        )
+        self.assertIn(
+            'actions/workflows/{PUBLISH_WORKFLOW_FILE}/runs',
+            program,
+        )
+        self.assertIn('"published_release_anchors": release_anchors', program)
+        self.assertNotIn('"merged_semver_tags"', program)
+
+        helpers = _review_state_runner()
+        helpers["git_text"] = lambda *_arguments: "1" * 40
+        records = [
+            {
+                "id": 101,
+                "tag_name": "v0.14.1",
+                "draft": False,
+                "prerelease": False,
+                "immutable": True,
+                "published_at": "2026-08-27T15:05:36Z",
+            },
+            {
+                "id": 102,
+                "tag_name": "v0.14.2",
+                "draft": False,
+                "prerelease": False,
+                "immutable": False,
+                "published_at": "2026-08-28T15:05:36Z",
+            },
+            {
+                "id": 103,
+                "tag_name": "v0.14.3",
+                "draft": False,
+                "prerelease": True,
+                "immutable": True,
+                "published_at": "2026-08-29T15:05:36Z",
+            },
+        ]
+        anchors = helpers["published_release_anchors"](
+            records,
+            (0, 15, 0),
+            {"v0.14.1", "v0.14.2", "v0.14.3", "v0.14.999"},
+            {
+                ("v0.14.1", "1" * 40): {
+                    "completed_at": "2026-08-27T16:05:36Z",
+                }
+            },
+        )
+
+        self.assertEqual([item["tag"] for item in anchors], ["v0.14.1"])
+        self.assertEqual(anchors[0]["sha"], "1" * 40)
+
+        malformed = dict(records[0])
+        malformed.pop("immutable")
+        with self.assertRaisesRegex(
+            SystemExit,
+            "malformed semantic release metadata",
+        ):
+            helpers["published_release_anchors"](
+                [malformed],
+                (0, 15, 0),
+                {"v0.14.1"},
+                {},
+            )
+
+    def test_snapshot_requires_exact_successful_publication_provenance(self):
+        helpers = _review_state_runner()
+        tag = "v0.14.1"
+        tag_sha = "1" * 40
+        control_sha = "2" * 40
+        repository = "acme/widget"
+        title = (
+            f"publish:{tag}@{tag_sha}:alias=v0.14:resume=33058238333"
+        )
+        run = {
+            "id": 33112740009,
+            "name": title,
+            "path": ".github/workflows/publish.yml",
+            "display_title": title,
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_sha": control_sha,
+            "head_branch": "main",
+            "run_attempt": 1,
+            "workflow_id": 270075259,
+            "repository": {"full_name": repository},
+            "head_repository": {"full_name": repository},
+            "created_at": "2026-08-27T20:19:13Z",
+            "updated_at": "2026-08-29T07:02:04Z",
+            "html_url": (
+                "https://github.com/acme/widget/actions/runs/33112740009"
+            ),
+        }
+
+        trusted = helpers["trusted_publication_runs"](
+            [run], 270075259, repository, {tag_sha, control_sha}
+        )
+        self.assertEqual(trusted[(tag, tag_sha)]["run_id"], 33112740009)
+
+        no_alias_title = title.replace("alias=v0.14", "alias=none")
+        no_alias_run = dict(
+            run,
+            id=33112740010,
+            name=no_alias_title,
+            display_title=no_alias_title,
+            html_url="https://github.com/acme/widget/actions/runs/33112740010",
+        )
+        trusted_no_alias = helpers["trusted_publication_runs"](
+            [no_alias_run], 270075259, repository, {tag_sha, control_sha}
+        )
+        self.assertEqual(
+            trusted_no_alias[(tag, tag_sha)]["run_id"],
+            33112740010,
+        )
+
+        release = [{
+            "id": 101,
+            "tag_name": tag,
+            "draft": False,
+            "prerelease": False,
+            "immutable": True,
+            "published_at": "2026-08-27T15:05:36Z",
+        }]
+        helpers["git_text"] = lambda *_arguments: tag_sha
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                release, (0, 15, 0), {tag}, trusted
+            )[0]["publication"]["control_sha"],
+            control_sha,
+        )
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                release, (0, 15, 0), {tag}, {}
+            ),
+            [],
+        )
+        postdated = [dict(
+            release[0],
+            published_at="2026-08-30T15:05:36Z",
+        )]
+        self.assertEqual(
+            helpers["published_release_anchors"](
+                postdated, (0, 15, 0), {tag}, trusted
+            ),
+            [],
+        )
+
+        unmerged = dict(run, head_sha="3" * 40)
+        with self.assertRaisesRegex(SystemExit, "untrusted publication-run"):
+            helpers["trusted_publication_runs"](
+                [unmerged], 270075259, repository, {tag_sha, control_sha}
+            )
+
+    def test_snapshot_rejects_calendar_invalid_github_timestamps(self):
+        helpers = _review_state_runner()
+
+        for value in (
+            "2026-02-31T12:00:00Z",
+            "2026-08-27T25:00:00Z",
+            "2026-08-27T15:05:60Z",
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                SystemExit, "malformed timestamp"
+            ):
+                helpers["timestamp_key"](value)
+
+        self.assertLess(
+            helpers["timestamp_key"]("2026-08-27T15:05:36.1Z"),
+            helpers["timestamp_key"]("2026-08-27T15:05:36.2Z"),
+        )
+
+    def test_snapshot_publication_run_pagination_is_complete_and_unique(self):
+        helpers = _review_state_runner()
+        first_page = [{"id": item} for item in range(1, 101)]
+        second_page = [{"id": 101}]
+
+        def complete(endpoint):
+            page = 2 if endpoint.endswith("page=2") else 1
+            return {
+                "total_count": 101,
+                "workflow_runs": first_page if page == 1 else second_page,
+            }
+
+        helpers["rest"] = complete
+        records = helpers["workflow_run_records"]("runs?per_page=100")
+        self.assertEqual([record["id"] for record in records], list(range(1, 102)))
+
+        def duplicate(endpoint):
+            page = 2 if endpoint.endswith("page=2") else 1
+            return {
+                "total_count": 101,
+                "workflow_runs": first_page if page == 1 else [{"id": 100}],
+            }
+
+        helpers["rest"] = duplicate
+        with self.assertRaisesRegex(SystemExit, "malformed publication-run"):
+            helpers["workflow_run_records"]("runs?per_page=100")
+
+        helpers["rest"] = lambda _endpoint: {
+            "total_count": 2,
+            "workflow_runs": [{"id": 1}],
+        }
+        with self.assertRaisesRegex(SystemExit, "pagination was incomplete"):
+            helpers["workflow_run_records"]("runs?per_page=100")
 
     def test_snapshot_commands_use_streaming_preallocation_caps(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]
@@ -493,7 +710,11 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         ):
             self.assertIn(setting, source)
         self.assertIn(
-            '"$python_command" -I - "$release_tag" "$merged_tags_file"',
+            '"$python_command" -I - "$release_tag" "$published_releases_file"',
+            source,
+        )
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"',
             source,
         )
         for field in (
@@ -539,7 +760,7 @@ class ReviewAuditMergeDestinationTests(unittest.TestCase):
                 """#!/bin/sh
 case "$1" in
   fetch) exit 0 ;;
-  tag) printf '%s\\n' 'v0.10.0' ;;
+  for-each-ref) : ;;
   rev-list) printf '%s\\n' "$FAKE_RELEASE_SHA" ;;
   *) printf '%s\\n' "unexpected git invocation: $*" >&2; exit 90 ;;
 esac
@@ -568,6 +789,11 @@ pathlib.Path(sys.argv[1]).write_text("finished")' "$FAKE_COMPLETION_MARKER"
   esac
 fi
 case "$*" in
+  *repos/acme/widget/releases?per_page=100*) : ;;
+  *repos/acme/widget/actions/workflows/publish.yml/runs*) : ;;
+  *repos/acme/widget/actions/workflows/publish.yml*)
+    printf '%s\\n' '270075259\tPromote verified release\t.github/workflows/publish.yml\tactive'
+    ;;
   *repos/acme/widget/commits/*/pulls*) printf '%s\\n' '17' ;;
   *repos/acme/widget/pulls/17*) printf '%s\\n' "$FAKE_PR_METADATA" ;;
   *'repos/acme/widget --jq'*) printf '%s\\n' '1|acme|Organization' ;;

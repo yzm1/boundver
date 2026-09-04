@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-04
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
 ### Added
 
 - Added `boundver review BASE..TARGET`, with equivalent explicit
@@ -136,6 +145,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- Bound the release-review range to the newest lower stable, published,
+  immutable GitHub Release that is merged into the candidate and backed by a
+  successful, exact-identity publication workflow run from candidate history.
+  The run binds the tag, tag commit, compatibility alias (or explicit `none`),
+  recovery source, and repository. A standalone, draft, prerelease, mutable,
+  missing, malformed,
+  unmerged, or manually fabricated SemVer-looking release can no longer shorten
+  the commits and pull requests audited before tag creation; the workflow-owned
+  review-state handoff uses the same authority.
 - Updated the isolated build backend to Setuptools 84.0.0, beyond the
   vulnerable `<83.0.0` range for GHSA-h35f-9h28-mq5c / CVE-2026-59890, and
   refreshed the coordinated test toolchain to Coverage 7.16.0, pytest 9.1.1,
@@ -144,6 +162,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Prevented lock, config, migration, update, and range-review summary writes
+  from traversing a symlinked directory, Windows junction, or reparse-point
+  ancestor. Temporary-file creation and replacement now stay relative to an
+  identity-bound plain parent directory and fail closed if any ancestor or
+  destination type changes before publication. Environment-selected temporary
+  roots are no longer resolved as trusted prefixes; only inspected, fixed
+  macOS system aliases are canonicalized. Missing parent directories are now
+  created relative to already-opened directory handles, closing the remaining
+  ancestor-swap window before sidecar creation.
+- Calendar-validated every GitHub timestamp used by release anchoring, pull
+  request review, and evidence ordering. Regex-shaped impossible dates and
+  times now fail closed, and fractional timestamps compare canonically.
 - Bound release-preflight diagnostics to the fixed TestPyPI and PyPI entries,
   and fixed the public Action smoke test for valid reviews that select no
   configured components.
@@ -919,7 +949,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/yzm1/boundver/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/yzm1/boundver/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/yzm1/boundver/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/yzm1/boundver/compare/v0.12.0...v0.13.0
