@@ -19,10 +19,13 @@ Requested lock, config, migration, update, and review-summary writes reject
 symlinked ancestors, Windows junctions and reparse points, and non-regular
 destinations. Temporary creation and final replacement remain relative to an
 identity-bound plain parent directory; if its path changes before publication,
-the write fails closed instead of following the replacement. Working-directory
-and environment-selected temporary paths are not trusted prefixes. Boundver
-walks them lexically and canonicalizes only fixed macOS `/var` and `/tmp`
-aliases after inspecting their exact system targets.
+the write fails closed instead of following the replacement. Missing parent
+directories are opened or created one component at a time relative to the
+previously validated directory handle, so an ancestor rename cannot redirect
+either parent creation or the temporary payload. Working-directory and
+environment-selected temporary paths are not trusted prefixes. Boundver walks
+them lexically and canonicalizes only fixed macOS `/var` and `/tmp` aliases
+after inspecting their exact system targets.
 
 Git subprocesses are constrained to local inspection. Boundver disables hooks,
 filters, external diff and text-conversion helpers, filesystem monitors,

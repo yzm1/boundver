@@ -309,9 +309,10 @@ threads, changes-requested state, and pending human or team review requests.
 Its range begins at the newest lower stable, published, immutable GitHub
 Release whose tag is merged into the candidate and whose tag and commit match a
 successful run of the repository's active `publish.yml`. That run must bind the
-exact tag, commit, release-line alias, optional recovery source, repository, and
-a workflow control commit in candidate history; the release publication time
-must not postdate that run's successful completion. Standalone tags, drafts,
+exact tag, commit, release-line alias or explicit `none`, optional recovery
+source, repository, and a workflow control commit in candidate history; the
+release publication time must not postdate that run's successful completion.
+Standalone tags, drafts,
 prereleases, mutable historical releases, unmerged releases, and releases
 created without that publication provenance cannot narrow the range. The
 read-only audit and the workflow-owned review-state snapshot derive this anchor

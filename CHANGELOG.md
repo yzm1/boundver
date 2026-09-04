@@ -148,8 +148,9 @@ All notable changes to this project are documented here. The format follows
 - Bound the release-review range to the newest lower stable, published,
   immutable GitHub Release that is merged into the candidate and backed by a
   successful, exact-identity publication workflow run from candidate history.
-  The run binds the tag, tag commit, compatibility alias, recovery source, and
-  repository. A standalone, draft, prerelease, mutable, missing, malformed,
+  The run binds the tag, tag commit, compatibility alias (or explicit `none`),
+  recovery source, and repository. A standalone, draft, prerelease, mutable,
+  missing, malformed,
   unmerged, or manually fabricated SemVer-looking release can no longer shorten
   the commits and pull requests audited before tag creation; the workflow-owned
   review-state handoff uses the same authority.
@@ -167,7 +168,9 @@ All notable changes to this project are documented here. The format follows
   identity-bound plain parent directory and fail closed if any ancestor or
   destination type changes before publication. Environment-selected temporary
   roots are no longer resolved as trusted prefixes; only inspected, fixed
-  macOS system aliases are canonicalized.
+  macOS system aliases are canonicalized. Missing parent directories are now
+  created relative to already-opened directory handles, closing the remaining
+  ancestor-swap window before sidecar creation.
 - Calendar-validated every GitHub timestamp used by release anchoring, pull
   request review, and evidence ordering. Regex-shaped impossible dates and
   times now fail closed, and fractional timestamps compare canonically.

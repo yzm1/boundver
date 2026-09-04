@@ -2320,6 +2320,9 @@ class MainUtilityTests(unittest.TestCase):
             with patch(
                 "boundver.core._is_windows_reparse_point",
                 side_effect=marked,
+            ), patch(
+                "boundver._baseline._is_windows_reparse_point",
+                side_effect=marked,
             ), self.assertRaisesRegex(core.ConfigError, "reparse"):
                 core._write_text_atomic(parent / "boundary.lock.json", "new\n")
 
@@ -2340,6 +2343,39 @@ class MainUtilityTests(unittest.TestCase):
                 core._write_text_atomic(target, "new\n")
 
             self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
+
+    @unittest.skipIf(os.name == "nt", "POSIX permits renaming an open directory")
+    def test_atomic_write_creates_nested_parent_through_held_handle(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            parent = root / "artifacts"
+            parent.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            moved = root / "moved-artifacts"
+            original_open_child = core._open_plain_child_directory
+            swapped = False
+
+            def swap_parent(directory_fd, name, *, create):
+                nonlocal swapped
+                if name == "new" and not swapped:
+                    parent.rename(moved)
+                    parent.symlink_to(outside, target_is_directory=True)
+                    swapped = True
+                return original_open_child(directory_fd, name, create=create)
+
+            with patch(
+                "boundver.core._open_plain_child_directory",
+                side_effect=swap_parent,
+            ), self.assertRaisesRegex(core.ConfigError, "changed"):
+                core._write_text_atomic(
+                    parent / "new" / "boundary.lock.json",
+                    "secret\n",
+                )
+
+            self.assertTrue(swapped)
+            self.assertFalse((outside / "new").exists())
+            self.assertEqual(list((moved / "new").iterdir()), [])
 
     @unittest.skipIf(os.name == "nt", "POSIX permits renaming an open directory")
     def test_atomic_write_rejects_parent_swap_before_publication(self):

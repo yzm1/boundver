@@ -3151,6 +3151,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         script = (REPO_ROOT / "scripts" / "audit_release_reviews.sh").read_text(
             encoding="utf-8"
         )
+        publication_alias = overrides.pop("FAKE_PUBLICATION_ALIAS", "v0.14")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "audit_release_reviews.sh").write_bytes(
@@ -3287,10 +3288,10 @@ exit 74
                     "FAKE_PUBLICATION_RUNS": (
                         "33112740009\t"
                         "publish:v0.14.1@"
-                        f"{previous_sha}:alias=v0.14:resume=\t"
+                        f"{previous_sha}:alias={publication_alias}:resume=\t"
                         ".github/workflows/publish.yml\t"
                         "publish:v0.14.1@"
-                        f"{previous_sha}:alias=v0.14:resume=\t"
+                        f"{previous_sha}:alias={publication_alias}:resume=\t"
                         "workflow_dispatch\tcompleted\tsuccess\t"
                         f"{previous_sha}\tv0.14.1\t1\t270075259\t"
                         "owner/repository\towner/repository\t"
@@ -3366,6 +3367,12 @@ exit 74
                 "2026-08-28T15:05:36Z\n"
             )
         )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_accepts_explicit_no_alias_publication(self):
+        result = self._run_audit(FAKE_PUBLICATION_ALIAS="none")
 
         self.assertEqual(result.returncode, 0, result.stderr)
 

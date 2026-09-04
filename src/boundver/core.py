@@ -162,6 +162,7 @@ from ._review_plan import (
 from ._baseline import (
     BaselineError,
     _MutationDirectory,
+    _open_plain_child_directory,
     _open_plain_directory,
     _same_directory_identity,
     _validate_baseline_relative_path,
@@ -639,8 +640,12 @@ def _canonicalize_trusted_output_prefix(path: Path, label: str) -> Path:
 
 def _prepare_atomic_output(
     path: Path,
-) -> tuple[Path, tuple[tuple[Path, os.stat_result], ...]]:
-    """Create and capture every plain ancestor without following links."""
+) -> tuple[
+    Path,
+    tuple[tuple[Path, os.stat_result], ...],
+    tuple[int, ...],
+]:
+    """Open or create every ancestor relative to validated directory handles."""
     candidate = path if path.is_absolute() else Path.cwd() / path
     if not candidate.anchor or not candidate.parts:
         raise ConfigError(f"Output path must name a file: {path}")
@@ -655,6 +660,7 @@ def _prepare_atomic_output(
 
     current = Path(candidate.anchor)
     captured: list[tuple[Path, os.stat_result]] = []
+    held_fds: list[int] = []
     try:
         root_identity = current.lstat()
     except OSError as exc:
@@ -663,58 +669,72 @@ def _prepare_atomic_output(
         root_identity
     ):
         raise ConfigError(f"Output filesystem root is not a plain directory: {current}")
-    captured.append((current, root_identity))
-
-    for part in candidate.parts[1:-1]:
-        if part in {"", "."}:
-            continue
-        current = current / part
-        try:
-            identity = current.lstat()
-        except FileNotFoundError:
-            try:
-                current.mkdir()
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise ConfigError(
-                    f"Cannot create output parent directory: {current}"
-                ) from exc
-            try:
-                identity = current.lstat()
-            except OSError as exc:
-                raise ConfigError(
-                    f"Cannot inspect output parent directory: {current}"
-                ) from exc
-        except OSError as exc:
-            raise ConfigError(
-                f"Cannot inspect output parent directory: {current}"
-            ) from exc
-        if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(
-            identity
-        ):
-            raise ConfigError(
-                "Output path must not traverse a symlink, junction, "
-                f"reparse point, or non-directory ancestor: {current}"
-            )
-        captured.append((current, identity))
-
-    prepared = current / leaf
     try:
-        leaf_identity = prepared.lstat()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise ConfigError(f"Cannot inspect output path: {prepared}") from exc
-    else:
-        if not stat.S_ISREG(leaf_identity.st_mode) or _is_windows_reparse_point(
-            leaf_identity
-        ):
+        try:
+            root_fd = _open_plain_directory(current)
+        except (OSError, ValueError) as exc:
+            raise ConfigError(
+                f"Cannot safely open output filesystem root: {current}"
+            ) from exc
+        held_fds.append(root_fd)
+        opened_root = os.fstat(root_fd)
+        if not _same_directory_identity(root_identity, opened_root):
+            raise ConfigError(
+                f"Output filesystem root changed while it was opened: {current}"
+            )
+        captured.append((current, opened_root))
+
+        current_fd = root_fd
+        for part in candidate.parts[1:-1]:
+            if part in {"", "."}:
+                continue
+            current = current / part
+            try:
+                child_fd = _open_plain_child_directory(
+                    current_fd,
+                    part,
+                    create=True,
+                )
+            except (OSError, ValueError) as exc:
+                raise ConfigError(
+                    "Output path must not traverse or create through a symlink, "
+                    "junction, reparse point, or non-directory ancestor: "
+                    f"{current}"
+                ) from exc
+            held_fds.append(child_fd)
+            identity = os.fstat(child_fd)
+            captured.append((current, identity))
+            current_fd = child_fd
+
+        prepared = current / leaf
+        directory = _MutationDirectory(current, current_fd)
+        try:
+            leaf_identity = directory.lstat(leaf)
+        except FileNotFoundError:
+            pass
+        except ValueError as exc:
             raise ConfigError(
                 "Output path must be a regular file, not a symlink, junction, "
                 f"or reparse point: {prepared}"
-            )
-    return prepared, tuple(captured)
+            ) from exc
+        except OSError as exc:
+            raise ConfigError(f"Cannot inspect output path: {prepared}") from exc
+        else:
+            if not stat.S_ISREG(leaf_identity.st_mode) or _is_windows_reparse_point(
+                leaf_identity
+            ):
+                raise ConfigError(
+                    "Output path must be a regular file, not a symlink, junction, "
+                    f"or reparse point: {prepared}"
+                )
+        return prepared, tuple(captured), tuple(held_fds)
+    except BaseException:
+        for descriptor in reversed(held_fds):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
 
 
 def _revalidate_atomic_output_ancestors(
@@ -741,11 +761,8 @@ def _write_text_atomic(path: Path, text: str) -> None:
     the target filesystem.  This prevents an interrupted generation/update
     from leaving a truncated lockfile behind.
     """
-    path, ancestors = _prepare_atomic_output(path)
-    try:
-        parent_fd = _open_plain_directory(path.parent)
-    except (OSError, ValueError) as exc:
-        raise ConfigError(f"Cannot safely open output parent: {path.parent}") from exc
+    path, ancestors, held_fds = _prepare_atomic_output(path)
+    parent_fd = held_fds[-1]
     directory = _MutationDirectory(path.parent, parent_fd)
     temp_name: Optional[str] = None
     temp_fd: Optional[int] = None
@@ -830,7 +847,11 @@ def _write_text_atomic(path: Path, text: str) -> None:
                 directory.unlink(temp_name)
             except OSError:
                 pass
-        os.close(parent_fd)
+        for descriptor in reversed(held_fds):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _write_lockfile_atomic(path: Path, value: dict) -> None:

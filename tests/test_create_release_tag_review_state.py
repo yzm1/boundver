@@ -433,6 +433,22 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         )
         self.assertEqual(trusted[(tag, tag_sha)]["run_id"], 33112740009)
 
+        no_alias_title = title.replace("alias=v0.14", "alias=none")
+        no_alias_run = dict(
+            run,
+            id=33112740010,
+            name=no_alias_title,
+            display_title=no_alias_title,
+            html_url="https://github.com/acme/widget/actions/runs/33112740010",
+        )
+        trusted_no_alias = helpers["trusted_publication_runs"](
+            [no_alias_run], 270075259, repository, {tag_sha, control_sha}
+        )
+        self.assertEqual(
+            trusted_no_alias[(tag, tag_sha)]["run_id"],
+            33112740010,
+        )
+
         release = [{
             "id": 101,
             "tag_name": tag,

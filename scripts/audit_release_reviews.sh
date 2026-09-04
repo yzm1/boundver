@@ -219,7 +219,7 @@ publication_title_pattern = re.compile(
     r"publish:(?P<tag>v(?:0|[1-9][0-9]{0,17})\."
     r"(?:0|[1-9][0-9]{0,17})\.(?:0|[1-9][0-9]{0,17}))"
     r"@(?P<sha>[0-9a-f]{40}):alias="
-    r"(?P<alias>v(?:0|[1-9][0-9]{0,17})\."
+    r"(?P<alias>none|v(?:0|[1-9][0-9]{0,17})\."
     r"(?:0|[1-9][0-9]{0,17}))"
     r":resume=(?P<resume>[1-9][0-9]{0,19})?"
 )
@@ -350,7 +350,7 @@ for row in run_rows:
     alias = match.group("alias")
     resume = match.group("resume")
     if (
-        alias != tag.rsplit(".", 1)[0]
+        alias not in {"none", tag.rsplit(".", 1)[0]}
         or (resume is not None and not positive_id(resume))
         or name != title
         or run_workflow_id != workflow_id
