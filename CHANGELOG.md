@@ -173,6 +173,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Corrected the release gate to consume GitHub's documented code-scanning
+  analysis shape. Exact-main CodeQL evidence is now bound to the immutable
+  `codeql.yml:analyze` workflow identity and Python category instead of a
+  nonexistent top-level `language` field, while the checked-in workflow
+  contract continues to require the `security-extended` query suite.
 - Prevented lock, config, migration, update, and range-review summary writes
   from traversing a symlinked directory, Windows junction, or reparse-point
   ancestor. Temporary-file creation and replacement now stay relative to an

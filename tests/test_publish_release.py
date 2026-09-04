@@ -1770,7 +1770,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     {
                         "commit_sha": SHA,
                         "ref": "refs/heads/main",
-                        "language": "python",
+                        "analysis_key": ".github/workflows/codeql.yml:analyze",
                         "category": "/language:python",
                         "tool": {"name": "CodeQL"},
                         "error": "",
@@ -1830,7 +1830,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     {
                         "commit_sha": SHA,
                         "ref": "refs/heads/main",
-                        "language": "python",
+                        "analysis_key": ".github/workflows/codeql.yml:analyze",
                         "category": "/language:python",
                         "tool": {"name": "another-scanner"},
                         "error": "",
@@ -1842,6 +1842,30 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             publisher, "_gh_json", side_effect=response
         ), mock.patch.object(
             publisher, "_gh_paginated_list", side_effect=non_codeql_analysis
+        ), mock.patch.object(
+            publisher, "_github_release_for_tag", return_value=None
+        ), self.assertRaisesRegex(publisher.GateError, "CodeQL security-extended"):
+            publisher._github_controls(Path("."), SHA, TAG)
+
+        def wrong_codeql_workflow(_repo, endpoint, *, collection=None):
+            if "/code-scanning/analyses?" in endpoint:
+                self.assertIsNone(collection)
+                return [
+                    {
+                        "commit_sha": SHA,
+                        "ref": "refs/heads/main",
+                        "analysis_key": ".github/workflows/untrusted.yml:analyze",
+                        "category": "/language:python",
+                        "tool": {"name": "CodeQL"},
+                        "error": "",
+                    }
+                ]
+            return paginated(_repo, endpoint, collection=collection)
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher, "_gh_paginated_list", side_effect=wrong_codeql_workflow
         ), mock.patch.object(
             publisher, "_github_release_for_tag", return_value=None
         ), self.assertRaisesRegex(publisher.GateError, "CodeQL security-extended"):
@@ -2517,7 +2541,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     {
                         "commit_sha": SHA,
                         "ref": "refs/heads/main",
-                        "language": "python",
+                        "analysis_key": ".github/workflows/codeql.yml:analyze",
                         "category": "/language:python",
                         "tool": {"name": "CodeQL"},
                         "error": "",
