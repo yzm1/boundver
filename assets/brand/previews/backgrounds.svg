@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title id="title">Boundver logo background validation</title>
+  <desc id="desc">The canonical colored mark on white, near-white, dark UI, and black backgrounds.</desc>
+  <rect width="600" height="320" fill="#ffffff"/>
+  <rect x="600" width="600" height="320" fill="#f5f7ff"/>
+  <rect y="320" width="600" height="320" fill="#161c37"/>
+  <rect x="600" y="320" width="600" height="320" fill="#000000"/>
+  <g font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">
+    <text x="28" y="40" fill="#111936">White</text>
+    <text x="628" y="40" fill="#111936">Near-white</text>
+    <text x="28" y="360" fill="#ffffff">Dark UI</text>
+    <text x="628" y="360" fill="#ffffff">Black</text>
+  </g>
+  <image href="../logo-light.svg" x="194" y="48" width="212" height="212"/>
+  <image href="../logo-light.svg" x="794" y="48" width="212" height="212"/>
+  <image href="../logo-dark.svg" x="194" y="368" width="212" height="212"/>
+  <image href="../logo-dark.svg" x="794" y="368" width="212" height="212"/>
+</svg>

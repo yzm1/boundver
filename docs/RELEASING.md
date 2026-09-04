@@ -96,7 +96,8 @@ The repository owner must configure these controls before starting a release:
   release. The checked-in GitLab pipeline independently refuses to publish when
   `CI_COMMIT_REF_PROTECTED` is not `true`.
 - Keep the GitHub social preview and GitLab Catalog project avatar synchronized
-  with `docs/assets/social-preview.png` and `docs/assets/logo.png`. Marketplace
+  with `docs/assets/social-preview.png` and `docs/assets/logo.png`, which mirror
+  the production sources under `assets/brand/`. Marketplace
   Action badges support only GitHub's approved Feather icons and colors, so
   `action.yml` uses the closest native branding rather than a custom image.
 - Maintain the public `yzm1/homebrew-boundver` tap. Formula changes must use
@@ -153,7 +154,7 @@ itself. Ordinary pull requests must receive the base-controlled
 | Surface | Source of truth | Release requirement |
 |---|---|---|
 | Git source and documentation | Exact commit on `main` | Version, schemas, examples, migration text, and links describe the release—not a future or already-published state. |
-| Project branding | `docs/assets/logo.svg`, `logo.png`, and `social-preview.*` | README, hosted docs, repository social preview, and GitLab Catalog avatar agree; the release gate requires all canonical assets. Historical immutable releases are not rewritten. |
+| Project branding | SVG sources and generated exports under `assets/brand/`, mirrored site assets under `docs/assets/`, and `social-preview.*` | README, hosted docs, favicons, repository social preview, and GitLab Catalog avatar agree; the release gate requires the complete responsive and monochrome asset family. Historical immutable releases are not rewritten. |
 | Hosted documentation | `mkdocs.yml`, `docs/`, and the hash-locked docs profile | Strict build passes and GitHub Pages deploys the exact `main` documentation commit. |
 | Version tag | `vX.Y.Z` | Immutable tag resolves to the tested `main` commit. |
 | TestPyPI | Verified wheel and sdist artifact | File names and SHA-256 digests equal the candidate; the wheel installs directly from TestPyPI. |
@@ -385,6 +386,22 @@ proposal checker in a separate bounded Python process whose environment omits
 the review token and all other ambient credentials. Run the local gate
 only on a trusted, isolated maintainer host and review changes to release
 scripts as security-sensitive code.
+
+On Windows, use the checked-in PowerShell wrapper. It prompts through
+`Read-Host -AsSecureString`, exposes the token only to the isolated Python
+launcher for that invocation, restores the caller's process environment, and
+zeroes the unmanaged plaintext buffer before returning. It also rejects a
+repository-local Python executable. Do not pass the token as a command-line
+argument or paste it into a terminal command.
+
+```powershell
+.\scripts\publish_release.ps1 check --tag vX.Y.Z
+$sha = git rev-parse HEAD
+.\scripts\publish_release.ps1 start --tag vX.Y.Z `
+  --alias vX.Y --confirm "vX.Y.Z@$sha"
+```
+
+On macOS or Linux, prompt without echoing and invoke the same Python launcher:
 
 ```bash
 read -rsp "Read-only release-review token: " BOUNDVER_RELEASE_REVIEW_TOKEN

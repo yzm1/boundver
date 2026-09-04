@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="500" viewBox="0 0 1000 500" role="img" aria-labelledby="title desc">
+  <title id="title">Boundver monochrome validation</title>
+  <desc id="desc">Dark and light one-color marks with the notch-to-diamond separation intact.</desc>
+  <rect width="500" height="500" fill="#ffffff"/>
+  <rect x="500" width="500" height="500" fill="#111936"/>
+  <text x="28" y="44" fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">One-color dark</text>
+  <text x="528" y="44" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">One-color light</text>
+  <image href="../logo-mono-dark.svg" x="110" y="70" width="280" height="280"/>
+  <image href="../logo-mono-light.svg" x="610" y="70" width="280" height="280"/>
+  <text x="250" y="420" fill="#111936" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Negative space preserves the boundary event</text>
+  <text x="750" y="420" fill="#ffffff" text-anchor="middle" font-family="Segoe UI, system-ui, sans-serif" font-size="18">Negative space preserves the boundary event</text>
+</svg>

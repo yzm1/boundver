@@ -17,6 +17,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added a Windows PowerShell release wrapper that obtains the separate,
+  repository-scoped review credential through a secure prompt, delegates to
+  the existing fail-closed Python launcher, restores the caller's process
+  environment, and zeroes the temporary unmanaged token buffer.
 - Added `boundver review BASE..TARGET`, with equivalent explicit
   `--base`/`--target` inputs and opt-in merge-base semantics, for historical
   exact/behavior/boundary/compat transitions after endpoint locks have been
@@ -104,6 +108,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Refined the Boundver mark without replacing its established B silhouette.
+  The diamond now crosses a purpose-built middle-boundary notch, with separate
+  small-size and monochrome constructions, SVG masters, transparent raster
+  exports, favicons, lockups, archived legacy artwork, and checked light,
+  dark, grayscale, and 16–512px usage proofs.
 - Reworked the README and hosted landing page around the familiar lockfile and
   CI-check category, a short decision path, an early statement of limits, and
   responsive, self-hosted styling. Package, Action, container, Homebrew, and

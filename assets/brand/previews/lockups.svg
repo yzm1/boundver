@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+  <title id="title">Boundver lockup validation</title>
+  <desc id="desc">Horizontal Boundver lockups on light and dark backgrounds.</desc>
+  <rect width="1200" height="320" fill="#ffffff"/>
+  <rect y="320" width="1200" height="320" fill="#161c37"/>
+  <text x="28" y="42" fill="#111936" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Light-background lockup</text>
+  <text x="28" y="362" fill="#ffffff" font-family="Segoe UI, system-ui, sans-serif" font-size="22" font-weight="600">Dark-background lockup</text>
+  <image href="../boundver-lockup.svg" x="200" y="78" width="800" height="224"/>
+  <image href="../boundver-lockup-dark.svg" x="200" y="398" width="800" height="224"/>
+</svg>

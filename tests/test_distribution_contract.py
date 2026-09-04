@@ -2056,17 +2056,99 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("immutable Debian snapshot", releasing)
 
     def test_public_brand_assets_and_native_marketplace_badge_are_consistent(self):
+        import xml.etree.ElementTree as ET
+
         action = yaml.safe_load((REPO_ROOT / "action.yml").read_text(encoding="utf-8"))
         self.assertEqual(action["branding"], {"icon": "layers", "color": "purple"})
 
-        logo_svg = (REPO_ROOT / "docs/assets/logo.svg").read_text(encoding="utf-8")
+        brand = REPO_ROOT / "assets" / "brand"
+        logo_svg = (brand / "logo.svg").read_text(encoding="utf-8")
         self.assertIn('viewBox="-4 -4 72 72"', logo_svg)
         self.assertIn("#6674f8", logo_svg)
         self.assertIn("#08b8d1", logo_svg)
-        self.assertNotIn("linearGradient", logo_svg)
+        self.assertIn("L41 32l8.5 7", logo_svg)
+        for forbidden in ("gradient", "<filter", "<image", "stroke=", "data:"):
+            self.assertNotIn(forbidden, logo_svg.lower())
+
+        namespace = {"svg": "http://www.w3.org/2000/svg"}
+        canonical_paths = [
+            path.attrib["d"]
+            for path in ET.fromstring(logo_svg).findall("svg:path", namespace)
+        ]
+        self.assertEqual(len(canonical_paths), 2)
+        for name in ("logo-light.svg", "logo-dark.svg"):
+            with self.subTest(asset=name):
+                text = (brand / name).read_text(encoding="utf-8")
+                paths = ET.fromstring(text).findall("svg:path", namespace)
+                self.assertEqual([path.attrib["d"] for path in paths], canonical_paths)
+                self.assertEqual(
+                    [path.attrib["fill"] for path in paths],
+                    ["#6674f8", "#08b8d1"],
+                )
+
+        for name, fill in (
+            ("logo-mono-dark.svg", "#111936"),
+            ("logo-mono-light.svg", "#ffffff"),
+        ):
+            with self.subTest(asset=name):
+                text = (brand / name).read_text(encoding="utf-8")
+                paths = ET.fromstring(text).findall("svg:path", namespace)
+                self.assertEqual([path.attrib["d"] for path in paths], canonical_paths)
+                self.assertEqual([path.attrib["fill"] for path in paths], [fill, fill])
+
+        for name in ("boundver-lockup.svg", "boundver-lockup-dark.svg"):
+            with self.subTest(asset=name):
+                text = (brand / name).read_text(encoding="utf-8")
+                self.assertIn(">Boundver</text>", text)
+                self.assertIn("#6674f8", text)
+                self.assertIn("#08b8d1", text)
+                for forbidden in ("gradient", "<filter", "data:"):
+                    self.assertNotIn(forbidden, text.lower())
+
+        small_svg = (brand / "logo-small.svg").read_bytes()
+        favicon_svg = (brand / "favicon.svg").read_text(encoding="utf-8")
+        self.assertIn('viewBox="0 0 32 32"', favicon_svg)
+        self.assertIn("#6674f8", favicon_svg)
+        self.assertIn("#08b8d1", favicon_svg)
+        small_paths = ET.fromstring(small_svg).findall("svg:path", namespace)
+        favicon_paths = ET.fromstring(favicon_svg).findall("svg:path", namespace)
+        self.assertEqual(
+            [path.attrib["d"] for path in favicon_paths],
+            [path.attrib["d"] for path in small_paths],
+        )
+
+        self.assertEqual(
+            (REPO_ROOT / "docs/assets/logo.svg").read_bytes(),
+            (brand / "logo.svg").read_bytes(),
+        )
+        self.assertEqual(
+            (REPO_ROOT / "docs/assets/logo-small.svg").read_bytes(),
+            small_svg,
+        )
+        self.assertEqual(
+            (REPO_ROOT / "docs/assets/favicon.svg").read_bytes(),
+            (brand / "favicon.svg").read_bytes(),
+        )
 
         for relative, dimensions, max_bytes in (
+            ("assets/brand/logo-64.png", (64, 64), 50_000),
+            ("assets/brand/logo-128.png", (128, 128), 100_000),
+            ("assets/brand/logo-256.png", (256, 256), 150_000),
+            ("assets/brand/logo-512.png", (512, 512), 200_000),
+            ("assets/brand/logo-1024.png", (1024, 1024), 500_000),
+            ("assets/brand/favicon-16x16.png", (16, 16), 20_000),
+            ("assets/brand/favicon-32x32.png", (32, 32), 20_000),
+            ("assets/brand/favicon-48x48.png", (48, 48), 20_000),
+            ("assets/brand/legacy/logo-pre-boundary-notch.png", (512, 512), 200_000),
+            ("assets/brand/previews/backgrounds.png", (1200, 640), 1_000_000),
+            ("assets/brand/previews/grayscale.png", (1000, 500), 1_000_000),
+            ("assets/brand/previews/lockups.png", (1200, 640), 1_000_000),
+            ("assets/brand/previews/monochrome.png", (1000, 500), 1_000_000),
+            ("assets/brand/previews/sizes.png", (1200, 320), 1_000_000),
             ("docs/assets/logo.png", (512, 512), 200_000),
+            ("docs/assets/favicon-16x16.png", (16, 16), 20_000),
+            ("docs/assets/favicon-32x32.png", (32, 32), 20_000),
+            ("docs/assets/favicon-48x48.png", (48, 48), 20_000),
             ("docs/assets/social-preview.png", (1280, 640), 1_000_000),
         ):
             with self.subTest(asset=relative):
@@ -2079,10 +2161,39 @@ print(json.dumps(payload, separators=(",", ":")))
                     int.from_bytes(payload[20:24], "big"),
                 )
                 self.assertEqual(actual, dimensions)
+                self.assertEqual(payload[24], 8)
+                self.assertIn(payload[25], {2, 6})
+                self.assertEqual(payload[28], 0)
+                if "previews/" not in relative and "social-preview" not in relative:
+                    self.assertEqual(payload[25], 6)
+
+        self.assertEqual(
+            (REPO_ROOT / "docs/assets/logo.png").read_bytes(),
+            (brand / "logo-512.png").read_bytes(),
+        )
+        for size in (16, 32, 48):
+            self.assertEqual(
+                (REPO_ROOT / f"docs/assets/favicon-{size}x{size}.png").read_bytes(),
+                (brand / f"favicon-{size}x{size}.png").read_bytes(),
+            )
+
+        mkdocs = yaml.safe_load((REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8"))
+        self.assertEqual(mkdocs["theme"]["logo"], "assets/logo-small.svg")
+        self.assertEqual(mkdocs["theme"]["favicon"], "assets/favicon.svg")
+        override = (REPO_ROOT / "docs/overrides/main.html").read_text(encoding="utf-8")
+        for favicon in (
+            "assets/favicon-48x48.png",
+            "assets/favicon-32x32.png",
+            "assets/favicon-16x16.png",
+        ):
+            self.assertIn(favicon, override)
 
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("https://yzm1.github.io/boundver/assets/logo.png", readme)
         self.assertIn("https://gitlab.com/boundver-project/boundver", readme)
+        brand_readme = (brand / "README.md").read_text(encoding="utf-8")
+        for contract in ("#6674F8", "#08B8D1", "32px", "logo-small.svg", "6.5"):
+            self.assertIn(contract, brand_readme)
 
     def test_container_and_sdist_exclude_repository_only_material(self):
         import datetime
