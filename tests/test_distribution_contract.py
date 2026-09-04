@@ -1834,6 +1834,15 @@ elif endpoint == "graphql":
             "hasNextPage": False, "endCursor": None,
         }},
     }}}}
+elif endpoint.startswith("repos/owner/repository/releases?per_page=100"):
+    payload = [{
+        "id": 10,
+        "tag_name": "v0.10.0",
+        "draft": False,
+        "prerelease": False,
+        "immutable": True,
+        "published_at": "2026-08-17T00:00:00Z",
+    }]
 elif endpoint.startswith("repos/owner/repository/commits/") and "/pulls?per_page=100" in endpoint:
     payload = [{"number": 17}]
 elif endpoint.startswith("repos/owner/repository/commits/"):
@@ -3122,6 +3131,11 @@ endpoint=
 for argument in "$@"; do
   if [[ "$argument" == repos/* ]]; then endpoint=$argument; fi
 done
+if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then
+  if [[ "$FAKE_FAILURE" == releases ]]; then exit 73; fi
+  printf '%s' "$FAKE_RELEASES"
+  exit 0
+fi
 if [[ "$endpoint" == */commits/*/pulls ]]; then
   if [[ "$FAKE_FAILURE" == associated ]]; then exit 73; fi
   echo 17
@@ -3191,9 +3205,14 @@ exit 74
                 cwd=root,
                 check=True,
             )
+            (root / "file.txt").write_text("previous\n", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "previous"], cwd=root, check=True)
+            subprocess.run(["git", "tag", "v0.14.1"], cwd=root, check=True)
             (root / "file.txt").write_text("release\n", encoding="utf-8")
             subprocess.run(["git", "add", "file.txt"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "release"], cwd=root, check=True)
+            subprocess.run(["git", "tag", "v0.14.999"], cwd=root, check=True)
             release_sha = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip()
@@ -3212,6 +3231,10 @@ exit 74
                     "GH_TOKEN": "test-token",
                     "GITHUB_REPOSITORY": "owner/repository",
                     "FAKE_FAILURE": "none",
+                    "FAKE_RELEASES": (
+                        "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                        "2026-08-27T15:05:36Z\n"
+                    ),
                     "FAKE_OWNER_ID": "101",
                     "FAKE_OWNER_LOGIN": "owner",
                     "FAKE_OWNER_TYPE": "User",
@@ -3267,6 +3290,12 @@ exit 74
             FAKE_REVIEWS="",
             FAKE_COMMENTS=comment,
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_unpublished_semver_tag_cannot_narrow_the_review_range(self):
+        result = self._run_audit()
+
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
@@ -3561,6 +3590,7 @@ exit 74
         self.assertIn("trusted_codex_bot_id=199175422", script)
 
         for failure in (
+            "releases",
             "associated",
             "owner",
             "metadata",

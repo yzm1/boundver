@@ -487,6 +487,67 @@ env:
         fraction = fraction_and_zone[:-1] if separator else ""
         return base.rstrip("Z"), fraction.ljust(9, "0")
 
+    def published_release_anchors(records, release_version, merged_tag_names):
+        anchors = []
+        seen_ids = set()
+        seen_tags = set()
+        pattern = re.compile(
+            r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\."
+            r"(0|[1-9][0-9]*)"
+        )
+        for record in records:
+            if not isinstance(record, dict):
+                raise SystemExit("GitHub returned malformed release metadata")
+            tag = record.get("tag_name")
+            if not isinstance(tag, str):
+                raise SystemExit("GitHub returned malformed release metadata")
+            match = pattern.fullmatch(tag)
+            if match is None:
+                continue
+            release_id = record.get("id")
+            draft = record.get("draft")
+            prerelease = record.get("prerelease")
+            immutable = record.get("immutable")
+            published_at = record.get("published_at")
+            if (type(release_id) is not int or release_id <= 0 or
+                    type(draft) is not bool or type(prerelease) is not bool or
+                    type(immutable) is not bool or
+                    (published_at is not None and
+                     not isinstance(published_at, str))):
+                raise SystemExit(
+                    "GitHub returned malformed semantic release metadata"
+                )
+            if release_id in seen_ids or tag in seen_tags:
+                raise SystemExit(
+                    "GitHub returned duplicate semantic release metadata"
+                )
+            seen_ids.add(release_id)
+            seen_tags.add(tag)
+            if draft or prerelease or not immutable:
+                continue
+            if published_at is None:
+                raise SystemExit(
+                    "GitHub returned malformed published release metadata"
+                )
+            timestamp_key(published_at)
+            version = tuple(map(int, match.groups()))
+            if version >= release_version or tag not in merged_tag_names:
+                continue
+            tag_sha = git_text(
+                "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"
+            ).strip()
+            if re.fullmatch(r"[0-9a-f]{40}", tag_sha) is None:
+                raise SystemExit("published release tag resolved ambiguously")
+            anchors.append({
+                "version": version,
+                "tag": tag,
+                "id": release_id,
+                "published_at": published_at,
+                "sha": tag_sha,
+            })
+        anchors.sort(key=lambda item: (item["version"], item["tag"]))
+        return anchors
+
     def parse_semantic_review_roster(body, repository_id, owner_id):
         if not isinstance(body, str) or len(body) > 4096:
             raise SystemExit("GitHub returned a malformed semantic review roster")
@@ -532,20 +593,16 @@ env:
             raise SystemExit("Semantic review roster needs distinct external humans")
         return reviewers
 
-    merged_tags = []
-    for candidate in git_text("tag", "--merged", release_sha).splitlines():
-        match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", candidate)
-        # The mutation job creates the candidate tag locally before its final
-        # snapshot.  Normalize that one tag away so the digest remains bound
-        # to the same remote/review state as the read-only handoff.
-        if match is not None and candidate != release_tag:
-            merged_tags.append((tuple(map(int, match.groups())), candidate))
-    if len(merged_tags) != len(set(merged_tags)):
-        raise SystemExit("duplicate merged semantic-version tags were returned")
-    merged_tags.sort()
     release_version = tuple(map(int, version_match.groups()))
-    previous = [item for item in merged_tags if item[0] < release_version]
-    previous_tag = previous[-1][1] if previous else ""
+    merged_tag_names = set(
+        git_text("tag", "--merged", release_sha).splitlines()
+    )
+    release_anchors = published_release_anchors(
+        rest_records(f"repos/{repository}/releases?per_page=100"),
+        release_version,
+        merged_tag_names,
+    )
+    previous_tag = release_anchors[-1]["tag"] if release_anchors else ""
     commit_range = f"{previous_tag}..{release_sha}" if previous_tag else release_sha
     commits = git_text("rev-list", commit_range).splitlines()
     if (not commits or len(commits) > MAX_RECORDS or
@@ -1085,7 +1142,7 @@ env:
     snapshot = {
         "release_sha": release_sha,
         "release_tag": release_tag,
-        "merged_semver_tags": [item[1] for item in merged_tags],
+        "published_release_anchors": release_anchors,
         "previous_tag": previous_tag,
         "commits": commits,
         "associations": associations,

@@ -15,6 +15,12 @@ local Git commands, computes digests, and writes only artifacts requested by
 the command. It has no outbound-network or telemetry client in its runtime
 dependency surface.
 
+Requested lock, config, migration, update, and review-summary writes reject
+symlinked ancestors, Windows junctions and reparse points, and non-regular
+destinations. Temporary creation and final replacement remain relative to an
+identity-bound plain parent directory; if its path changes before publication,
+the write fails closed instead of following the replacement.
+
 Git subprocesses are constrained to local inspection. Boundver disables hooks,
 filters, external diff and text-conversion helpers, filesystem monitors,
 pagers, prompts, signature helpers, trace sinks, and partial-clone lazy fetches.

@@ -82,7 +82,7 @@ capture_index=0
 cleanup_capture_temp() {
   local status=$?
   rm -f -- "$capture_temp_dir"/capture-* "$capture_temp_dir/merged-tags" \
-    "$capture_temp_dir/release-prs"
+    "$capture_temp_dir/published-releases" "$capture_temp_dir/release-prs"
   rmdir -- "$capture_temp_dir" 2>/dev/null || true
   exit "$status"
 }
@@ -133,6 +133,16 @@ capture_bounded() {
 }
 
 git fetch --force --tags origin
+published_releases_file="$capture_temp_dir/published-releases"
+if ! run_bounded_to_file "$max_capture_bytes" "published GitHub releases" \
+    "$published_releases_file" gh api --paginate \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+    --jq '.[] | [(.id | tostring), (.tag_name // ""), (.draft | tostring), (.prerelease | tostring), (.immutable | tostring), (.published_at // "")] | @tsv'; then
+  echo "GitHub API failed while listing published releases." >&2
+  exit 1
+fi
 merged_tags_file="$capture_temp_dir/merged-tags"
 if ! run_bounded_to_file "$max_capture_bytes" "merged release tags" \
     "$merged_tags_file" git tag --merged "$release_sha"; then
@@ -141,21 +151,60 @@ if ! run_bounded_to_file "$max_capture_bytes" "merged release tags" \
 fi
 if ! capture_bounded previous_tag "previous release tag" \
     "$max_small_capture_bytes" \
-    "$python_command" -I - "$release_tag" "$merged_tags_file" <<'PY'
+    "$python_command" -I - "$release_tag" "$published_releases_file" \
+    "$merged_tags_file" "$max_records" <<'PY'
 from pathlib import Path
 import re
 import sys
 
-release_tag, merged_tags_path = sys.argv[1:]
+release_tag, releases_path, merged_tags_path, max_records_text = sys.argv[1:]
 release_version = tuple(map(int, release_tag.removeprefix("v").split(".")))
+max_records = int(max_records_text)
+version_pattern = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+timestamp_pattern = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,9})?Z"
+)
+merged_tags = {
+    tag
+    for tag in Path(merged_tags_path).read_text(encoding="utf-8").splitlines()
+    if version_pattern.fullmatch(tag) is not None
+}
+rows = Path(releases_path).read_text(encoding="utf-8").splitlines()
+if len(rows) > max_records:
+    raise SystemExit("GitHub returned too many release records")
 candidates = []
-for tag in Path(merged_tags_path).read_text(encoding="utf-8").splitlines():
-    match = re.fullmatch(r"v([0-9]+)\.([0-9]+)\.([0-9]+)", tag)
+seen_ids = set()
+seen_tags = set()
+for row in rows:
+    fields = row.split("\t")
+    if len(fields) != 6:
+        raise SystemExit("GitHub returned malformed release metadata")
+    release_id, tag, draft, prerelease, immutable, published_at = fields
+    match = version_pattern.fullmatch(tag)
     if match is None:
         continue
+    if (
+        not release_id.isascii()
+        or not release_id.isdecimal()
+        or len(release_id) > 20
+        or int(release_id) <= 0
+        or draft not in {"true", "false"}
+        or prerelease not in {"true", "false"}
+        or immutable not in {"true", "false"}
+    ):
+        raise SystemExit("GitHub returned malformed semantic release metadata")
+    if release_id in seen_ids or tag in seen_tags:
+        raise SystemExit("GitHub returned duplicate semantic release metadata")
+    seen_ids.add(release_id)
+    seen_tags.add(tag)
+    if draft == "true" or prerelease == "true" or immutable != "true":
+        continue
+    if timestamp_pattern.fullmatch(published_at) is None:
+        raise SystemExit("GitHub returned malformed published release metadata")
     version = tuple(map(int, match.groups()))
-    if version < release_version:
-        candidates.append((version, tag))
+    if version < release_version and tag in merged_tags:
+        candidates.append((version, tag, release_id, published_at))
 print(max(candidates)[1] if candidates else "")
 PY
 then

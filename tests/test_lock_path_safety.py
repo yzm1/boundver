@@ -206,6 +206,37 @@ class ConfigAliasSafetyTests(unittest.TestCase):
             self.assertEqual(config_path.read_bytes(), expected)
             generate_lockfile.assert_not_called()
 
+    def test_cli_generate_rejects_output_parent_redirected_outside_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            root = base / "repo"
+            root.mkdir()
+            _build_repo(root)
+            outside = base / "outside"
+            outside.mkdir()
+            redirected = outside / "boundary.lock.json"
+            redirected.write_text("outside\n", encoding="utf-8")
+            try:
+                _make_directory_link(root / "artifacts", outside)
+            except OSError as exc:
+                self.skipTest(f"directory links are unavailable: {exc}")
+
+            code, _stdout, stderr = _run_cli(
+                root,
+                "generate",
+                "--source",
+                "working-tree",
+                "--out",
+                "artifacts/boundary.lock.json",
+            )
+
+            self.assertEqual(code, core.EXIT_USAGE, stderr)
+            self.assertRegex(stderr, "symlink|junction|reparse")
+            self.assertEqual(
+                redirected.read_text(encoding="utf-8"),
+                "outside\n",
+            )
+
     def test_cli_generate_resolves_symlink_before_parent_segments_for_config(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

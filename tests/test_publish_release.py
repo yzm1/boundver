@@ -1557,7 +1557,12 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertIn("python_command=${PYTHON:-python3}", script)
         self.assertIn("capture_bounded previous_tag", script)
         self.assertIn(
-            '"$python_command" -I - "$release_tag" "$merged_tags_file"',
+            '"$python_command" -I - "$release_tag" "$published_releases_file"',
+            script,
+        )
+        self.assertIn('"$merged_tags_file" "$max_records"', script)
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"',
             script,
         )
 

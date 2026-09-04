@@ -305,6 +305,12 @@ diff; it is never accepted implicitly by an install.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
 threads, changes-requested state, and pending human or team review requests.
+Its range begins at the newest lower stable, published, immutable GitHub
+Release whose tag is merged into the candidate. Standalone tags, drafts,
+prereleases, mutable historical releases, and unmerged releases cannot narrow
+the range. The read-only audit and the workflow-owned review-state snapshot
+both derive this anchor from the paginated GitHub Releases API and fetched tag
+graph; malformed or unavailable release state fails closed.
 Each contributing PR also needs current, exact-commit evidence: an approval by
 a non-author collaborator with push access, or—only for an owner-authored PR in
 this personal repository—a review from the trusted Codex GitHub App account.

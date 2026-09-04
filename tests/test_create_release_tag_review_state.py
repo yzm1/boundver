@@ -37,6 +37,7 @@ def _review_state_runner() -> dict:
         "MAX_STDERR_BYTES",
         "MAX_JSON_NUMBER_DIGITS",
         "READ_CHUNK_BYTES",
+        "GITHUB_TIMESTAMP_RE",
         "consumed_api_bytes",
     }
     functions = {
@@ -47,6 +48,8 @@ def _review_state_runner() -> dict:
         "bounded_json_int",
         "bounded_json_float",
         "reject_json_constant",
+        "timestamp_key",
+        "published_release_anchors",
     }
     selected = []
     for node in tree.body:
@@ -316,11 +319,64 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         )
         self.assertIn('"semantic_review_authority": semantic_review_authority', program)
 
-    def test_snapshot_normalizes_only_the_local_candidate_tag(self):
+    def test_snapshot_anchors_only_to_immutable_published_releases(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]
 
-        self.assertIn("candidate != release_tag", program)
-        self.assertIn('"merged_semver_tags": [item[1] for item in merged_tags]', program)
+        self.assertIn(
+            'rest_records(f"repos/{repository}/releases?per_page=100")',
+            program,
+        )
+        self.assertIn('"published_release_anchors": release_anchors', program)
+        self.assertNotIn('"merged_semver_tags"', program)
+
+        helpers = _review_state_runner()
+        helpers["git_text"] = lambda *_arguments: "1" * 40
+        records = [
+            {
+                "id": 101,
+                "tag_name": "v0.14.1",
+                "draft": False,
+                "prerelease": False,
+                "immutable": True,
+                "published_at": "2026-08-27T15:05:36Z",
+            },
+            {
+                "id": 102,
+                "tag_name": "v0.14.2",
+                "draft": False,
+                "prerelease": False,
+                "immutable": False,
+                "published_at": "2026-08-28T15:05:36Z",
+            },
+            {
+                "id": 103,
+                "tag_name": "v0.14.3",
+                "draft": False,
+                "prerelease": True,
+                "immutable": True,
+                "published_at": "2026-08-29T15:05:36Z",
+            },
+        ]
+        anchors = helpers["published_release_anchors"](
+            records,
+            (0, 15, 0),
+            {"v0.14.1", "v0.14.2", "v0.14.3", "v0.14.999"},
+        )
+
+        self.assertEqual([item["tag"] for item in anchors], ["v0.14.1"])
+        self.assertEqual(anchors[0]["sha"], "1" * 40)
+
+        malformed = dict(records[0])
+        malformed.pop("immutable")
+        with self.assertRaisesRegex(
+            SystemExit,
+            "malformed semantic release metadata",
+        ):
+            helpers["published_release_anchors"](
+                [malformed],
+                (0, 15, 0),
+                {"v0.14.1"},
+            )
 
     def test_snapshot_commands_use_streaming_preallocation_caps(self):
         program = _workflow()["env"]["REVIEW_STATE_PROGRAM"]
@@ -493,7 +549,11 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         ):
             self.assertIn(setting, source)
         self.assertIn(
-            '"$python_command" -I - "$release_tag" "$merged_tags_file"',
+            '"$python_command" -I - "$release_tag" "$published_releases_file"',
+            source,
+        )
+        self.assertIn(
+            '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"',
             source,
         )
         for field in (
@@ -568,6 +628,7 @@ pathlib.Path(sys.argv[1]).write_text("finished")' "$FAKE_COMPLETION_MARKER"
   esac
 fi
 case "$*" in
+  *repos/acme/widget/releases?per_page=100*) : ;;
   *repos/acme/widget/commits/*/pulls*) printf '%s\\n' '17' ;;
   *repos/acme/widget/pulls/17*) printf '%s\\n' "$FAKE_PR_METADATA" ;;
   *'repos/acme/widget --jq'*) printf '%s\\n' '1|acme|Organization' ;;

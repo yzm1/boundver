@@ -145,6 +145,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- Bound the release-review range to the newest lower stable, published,
+  immutable GitHub Release that is merged into the candidate. A standalone,
+  draft, prerelease, mutable, missing, malformed, or unmerged SemVer-looking
+  tag can no longer shorten the commits and pull requests audited before tag
+  creation; the workflow-owned review-state handoff uses the same authority.
 - Updated the isolated build backend to Setuptools 84.0.0, beyond the
   vulnerable `<83.0.0` range for GHSA-h35f-9h28-mq5c / CVE-2026-59890, and
   refreshed the coordinated test toolchain to Coverage 7.16.0, pytest 9.1.1,
@@ -153,6 +158,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Prevented lock, config, migration, update, and range-review summary writes
+  from traversing a symlinked directory, Windows junction, or reparse-point
+  ancestor. Temporary-file creation and replacement now stay relative to an
+  identity-bound plain parent directory and fail closed if any ancestor or
+  destination type changes before publication.
 - Bound release-preflight diagnostics to the fixed TestPyPI and PyPI entries,
   and fixed the public Action smoke test for valid reviews that select no
   configured components.

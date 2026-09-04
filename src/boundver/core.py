@@ -29,6 +29,7 @@ Requires: Git and Python 3.10+.
 """
 
 import os
+import secrets
 import stat
 import subprocess
 import sys
@@ -161,6 +162,9 @@ from ._review_plan import (
 )
 from ._baseline import (
     BaselineError,
+    _MutationDirectory,
+    _open_plain_directory,
+    _same_directory_identity,
     _validate_baseline_relative_path,
     apply_baseline,
     baseline_change_ids,
@@ -584,6 +588,139 @@ def _ensure_json_mutation_path(path: Path, command: str) -> None:
         )
 
 
+def _canonicalize_trusted_output_prefix(path: Path, label: str) -> Path:
+    """Resolve only an already selected working or temporary root.
+
+    macOS commonly exposes its temporary directory through the stable ``/var``
+    alias.  Resolving that process-selected prefix keeps ordinary temporary
+    outputs usable without resolving any output-specific component that a
+    repository can control.
+    """
+    candidates: list[tuple[int, Path, Path]] = []
+    for selected in (Path.cwd(), Path(tempfile.gettempdir())):
+        lexical_root = selected if selected.is_absolute() else Path.cwd() / selected
+        try:
+            relative = path.relative_to(lexical_root)
+        except ValueError:
+            continue
+        candidates.append((len(lexical_root.parts), lexical_root, relative))
+    if not candidates:
+        return path
+
+    _depth, lexical_root, relative = max(candidates, key=lambda item: item[0])
+    try:
+        resolved_root = lexical_root.resolve(strict=True)
+        identity = resolved_root.lstat()
+    except OSError as exc:
+        raise ConfigError(
+            f"Cannot safely write {label}: selected root is unavailable: "
+            f"{lexical_root}"
+        ) from exc
+    if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(identity):
+        raise ConfigError(
+            f"Cannot safely write {label}: selected root is not a plain "
+            f"directory: {lexical_root}"
+        )
+    return resolved_root.joinpath(*relative.parts)
+
+
+def _prepare_atomic_output(
+    path: Path,
+) -> tuple[Path, tuple[tuple[Path, os.stat_result], ...]]:
+    """Create and capture every plain ancestor without following links."""
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    if not candidate.anchor or not candidate.parts:
+        raise ConfigError(f"Output path must name a file: {path}")
+    candidate = _canonicalize_trusted_output_prefix(candidate, str(path))
+    leaf = candidate.parts[-1]
+    if leaf in {"", ".", ".."} or "\0" in leaf or ":" in leaf:
+        raise ConfigError(f"Output path must use a portable filename: {path}")
+    if ".." in candidate.parts[1:-1]:
+        raise ConfigError(
+            f"Output path must not contain parent-directory traversal: {path}"
+        )
+
+    current = Path(candidate.anchor)
+    captured: list[tuple[Path, os.stat_result]] = []
+    try:
+        root_identity = current.lstat()
+    except OSError as exc:
+        raise ConfigError(f"Cannot inspect output filesystem root: {current}") from exc
+    if not stat.S_ISDIR(root_identity.st_mode) or _is_windows_reparse_point(
+        root_identity
+    ):
+        raise ConfigError(f"Output filesystem root is not a plain directory: {current}")
+    captured.append((current, root_identity))
+
+    for part in candidate.parts[1:-1]:
+        if part in {"", "."}:
+            continue
+        current = current / part
+        try:
+            identity = current.lstat()
+        except FileNotFoundError:
+            try:
+                current.mkdir()
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise ConfigError(
+                    f"Cannot create output parent directory: {current}"
+                ) from exc
+            try:
+                identity = current.lstat()
+            except OSError as exc:
+                raise ConfigError(
+                    f"Cannot inspect output parent directory: {current}"
+                ) from exc
+        except OSError as exc:
+            raise ConfigError(
+                f"Cannot inspect output parent directory: {current}"
+            ) from exc
+        if not stat.S_ISDIR(identity.st_mode) or _is_windows_reparse_point(
+            identity
+        ):
+            raise ConfigError(
+                "Output path must not traverse a symlink, junction, "
+                f"reparse point, or non-directory ancestor: {current}"
+            )
+        captured.append((current, identity))
+
+    prepared = current / leaf
+    try:
+        leaf_identity = prepared.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ConfigError(f"Cannot inspect output path: {prepared}") from exc
+    else:
+        if not stat.S_ISREG(leaf_identity.st_mode) or _is_windows_reparse_point(
+            leaf_identity
+        ):
+            raise ConfigError(
+                "Output path must be a regular file, not a symlink, junction, "
+                f"or reparse point: {prepared}"
+            )
+    return prepared, tuple(captured)
+
+
+def _revalidate_atomic_output_ancestors(
+    ancestors: tuple[tuple[Path, os.stat_result], ...],
+) -> None:
+    """Fail if any prepared output ancestor changed before publication."""
+    for ancestor, expected in ancestors:
+        try:
+            current = ancestor.lstat()
+        except OSError as exc:
+            raise ConfigError(
+                f"Output parent changed before publication: {ancestor}"
+            ) from exc
+        if not _same_directory_identity(expected, current):
+            raise ConfigError(
+                f"Output parent changed before publication: {ancestor}"
+            )
+
+
 def _write_text_atomic(path: Path, text: str) -> None:
     """Replace *path* only after the complete UTF-8 payload is durable.
 
@@ -591,36 +728,96 @@ def _write_text_atomic(path: Path, text: str) -> None:
     the target filesystem.  This prevents an interrupted generation/update
     from leaving a truncated lockfile behind.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    existing_mode: Optional[int] = None
-    if os.name != "nt":
+    path, ancestors = _prepare_atomic_output(path)
+    try:
+        parent_fd = _open_plain_directory(path.parent)
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"Cannot safely open output parent: {path.parent}") from exc
+    directory = _MutationDirectory(path.parent, parent_fd)
+    temp_name: Optional[str] = None
+    temp_fd: Optional[int] = None
+    try:
+        if not _same_directory_identity(ancestors[-1][1], os.fstat(parent_fd)):
+            raise ConfigError(
+                f"Output parent changed while it was opened: {path.parent}"
+            )
+        existing_mode: Optional[int] = None
         try:
-            existing_mode = stat.S_IMODE(path.stat().st_mode)
+            existing_leaf = directory.lstat(path.name)
         except FileNotFoundError:
             pass
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
-    try:
-        if existing_mode is not None:
-            os.fchmod(fd, existing_mode)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-        if os.name != "nt":
-            directory_fd = os.open(str(path.parent), os.O_RDONLY)
+        except (OSError, ValueError) as exc:
+            raise ConfigError(
+                f"Output path changed while it was opened: {path}"
+            ) from exc
+        else:
+            if not stat.S_ISREG(existing_leaf.st_mode) or _is_windows_reparse_point(
+                existing_leaf
+            ):
+                raise ConfigError(
+                    "Output path changed to a symlink, junction, reparse point, "
+                    f"or non-file while it was opened: {path}"
+                )
+            if os.name != "nt":
+                existing_mode = stat.S_IMODE(existing_leaf.st_mode)
+        for _attempt in range(100):
+            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
             try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-    except Exception:
+                temp_fd = directory.open_exclusive(candidate)
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        else:
+            raise OSError("cannot allocate a unique output sidecar")
         try:
-            os.unlink(temp_name)
-        except OSError:
+            if existing_mode is not None:
+                os.fchmod(temp_fd, existing_mode)
+            handle = os.fdopen(temp_fd, "w", encoding="utf-8", newline="\n")
+            temp_fd = None
+            with handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+                temp_fd = None
+        _revalidate_atomic_output_ancestors(ancestors)
+        try:
+            current_leaf = directory.lstat(path.name)
+        except FileNotFoundError:
             pass
-        raise
+        except (OSError, ValueError) as exc:
+            raise ConfigError(
+                f"Output path changed before publication: {path}"
+            ) from exc
+        else:
+            if not stat.S_ISREG(current_leaf.st_mode) or _is_windows_reparse_point(
+                current_leaf
+            ):
+                raise ConfigError(
+                    "Output path changed to a symlink, junction, reparse point, "
+                    f"or non-file before publication: {path}"
+                )
+        directory.replace(temp_name, path.name)
+        temp_name = None
+        directory.fsync()
+    finally:
+        if temp_fd is not None:
+            try:
+                os.close(temp_fd)
+            except OSError:
+                pass
+        if temp_name is not None:
+            try:
+                directory.unlink(temp_name)
+            except OSError:
+                pass
+        os.close(parent_fd)
 
 
 def _write_lockfile_atomic(path: Path, value: dict) -> None:
