@@ -2571,6 +2571,22 @@ print(json.dumps(payload, separators=(",", ":")))
             REPO_ROOT / ".github/workflows/publish-container.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("for platform in linux/amd64 linux/arm64", container)
+        self.assertIn("Checkout the reviewed release-control commit", container)
+        self.assertIn(
+            "python3 -I .release-control/scripts/prepare_oci_scan_layout.py",
+            container,
+        )
+        self.assertIn(
+            '--output "$RUNNER_TEMP/trivy-oci-scan"',
+            container,
+        )
+        self.assertIn(
+            "--input /scan/trivy-oci-scan/layout",
+            container,
+        )
+        self.assertIn("selector=${platform//\\//-}.json", container)
+        self.assertNotIn('--input "$archive"', container)
+        self.assertNotIn('"${scan[@]}" --platform "$platform"', container)
 
         policy = yaml.safe_load(
             (REPO_ROOT / ".trivyignore.yaml").read_text(encoding="utf-8")

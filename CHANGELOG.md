@@ -11,6 +11,11 @@ All notable changes to this project are documented here. The format follows
 - Restored system CA paths for the pinned PyPI publisher and the downstream
   Sigstore provenance checks after neutralizing inherited TLS overrides,
   preventing TUF refreshes from failing with an empty OpenSSL trust store.
+- Fixed release-container scanning of retained multi-platform OCI archives.
+  Promotion now performs bounded extraction, verifies every content-addressed
+  blob, and selects each child manifest explicitly before Trivy scans it. This
+  avoids unsupported OCI-tar input and prevents Trivy's ignored local
+  `--platform` option from silently scanning the same architecture twice.
 
 ## [0.15.0] - 2026-09-04
 

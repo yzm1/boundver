@@ -214,6 +214,16 @@ tree for high/critical secret and configuration findings. Never use a wildcard,
 unscoped CVE, non-expiring entry, or global `--ignore-unfixed` as the primary
 publication gate.
 
+The release build retains one multi-platform OCI archive for publication.
+Before scanning, reviewed release-control code extracts that archive with
+member-count and byte limits, rejects links and unexpected paths, verifies every
+blob against its SHA-256 filename, and creates one root-index selector for each
+declared platform. Trivy scans those single-platform OCI layout directories.
+Do not pass the OCI tar directly to `trivy image --input`, which accepts Docker
+archives but expects OCI input to be a directory. Do not rely on Trivy's local
+`--platform` option to select children from a multi-platform OCI layout; select
+the exact child manifest first so both architectures are actually inspected.
+
 `scripts/release-tool-artifacts.json` records the PyPI wheel filenames behind
 the local hashes for review. The generator reads only the official versioned
 PyPI JSON API over HTTPS and rejects any pin with an active advisory in that
