@@ -1,0 +1,73 @@
+name: TUF publisher diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/tuf-publisher-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ALL_PROXY: ""
+      HTTPS_PROXY: ""
+      HTTP_PROXY: ""
+      NO_PROXY: github.com,api.github.com
+    steps:
+      - name: Probe the Sigstore TUF repository from the hosted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          getent ahosts tuf-repo-cdn.sigstore.dev
+          test "$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            https://tuf-repo-cdn.sigstore.dev/15.root.json)" = 200
+          test "$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            https://tuf-repo-cdn.sigstore.dev/16.root.json)" = 404
+
+      - name: Expose the exception hidden by the exact publisher image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --interactive \
+            --env ALL_PROXY \
+            --env HTTPS_PROXY \
+            --env HTTP_PROXY \
+            --env NO_PROXY \
+            --entrypoint python \
+            ghcr.io/pypa/gh-action-pypi-publish@sha256:a68d05519f6d7e47372aeaddab80b851b69afa89be179ec41775c72c4e3ab2d5 \
+            - <<'PY'
+          from tuf.ngclient._internal.proxy import ProxyEnvironment
+          from sigstore.models import ClientTrustConfig
+
+          original_request = ProxyEnvironment.request
+
+
+          def traced_request(self, method, url, **kwargs):
+              try:
+                  response = original_request(self, method, url, **kwargs)
+              except BaseException as error:
+                  print(
+                      "REQUEST ERROR",
+                      url,
+                      type(error).__name__,
+                      repr(error),
+                      "reason=",
+                      repr(getattr(error, "reason", None)),
+                      flush=True,
+                  )
+                  raise
+              print("REQUEST", url, response.status, flush=True)
+              return response
+
+
+          ProxyEnvironment.request = traced_request
+          ClientTrustConfig.production()
+          print("TRUST REFRESH PASSED", flush=True)
+          PY
