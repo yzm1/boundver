@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored the pinned PyPI publisher container's system CA paths after
+  neutralizing inherited TLS overrides, preventing trusted-publication TUF
+  refreshes from failing with an empty OpenSSL trust store.
+
 ## [0.15.0] - 2026-09-04
 
 ### Upgrade contract

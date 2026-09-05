@@ -915,6 +915,12 @@ jobs:
       - name: Publish missing candidate files to TestPyPI
         if: needs.testpypi-preflight.outputs.upload-required == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        env:
+          # The workflow-wide empty values reject inherited CA overrides. Both
+          # empty together also suppress OpenSSL's defaults, so restore only
+          # the CA bundle and directory supplied by the pinned container.
+          SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+          SSL_CERT_DIR: /etc/ssl/certs
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist
@@ -1993,6 +1999,11 @@ jobs:
       - name: Upload the exact candidate to PyPI with retry-safe duplicates
         if: needs.pypi-preflight.outputs.upload-required == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        env:
+          # See the TestPyPI publisher: use only the pinned container's system
+          # trust paths after neutralizing inherited CA overrides globally.
+          SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+          SSL_CERT_DIR: /etc/ssl/certs
         with:
           packages-dir: dist
           skip-existing: true
