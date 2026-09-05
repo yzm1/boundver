@@ -361,11 +361,13 @@ class ReleaseAliasHardeningTests(unittest.TestCase):
     def test_git_replace_cannot_forge_alias_ancestry(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
+            replacement_environment = self.alias.sanitize_git_environment()
 
             def git(*arguments: str, check: bool = True):
                 return subprocess.run(
                     ("git", *arguments),
                     cwd=repo,
+                    env=replacement_environment,
                     text=True,
                     capture_output=True,
                     check=check,
