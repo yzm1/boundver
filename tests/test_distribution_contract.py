@@ -1266,6 +1266,36 @@ class AutomationContractTests(unittest.TestCase):
             production_publish["if"],
             "needs.pypi-preflight.outputs.upload-required == 'true'",
         )
+        expected_tls_steps = {
+            (
+                "publish-testpypi",
+                "Publish missing candidate files to TestPyPI",
+            ),
+            (
+                "verify-testpypi",
+                "Cryptographically verify TestPyPI trusted-publisher provenance",
+            ),
+            (
+                "publish-pypi",
+                "Upload the exact candidate to PyPI with retry-safe duplicates",
+            ),
+            (
+                "verify-pypi",
+                "Cryptographically verify PyPI trusted-publisher provenance",
+            ),
+        }
+        actual_tls_steps = set()
+        for job_name, job in jobs.items():
+            for step in job.get("steps", []):
+                environment = step.get("env", {})
+                if (
+                    environment.get("SSL_CERT_FILE")
+                    == publisher_tls_env["SSL_CERT_FILE"]
+                    and environment.get("SSL_CERT_DIR")
+                    == publisher_tls_env["SSL_CERT_DIR"]
+                ):
+                    actual_tls_steps.add((job_name, step.get("name")))
+        self.assertEqual(actual_tls_steps, expected_tls_steps)
         production_steps = jobs["publish-pypi"]["steps"]
         production_download = next(
             step

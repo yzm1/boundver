@@ -999,6 +999,11 @@ jobs:
 
       - name: Cryptographically verify TestPyPI trusted-publisher provenance
         shell: bash
+        env:
+          # pypi-attestations uses OpenSSL directly and therefore needs the
+          # host runner's trust paths after the global override neutralization.
+          SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+          SSL_CERT_DIR: /etc/ssl/certs
         run: |
           set -euo pipefail
           python3 -I scripts/install_locked_tools.py release
@@ -2083,6 +2088,10 @@ jobs:
         env:
           PYPI_WHEEL_URL: ${{ steps.verify-pypi.outputs.wheel-url }}
           PYPI_SDIST_URL: ${{ steps.verify-pypi.outputs.sdist-url }}
+          # Match the narrowly scoped publisher trust configuration. The
+          # workflow-level empty pair suppresses OpenSSL's default locations.
+          SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
+          SSL_CERT_DIR: /etc/ssl/certs
         run: |
           set -euo pipefail
           python3 -I scripts/install_locked_tools.py release

@@ -8,9 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Restored the pinned PyPI publisher container's system CA paths after
-  neutralizing inherited TLS overrides, preventing trusted-publication TUF
-  refreshes from failing with an empty OpenSSL trust store.
+- Restored system CA paths for the pinned PyPI publisher and the downstream
+  Sigstore provenance checks after neutralizing inherited TLS overrides,
+  preventing TUF refreshes from failing with an empty OpenSSL trust store.
 
 ## [0.15.0] - 2026-09-04
 
