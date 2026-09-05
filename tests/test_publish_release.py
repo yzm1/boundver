@@ -247,6 +247,78 @@ def _resume_api_payloads(
     }
 
 
+def _container_recovery_api_payloads(container_run_id: int) -> dict[str, object]:
+    container_control_sha = "3" * 40
+    endpoint = f"repos/yzm1/boundver/actions/runs/{container_run_id}"
+    association = {
+        "id": container_run_id,
+        "head_branch": "main",
+        "head_sha": container_control_sha,
+    }
+    return {
+        endpoint: {
+            "id": container_run_id,
+            "repository": {"full_name": "yzm1/boundver"},
+            "path": ".github/workflows/publish.yml",
+            "event": "workflow_dispatch",
+            "status": "completed",
+            "conclusion": "failure",
+            "head_branch": "main",
+            "head_sha": container_control_sha,
+            "run_attempt": 3,
+            "display_title": (
+                f"publish:{TAG}@{SHA}:alias={ALIAS}:resume={RUN_ID}"
+            ),
+        },
+        f"{endpoint}/jobs?filter=all&per_page=100": {
+            "total_count": 2,
+            "jobs": [
+                {
+                    "id": 51,
+                    "name": "verify-release",
+                    "run_id": container_run_id,
+                    "run_attempt": 3,
+                    "head_sha": container_control_sha,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 52,
+                    "name": "Publish and verify the release container / build",
+                    "run_id": container_run_id,
+                    "run_attempt": 3,
+                    "head_sha": container_control_sha,
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ],
+        },
+        f"{endpoint}/artifacts?per_page=100": {
+            "total_count": 2,
+            "artifacts": [
+                {
+                    "id": 61,
+                    "size_in_bytes": 100,
+                    "name": f"release-notes-{SHA}-{container_run_id}-2",
+                    "expired": False,
+                    "expires_at": "2999-01-01T00:00:00Z",
+                    "digest": "sha256:" + "c" * 64,
+                    "workflow_run": dict(association),
+                },
+                {
+                    "id": 62,
+                    "size_in_bytes": 200,
+                    "name": f"boundver-container-{container_run_id}-3",
+                    "expired": False,
+                    "expires_at": "2999-01-01T00:00:00Z",
+                    "digest": "sha256:" + "d" * 64,
+                    "workflow_run": dict(association),
+                },
+            ],
+        },
+    }
+
+
 def _verify_release_job_log(
     *,
     tag: str = TAG,
@@ -998,7 +1070,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         evaluate.assert_called_once_with(
-            Path(td), "origin", TAG, ALIAS, RUN_ID, SHA
+            Path(td), "origin", TAG, ALIAS, RUN_ID, SHA, None
         )
         start_evaluate.assert_not_called()
         revalidate.assert_called_once_with(resolved_repo, "origin", CONTROL_SHA)
@@ -1036,6 +1108,88 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             payload["dispatch"]["title"],
             f"publish:{TAG}@{SHA}:alias={ALIAS}:resume={RUN_ID}",
         )
+
+    def test_resume_binds_and_dispatches_a_distinct_container_source_run(self):
+        publisher = _load_script()
+        container_run_id = RUN_ID + 100
+        checks = [publisher.Check("resume release gates", "passed", "passed")]
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.object(
+                publisher, "_evaluate_resume", return_value=(CONTROL_SHA, checks)
+            ) as evaluate,
+            mock.patch.object(
+                publisher, "_main_identity", return_value=CONTROL_SHA
+            ),
+            mock.patch.object(
+                publisher,
+                "_dispatch_workflow",
+                return_value=(
+                    "workflow dispatch accepted at "
+                    "https://github.com/yzm1/boundver/actions/runs/2"
+                ),
+            ) as dispatch,
+            mock.patch("builtins.print") as output,
+        ):
+            result = publisher.main(
+                [
+                    "resume",
+                    "--tag",
+                    TAG,
+                    "--alias",
+                    ALIAS,
+                    "--run-id",
+                    str(RUN_ID),
+                    "--container-run-id",
+                    str(container_run_id),
+                    "--confirm",
+                    f"{TAG}@{SHA}#{RUN_ID}+{container_run_id}",
+                    "--repo",
+                    td,
+                    "--format",
+                    "json",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        evaluate.assert_called_once_with(
+            Path(td),
+            "origin",
+            TAG,
+            ALIAS,
+            RUN_ID,
+            SHA,
+            container_run_id,
+        )
+        command = dispatch.call_args.args[1]
+        self.assertIn(f"container_run_id={container_run_id}", command)
+        payload = json.loads(output.call_args.args[0])
+        self.assertEqual(
+            payload["dispatch"]["container_run_id"], str(container_run_id)
+        )
+        self.assertEqual(
+            payload["dispatch"]["title"],
+            f"publish:{TAG}@{SHA}:alias={ALIAS}:resume={RUN_ID}"
+            f":container={container_run_id}",
+        )
+
+    def test_resume_rejects_unbound_container_source_confirmation(self):
+        container_run_id = RUN_ID + 100
+        result = _run(
+            "resume",
+            "--tag",
+            TAG,
+            "--alias",
+            ALIAS,
+            "--run-id",
+            str(RUN_ID),
+            "--container-run-id",
+            str(container_run_id),
+            "--confirm",
+            f"{TAG}@{SHA}#{RUN_ID}",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("every selected run ID", result.stderr)
 
     def test_dispatch_recovers_an_accepted_run_after_ambiguous_cli_failure(self):
         publisher = _load_script()
@@ -1125,7 +1279,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             resolved_repo, CONTROL_SHA, TAG, allow_resumable_release=True
         )
         artifacts.assert_called_once_with(
-            resolved_repo, RUN_ID, TAG, SHA, ALIAS
+            resolved_repo, RUN_ID, TAG, SHA, ALIAS, None, CONTROL_SHA
         )
         alias_workflow.assert_called_once_with(
             resolved_repo, "origin", SHA, TAG, ALIAS
@@ -1318,8 +1472,12 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             (
                 "environment: action-alias",
                 "Dispatch exact-tag alias handoff verification",
+                "container_run_id:",
+                "container-source-run-id:",
                 "container-artifact-id:",
                 "container-artifact-name:",
+                "Locate the exact later-run container artifact for recovery",
+                "Require the later container source control to be reviewed main history",
                 "Re-retain the exact recovered OCI image for the protected publisher",
                 "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
                 "retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}",
@@ -2045,6 +2203,74 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         ), self.assertRaisesRegex(publisher.GateError, "COMPATIBILITY_ALIAS"):
             publisher._source_release_artifacts(
                 Path("."), RUN_ID, TAG, SHA, "none"
+            )
+
+    def test_resume_can_bind_one_distinct_later_container_run(self):
+        publisher = _load_script()
+        container_run_id = RUN_ID + 100
+        payloads = {
+            **_resume_api_payloads(),
+            **_container_recovery_api_payloads(container_run_id),
+        }
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ) as api, mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ) as job_log, mock.patch.object(
+            publisher,
+            "_release_is_on_main",
+            return_value="container control is reviewed main history",
+        ) as ancestry:
+            detail = publisher._source_release_artifacts(
+                Path("."),
+                RUN_ID,
+                TAG,
+                SHA,
+                ALIAS,
+                container_run_id,
+                CONTROL_SHA,
+            )
+
+        self.assertIn(f"later recovery run {container_run_id}", detail)
+        self.assertIn("exact OCI artifact 62", detail)
+        self.assertEqual(api.call_count, 6)
+        self.assertEqual(
+            job_log.call_args_list,
+            [mock.call(Path("."), 31), mock.call(Path("."), 51)],
+        )
+        ancestry.assert_called_once_with(Path("."), "3" * 40, CONTROL_SHA)
+
+    def test_resume_rejects_two_competing_container_sources(self):
+        publisher = _load_script()
+        container_run_id = RUN_ID + 100
+        payloads = _resume_api_payloads(
+            downstream_artifact_names=(f"boundver-container-{RUN_ID}-3",)
+        )
+
+        def response(_repo, _repository, endpoint):
+            return copy.deepcopy(payloads[endpoint])
+
+        with mock.patch.object(
+            publisher, "_gh_json", side_effect=response
+        ), mock.patch.object(
+            publisher,
+            "_gh_job_log",
+            return_value=_verify_release_job_log(),
+        ), self.assertRaisesRegex(publisher.GateError, "ambiguous"):
+            publisher._source_release_artifacts(
+                Path("."),
+                RUN_ID,
+                TAG,
+                SHA,
+                ALIAS,
+                container_run_id,
+                CONTROL_SHA,
             )
 
     def test_resume_reuses_verified_artifact_attempt_after_failed_job_rerun(self):

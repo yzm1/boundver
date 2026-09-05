@@ -1,5 +1,5 @@
 name: Promote verified release
-run-name: publish:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}:resume=${{ inputs.resume_run_id }}
+run-name: publish:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}:resume=${{ inputs.resume_run_id }}${{ inputs.container_run_id != '' && format(':container={0}', inputs.container_run_id) || '' }}
 
 on:
   workflow_dispatch:
@@ -18,6 +18,11 @@ on:
         type: string
       resume_run_id:
         description: Completed publication run whose verified artifacts should be reused.
+        required: false
+        default: ""
+        type: string
+      container_run_id:
+        description: Optional later failed recovery run containing one retained OCI image.
         required: false
         default: ""
         type: string
@@ -63,6 +68,7 @@ env:
   RELEASE_SHA: ${{ inputs.release_sha }}
   COMPATIBILITY_ALIAS: ${{ inputs.compatibility_alias }}
   RESUME_RUN_ID: ${{ inputs.resume_run_id }}
+  CONTAINER_RUN_ID: ${{ inputs.container_run_id }}
 
 jobs:
   verify-release:
@@ -77,6 +83,7 @@ jobs:
       source-run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
       python-dist-artifact-id: ${{ steps.select-artifacts.outputs.python-dist-artifact-id }}
       release-assets-artifact-id: ${{ steps.select-artifacts.outputs.release-assets-artifact-id }}
+      container-source-run-id: ${{ steps.select-artifacts.outputs.container-source-run-id }}
       container-artifact-id: ${{ steps.select-artifacts.outputs.container-artifact-id }}
       container-artifact-name: ${{ steps.recovered-container-handoff.outputs.name }}
     steps:
@@ -104,6 +111,10 @@ jobs:
             exit 1
           fi
           if [[ -z "$RESUME_RUN_ID" ]]; then
+            if [[ -n "$CONTAINER_RUN_ID" ]]; then
+              echo "A container source run requires recovery mode" >&2
+              exit 1
+            fi
             if [[ "$DISPATCH_REF_TYPE" != tag || \
                   "$DISPATCH_REF_NAME" != "$RELEASE_TAG" || \
                   "$DISPATCH_REF" != "refs/tags/$RELEASE_TAG" ]]; then
@@ -118,6 +129,16 @@ jobs:
             if [[ ! "$RESUME_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
               echo "Recovery source run ID must be a positive integer" >&2
               exit 1
+            fi
+            if [[ -n "$CONTAINER_RUN_ID" ]]; then
+              if [[ ! "$CONTAINER_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+                echo "Container source run ID must be a positive integer" >&2
+                exit 1
+              fi
+              if [[ "$CONTAINER_RUN_ID" == "$RESUME_RUN_ID" ]]; then
+                echo "Container source run must differ from the original publication run" >&2
+                exit 1
+              fi
             fi
             if [[ "$DISPATCH_REF_TYPE" != branch || \
                   "$DISPATCH_REF_NAME" != main || \
@@ -609,6 +630,67 @@ jobs:
           (cd "$clean_python_cwd" && python3 -I \
             "$RUNNER_TEMP/release_workflow.py" "${evidence_args[@]}")
 
+      - name: Locate the exact later-run container artifact for recovery
+        if: inputs.container_run_id != ''
+        id: recover-container
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          clean_python_cwd=$(mktemp -d)
+          recovery_args=(
+            recover-container
+            --repository "$GITHUB_REPOSITORY"
+            --run-id "$CONTAINER_RUN_ID"
+            --original-run-id "$RESUME_RUN_ID"
+            --tag "$RELEASE_TAG"
+            --sha "$RELEASE_SHA"
+            --alias "$COMPATIBILITY_ALIAS"
+            --output "$GITHUB_OUTPUT"
+          )
+          (cd "$clean_python_cwd" && python3 -I \
+            "$RUNNER_TEMP/release_workflow.py" "${recovery_args[@]}")
+
+      - name: Require the later container source control to be reviewed main history
+        if: inputs.container_run_id != ''
+        shell: bash
+        env:
+          CONTAINER_CONTROL_SHA: ${{ steps.recover-container.outputs.container-source-control-sha }}
+          CONTROL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CONTAINER_CONTROL_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Container source control SHA is malformed" >&2
+            exit 1
+          fi
+          if ! git -C .release-control cat-file -e "$CONTAINER_CONTROL_SHA^{commit}" || \
+             ! git -C .release-control merge-base --is-ancestor \
+               "$CONTAINER_CONTROL_SHA" "$CONTROL_SHA"; then
+            echo "Container source control is not reviewed current-main history" >&2
+            exit 1
+          fi
+
+      - name: Bind later-run container policy to its verification log
+        if: inputs.container_run_id != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERIFICATION_JOB_ID: ${{ steps.recover-container.outputs.container-verification-job-id }}
+        run: |
+          set -euo pipefail
+          clean_python_cwd=$(mktemp -d)
+          evidence_args=(
+            verify-input-log
+            --repository "$GITHUB_REPOSITORY"
+            --job-id "$VERIFICATION_JOB_ID"
+            --tag "$RELEASE_TAG"
+            --sha "$RELEASE_SHA"
+            --alias "$COMPATIBILITY_ALIAS"
+          )
+          (cd "$clean_python_cwd" && python3 -I \
+            "$RUNNER_TEMP/release_workflow.py" "${evidence_args[@]}")
+
       - name: Select the immutable artifact source
         id: select-artifacts
         shell: bash
@@ -625,6 +707,9 @@ jobs:
           RECOVERED_RELEASE_DIGEST: ${{ steps.recover-artifacts.outputs.release-assets-artifact-digest }}
           RECOVERED_CONTAINER_ID: ${{ steps.recover-artifacts.outputs.container-artifact-id }}
           RECOVERED_CONTAINER_DIGEST: ${{ steps.recover-artifacts.outputs.container-artifact-digest }}
+          EXTERNAL_CONTAINER_RUN_ID: ${{ steps.recover-container.outputs.container-source-run-id }}
+          EXTERNAL_CONTAINER_ID: ${{ steps.recover-container.outputs.container-artifact-id }}
+          EXTERNAL_CONTAINER_DIGEST: ${{ steps.recover-container.outputs.container-artifact-digest }}
         run: |
           set -euo pipefail
           workflow_script="$GITHUB_WORKSPACE/scripts/release_workflow.py"
@@ -645,6 +730,10 @@ jobs:
             --recovered-release-digest "$RECOVERED_RELEASE_DIGEST" \
             --recovered-container-id "$RECOVERED_CONTAINER_ID" \
             --recovered-container-digest "$RECOVERED_CONTAINER_DIGEST" \
+            --container-run-id "$CONTAINER_RUN_ID" \
+            --external-container-run-id "$EXTERNAL_CONTAINER_RUN_ID" \
+            --external-container-id "$EXTERNAL_CONTAINER_ID" \
+            --external-container-digest "$EXTERNAL_CONTAINER_DIGEST" \
             --output "$GITHUB_OUTPUT"
 
       - name: Download recovered Python distributions
@@ -677,7 +766,7 @@ jobs:
           path: recovered-container
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
-          run-id: ${{ steps.select-artifacts.outputs.source-run-id }}
+          run-id: ${{ steps.select-artifacts.outputs.container-source-run-id }}
           merge-multiple: true
 
       - name: Fail on any recovered artifact archive digest mismatch

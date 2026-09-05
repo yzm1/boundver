@@ -475,6 +475,28 @@ class RecoverySelection:
         }
 
 
+@dataclass(frozen=True)
+class ContainerRecoverySelection:
+    source_run_id: int
+    source_run_attempt: int
+    control_sha: str
+    verification_job_id: int
+    container_job_id: int
+    artifact_attempt: int
+    container_artifact_id: int
+    container_artifact_digest: str
+    release_note_artifact_count: int
+
+    def outputs(self) -> dict[str, str]:
+        return {
+            "container-source-run-id": str(self.source_run_id),
+            "container-source-control-sha": self.control_sha,
+            "container-verification-job-id": str(self.verification_job_id),
+            "container-artifact-id": str(self.container_artifact_id),
+            "container-artifact-digest": self.container_artifact_digest,
+        }
+
+
 def _positive_int(value: object, label: str) -> int:
     if type(value) is not int or not 1 <= value <= MAX_GITHUB_ID:
         raise ReleaseWorkflowError(f"{label} must be a positive integer")
@@ -753,6 +775,207 @@ def select_recovery_artifacts(
     )
 
 
+def select_container_recovery_artifact(
+    run: object,
+    jobs_payload: object,
+    artifacts_payload: object,
+    *,
+    repository: str,
+    run_id: int,
+    original_run_id: int,
+    tag: str,
+    sha: str,
+    alias: str,
+    now: datetime | None = None,
+) -> ContainerRecoverySelection:
+    """Select one OCI artifact retained by an exact later recovery run."""
+    _require_identity(tag, sha)
+    _positive_int(run_id, "container source run ID")
+    _positive_int(original_run_id, "original publication run ID")
+    if run_id == original_run_id:
+        raise ReleaseWorkflowError(
+            "container source run must differ from the original publication run"
+        )
+    expected_alias = tag.rsplit(".", 1)[0]
+    if alias not in {"none", expected_alias}:
+        raise ReleaseWorkflowError(
+            f"compatibility alias must be {expected_alias} or none"
+        )
+    if not isinstance(run, dict):
+        raise ReleaseWorkflowError("container source run response is malformed")
+    attempt = _positive_int(run.get("run_attempt"), "container source run attempt")
+    control_sha = run.get("head_sha")
+    expected_title = (
+        f"publish:{tag}@{sha}:alias={alias}:resume={original_run_id}"
+    )
+    expected_run = {
+        "id": run_id,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "failure",
+        "path": ".github/workflows/publish.yml",
+        "head_branch": "main",
+        "display_title": expected_title,
+    }
+    disagreements = [
+        key for key, expected in expected_run.items() if run.get(key) != expected
+    ]
+    if disagreements or not isinstance(control_sha, str) or SHA_RE.fullmatch(control_sha) is None:
+        labels = disagreements or ["head_sha"]
+        raise ReleaseWorkflowError(
+            "container source run does not match the exact recovery identity: "
+            + ", ".join(labels)
+        )
+    run_repository = run.get("repository")
+    if (
+        not isinstance(run_repository, dict)
+        or run_repository.get("full_name") != repository
+    ):
+        raise ReleaseWorkflowError("container source repository disagrees")
+
+    if not isinstance(jobs_payload, dict):
+        raise ReleaseWorkflowError("container source jobs response is malformed")
+    jobs = jobs_payload.get("jobs")
+    total_jobs = jobs_payload.get("total_count")
+    if (
+        not isinstance(jobs, list)
+        or type(total_jobs) is not int
+        or total_jobs != len(jobs)
+        or not 1 <= len(jobs) <= 100
+        or any(not isinstance(job, dict) for job in jobs)
+    ):
+        raise ReleaseWorkflowError(
+            "cannot completely inspect the container source jobs response"
+        )
+
+    if not isinstance(artifacts_payload, dict):
+        raise ReleaseWorkflowError("container source artifacts response is malformed")
+    artifacts = artifacts_payload.get("artifacts")
+    total_artifacts = artifacts_payload.get("total_count")
+    if (
+        type(total_artifacts) is not int
+        or not isinstance(artifacts, list)
+        or total_artifacts != len(artifacts)
+        or not 1 <= total_artifacts <= 100
+        or any(not isinstance(artifact, dict) for artifact in artifacts)
+    ):
+        raise ReleaseWorkflowError(
+            "container source artifact response is incomplete or exceeds the inspection limit"
+        )
+
+    release_notes_re = re.compile(
+        rf"release-notes-{re.escape(sha)}-{run_id}-([1-9][0-9]*)"
+    )
+    container_re = re.compile(rf"boundver-container-{run_id}-([1-9][0-9]*)")
+    actual_names: set[str] = set()
+    release_note_count = 0
+    container_artifacts: list[tuple[int, int, str]] = []
+    current_time = now or datetime.now(timezone.utc)
+    for artifact in artifacts:
+        artifact_id = artifact.get("id")
+        artifact_size = artifact.get("size_in_bytes")
+        artifact_digest = artifact.get("digest")
+        name = artifact.get("name")
+        association = artifact.get("workflow_run")
+        try:
+            name_size = len(name.encode("utf-8")) if isinstance(name, str) else -1
+        except UnicodeEncodeError:
+            name_size = -1
+        if (
+            type(artifact_id) is not int
+            or not 0 < artifact_id <= MAX_GITHUB_ID
+            or type(artifact_size) is not int
+            or not 0 < artifact_size <= MAX_ARTIFACT_BYTES
+            or not isinstance(name, str)
+            or not 0 <= name_size <= MAX_ARTIFACT_NAME_BYTES
+            or name in actual_names
+            or artifact.get("expired") is not False
+            or not isinstance(artifact_digest, str)
+            or DIGEST_RE.fullmatch(artifact_digest) is None
+            or not isinstance(association, dict)
+            or type(association.get("id")) is not int
+            or association.get("id") != run_id
+            or association.get("head_branch") != "main"
+            or association.get("head_sha") != control_sha
+        ):
+            raise ReleaseWorkflowError(
+                "container artifact identity, digest, or run association is invalid"
+            )
+        if _timestamp(artifact.get("expires_at"), "container artifact expiry") <= current_time:
+            raise ReleaseWorkflowError("container source artifact has expired")
+
+        container_match = container_re.fullmatch(name)
+        note_match = release_notes_re.fullmatch(name)
+        if container_match is not None:
+            artifact_attempt = int(container_match.group(1))
+            if artifact_attempt > attempt:
+                raise ReleaseWorkflowError(
+                    "container artifact name does not match the source run attempt"
+                )
+            container_artifacts.append(
+                (artifact_attempt, artifact_id, artifact_digest)
+            )
+        elif note_match is not None:
+            if int(note_match.group(1)) > attempt:
+                raise ReleaseWorkflowError(
+                    "release-note artifact name does not match the source run attempt"
+                )
+            release_note_count += 1
+        else:
+            raise ReleaseWorkflowError(
+                "container source run contains an unexpected retained artifact"
+            )
+        actual_names.add(name)
+
+    if len(container_artifacts) != 1:
+        raise ReleaseWorkflowError(
+            "container source run must contain exactly one retained OCI artifact"
+        )
+    artifact_attempt, container_id, container_digest = container_artifacts[0]
+
+    def matching_jobs(name: str, conclusions: set[str]) -> list[dict[str, object]]:
+        return [
+            job
+            for job in jobs
+            if job.get("name") == name
+            and type(job.get("id")) is int
+            and 0 < job["id"] <= MAX_GITHUB_ID
+            and type(job.get("run_id")) is int
+            and job.get("run_id") == run_id
+            and job.get("head_sha") == control_sha
+            and job.get("status") == "completed"
+            and job.get("conclusion") in conclusions
+            and type(job.get("run_attempt")) is int
+            and job.get("run_attempt") == artifact_attempt
+        ]
+
+    verify_jobs = matching_jobs("verify-release", {"success"})
+    if len(verify_jobs) != 1:
+        raise ReleaseWorkflowError(
+            "container source must have exactly one successful verify-release job "
+            "for the retained artifact attempt"
+        )
+    container_jobs = matching_jobs(
+        "Publish and verify the release container / build", {"success", "failure"}
+    )
+    if len(container_jobs) != 1:
+        raise ReleaseWorkflowError(
+            "container source must have exactly one completed container build job "
+            "for the retained artifact attempt"
+        )
+    return ContainerRecoverySelection(
+        source_run_id=run_id,
+        source_run_attempt=attempt,
+        control_sha=control_sha,
+        verification_job_id=verify_jobs[0]["id"],
+        container_job_id=container_jobs[0]["id"],
+        artifact_attempt=artifact_attempt,
+        container_artifact_id=container_id,
+        container_artifact_digest=container_digest,
+        release_note_artifact_count=release_note_count,
+    )
+
+
 def require_release_input_evidence(
     job_log: str, *, tag: str, sha: str, alias: str
 ) -> str:
@@ -827,17 +1050,51 @@ def select_artifact_values(
     recovered_release_digest: str,
     recovered_container_id: str,
     recovered_container_digest: str,
+    container_run_id: str = "",
+    external_container_run_id: str = "",
+    external_container_id: str = "",
+    external_container_digest: str = "",
 ) -> dict[str, str]:
     """Normalize the fresh or recovered immutable artifact outputs."""
     if resume_run_id:
+        if container_run_id:
+            _positive_int_text(container_run_id, "container source run ID")
+            if container_run_id == resume_run_id:
+                raise ReleaseWorkflowError(
+                    "container source run must differ from the original publication run"
+                )
+            if recovered_container_id or recovered_container_digest:
+                raise ReleaseWorkflowError(
+                    "the original and external recovery runs both contain a container artifact"
+                )
+            if external_container_run_id != container_run_id:
+                raise ReleaseWorkflowError("selected container source run ID disagrees")
+            selected_container_run_id = external_container_run_id
+            selected_container_id = external_container_id
+            selected_container_digest = external_container_digest
+        else:
+            if (
+                external_container_run_id
+                or external_container_id
+                or external_container_digest
+            ):
+                raise ReleaseWorkflowError(
+                    "an external container artifact requires an explicit source run ID"
+                )
+            selected_container_run_id = (
+                recovered_run_id if recovered_container_id else ""
+            )
+            selected_container_id = recovered_container_id
+            selected_container_digest = recovered_container_digest
         values = {
             "source-run-id": recovered_run_id,
             "python-dist-artifact-id": recovered_python_id,
             "python-dist-artifact-digest": recovered_python_digest,
             "release-assets-artifact-id": recovered_release_id,
             "release-assets-artifact-digest": recovered_release_digest,
-            "container-artifact-id": recovered_container_id,
-            "container-artifact-digest": recovered_container_digest,
+            "container-source-run-id": selected_container_run_id,
+            "container-artifact-id": selected_container_id,
+            "container-artifact-digest": selected_container_digest,
         }
         if recovered_run_id != resume_run_id:
             raise ReleaseWorkflowError("selected recovery run ID disagrees")
@@ -848,9 +1105,19 @@ def select_artifact_values(
             "python-dist-artifact-digest": fresh_python_digest,
             "release-assets-artifact-id": fresh_release_id,
             "release-assets-artifact-digest": fresh_release_digest,
+            "container-source-run-id": "",
             "container-artifact-id": "",
             "container-artifact-digest": "",
         }
+        if (
+            container_run_id
+            or external_container_run_id
+            or external_container_id
+            or external_container_digest
+        ):
+            raise ReleaseWorkflowError(
+                "fresh publication cannot select a recovered container artifact"
+            )
     for key in (
         "source-run-id",
         "python-dist-artifact-id",
@@ -862,13 +1129,19 @@ def select_artifact_values(
         "release-assets-artifact-digest",
     ):
         values[key] = _digest(values[key], f"selected {key}")
-    if bool(values["container-artifact-id"]) != bool(
-        values["container-artifact-digest"]
-    ):
+    container_fields = (
+        values["container-source-run-id"],
+        values["container-artifact-id"],
+        values["container-artifact-digest"],
+    )
+    if any(container_fields) and not all(container_fields):
         raise ReleaseWorkflowError(
-            "selected retained container artifact ID and digest must appear together"
+            "selected retained container run, artifact ID, and digest must appear together"
         )
     if values["container-artifact-id"]:
+        _positive_int_text(
+            values["container-source-run-id"], "selected container-source-run-id"
+        )
         _positive_int_text(
             values["container-artifact-id"], "selected container-artifact-id"
         )
@@ -1288,6 +1561,15 @@ def _parser() -> argparse.ArgumentParser:
     fetch.add_argument("--sha", required=True)
     fetch.add_argument("--output", type=Path, required=True)
 
+    container_fetch = commands.add_parser("recover-container")
+    container_fetch.add_argument("--repository", required=True)
+    container_fetch.add_argument("--run-id", required=True)
+    container_fetch.add_argument("--original-run-id", required=True)
+    container_fetch.add_argument("--tag", required=True)
+    container_fetch.add_argument("--sha", required=True)
+    container_fetch.add_argument("--alias", required=True)
+    container_fetch.add_argument("--output", type=Path, required=True)
+
     evidence = commands.add_parser("verify-input-log")
     evidence_source = evidence.add_mutually_exclusive_group(required=True)
     evidence_source.add_argument("--log", type=Path)
@@ -1312,6 +1594,10 @@ def _parser() -> argparse.ArgumentParser:
         "recovered-release-digest",
         "recovered-container-id",
         "recovered-container-digest",
+        "container-run-id",
+        "external-container-run-id",
+        "external-container-id",
+        "external-container-digest",
     ):
         selection.add_argument(f"--{name}", default="")
     selection.add_argument("--output", type=Path, required=True)
@@ -1366,6 +1652,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{selection.release_note_artifact_count} release-note artifact(s) and "
                 f"{selection.downstream_artifact_count} downstream artifact(s)"
             )
+        elif args.command == "recover-container":
+            run_id = _positive_int_text(args.run_id, "container source run ID")
+            original_run_id = _positive_int_text(
+                args.original_run_id, "original publication run ID"
+            )
+            selection = select_container_recovery_artifact(
+                *fetch_recovery_payloads(args.repository, run_id),
+                repository=args.repository,
+                run_id=run_id,
+                original_run_id=original_run_id,
+                tag=args.tag,
+                sha=args.sha,
+                alias=args.alias,
+            )
+            _write_outputs(args.output, selection.outputs())
+            detail = (
+                f"selected exact OCI artifact from recovery run "
+                f"{selection.source_run_id} attempt {selection.artifact_attempt}; "
+                f"validated {selection.release_note_artifact_count} "
+                "release-note artifact(s)"
+            )
         elif args.command == "verify-input-log":
             if args.job_id is not None:
                 if not args.repository:
@@ -1404,6 +1711,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "recovered-release-digest",
                         "recovered-container-id",
                         "recovered-container-digest",
+                        "container-run-id",
+                        "external-container-run-id",
+                        "external-container-id",
+                        "external-container-digest",
                     )
                 }
             )

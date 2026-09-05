@@ -222,6 +222,7 @@ publication_title_pattern = re.compile(
     r"(?P<alias>none|v(?:0|[1-9][0-9]{0,17})\."
     r"(?:0|[1-9][0-9]{0,17}))"
     r":resume=(?P<resume>[1-9][0-9]{0,19})?"
+    r"(?::container=(?P<container>[1-9][0-9]{0,19}))?"
 )
 sha_pattern = re.compile(r"[0-9a-f]{40}")
 max_github_id = (1 << 64) - 1
@@ -349,9 +350,18 @@ for row in run_rows:
     tag_sha = match.group("sha")
     alias = match.group("alias")
     resume = match.group("resume")
+    container = match.group("container")
     if (
         alias not in {"none", tag.rsplit(".", 1)[0]}
         or (resume is not None and not positive_id(resume))
+        or (
+            container is not None
+            and (
+                resume is None
+                or not positive_id(container)
+                or container == resume
+            )
+        )
         or name != title
         or run_workflow_id != workflow_id
         or not positive_id(run_attempt)

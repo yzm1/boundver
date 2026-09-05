@@ -16,6 +16,10 @@ All notable changes to this project are documented here. The format follows
   blob, and selects each child manifest explicitly before Trivy scans it. This
   avoids unsupported OCI-tar input and prevents Trivy's ignored local
   `--platform` option from silently scanning the same architecture twice.
+  Recovery can also bind wheel and release assets to the original publication
+  run while selecting one exact OCI archive from a separately identified later
+  recovery run; both histories, verification logs, job attempts, artifact
+  associations, expiries, and digests must agree before the archive is reused.
 
 ## [0.15.0] - 2026-09-04
 

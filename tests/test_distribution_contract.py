@@ -414,7 +414,7 @@ class AutomationContractTests(unittest.TestCase):
             create,
         )
         self.assertIn(
-            "run-name: publish:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}:resume=${{ inputs.resume_run_id }}",
+            "run-name: publish:${{ inputs.release_tag }}@${{ inputs.release_sha }}:alias=${{ inputs.compatibility_alias }}:resume=${{ inputs.resume_run_id }}${{ inputs.container_run_id != '' && format(':container={0}', inputs.container_run_id) || '' }}",
             publish,
         )
         self.assertIn("EXPECTED_RUN_TITLE:", create)
@@ -1008,6 +1008,14 @@ class AutomationContractTests(unittest.TestCase):
                 ("verify-release", "Bind recovery policy to the source verification log"),
                 (
                     "verify-release",
+                    "Locate the exact later-run container artifact for recovery",
+                ),
+                (
+                    "verify-release",
+                    "Bind later-run container policy to its verification log",
+                ),
+                (
+                    "verify-release",
                     "Fail on any recovered artifact archive digest mismatch",
                 ),
                 ("prepare-release-draft", "Create or reconcile the exact release draft"),
@@ -1167,6 +1175,7 @@ class AutomationContractTests(unittest.TestCase):
                 "source-run-id",
                 "python-dist-artifact-id",
                 "release-assets-artifact-id",
+                "container-source-run-id",
                 "container-artifact-id",
                 "container-artifact-name",
             },
@@ -1471,8 +1480,12 @@ class AutomationContractTests(unittest.TestCase):
                     download["if"],
                     "inputs.resume_run_id != '' && steps.select-artifacts.outputs.container-artifact-id != ''",
                 )
+                expected_run_id = (
+                    "${{ steps.select-artifacts.outputs.container-source-run-id }}"
+                )
             else:
                 self.assertEqual(download["if"], "inputs.resume_run_id != ''")
+                expected_run_id = "${{ steps.select-artifacts.outputs.source-run-id }}"
             self.assertEqual(
                 download["with"]["github-token"], "${{ github.token }}"
             )
@@ -1481,7 +1494,7 @@ class AutomationContractTests(unittest.TestCase):
             )
             self.assertEqual(
                 download["with"]["run-id"],
-                "${{ steps.select-artifacts.outputs.source-run-id }}",
+                expected_run_id,
             )
             self.assertIs(download["with"]["merge-multiple"], True)
             self.assertIn(
@@ -1536,6 +1549,28 @@ class AutomationContractTests(unittest.TestCase):
             '--run-id "$RESUME_RUN_ID"',
         ):
             self.assertIn(check, recovery_lookup)
+
+        container_lookup = next(
+            step
+            for step in steps
+            if step["name"]
+            == "Locate the exact later-run container artifact for recovery"
+        )
+        self.assertEqual(container_lookup["if"], "inputs.container_run_id != ''")
+        for check in (
+            "recover-container",
+            '--run-id "$CONTAINER_RUN_ID"',
+            '--original-run-id "$RESUME_RUN_ID"',
+            '--alias "$COMPATIBILITY_ALIAS"',
+        ):
+            self.assertIn(check, container_lookup["run"])
+        ancestry = next(
+            step
+            for step in steps
+            if step["name"]
+            == "Require the later container source control to be reviewed main history"
+        )["run"]
+        self.assertIn("merge-base --is-ancestor", ancestry)
 
         log_lookup = next(
             step
@@ -3360,6 +3395,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             encoding="utf-8"
         )
         publication_alias = overrides.pop("FAKE_PUBLICATION_ALIAS", "v0.14")
+        publication_resume = overrides.pop("FAKE_PUBLICATION_RESUME", "")
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "audit_release_reviews.sh").write_bytes(
@@ -3496,10 +3532,12 @@ exit 74
                     "FAKE_PUBLICATION_RUNS": (
                         "33112740009\t"
                         "publish:v0.14.1@"
-                        f"{previous_sha}:alias={publication_alias}:resume=\t"
+                        f"{previous_sha}:alias={publication_alias}:resume="
+                        f"{publication_resume}\t"
                         ".github/workflows/publish.yml\t"
                         "publish:v0.14.1@"
-                        f"{previous_sha}:alias={publication_alias}:resume=\t"
+                        f"{previous_sha}:alias={publication_alias}:resume="
+                        f"{publication_resume}\t"
                         "workflow_dispatch\tcompleted\tsuccess\t"
                         f"{previous_sha}\tv0.14.1\t1\t270075259\t"
                         "owner/repository\towner/repository\t"
@@ -3583,6 +3621,19 @@ exit 74
         result = self._run_audit(FAKE_PUBLICATION_ALIAS="none")
 
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_accepts_bound_split_run_recovery(self):
+        result = self._run_audit(
+            FAKE_PUBLICATION_RESUME="33058238333:container=33058239999"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        conflicting = self._run_audit(
+            FAKE_PUBLICATION_RESUME="33058238333:container=33058238333"
+        )
+        self.assertNotEqual(conflicting.returncode, 0)
+        self.assertIn("untrusted publication-run", conflicting.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_release_anchor_rejects_calendar_invalid_timestamps(self):

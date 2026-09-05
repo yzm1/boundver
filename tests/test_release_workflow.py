@@ -20,6 +20,8 @@ REPOSITORY = "yzm1/boundver"
 TAG = f"v{CURRENT_VERSION}"
 SHA = "a" * 40
 RUN_ID = 12345
+CONTAINER_RUN_ID = 12346
+CONTROL_SHA = "d" * 40
 
 
 def _load_script():
@@ -75,6 +77,75 @@ def _payloads():
             }
         )
     return run, jobs, {"total_count": 2, "artifacts": artifacts}
+
+
+def _container_payloads():
+    run = {
+        "id": CONTAINER_RUN_ID,
+        "run_attempt": 3,
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "failure",
+        "path": ".github/workflows/publish.yml",
+        "head_branch": "main",
+        "head_sha": CONTROL_SHA,
+        "display_title": (
+            f"publish:{TAG}@{SHA}:alias={CURRENT_MINOR_TAG}:resume={RUN_ID}"
+        ),
+        "repository": {"full_name": REPOSITORY},
+    }
+    jobs = {
+        "total_count": 2,
+        "jobs": [
+            {
+                "id": 2001,
+                "name": "verify-release",
+                "run_id": CONTAINER_RUN_ID,
+                "run_attempt": 3,
+                "head_sha": CONTROL_SHA,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "id": 2002,
+                "name": "Publish and verify the release container / build",
+                "run_id": CONTAINER_RUN_ID,
+                "run_attempt": 3,
+                "head_sha": CONTROL_SHA,
+                "status": "completed",
+                "conclusion": "failure",
+            },
+        ],
+    }
+    association = {
+        "id": CONTAINER_RUN_ID,
+        "head_branch": "main",
+        "head_sha": CONTROL_SHA,
+    }
+    artifacts = {
+        "total_count": 2,
+        "artifacts": [
+            {
+                "id": 3001,
+                "name": f"release-notes-{SHA}-{CONTAINER_RUN_ID}-2",
+                "size_in_bytes": 100,
+                "expired": False,
+                "digest": "sha256:" + "e" * 64,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "workflow_run": dict(association),
+            },
+            {
+                "id": 3002,
+                "name": f"boundver-container-{CONTAINER_RUN_ID}-3",
+                "size_in_bytes": 100,
+                "expired": False,
+                "digest": "sha256:" + "f" * 64,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "workflow_run": dict(association),
+            },
+        ],
+    }
+    return run, jobs, artifacts
 
 
 class RecoverySelectionTests(unittest.TestCase):
@@ -330,6 +401,118 @@ class RecoverySelectionTests(unittest.TestCase):
             self.release._strict_json_loads("[0,0,0]")
 
 
+class ContainerRecoverySelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.release = _load_script()
+
+    def _select(self, run, jobs, artifacts):
+        return self.release.select_container_recovery_artifact(
+            run,
+            jobs,
+            artifacts,
+            repository=REPOSITORY,
+            run_id=CONTAINER_RUN_ID,
+            original_run_id=RUN_ID,
+            tag=TAG,
+            sha=SHA,
+            alias=CURRENT_MINOR_TAG,
+            now=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+
+    def test_selects_one_exact_later_run_container(self):
+        selection = self._select(*_container_payloads())
+
+        self.assertEqual(selection.source_run_id, CONTAINER_RUN_ID)
+        self.assertEqual(selection.source_run_attempt, 3)
+        self.assertEqual(selection.artifact_attempt, 3)
+        self.assertEqual(selection.control_sha, CONTROL_SHA)
+        self.assertEqual(selection.verification_job_id, 2001)
+        self.assertEqual(selection.container_job_id, 2002)
+        self.assertEqual(selection.container_artifact_id, 3002)
+        self.assertEqual(
+            selection.container_artifact_digest, "sha256:" + "f" * 64
+        )
+        self.assertEqual(selection.release_note_artifact_count, 1)
+        self.assertEqual(
+            selection.outputs()["container-source-run-id"],
+            str(CONTAINER_RUN_ID),
+        )
+
+    def test_rejects_wrong_recovery_identity_or_repository(self):
+        for field, value in (
+            ("display_title", "publish:wrong"),
+            ("head_branch", TAG),
+            ("head_sha", "not-a-sha"),
+        ):
+            with self.subTest(field=field):
+                run, jobs, artifacts = _container_payloads()
+                run[field] = value
+                with self.assertRaisesRegex(
+                    self.release.ReleaseWorkflowError, "recovery identity"
+                ):
+                    self._select(run, jobs, artifacts)
+
+        run, jobs, artifacts = _container_payloads()
+        run["repository"]["full_name"] = "attacker/fork"
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "repository"):
+            self._select(run, jobs, artifacts)
+
+    def test_rejects_unbound_expired_or_unexpected_artifacts(self):
+        run, jobs, artifacts = _container_payloads()
+        artifacts["artifacts"][1]["workflow_run"]["head_sha"] = SHA
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "association"):
+            self._select(run, jobs, artifacts)
+
+        run, jobs, artifacts = _container_payloads()
+        artifacts["artifacts"][1]["expires_at"] = "2025-01-01T00:00:00Z"
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "expired"):
+            self._select(run, jobs, artifacts)
+
+        run, jobs, artifacts = _container_payloads()
+        artifacts["artifacts"][0]["name"] = "unbound-output"
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "unexpected"):
+            self._select(run, jobs, artifacts)
+
+    def test_rejects_ambiguous_or_unverified_container_attempt(self):
+        run, jobs, artifacts = _container_payloads()
+        duplicate = dict(artifacts["artifacts"][1])
+        duplicate["id"] = 3003
+        duplicate["name"] = f"boundver-container-{CONTAINER_RUN_ID}-2"
+        artifacts["artifacts"].append(duplicate)
+        artifacts["total_count"] = 3
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "exactly one"):
+            self._select(run, jobs, artifacts)
+
+        for job_name in (
+            "verify-release",
+            "Publish and verify the release container / build",
+        ):
+            with self.subTest(job=job_name):
+                run, jobs, artifacts = _container_payloads()
+                matching = next(job for job in jobs["jobs"] if job["name"] == job_name)
+                matching["run_attempt"] = 2
+                with self.assertRaisesRegex(
+                    self.release.ReleaseWorkflowError,
+                    "exactly one",
+                ):
+                    self._select(run, jobs, artifacts)
+
+    def test_rejects_original_run_as_container_source(self):
+        run, jobs, artifacts = _container_payloads()
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "must differ"):
+            self.release.select_container_recovery_artifact(
+                run,
+                jobs,
+                artifacts,
+                repository=REPOSITORY,
+                run_id=RUN_ID,
+                original_run_id=RUN_ID,
+                tag=TAG,
+                sha=SHA,
+                alias=CURRENT_MINOR_TAG,
+            )
+
+
 class ReleasePolicyEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.release = _load_script()
@@ -399,6 +582,7 @@ class ReleasePolicyEvidenceTests(unittest.TestCase):
         self.assertEqual(recovered["source-run-id"], "22")
         self.assertEqual(recovered["release-assets-artifact-id"], "24")
         self.assertEqual(recovered["container-artifact-id"], "25")
+        self.assertEqual(recovered["container-source-run-id"], "22")
         self.assertEqual(
             recovered["container-artifact-digest"], "sha256:" + "e" * 64
         )
@@ -408,6 +592,36 @@ class ReleasePolicyEvidenceTests(unittest.TestCase):
             self.release.ReleaseWorkflowError, "must appear together"
         ):
             self.release.select_artifact_values(resume_run_id="22", **common)
+
+    def test_selects_external_container_run_and_rejects_ambiguity(self):
+        common = {
+            "resume_run_id": "22",
+            "current_run_id": "12",
+            "fresh_python_id": "",
+            "fresh_python_digest": "",
+            "fresh_release_id": "",
+            "fresh_release_digest": "",
+            "recovered_run_id": "22",
+            "recovered_python_id": "23",
+            "recovered_python_digest": "sha256:" + "c" * 64,
+            "recovered_release_id": "24",
+            "recovered_release_digest": "sha256:" + "d" * 64,
+            "recovered_container_id": "",
+            "recovered_container_digest": "",
+            "container_run_id": "32",
+            "external_container_run_id": "32",
+            "external_container_id": "35",
+            "external_container_digest": "sha256:" + "e" * 64,
+        }
+        selected = self.release.select_artifact_values(**common)
+        self.assertEqual(selected["source-run-id"], "22")
+        self.assertEqual(selected["container-source-run-id"], "32")
+        self.assertEqual(selected["container-artifact-id"], "35")
+
+        common["recovered_container_id"] = "25"
+        common["recovered_container_digest"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "both contain"):
+            self.release.select_artifact_values(**common)
 
 
 class ArtifactPayloadTests(unittest.TestCase):

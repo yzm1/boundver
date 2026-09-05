@@ -1425,11 +1425,19 @@ def _dispatch_title(
     sha: str,
     alias: str,
     resume_run_id: int | None,
+    container_run_id: int | None = None,
 ) -> str:
-    if workflow == "create-release-tag.yml" and resume_run_id is None:
+    if (
+        workflow == "create-release-tag.yml"
+        and resume_run_id is None
+        and container_run_id is None
+    ):
         return f"release-tag:{tag}@{sha}:alias={alias}"
     if workflow == "publish.yml" and resume_run_id is not None:
-        return f"publish:{tag}@{sha}:alias={alias}:resume={resume_run_id}"
+        title = f"publish:{tag}@{sha}:alias={alias}:resume={resume_run_id}"
+        if container_run_id is not None:
+            title += f":container={container_run_id}"
+        return title
     raise GateError("workflow dispatch identity is internally inconsistent")
 
 
@@ -2193,6 +2201,8 @@ def _source_release_artifacts(
     tag: str,
     sha: str,
     alias: str,
+    container_run_id: int | None = None,
+    control_sha: str | None = None,
 ) -> str:
     """Bind a failed publication to its exact retained verified artifacts."""
     run_endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}"
@@ -2225,13 +2235,60 @@ def _source_release_artifacts(
         sha,
         alias,
     )
-    return (
+    detail = (
         f"failed publish run {run_id} attempt {selection.source_run_attempt} "
         f"reuses successful verify-release attempt {selection.artifact_attempt} "
         "and its two exact unexpired artifacts; "
         f"validated {selection.release_note_artifact_count} retained "
         f"release-note artifact(s) and {selection.downstream_artifact_count} "
         f"downstream artifact(s); {source_inputs}"
+    )
+    if container_run_id is None:
+        return detail
+    if control_sha is None or SHA_RE.fullmatch(control_sha) is None:
+        raise GateError("current recovery control SHA is unavailable")
+    if selection.container_artifact_id is not None:
+        raise GateError(
+            "the original publication run already contains a retained container; "
+            "a second container source would be ambiguous"
+        )
+    container_endpoint = f"repos/{REPOSITORY}/actions/runs/{container_run_id}"
+    container_run = _gh_json(repo, REPOSITORY, container_endpoint)
+    container_jobs = _gh_json(
+        repo,
+        REPOSITORY,
+        f"{container_endpoint}/jobs?filter=all&per_page=100",
+    )
+    container_artifacts = _gh_json(
+        repo,
+        REPOSITORY,
+        f"{container_endpoint}/artifacts?per_page=100",
+    )
+    try:
+        container = release_workflow.select_container_recovery_artifact(
+            container_run,
+            container_jobs,
+            container_artifacts,
+            repository=REPOSITORY,
+            run_id=container_run_id,
+            original_run_id=run_id,
+            tag=tag,
+            sha=sha,
+            alias=alias,
+        )
+    except ReleaseWorkflowError as error:
+        raise GateError(str(error)) from error
+    ancestry = _release_is_on_main(repo, container.control_sha, control_sha)
+    container_inputs = _require_source_release_inputs(
+        _gh_job_log(repo, container.verification_job_id),
+        tag,
+        sha,
+        alias,
+    )
+    return (
+        f"{detail}; selected exact OCI artifact {container.container_artifact_id} "
+        f"from later recovery run {container_run_id} attempt "
+        f"{container.artifact_attempt}; {ancestry}; {container_inputs}"
     )
 
 
@@ -2510,6 +2567,7 @@ def _surface_inventory(repo: Path) -> str:
             ".trivyignore.yaml",
             ".github/workflows/publish-container.yml",
             ".github/workflows/publish.yml",
+            "scripts/prepare_oci_scan_layout.py",
         ),
         "Homebrew tap": (
             "scripts/render_homebrew_formula.py",
@@ -2557,8 +2615,12 @@ def _surface_inventory(repo: Path) -> str:
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
         )
     required_recovery_contracts = (
+        "container_run_id:",
+        "container-source-run-id:",
         "container-artifact-id:",
         "container-artifact-name:",
+        "Locate the exact later-run container artifact for recovery",
+        "Require the later container source control to be reviewed main history",
         "Re-retain the exact recovered OCI image for the protected publisher",
         "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
         "retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}",
@@ -2674,6 +2736,7 @@ def _evaluate_resume(
     alias: str,
     run_id: int,
     release_sha: str,
+    container_run_id: int | None = None,
 ) -> tuple[str | None, list[Check]]:
     repo = repo.resolve()
     checks: list[Check] = []
@@ -2727,7 +2790,13 @@ def _evaluate_resume(
                 checks,
                 "source publication artifacts",
                 lambda: _source_release_artifacts(
-                    repo, run_id, tag, release_sha, alias
+                    repo,
+                    run_id,
+                    tag,
+                    release_sha,
+                    alias,
+                    container_run_id,
+                    control_sha,
                 ),
             )
     return control_sha, checks
@@ -2868,7 +2937,14 @@ def _parser() -> argparse.ArgumentParser:
                     required=True,
                     help="Positive decimal ID of the failed original publish run",
                 )
-                confirmation_help += " followed by #RUNID"
+                child.add_argument(
+                    "--container-run-id",
+                    help=(
+                        "Optional positive decimal ID of a later failed recovery "
+                        "run containing the retained OCI image"
+                    ),
+                )
+                confirmation_help += " followed by #RUNID[+CONTAINER_RUN_ID]"
             child.add_argument("--confirm", required=True, help=confirmation_help)
     alias = subparsers.add_parser("alias")
     alias.add_argument("--tag", required=True, help="Exact vMAJOR.MINOR.PATCH tag")
@@ -2921,17 +2997,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.run_id = int(args.run_id)
             if args.run_id > MAX_GITHUB_NUMERIC_ID:
                 parser.error("--run-id exceeds the supported GitHub numeric ID range")
+            container_suffix = ""
+            if args.command == "resume" and args.container_run_id is not None:
+                if RUN_ID_RE.fullmatch(args.container_run_id) is None:
+                    parser.error(
+                        "--container-run-id must be a positive decimal with no leading zero"
+                    )
+                args.container_run_id = int(args.container_run_id)
+                if args.container_run_id > MAX_GITHUB_NUMERIC_ID:
+                    parser.error(
+                        "--container-run-id exceeds the supported GitHub numeric ID range"
+                    )
+                if args.container_run_id == args.run_id:
+                    parser.error("--container-run-id must differ from --run-id")
+                container_suffix = r"\+(?P<container_run_id>[1-9][0-9]{0,19})"
             match = re.fullmatch(
                 rf"{re.escape(args.tag)}@(?P<sha>[0-9a-f]{{40}})#"
-                rf"(?P<run_id>[1-9][0-9]{{0,19}})",
+                rf"(?P<run_id>[1-9][0-9]{{0,19}}){container_suffix}",
                 args.confirm,
             )
             if (
                 match is None
                 or int(match.group("run_id")) != args.run_id
+                or (
+                    args.command == "resume"
+                    and args.container_run_id is not None
+                    and int(match.group("container_run_id"))
+                    != args.container_run_id
+                )
             ):
                 parser.error(
-                    "--confirm must be the exact TAG@lowercase-40-character-SHA#RUNID"
+                    "--confirm must bind the exact tag, SHA, and every selected run ID"
                 )
             confirmation_sha = match.group("sha")
 
@@ -2946,6 +3042,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.alias,
             args.run_id,
             confirmation_sha,
+            args.container_run_id,
         )
         sha = confirmation_sha
     elif args.command == "alias":
@@ -3022,6 +3119,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "resume":
             workflow = "publish.yml"
             fields += ("--field", f"resume_run_id={args.run_id}")
+            if args.container_run_id is not None:
+                fields += (
+                    "--field",
+                    f"container_run_id={args.container_run_id}",
+                )
         command = (
             "gh", "workflow", "run", workflow,
             "--repo", REPOSITORY,
@@ -3034,6 +3136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sha,
             args.alias,
             args.run_id if args.command == "resume" else None,
+            args.container_run_id if args.command == "resume" else None,
         )
         detail = _dispatch_workflow(
             args.repo.resolve(),
@@ -3058,6 +3161,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     if args.command == "resume":
         dispatch["resume_run_id"] = str(args.run_id)
+        if args.container_run_id is not None:
+            dispatch["container_run_id"] = str(args.container_run_id)
     return _emit(args, sha, checks, dispatch)
 
 
