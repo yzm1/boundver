@@ -3396,6 +3396,7 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         )
         publication_alias = overrides.pop("FAKE_PUBLICATION_ALIAS", "v0.14")
         publication_resume = overrides.pop("FAKE_PUBLICATION_RESUME", "")
+        publication_branch = "main" if publication_resume else "v0.14.1"
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "audit_release_reviews.sh").write_bytes(
@@ -3539,7 +3540,7 @@ exit 74
                         f"{previous_sha}:alias={publication_alias}:resume="
                         f"{publication_resume}\t"
                         "workflow_dispatch\tcompleted\tsuccess\t"
-                        f"{previous_sha}\tv0.14.1\t1\t270075259\t"
+                        f"{previous_sha}\t{publication_branch}\t1\t270075259\t"
                         "owner/repository\towner/repository\t"
                         "2026-08-27T14:05:36Z\t"
                         "2026-08-27T16:05:36Z\t"
