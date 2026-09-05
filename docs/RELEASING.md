@@ -448,9 +448,11 @@ workflows then perform these gates in order:
    OIDC job checks out no repository code: it only downloads the preflight's
    immutable artifact ID and invokes the commit-pinned publisher action. The
    action receives the pinned container's system CA file and directory
-   explicitly. This preserves TLS verification after the workflow-wide
-   environment neutralizes inherited CA overrides; do not replace those paths
-   with empty values, because doing so disables OpenSSL's default trust store.
+   explicitly. The downstream TestPyPI and PyPI Sigstore provenance steps
+   likewise receive the host runner's system CA paths. These narrow overrides
+   preserve TLS verification after the workflow-wide environment neutralizes
+   inherited CA settings; do not replace both paths with empty values, because
+   doing so disables OpenSSL's default trust store.
 5. Prepare a draft GitHub Release with the exact changelog notes and release
    assets. A read-only job generates and retains the notes first; the mutation
    job checks out no candidate tree and treats the retained notes and assets as
