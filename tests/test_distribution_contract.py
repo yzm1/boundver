@@ -1230,6 +1230,13 @@ class AutomationContractTests(unittest.TestCase):
             "https://test.pypi.org/legacy/",
         )
         self.assertIs(test_publish["with"]["skip-existing"], True)
+        publisher_tls_env = {
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+        }
+        self.assertEqual(test_publish["env"], publisher_tls_env)
+        self.assertEqual(workflow["env"]["SSL_CERT_FILE"], "")
+        self.assertEqual(workflow["env"]["SSL_CERT_DIR"], "")
         self.assertEqual(
             test_publish["if"],
             "needs.testpypi-preflight.outputs.upload-required == 'true'",
@@ -1254,6 +1261,7 @@ class AutomationContractTests(unittest.TestCase):
         # tolerate that exact filename; verify-pypi checks all public bytes.
         self.assertIs(production_publish["with"]["skip-existing"], True)
         self.assertEqual(production_publish["with"]["packages-dir"], "dist")
+        self.assertEqual(production_publish["env"], publisher_tls_env)
         self.assertEqual(
             production_publish["if"],
             "needs.pypi-preflight.outputs.upload-required == 'true'",
