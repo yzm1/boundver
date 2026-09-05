@@ -304,6 +304,31 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     max_stderr_bytes=8,
                 )
 
+    def test_failed_command_reports_both_bounded_output_streams(self):
+        publisher = _load_script()
+        program = (
+            "import sys; "
+            "sys.stdout.write('useful pytest failure\\n' + 'o' * 5000); "
+            "sys.stderr.write('wrapper error'); "
+            "raise SystemExit(1)"
+        )
+        with self.assertRaises(publisher.GateError) as raised:
+            publisher._run(
+                (sys.executable, "-c", program),
+                cwd=REPO_ROOT,
+                max_stdout_bytes=6000,
+                max_stderr_bytes=100,
+            )
+
+        detail = str(raised.exception)
+        self.assertIn("useful pytest failure", detail)
+        self.assertIn("[diagnostic truncated]", detail)
+        self.assertIn("wrapper error", detail)
+        self.assertLessEqual(
+            len(detail),
+            publisher.MAX_COMMAND_DIAGNOSTIC_CHARS + 512,
+        )
+
     def test_subprocess_capture_has_a_wall_clock_limit(self):
         publisher = _load_script()
         with self.assertRaisesRegex(publisher.GateError, "command timed out"):

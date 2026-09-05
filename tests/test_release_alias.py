@@ -361,11 +361,28 @@ class ReleaseAliasHardeningTests(unittest.TestCase):
     def test_git_replace_cannot_forge_alias_ancestry(self):
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
+            replacement_environment = self.alias.sanitize_git_environment()
+            replacement_environment.update(
+                {
+                    "GIT_ATTR_NOSYSTEM": "1",
+                    "GIT_CONFIG_COUNT": "2",
+                    "GIT_CONFIG_GLOBAL": self.alias.os.devnull,
+                    "GIT_CONFIG_KEY_0": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_0": self.alias.os.devnull,
+                    "GIT_CONFIG_KEY_1": "commit.gpgSign",
+                    "GIT_CONFIG_VALUE_1": "false",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_OPTIONAL_LOCKS": "0",
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "GCM_INTERACTIVE": "never",
+                }
+            )
 
             def git(*arguments: str, check: bool = True):
                 return subprocess.run(
                     ("git", *arguments),
                     cwd=repo,
+                    env=replacement_environment,
                     text=True,
                     capture_output=True,
                     check=check,

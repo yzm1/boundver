@@ -687,9 +687,16 @@ def _run(
     stderr = as_text(raw.stderr)
     result = subprocess.CompletedProcess(raw.args, raw.returncode, stdout, stderr)
     if check and result.returncode != 0:
-        detail = (result.stderr or result.stdout or "command failed").strip()
+        detail = "\n".join(
+            stream.strip()
+            for stream in (result.stdout, result.stderr)
+            if stream.strip()
+        ) or "command failed"
         if len(detail) > MAX_COMMAND_DIAGNOSTIC_CHARS:
-            detail = detail[:MAX_COMMAND_DIAGNOSTIC_CHARS] + "..."
+            marker = "\n...[diagnostic truncated]...\n"
+            retained = MAX_COMMAND_DIAGNOSTIC_CHARS - len(marker)
+            prefix = retained // 2
+            detail = detail[:prefix] + marker + detail[-(retained - prefix) :]
         raise GateError(f"{' '.join(command)}: {detail}")
     return result
 
