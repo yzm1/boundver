@@ -3757,6 +3757,40 @@ exit 74
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_ignores_same_tag_draft_but_rejects_public_duplicate(self):
+        draft_and_public = self._run_audit(
+            FAKE_RELEASES=(
+                "100\tv0.14.1\ttrue\tfalse\tfalse\t\n"
+                "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-08-27T15:05:36Z\n"
+            )
+        )
+        self.assertEqual(draft_and_public.returncode, 0, draft_and_public.stderr)
+
+        duplicate_public = self._run_audit(
+            FAKE_RELEASES=(
+                "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-08-27T15:05:36Z\n"
+                "102\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-08-27T15:05:37Z\n"
+            )
+        )
+        self.assertNotEqual(duplicate_public.returncode, 0)
+        self.assertIn("duplicate semantic release metadata", duplicate_public.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_release_anchor_rejects_duplicate_release_identity_even_for_draft(self):
+        result = self._run_audit(
+            FAKE_RELEASES=(
+                "101\tv0.14.0\ttrue\tfalse\tfalse\t\n"
+                "101\tv0.14.1\tfalse\tfalse\ttrue\t"
+                "2026-08-27T15:05:36Z\n"
+            )
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate semantic release metadata", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_release_anchor_accepts_explicit_no_alias_publication(self):
         result = self._run_audit(FAKE_PUBLICATION_ALIAS="none")
 

@@ -22,6 +22,12 @@ All notable changes to this project are documented here. The format follows
   deployment and job summary now link directly to that draft, the handoff
   explicitly forbids creating a second release, and public-surface verification
   rejects a different release object even when it uses the expected tag.
+- Let replacement-release review ignore draft, prerelease, and mutable records
+  before enforcing unique eligible release tags, while still rejecting reused
+  numeric release IDs and duplicate public stable immutable releases. This
+  preserves failed-release evidence without letting it become a review anchor.
+- Run both published demonstrations in the local release-candidate gate and
+  refresh the deterministic range-review provenance for the v0.15.2 schema URL.
 
 ### Distribution recovery
 

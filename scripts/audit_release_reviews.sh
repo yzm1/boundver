@@ -411,12 +411,14 @@ for row in rows:
         or immutable not in {"true", "false"}
     ):
         raise SystemExit("GitHub returned malformed semantic release metadata")
-    if release_id in seen_ids or tag in seen_tags:
+    if release_id in seen_ids:
         raise SystemExit("GitHub returned duplicate semantic release metadata")
     seen_ids.add(release_id)
-    seen_tags.add(tag)
     if draft == "true" or prerelease == "true" or immutable != "true":
         continue
+    if tag in seen_tags:
+        raise SystemExit("GitHub returned duplicate semantic release metadata")
+    seen_tags.add(tag)
     published_key = timestamp_key(published_at)
     version = tuple(map(int, match.groups()))
     tag_sha = merged_tags.get(tag)
