@@ -119,6 +119,7 @@ env:
         r"(?P<alias>none|v(?:0|[1-9][0-9]{0,17})\."
         r"(?:0|[1-9][0-9]{0,17}))"
         r":resume=(?P<resume>[1-9][0-9]{0,19})?"
+        r"(?::container=(?P<container>[1-9][0-9]{0,19}))?"
     )
     consumed_api_bytes = 0
 
@@ -582,6 +583,7 @@ env:
             tag_sha = match.group("sha")
             alias = match.group("alias")
             resume = match.group("resume")
+            container = match.group("container")
             attempt = record.get("run_attempt")
             head_sha = record.get("head_sha")
             head_branch = record.get("head_branch")
@@ -592,6 +594,9 @@ env:
             expected_url = f"https://github.com/{repository}/actions/runs/{run_id}"
             if (alias not in {"none", tag.rsplit(".", 1)[0]} or
                     (resume is not None and int(resume) > MAX_GITHUB_ID) or
+                    (container is not None and
+                     (resume is None or int(container) > MAX_GITHUB_ID or
+                      container == resume)) or
                     record.get("name") != title or
                     record.get("path") != PUBLISH_WORKFLOW_PATH or
                     record.get("event") != "workflow_dispatch" or
@@ -626,6 +631,9 @@ env:
                 "control_ref": head_branch,
                 "control_sha": head_sha,
                 "resume_run_id": int(resume) if resume is not None else None,
+                "container_run_id": (
+                    int(container) if container is not None else None
+                ),
                 "created_at": created_at,
                 "completed_at": updated_at,
             }

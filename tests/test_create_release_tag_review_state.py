@@ -433,6 +433,38 @@ class CreateTagReviewStateContracts(unittest.TestCase):
         )
         self.assertEqual(trusted[(tag, tag_sha)]["run_id"], 33112740009)
 
+        container_title = title + ":container=33058239999"
+        container_run = dict(
+            run,
+            id=33112740011,
+            name=container_title,
+            display_title=container_title,
+            html_url="https://github.com/acme/widget/actions/runs/33112740011",
+        )
+        trusted_container = helpers["trusted_publication_runs"](
+            [container_run], 270075259, repository, {tag_sha, control_sha}
+        )
+        self.assertEqual(
+            trusted_container[(tag, tag_sha)]["container_run_id"],
+            33058239999,
+        )
+
+        conflicting_title = title + ":container=33058238333"
+        conflicting_run = dict(
+            run,
+            id=33112740012,
+            name=conflicting_title,
+            display_title=conflicting_title,
+            html_url="https://github.com/acme/widget/actions/runs/33112740012",
+        )
+        with self.assertRaisesRegex(SystemExit, "untrusted publication-run"):
+            helpers["trusted_publication_runs"](
+                [conflicting_run],
+                270075259,
+                repository,
+                {tag_sha, control_sha},
+            )
+
         no_alias_title = title.replace("alias=v0.14", "alias=none")
         no_alias_run = dict(
             run,

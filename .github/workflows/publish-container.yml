@@ -145,6 +145,14 @@ jobs:
           fetch-depth: 1
           ref: ${{ inputs.release_sha }}
 
+      - name: Checkout the reviewed release-control commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .release-control
+
       - name: Record the reproducible image timestamp
         if: inputs.reuse_retained_artifact != true
         id: timestamp
@@ -237,17 +245,27 @@ jobs:
             exit 1
           fi
 
-      - name: Reject new or fixable high-severity container vulnerabilities
+      - name: Prepare exact per-platform OCI scan selectors
         shell: bash
         env:
           REUSE_RETAINED_ARTIFACT: ${{ inputs.reuse_retained_artifact }}
         run: |
           set -euo pipefail
           if [[ "$REUSE_RETAINED_ARTIFACT" == true ]]; then
-            archive=/scan/recovered-container-check/boundver.oci.tar
+            archive="$RUNNER_TEMP/recovered-container-check/boundver.oci.tar"
           else
-            archive=/scan/boundver.oci.tar
+            archive="$RUNNER_TEMP/boundver.oci.tar"
           fi
+          python3 -I .release-control/scripts/prepare_oci_scan_layout.py \
+            --archive "$archive" \
+            --output "$RUNNER_TEMP/trivy-oci-scan" \
+            --platform linux/amd64 \
+            --platform linux/arm64
+
+      - name: Reject new or fixable high-severity container vulnerabilities
+        shell: bash
+        run: |
+          set -euo pipefail
           cache="$RUNNER_TEMP/trivy-cache"
           mkdir -m 700 "$cache"
           scan=(
@@ -256,7 +274,7 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/policy:ro"
             --volume "$cache:/root/.cache"
             "$TRIVY_IMAGE" image
-            --input "$archive"
+            --input /scan/trivy-oci-scan/layout
             --scanners vuln
             --severity HIGH,CRITICAL
             --max-image-size 2GB
@@ -264,9 +282,13 @@ jobs:
             --skip-version-check
           )
           for platform in linux/amd64 linux/arm64; do
-            "${scan[@]}" --platform "$platform" \
+            selector=${platform//\//-}.json
+            install --mode=0600 \
+              "$RUNNER_TEMP/trivy-oci-scan/selectors/$selector" \
+              "$RUNNER_TEMP/trivy-oci-scan/layout/index.json"
+            "${scan[@]}" \
               --ignorefile /policy/.trivyignore.yaml --exit-code 1
-            "${scan[@]}" --platform "$platform" \
+            "${scan[@]}" \
               --ignore-unfixed --exit-code 1
           done
 

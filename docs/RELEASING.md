@@ -214,6 +214,16 @@ tree for high/critical secret and configuration findings. Never use a wildcard,
 unscoped CVE, non-expiring entry, or global `--ignore-unfixed` as the primary
 publication gate.
 
+The release build retains one multi-platform OCI archive for publication.
+Before scanning, reviewed release-control code extracts that archive with
+member-count and byte limits, rejects links and unexpected paths, verifies every
+blob against its SHA-256 filename, and creates one root-index selector for each
+declared platform. Trivy scans those single-platform OCI layout directories.
+Do not pass the OCI tar directly to `trivy image --input`, which accepts Docker
+archives but expects OCI input to be a directory. Do not rely on Trivy's local
+`--platform` option to select children from a multi-platform OCI layout; select
+the exact child manifest first so both architectures are actually inspected.
+
 `scripts/release-tool-artifacts.json` records the PyPI wheel filenames behind
 the local hashes for review. The generator reads only the official versioned
 PyPI JSON API over HTTPS and rejects any pin with an active advisory in that
@@ -562,10 +572,22 @@ python3 scripts/publish_release.py resume \
   --confirm "$release_tag@$release_sha#$run_id"
 ```
 
+If that original run holds the wheel and release assets but a later failed
+recovery run holds the sole retained OCI archive, bind both IDs explicitly:
+
+```bash
+container_run_id=123456999
+python3 scripts/publish_release.py resume \
+  --tag "$release_tag" --alias vX.Y --run-id "$run_id" \
+  --container-run-id "$container_run_id" \
+  --confirm "$release_tag@$release_sha#$run_id+$container_run_id"
+```
+
 Use `--alias none` only if that was the approved policy for the original
 release. Recovery cannot change that choice in either direction. The
-confirmation binds three independent facts: immutable tag, full lowercase
-release commit, and positive-decimal source run ID. `resume` remains read-only
+confirmation binds the immutable tag, full lowercase release commit, original
+source run ID, and—when supplied—the distinct container source run ID.
+`resume` remains read-only
 until its final workflow dispatch. It requires the checkout to be clean and at
 current remote `main`; confirms that the tagged release commit is on that main
 history; repeats the hygiene, version, exact-main CI, environment, ruleset,
@@ -599,10 +621,20 @@ downstream release-note, container, and disabled Docker diagnostic records are
 validated separately; unknown records remain fatal, and more than one retained
 container is ambiguous and rejected.
 
+A separate container source is accepted only when it is the completed failed
+`publish.yml` recovery for the same tag, SHA, alias, and original source run.
+Its control commit must be an ancestor of reviewed current `main`; its exact
+artifact attempt must have one successful `verify-release` job and one
+completed container-build job; and the run may contain only strictly bound
+release notes plus one unexpired OCI artifact. The second verification log is
+checked independently. A container in both runs, a chained recovery title, or
+any unexpected artifact fails closed.
+
 Immediately before its only mutation, `resume` re-reads current remote `main`.
 It then dispatches `publish.yml` on `main` with the exact release tag, tagged
-SHA, alias policy, and source run ID. The recovery workflow downloads those
-identified source artifacts. When the source run retained a container, the
+SHA, alias policy, source run ID, and optional container source run ID. The
+recovery workflow downloads those identified source artifacts. When either
+validated source run retained a container, the
 unprivileged verifier independently checks its GitHub artifact ZIP digest and
 the extracted OCI bytes, then re-retains that exact file under the current run
 for the protected publisher; it does not rebuild or overwrite the immutable
