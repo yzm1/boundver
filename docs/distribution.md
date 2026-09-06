@@ -16,12 +16,12 @@ not intended for production installation.
 ## GitHub Action
 
 ```yaml
-- uses: yzm1/boundver@v0.15.0
+- uses: yzm1/boundver@v0.15.1
 ```
 
 Pin the exact patch release used to write the lockfile. The compatibility alias
 such as `v0.15` advances to the newest patch in that line and is intentionally
-mutable. An exact tag such as `v0.15.0` never moves.
+mutable. An exact tag such as `v0.15.1` never moves.
 
 From v0.15, the same Action can emit a source-bound historical test plan. Use
 the exact immutable patch tag, check out full history, and request artifact
@@ -38,7 +38,7 @@ test routing.
     fetch-depth: 0
     persist-credentials: false
 - id: review
-  uses: yzm1/boundver@v0.15.0
+  uses: yzm1/boundver@v0.15.1
   with:
     operation: review
     base: ${{ github.event.pull_request.base.sha }}
@@ -110,7 +110,7 @@ an exact semantic version:
 
 ```yaml
 include:
-  - component: gitlab.com/boundver-project/boundver/boundver@0.15.0
+  - component: gitlab.com/boundver-project/boundver/boundver@0.15.1
     inputs:
       stage: test
       operation: review
