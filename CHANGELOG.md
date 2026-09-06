@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The format follows
   run while selecting one exact OCI archive from a separately identified later
   recovery run; both histories, verification logs, job attempts, artifact
   associations, expiries, and digests must agree before the archive is reused.
+- Restored the reviewed recovery-control checkout after the immutable release
+  checkout cleans the workspace, so split-run container recovery can prove the
+  earlier control commit is an ancestor of reviewed current `main`.
 
 ## [0.15.0] - 2026-09-04
 

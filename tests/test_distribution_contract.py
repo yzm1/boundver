@@ -1564,6 +1564,43 @@ class AutomationContractTests(unittest.TestCase):
             '--alias "$COMPATIBILITY_ALIAS"',
         ):
             self.assertIn(check, container_lookup["run"])
+        restored_control_checkout = next(
+            step
+            for step in steps
+            if step["name"] == "Restore the reviewed recovery control checkout"
+        )
+        self.assertEqual(
+            restored_control_checkout["if"], "inputs.container_run_id != ''"
+        )
+        self.assertEqual(
+            restored_control_checkout["uses"], control_checkout["uses"]
+        )
+        self.assertEqual(
+            restored_control_checkout["with"],
+            {
+                "persist-credentials": False,
+                "fetch-depth": 0,
+                "ref": "${{ github.sha }}",
+                "path": ".release-control",
+            },
+        )
+        step_names = [step["name"] for step in steps]
+        self.assertLess(
+            step_names.index("Checkout the released commit"),
+            step_names.index("Restore the reviewed recovery control checkout"),
+        )
+        self.assertLess(
+            step_names.index(
+                "Locate the exact later-run container artifact for recovery"
+            ),
+            step_names.index("Restore the reviewed recovery control checkout"),
+        )
+        self.assertLess(
+            step_names.index("Restore the reviewed recovery control checkout"),
+            step_names.index(
+                "Require the later container source control to be reviewed main history"
+            ),
+        )
         ancestry = next(
             step
             for step in steps

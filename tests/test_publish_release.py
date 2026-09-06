@@ -1477,6 +1477,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "container-artifact-id:",
                 "container-artifact-name:",
                 "Locate the exact later-run container artifact for recovery",
+                "Restore the reviewed recovery control checkout",
                 "Require the later container source control to be reviewed main history",
                 "Re-retain the exact recovered OCI image for the protected publisher",
                 "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
