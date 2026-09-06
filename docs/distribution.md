@@ -20,11 +20,17 @@ not intended for production installation.
 ```
 
 Pin the exact patch release used to write the lockfile. The compatibility alias
-is convenient for controlled updates but is intentionally mutable.
+such as `v0.15` advances to the newest patch in that line and is intentionally
+mutable. An exact tag such as `v0.15.0` never moves.
 
 From v0.15, the same Action can emit a source-bound historical test plan. Use
 the exact immutable patch tag, check out full history, and request artifact
 upload when another job or a reviewer needs the complete result:
+
+This requires reconciled locks in both the base commit and target commit. A
+periodic-lock workflow cannot route an unreconciled pull-request tip with
+`review`; reconcile and commit the target lock first, or retain conservative
+test routing.
 
 ```yaml
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

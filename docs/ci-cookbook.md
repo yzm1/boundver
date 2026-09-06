@@ -166,6 +166,13 @@ From v0.15, the maintained Action can compare two reconciled commits and emit
 the smaller `boundver-plan/v1` routing contract. This is a historical query;
 keep an ordinary `verify` job as the current-tree integrity gate.
 
+The example below assumes the base commit and pull-request tip both contain
+locks reconciled to those exact trees. Require the branch to update and commit
+its lock before this job runs. If locks are updated only periodically, an
+unreconciled pull-request tip is not a valid target; `--merge-base` does not
+change that. Keep conservative test routing and use `verify --changed-from` for
+current-tree integrity and path reporting until a complete plan is available.
+
 ```yaml
 jobs:
   contract-plan:
@@ -422,6 +429,12 @@ shared hook environment, bootstrap it with the exact `--upgrade` install and
 version assertion from [Pin a package instead of the
 Action](#pin-a-package-instead-of-the-action). Then invoke it through
 `python -m boundver` from that interpreter.
+
+Use an exact patch tag such as `v0.15.0` for reproducible hook execution. A
+two-component alias such as `v0.15` is intentionally mutable and advances to
+the newest patch release in that line. Do not pin the hook to one patch while a
+separate CI assertion or system installation expects another; update those
+version identities together.
 
 When the staged check finds intentional drift, regenerate from the index and
 stage the result. Because the config is read from the staged snapshot, stage a

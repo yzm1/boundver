@@ -287,17 +287,22 @@ change gates through its exact-only override.
 ## Daily review and update
 
 ```bash
-boundver review origin/main..HEAD --merge-base --transitive
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
+git add boundary.lock.json path/to/changed-file
+git commit -m "chore: reconcile boundver lock"
+boundver verify --source head
+boundver review origin/main..HEAD --merge-base --transitive
 ```
 
-The first command answers the branch-history question from reconciled lock
-state at both committed endpoints. It is a query and returns `0` for a complete
-analysis even when facets moved. The following `verify` command remains the
-integrity gate for the source snapshot you are about to accept. See
+The `verify` commands inspect and then reconcile the source snapshot you are
+preparing. The final `review` command answers the branch-history question only
+after both committed endpoints have reconciled locks. It returns `0` for a
+complete analysis even when facets moved. A repository that updates its lock
+periodically can review those checkpoints, but not an unreconciled pull-request
+tip. See
 [historical range review](reference.md#historical-range-review) for endpoint,
 merge-base, and shallow-history rules.
 

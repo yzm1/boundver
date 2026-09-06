@@ -1209,12 +1209,17 @@ def verify_lockfile(
     snapshot: Optional[GitSourceSnapshot] = None,
     transitive_consumers: bool = False,
     consumer_impact: Optional[List[dict]] = None,
+    drifted_components: Optional[Set[str]] = None,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches.
 
     When *fail_fast* is True, all selected components are still evaluated so the
     process can return the globally highest-severity exit condition; only the
     returned mismatch report is limited to one item.
+
+    When supplied, *drifted_components* receives component names associated
+    with both gating and non-gating drift. A truncated diagnostic result may
+    leave that set incomplete, so callers must retain the truncation signal.
     """
     source = _normalize_source(source)
     # Compute all selected entries even when only one issue is requested. This
@@ -1394,6 +1399,8 @@ def verify_lockfile(
         current_comp = computed_entries[name]
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
+            if drifted_components is not None:
+                drifted_components.add(name)
             issues.append(f"NEW component not in lockfile: {display_name}")
             if fail_fast:
                 return issues
@@ -1401,6 +1408,8 @@ def verify_lockfile(
         current_errors = _generation_errors({"components": {name: current_comp}})
         locked_errors = _generation_errors({"components": {name: locked_comp}})
         for message in current_errors:
+            if drifted_components is not None:
+                drifted_components.add(name)
             issues.append(
                 f"CURRENT DIGEST ERROR {_bounded_diagnostic_text(message)}"
             )
@@ -1409,6 +1418,8 @@ def verify_lockfile(
             if fail_fast:
                 return issues
         for message in locked_errors:
+            if drifted_components is not None:
+                drifted_components.add(name)
             issues.append(
                 f"LOCKED DIGEST ERROR {_bounded_diagnostic_text(message)}"
             )
@@ -1427,6 +1438,8 @@ def verify_lockfile(
                 and facet in component_gated_facets
                 and (cv is None or lv is None)
             ):
+                if drifted_components is not None:
+                    drifted_components.add(name)
                 issues.append(
                     f"UNAVAILABLE FACET {display_name}.{facet}: selected gate requires "
                     "both locked and current digests"
@@ -1437,6 +1450,8 @@ def verify_lockfile(
                 # policy error; do not also classify it as ordinary drift.
                 continue
             if cv != lv:
+                if drifted_components is not None:
+                    drifted_components.add(name)
                 message = (
                     f"MISMATCH {display_name}.{facet}: "
                     f"lockfile={_short(lv)} current={_short(cv)}"
@@ -1493,6 +1508,8 @@ def verify_lockfile(
 
         for field in COMPONENT_METADATA_FIELDS:
             if locked_comp.get(field) != current_comp.get(field):
+                if drifted_components is not None:
+                    drifted_components.add(name)
                 locked_value = _bounded_diagnostic_repr(locked_comp.get(field))
                 current_value = _bounded_diagnostic_repr(current_comp.get(field))
                 issues.append(
@@ -1504,6 +1521,8 @@ def verify_lockfile(
 
         # Check for vendored copy drift
         for warning in current_comp.get("warnings", []):
+            if drifted_components is not None:
+                drifted_components.add(name)
             issues.append(
                 f"VENDORED DRIFT {display_name}: "
                 f"{_bounded_diagnostic_text(warning)}"
@@ -1519,6 +1538,8 @@ def verify_lockfile(
         if name not in check_components:
             if name in all_components:
                 continue
+            if drifted_components is not None:
+                drifted_components.add(name)
             issues.append(
                 "REMOVED component still in lockfile: "
                 f"{_bounded_diagnostic_text(name)}"

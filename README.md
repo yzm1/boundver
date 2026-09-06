@@ -148,23 +148,32 @@ documents providers, selectors, source modes, facets, and graph limits. The
 [glossary](https://yzm1.github.io/boundver/glossary/) defines the terms used
 throughout the project.
 
-## Review a branch before accepting drift
+## Reconcile a branch, then review the range
+
+`review` compares reconciled checkpoints. Both endpoint commits must already
+contain locks that match their source trees.
 
 ```bash
-# Compare committed endpoints using pull-request merge-base semantics.
-boundver review origin/main..HEAD --merge-base --transitive
-
-# Verify the candidate snapshot.
+# Inspect the candidate before accepting its drift.
 boundver verify --source working-tree
+boundver why payment-api --source working-tree
 
-# After review, update the lock and inspect the exact change.
+# Record intentional drift, inspect the lock change, and commit the checkpoint.
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
+git add boundary.lock.json path/to/changed-file
+git commit -m "chore: reconcile boundver lock"
+boundver verify --source head
+
+# Now compare the two reconciled commits.
+boundver review origin/main..HEAD --merge-base --transitive
 ```
 
 `review` is read-only and compares two immutable Git trees. `verify` remains
-the integrity gate for the current candidate. Generated boundary artifacts need
-their own deterministic freshness check before verification; see
+the integrity gate for the current candidate. Repositories that update locks
+only periodically can review their reconciled checkpoints, but cannot use an
+unreconciled pull-request tip as a review endpoint. Generated boundary artifacts
+need their own deterministic freshness check before verification; see
 [troubleshooting](https://yzm1.github.io/boundver/troubleshooting/).
 
 ## GitHub Actions

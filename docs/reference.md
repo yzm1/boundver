@@ -197,6 +197,25 @@ A component-scoped
 generation produced by Boundver is accepted because that operation proves all
 unselected entries current before writing its coherent result.
 
+This is a workflow precondition, not a compatibility verdict. Reconcile and
+commit the lock at each endpoint before invoking `review`. The commits between
+the endpoints may contain stale locks; the two endpoint commits may not. When
+source-tree drift is found, the error identifies its exact commit, counts
+drifted components, examines at most 128 first-parent commits, and fully
+verifies at most eight lock/config checkpoint candidates. Custom-provider
+review skips that search rather than executing repository-declared Python
+repeatedly.
+
+Two repository disciplines follow from that rule:
+
+- An endpoint-reconciled pull-request workflow commits the updated lock on the
+  branch, verifies `HEAD`, and can then use `review --format plan` for routing.
+- A periodic-lock workflow can compare its accepted checkpoints. It cannot use
+  an unreconciled pull-request tip as a target; `--merge-base` changes only the
+  base and does not relax target validation. Use `verify --changed-from` for
+  current-tree integrity and path reporting, and keep conservative test routing
+  until the target lock is reconciled.
+
 Historical recomputation does not import repository-declared Python by
 default. A config using custom providers therefore fails closed unless trusted
 automation explicitly adds `--allow-custom-providers`; checking out a branch
