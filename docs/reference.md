@@ -201,10 +201,10 @@ This is a workflow precondition, not a compatibility verdict. Reconcile and
 commit the lock at each endpoint before invoking `review`. The commits between
 the endpoints may contain stale locks; the two endpoint commits may not. When
 source-tree drift is found, the error identifies its exact commit, counts
-drifted components, examines at most 128 first-parent commits, and fully
-verifies at most eight lock/config checkpoint candidates. Custom-provider
-review skips that search rather than executing repository-declared Python
-repeatedly.
+drifted components, and fully verifies at most the eight nearest first-parent
+commits. It checks commits in order without assuming that a lock or config edit
+caused the reconciliation. Custom-provider review skips that search rather than
+executing repository-declared Python repeatedly.
 
 Two repository disciplines follow from that rule:
 

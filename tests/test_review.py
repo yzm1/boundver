@@ -125,8 +125,14 @@ def _commit_endpoint(
     *,
     existing_lock: dict | None = None,
     selected_components: list[str] | None = None,
+    config_hint: str = "boundary.config.json",
+    lock_hint: str = "boundary.lock.json",
 ) -> tuple[str, dict]:
-    (root / "boundary.config.json").write_text(
+    config_path = root / config_hint
+    lock_path = root / lock_hint
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -139,12 +145,12 @@ def _commit_endpoint(
             config,
             root,
             selected_components=selected_components,
-            out_path=root / "boundary.lock.json",
+            out_path=lock_path,
             source="index",
             existing_lockfile=existing_lock,
             running_version="0.14.1",
         )
-    (root / "boundary.lock.json").write_text(
+    lock_path.write_text(
         dump_lockfile(lockfile),
         encoding="utf-8",
     )
@@ -157,11 +163,19 @@ def _make_range(
     *,
     partial_target: bool = False,
     provider: str = "openapi-canonical",
+    config_hint: str = "boundary.config.json",
+    lock_hint: str = "boundary.lock.json",
 ) -> tuple[str, str]:
     init_git_repo(root, initial_branch="main")
     _write_components(root)
     base_config = _config(provider)
-    base, base_lock = _commit_endpoint(root, base_config, "base")
+    base, base_lock = _commit_endpoint(
+        root,
+        base_config,
+        "base",
+        config_hint=config_hint,
+        lock_hint=lock_hint,
+    )
 
     target_config = copy.deepcopy(base_config)
     target_config["components"]["layer"]["consumers"] = ["service", "new"]
@@ -207,6 +221,8 @@ def _make_range(
         "target",
         existing_lock=base_lock if partial_target else None,
         selected_components=["layer"] if partial_target else None,
+        config_hint=config_hint,
+        lock_hint=lock_hint,
     )
     return base, target
 
@@ -573,40 +589,26 @@ def test_review_bounds_reconciled_checkpoint_search(
     commit_all(tmp_path, "introduce unreconciled drift")
     _git(tmp_path, "commit", "--allow-empty", "-m", "still stale")
     stale_target = _git(tmp_path, "rev-parse", "HEAD")
-    monkeypatch.setattr(review_module, "MAX_REVIEW_RECONCILIATION_HISTORY", 1)
+    monkeypatch.setattr(review_module, "MAX_REVIEW_RECONCILIATION_CANDIDATES", 1)
 
     with pytest.raises(LockfileError) as captured:
         analyze_review_range(tmp_path, base, stale_target)
 
     assert (
-        "No reconciled checkpoint was found among 1 lock/config checkpoint "
-        "candidate within the first 1 first-parent commit."
+        "No reconciled checkpoint was found among the nearest 1 first-parent "
+        "commit."
         in str(captured.value)
     )
 
 
-def test_review_caps_lock_config_checkpoint_candidates(
+def test_review_caps_nearest_first_parent_checkpoint_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    endpoint = "f" * 40
     ancestors = [f"{index:040x}" for index in range(1, 11)]
-    completed = subprocess.CompletedProcess(
-        ["git", "rev-list"],
-        0,
-        stdout="\n".join(ancestors) + "\n",
-        stderr="",
-    )
-    monkeypatch.setattr(review_module, "_git_run", lambda *_args, **_kwargs: completed)
     monkeypatch.setattr(review_module, "MAX_REVIEW_RECONCILIATION_CANDIDATES", 3)
 
-    candidates, truncated = review_module._reconciliation_candidates(
-        tmp_path,
-        endpoint,
-        ancestors,
-        config_path=tmp_path / "boundary.config.json",
-        lock_path=tmp_path / "boundary.lock.json",
-    )
+    candidates, truncated = review_module._reconciliation_candidates(ancestors)
 
     assert candidates == [
         (ancestors[0], 1),
@@ -614,6 +616,61 @@ def test_review_caps_lock_config_checkpoint_candidates(
         (ancestors[2], 3),
     ]
     assert truncated is True
+
+
+def test_review_finds_a_source_only_reconciled_checkpoint(tmp_path: Path) -> None:
+    base, _target = _make_range(tmp_path)
+    implementation = tmp_path / "service" / "impl.txt"
+    reconciled_content = implementation.read_text(encoding="utf-8")
+
+    implementation.write_text("stale once\n", encoding="utf-8")
+    commit_all(tmp_path, "source drift")
+    implementation.write_text(reconciled_content, encoding="utf-8")
+    commit_all(tmp_path, "source-only reconciliation")
+    reconciled_source_only = _git(tmp_path, "rev-parse", "HEAD")
+    implementation.write_text("stale again\n", encoding="utf-8")
+    commit_all(tmp_path, "new source drift")
+    stale_target = _git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(LockfileError) as captured:
+        analyze_review_range(tmp_path, base, stale_target)
+
+    assert (
+        "Reconciled checkpoint found by bounded first-parent search: "
+        f"{reconciled_source_only} (1 commit back)."
+    ) in str(captured.value)
+
+
+def test_review_checkpoint_search_does_not_filter_on_endpoint_pathspecs(
+    tmp_path: Path,
+) -> None:
+    config_hint = "control/boundary[config].json"
+    lock_hint = "control/boundary[lock].json"
+    base, reconciled_target = _make_range(
+        tmp_path,
+        config_hint=config_hint,
+        lock_hint=lock_hint,
+    )
+    (tmp_path / "service" / "impl.txt").write_text(
+        "unreconciled\n",
+        encoding="utf-8",
+    )
+    commit_all(tmp_path, "source drift")
+    stale_target = _git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(LockfileError) as captured:
+        analyze_review_range(
+            tmp_path,
+            base,
+            stale_target,
+            config_hint=config_hint,
+            lock_hint=lock_hint,
+        )
+
+    assert (
+        "Reconciled checkpoint found by bounded first-parent search: "
+        f"{reconciled_target} (1 commit back)."
+    ) in str(captured.value)
 
 
 def test_review_labels_a_truncated_component_count_as_a_lower_bound(

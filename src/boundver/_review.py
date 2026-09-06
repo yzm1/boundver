@@ -49,7 +49,6 @@ REVIEW_SCHEMA = "boundver-review/v1"
 MAX_REVIEW_WORK_STEPS = 250_000
 MAX_REVIEW_RESULT_ROWS = 100_000
 MAX_REVIEW_RESULT_BYTES = 64 * 1024 * 1024
-MAX_REVIEW_RECONCILIATION_HISTORY = 128
 MAX_REVIEW_RECONCILIATION_CANDIDATES = 8
 
 
@@ -227,13 +226,13 @@ def _config_lock_consistency_issues(config: dict, lockfile: dict) -> List[str]:
 
 
 def _first_parent_ancestors(repo_root: Path, commit: str) -> List[str]:
-    """Return a bounded nearest-first first-parent history for one commit."""
+    """Return enough nearest-first ancestors to detect a truncated search."""
     result = _git_run(
         repo_root,
         [
             "rev-list",
             "--first-parent",
-            f"--max-count={MAX_REVIEW_RECONCILIATION_HISTORY + 1}",
+            f"--max-count={MAX_REVIEW_RECONCILIATION_CANDIDATES + 2}",
             commit,
             "--",
         ],
@@ -249,50 +248,17 @@ def _first_parent_ancestors(repo_root: Path, commit: str) -> List[str]:
 
 
 def _reconciliation_candidates(
-    repo_root: Path,
-    commit: str,
     ancestors: List[str],
-    *,
-    config_path: Path,
-    lock_path: Path,
 ) -> Tuple[List[Tuple[str, int]], bool]:
-    """Select bounded lock/config checkpoints from bounded first-parent history."""
-    if not ancestors:
-        return [], False
-    distances = {candidate: distance for distance, candidate in enumerate(ancestors, 1)}
-    oldest = ancestors[-1]
-    config_relative = _endpoint_path(repo_root, config_path)
-    lock_relative = _endpoint_path(repo_root, lock_path)
-    result = _git_run(
-        repo_root,
-        [
-            "rev-list",
-            "--first-parent",
-            f"--max-count={MAX_REVIEW_RECONCILIATION_HISTORY + 1}",
-            f"{oldest}..{commit}",
-            "--",
-            config_relative,
-            lock_relative,
-        ],
-    )
-    selected: List[Tuple[str, int]] = []
-    seen: Set[str] = set()
-    raw_candidates = [
-        _validated_git_object_id(line, "git rev-list checkpoint")
-        for line in result.stdout.splitlines()
-        if line
+    """Select the nearest ancestors without guessing which files reconciled them."""
+    selected = [
+        (candidate, distance)
+        for distance, candidate in enumerate(
+            ancestors[:MAX_REVIEW_RECONCILIATION_CANDIDATES],
+            1,
+        )
     ]
-    # The oldest inspected commit is also tested. It bounds the search even if
-    # its lock/config change occurred just before the retained history window.
-    raw_candidates.append(oldest)
-    for candidate in raw_candidates:
-        if candidate == commit or candidate in seen or candidate not in distances:
-            continue
-        seen.add(candidate)
-        selected.append((candidate, distances[candidate]))
-    selected.sort(key=lambda item: item[1])
-    truncated = len(selected) > MAX_REVIEW_RECONCILIATION_CANDIDATES
-    return selected[:MAX_REVIEW_RECONCILIATION_CANDIDATES], truncated
+    return selected, len(ancestors) > MAX_REVIEW_RECONCILIATION_CANDIDATES
 
 
 def _reconciled_checkpoint_hint(
@@ -314,11 +280,7 @@ def _reconciled_checkpoint_hint(
     try:
         ancestors = _first_parent_ancestors(repo_root, commit)
         candidates, candidates_truncated = _reconciliation_candidates(
-            repo_root,
-            commit,
             ancestors,
-            config_path=config_path,
-            lock_path=lock_path,
         )
     except (OSError, subprocess.CalledProcessError, BoundverError, ValueError):
         return "Checkpoint search could not inspect first-parent history."
@@ -347,21 +309,15 @@ def _reconciled_checkpoint_hint(
             f"({distance} {'commit' if distance == 1 else 'commits'} back)."
         )
 
-    history_count = len(ancestors)
     candidate_count = len(candidates)
-    if history_count == MAX_REVIEW_RECONCILIATION_HISTORY:
-        history_unit = "commit" if history_count == 1 else "commits"
-        history_scope = f"the first {history_count} first-parent {history_unit}"
-    else:
-        history_unit = "commit" if history_count == 1 else "commits"
-        history_scope = f"{history_count} available first-parent {history_unit}"
     if candidates_truncated:
+        candidate_unit = "commit" if candidate_count == 1 else "commits"
         candidate_scope = (
-            f"the first {candidate_count} lock/config checkpoint candidates"
+            f"the nearest {candidate_count} first-parent {candidate_unit}"
         )
     else:
-        candidate_unit = "candidate" if candidate_count == 1 else "candidates"
-        candidate_scope = f"{candidate_count} lock/config checkpoint {candidate_unit}"
+        candidate_unit = "commit" if candidate_count == 1 else "commits"
+        candidate_scope = f"{candidate_count} available first-parent {candidate_unit}"
     shallow = False
     try:
         shallow = _git_repository_is_shallow(repo_root)
@@ -374,8 +330,8 @@ def _reconciled_checkpoint_hint(
         else ""
     )
     return (
-        f"No reconciled checkpoint was found among {candidate_scope} within "
-        f"{history_scope}.{remediation}"
+        f"No reconciled checkpoint was found among {candidate_scope}."
+        f"{remediation}"
     )
 
 

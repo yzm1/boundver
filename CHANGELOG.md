@@ -20,9 +20,11 @@ All notable changes to this project are documented here. The format follows
 - Clarified that historical `review` compares reconciled endpoint commits and
   is not the human approval step before a lock update. Source-tree-drift
   failures now name the exact commit, count drifted components, and provide a
-  bounded reconciled first-parent checkpoint hint. Quick-start, Action,
-  GitLab, and pre-commit guidance now distinguishes endpoint-reconciled and
-  periodic-lock workflows, exact patch tags, and mutable release-line aliases.
+  bounded reconciled first-parent checkpoint hint. The hint checks nearest
+  ancestors in order, including source-only reconciliations, without treating
+  configured endpoint filenames as Git pathspecs. Quick-start, Action, GitLab,
+  and pre-commit guidance now distinguishes endpoint-reconciled and periodic-
+  lock workflows, exact patch tags, and mutable release-line aliases.
 - Restored system CA paths for the pinned PyPI publisher and the downstream
   Sigstore provenance checks after neutralizing inherited TLS overrides,
   preventing TUF refreshes from failing with an empty OpenSSL trust store.
