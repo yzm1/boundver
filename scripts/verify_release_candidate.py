@@ -348,6 +348,16 @@ def verify_candidate(
         env=tool_env,
     )
     _run((python, "-I", "-m", "pytest", "-q"), cwd=repo, env=tool_env)
+    _run(
+        (python, "-I", "scripts/demo_consumer_impact.py"),
+        cwd=repo,
+        env=tool_env,
+    )
+    _run(
+        (python, "-I", "scripts/demo_range_review.py"),
+        cwd=repo,
+        env=tool_env,
+    )
 
     bash = _packaging_bash(tool_env.get("PATH"), forbidden_root=repo)
     if bash is None:
