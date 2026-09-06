@@ -652,6 +652,15 @@ jobs:
           (cd "$clean_python_cwd" && python3 -I \
             "$RUNNER_TEMP/release_workflow.py" "${recovery_args[@]}")
 
+      - name: Restore the reviewed recovery control checkout
+        if: inputs.container_run_id != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: .release-control
+
       - name: Require the later container source control to be reviewed main history
         if: inputs.container_run_id != ''
         shell: bash
