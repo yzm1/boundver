@@ -32,8 +32,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
-python -c "import boundver; assert boundver.__version__ == '0.15.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.15.1"
+python -c "import boundver; assert boundver.__version__ == '0.15.1', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -89,7 +89,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.1/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -272,7 +272,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.15.0
+      - uses: yzm1/boundver@v0.15.1
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -287,17 +287,22 @@ change gates through its exact-only override.
 ## Daily review and update
 
 ```bash
-boundver review origin/main..HEAD --merge-base --transitive
 boundver verify --source working-tree
 boundver why payment-api --source working-tree
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
+git add boundary.lock.json path/to/changed-file
+git commit -m "chore: reconcile boundver lock"
+boundver verify --source head
+boundver review origin/main..HEAD --merge-base --transitive
 ```
 
-The first command answers the branch-history question from reconciled lock
-state at both committed endpoints. It is a query and returns `0` for a complete
-analysis even when facets moved. The following `verify` command remains the
-integrity gate for the source snapshot you are about to accept. See
+The `verify` commands inspect and then reconcile the source snapshot you are
+preparing. The final `review` command answers the branch-history question only
+after both committed endpoints have reconciled locks. It returns `0` for a
+complete analysis even when facets moved. A repository that updates its lock
+periodically can review those checkpoints, but not an unreconciled pull-request
+tip. See
 [historical range review](reference.md#historical-range-review) for endpoint,
 merge-base, and shallow-history rules.
 

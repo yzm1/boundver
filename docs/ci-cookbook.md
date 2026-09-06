@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
 
       # Keep the writer and verifier on the repository's lock-contract version.
-      - uses: yzm1/boundver@v0.15.0
+      - uses: yzm1/boundver@v0.15.1
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -135,7 +135,7 @@ analysis or create a compatibility identity for an unversioned component.
   with:
     fetch-depth: 0
 
-- uses: yzm1/boundver@v0.15.0
+- uses: yzm1/boundver@v0.15.1
   with:
     source: head
     changed-from: origin/${{ github.base_ref }}
@@ -166,6 +166,13 @@ From v0.15, the maintained Action can compare two reconciled commits and emit
 the smaller `boundver-plan/v1` routing contract. This is a historical query;
 keep an ordinary `verify` job as the current-tree integrity gate.
 
+The example below assumes the base commit and pull-request tip both contain
+locks reconciled to those exact trees. Require the branch to update and commit
+its lock before this job runs. If locks are updated only periodically, an
+unreconciled pull-request tip is not a valid target; `--merge-base` does not
+change that. Keep conservative test routing and use `verify --changed-from` for
+current-tree integrity and path reporting until a complete plan is available.
+
 ```yaml
 jobs:
   contract-plan:
@@ -180,7 +187,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: review
-        uses: yzm1/boundver@v0.15.0
+        uses: yzm1/boundver@v0.15.1
         with:
           operation: review
           base: ${{ github.event.pull_request.base.sha }}
@@ -234,7 +241,7 @@ script starts:
 
 ```yaml
 include:
-  - component: gitlab.com/boundver-project/boundver/boundver@0.15.0
+  - component: gitlab.com/boundver-project/boundver/boundver@0.15.1
     inputs:
       job-name: boundver-review
       operation: review
@@ -269,8 +276,8 @@ steps:
   - uses: actions/setup-python@v6
     with:
       python-version: "3.12"
-  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
-  - run: python -c "import boundver; assert boundver.__version__ == '0.15.0', boundver.__version__"
+  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.15.1"
+  - run: python -c "import boundver; assert boundver.__version__ == '0.15.1', boundver.__version__"
   - run: python -m boundver verify --source head
 ```
 
@@ -390,8 +397,8 @@ boundary-verify:
   image: python:3.12-slim
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-    - python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
-    - python -c "import boundver; assert boundver.__version__ == '0.15.0', boundver.__version__"
+    - python -m pip install --upgrade "boundver[schema,yaml]==0.15.1"
+    - python -c "import boundver; assert boundver.__version__ == '0.15.1', boundver.__version__"
   script:
     - python -m boundver verify --source head
   rules:
@@ -410,7 +417,7 @@ not conflated:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/yzm1/boundver
-    rev: v0.15.0
+    rev: v0.15.1
     hooks:
       - id: boundver-verify       # pre-commit: source=index, portable exact gate
       - id: boundver-verify-push  # pre-push: source=head, portable exact gate
@@ -422,6 +429,12 @@ shared hook environment, bootstrap it with the exact `--upgrade` install and
 version assertion from [Pin a package instead of the
 Action](#pin-a-package-instead-of-the-action). Then invoke it through
 `python -m boundver` from that interpreter.
+
+Use an exact patch tag such as `v0.15.1` for reproducible hook execution. A
+two-component alias such as `v0.15` is intentionally mutable and advances to
+the newest patch release in that line. Do not pin the hook to one patch while a
+separate CI assertion or system installation expects another; update those
+version identities together.
 
 When the staged check finds intentional drift, regenerate from the index and
 stage the result. Because the config is read from the staged snapshot, stage a

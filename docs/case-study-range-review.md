@@ -65,7 +65,7 @@ Direct consumers: analytics-contracts, platform-client
 Transitive consumers: admin-portal, analytics-contracts, checkout-web, insights-web, platform-client, scheduler
 External consumers: mobile-app, partner-audit
 Structural change: added /paths/~1orders~1{id}
-Provenance: base=72dc308d53b356b190e97d8309ee637565499b27 target=70383483c18a1dc57962402a96d0b14a8728c690
+Provenance: base=b21b334a842a144487c33ef882ca39eb1ca073c2 target=c3b193ce5a32eed4e8c31735206cc1767aaa772d
 Demo passed: current drift and reconciled historical review agree.
 ```
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import os
 from pathlib import Path
+import subprocess
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from ._config import find_config_file, load_config_file, validate_config
@@ -16,7 +17,9 @@ from ._git import (
     _capture_git_ref_snapshot,
     _git_merge_base,
     _git_repository_is_shallow,
+    _git_run,
     _resolve_git_commit,
+    _validated_git_object_id,
 )
 from ._lockfile import (
     COMPONENT_METADATA_FIELDS,
@@ -31,8 +34,10 @@ from ._lockfile import (
 )
 from ._structural_review import structural_boundary_changes
 from ._utils import (
+    DIAGNOSTIC_TRUNCATION_SENTINEL,
     FACETS,
     FACET_SET,
+    BoundverError,
     ConfigError,
     GuardrailError,
     LockfileError,
@@ -44,6 +49,7 @@ REVIEW_SCHEMA = "boundver-review/v1"
 MAX_REVIEW_WORK_STEPS = 250_000
 MAX_REVIEW_RESULT_ROWS = 100_000
 MAX_REVIEW_RESULT_BYTES = 64 * 1024 * 1024
+MAX_REVIEW_RECONCILIATION_CANDIDATES = 8
 
 
 class _ReviewWorkBudget:
@@ -219,6 +225,119 @@ def _config_lock_consistency_issues(config: dict, lockfile: dict) -> List[str]:
     return issues
 
 
+def _first_parent_ancestors(repo_root: Path, commit: str) -> List[str]:
+    """Return enough nearest-first ancestors to detect a truncated search."""
+    result = _git_run(
+        repo_root,
+        [
+            "rev-list",
+            "--first-parent",
+            f"--max-count={MAX_REVIEW_RECONCILIATION_CANDIDATES + 2}",
+            commit,
+            "--",
+        ],
+    )
+    commits = [
+        _validated_git_object_id(line, "git rev-list")
+        for line in result.stdout.splitlines()
+        if line
+    ]
+    if not commits or commits[0] != commit:
+        raise ValueError("Git first-parent history did not begin at the endpoint")
+    return commits[1:]
+
+
+def _reconciliation_candidates(
+    ancestors: List[str],
+) -> Tuple[List[Tuple[str, int]], bool]:
+    """Select the nearest ancestors without guessing which files reconciled them."""
+    selected = [
+        (candidate, distance)
+        for distance, candidate in enumerate(
+            ancestors[:MAX_REVIEW_RECONCILIATION_CANDIDATES],
+            1,
+        )
+    ]
+    return selected, len(ancestors) > MAX_REVIEW_RECONCILIATION_CANDIDATES
+
+
+def _reconciled_checkpoint_hint(
+    repo_root: Path,
+    commit: str,
+    *,
+    config_hint: str,
+    lock_hint: str,
+    has_custom_providers: bool,
+) -> str:
+    """Return bounded recovery guidance without weakening endpoint validation."""
+    if has_custom_providers:
+        return (
+            "Checkpoint search was skipped because the endpoint declares "
+            "custom providers; choose a known reconciled checkpoint explicitly."
+        )
+    try:
+        ancestors = _first_parent_ancestors(repo_root, commit)
+        candidates, candidates_truncated = _reconciliation_candidates(
+            ancestors,
+        )
+    except (OSError, subprocess.CalledProcessError, BoundverError, ValueError):
+        return "Checkpoint search could not inspect first-parent history."
+
+    for candidate, distance in candidates:
+        try:
+            candidate_snapshot = _capture_git_ref_snapshot(
+                repo_root,
+                candidate,
+                label="reconciliation ancestor",
+            )
+            _load_review_endpoint(
+                repo_root,
+                candidate_snapshot,
+                label="ancestor",
+                config_hint=config_hint,
+                lock_hint=lock_hint,
+                allow_custom_providers=False,
+                include_reconciliation_hint=False,
+            )
+        except GuardrailError:
+            return (
+                "Checkpoint search stopped after a candidate exceeded a safety "
+                "guardrail; the endpoint remains unreconciled."
+            )
+        except (BoundverError, ValueError, OSError):
+            continue
+        return (
+            f"Reconciled checkpoint found by bounded first-parent search: "
+            f"{candidate} "
+            f"({distance} {'commit' if distance == 1 else 'commits'} back)."
+        )
+
+    candidate_count = len(candidates)
+    if candidates_truncated:
+        candidate_unit = "commit" if candidate_count == 1 else "commits"
+        candidate_scope = (
+            f"the nearest {candidate_count} first-parent {candidate_unit}"
+        )
+    else:
+        candidate_unit = "commit" if candidate_count == 1 else "commits"
+        candidate_scope = f"{candidate_count} available first-parent {candidate_unit}"
+    shallow = False
+    try:
+        shallow = _git_repository_is_shallow(repo_root)
+    except (OSError, subprocess.CalledProcessError, BoundverError, ValueError):
+        pass
+    remediation = (
+        " Fetch complete history first (GitHub Actions: fetch-depth: 0; "
+        "GitLab: GIT_DEPTH: 0)."
+        if shallow
+        else ""
+    )
+    return (
+        f"No reconciled checkpoint was found among {candidate_scope}."
+        f"{remediation}"
+    )
+
+
 def _load_review_endpoint(
     repo_root: Path,
     snapshot: GitSourceSnapshot,
@@ -227,6 +346,7 @@ def _load_review_endpoint(
     config_hint: str,
     lock_hint: str,
     allow_custom_providers: bool,
+    include_reconciliation_hint: bool = True,
 ) -> Tuple[dict, dict, Path, Path]:
     config_path = find_config_file(repo_root, config_hint, snapshot=snapshot)
     lock_path = repo_root / lock_hint
@@ -291,6 +411,7 @@ def _load_review_endpoint(
         )
 
     observations: List[str] = []
+    drifted_components: Set[str] = set()
     integrity_issues = verify_lockfile(
         config,
         lockfile,
@@ -300,9 +421,48 @@ def _load_review_endpoint(
         facets=[],
         observations=observations,
         snapshot=snapshot,
+        drifted_components=drifted_components,
     )
     endpoint_drift = [*integrity_issues, *observations]
     if endpoint_drift:
+        commit = snapshot.head_oid
+        if commit is None:
+            raise ValueError("Review snapshot is missing its exact commit identity")
+        component_count = len(drifted_components)
+        diagnostics_truncated = DIAGNOSTIC_TRUNCATION_SENTINEL in endpoint_drift
+        component_summary = (
+            f" in {'at least ' if diagnostics_truncated else ''}{component_count} "
+            f"{'component' if component_count == 1 else 'components'}"
+            if component_count
+            else ""
+        )
+        header = (
+            "Range review compares reconciled endpoint commits; "
+            f"{label} commit {commit} has unreconciled drift"
+            f"{component_summary}."
+        )
+        guidance = (
+            "Reconcile and commit that endpoint's lock before review, or choose "
+            "two existing reconciled commits."
+        )
+        hint = ""
+        if include_reconciliation_hint:
+            try:
+                hint = _reconciled_checkpoint_hint(
+                    repo_root,
+                    commit,
+                    config_hint=config_hint,
+                    lock_hint=lock_hint,
+                    has_custom_providers=bool(config.get("providers")),
+                )
+            except Exception:
+                # Checkpoint discovery is recovery guidance. An unexpected
+                # auxiliary failure must not replace the original fail-closed
+                # endpoint verdict.
+                hint = (
+                    "Checkpoint search was unavailable; the endpoint remains "
+                    "unreconciled."
+                )
         preview_limit = 20
         preview = endpoint_drift[:preview_limit]
         if len(endpoint_drift) > preview_limit:
@@ -310,8 +470,15 @@ def _load_review_endpoint(
                 f"+{len(endpoint_drift) - preview_limit} additional endpoint issues"
             )
         raise LockfileError(
-            f"{label} endpoint lock is not reconciled to its immutable source tree:\n"
-            + "\n".join(preview)
+            "\n".join(
+                [
+                    header,
+                    *([hint] if hint else []),
+                    guidance,
+                    "Observed endpoint drift:",
+                    *preview,
+                ]
+            )
         )
     return config, lockfile, config_path, lock_path
 

@@ -185,7 +185,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
             "consumer, and slice impact.\n\n"
             "A complete review exits 0 whether or not identities changed. "
             "Missing history, invalid endpoints, or unreconciled config/lock "
-            "state exit 2. Use verify separately as the integrity gate."
+            "state exit 2. Reconcile and commit both endpoint locks first; "
+            "use verify separately as the current-tree integrity gate."
         ),
         epilog=(
             "Examples:\n"

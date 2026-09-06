@@ -197,6 +197,27 @@ A component-scoped
 generation produced by Boundver is accepted because that operation proves all
 unselected entries current before writing its coherent result.
 
+This is a workflow precondition, not a compatibility verdict. Reconcile and
+commit the lock at each endpoint before invoking `review`. The commits between
+the endpoints may contain stale locks; the two endpoint commits may not. When
+source-tree drift is found, the error identifies its exact commit, counts
+drifted components, and fully verifies at most the eight nearest first-parent
+commits. It checks commits in order without assuming that a lock or config edit
+caused the reconciliation, and stops at the first safety guardrail.
+Custom-provider declarations skip that search rather than executing repository-
+declared Python repeatedly; merely permitting custom providers does not skip it
+when the endpoint declares none.
+
+Two repository disciplines follow from that rule:
+
+- An endpoint-reconciled pull-request workflow commits the updated lock on the
+  branch, verifies `HEAD`, and can then use `review --format plan` for routing.
+- A periodic-lock workflow can compare its accepted checkpoints. It cannot use
+  an unreconciled pull-request tip as a target; `--merge-base` changes only the
+  base and does not relax target validation. Use `verify --changed-from` for
+  current-tree integrity and path reporting, and keep conservative test routing
+  until the target lock is reconciled.
+
 Historical recomputation does not import repository-declared Python by
 default. A config using custom providers therefore fails closed unless trusted
 automation explicitly adds `--allow-custom-providers`; checking out a branch
@@ -479,7 +500,7 @@ schema annotation. A structural lock change must advance the lock schema and
 select a new canonical publication. The upgrade procedure is:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.15.0"
+python -m pip install --upgrade "boundver[schema,yaml]==0.15.1"
 boundver validate-config
 # Stage changed config and every changed or newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml

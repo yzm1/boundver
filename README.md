@@ -102,7 +102,7 @@ designed to make.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.1/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -148,23 +148,32 @@ documents providers, selectors, source modes, facets, and graph limits. The
 [glossary](https://yzm1.github.io/boundver/glossary/) defines the terms used
 throughout the project.
 
-## Review a branch before accepting drift
+## Reconcile a branch, then review the range
+
+`review` compares reconciled checkpoints. Both endpoint commits must already
+contain locks that match their source trees.
 
 ```bash
-# Compare committed endpoints using pull-request merge-base semantics.
-boundver review origin/main..HEAD --merge-base --transitive
-
-# Verify the candidate snapshot.
+# Inspect the candidate before accepting its drift.
 boundver verify --source working-tree
+boundver why payment-api --source working-tree
 
-# After review, update the lock and inspect the exact change.
+# Record intentional drift, inspect the lock change, and commit the checkpoint.
 boundver verify --source working-tree --update
 git diff -- boundary.lock.json
+git add boundary.lock.json path/to/changed-file
+git commit -m "chore: reconcile boundver lock"
+boundver verify --source head
+
+# Now compare the two reconciled commits.
+boundver review origin/main..HEAD --merge-base --transitive
 ```
 
 `review` is read-only and compares two immutable Git trees. `verify` remains
-the integrity gate for the current candidate. Generated boundary artifacts need
-their own deterministic freshness check before verification; see
+the integrity gate for the current candidate. Repositories that update locks
+only periodically can review their reconciled checkpoints, but cannot use an
+unreconciled pull-request tip as a review endpoint. Generated boundary artifacts
+need their own deterministic freshness check before verification; see
 [troubleshooting](https://yzm1.github.io/boundver/troubleshooting/).
 
 ## GitHub Actions
@@ -175,7 +184,7 @@ Pin the Action to the same release used to write the lock:
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
-- uses: yzm1/boundver@v0.15.0
+- uses: yzm1/boundver@v0.15.1
   with:
     operation: verify
     source: head
@@ -191,9 +200,9 @@ GitLab, pre-commit, range review, outputs, and shallow-history failures.
 - PyPI: `python -m pip install "boundver[schema,yaml]"`
 - GitHub Action: [Marketplace](https://github.com/marketplace/actions/boundver)
 - GitLab CI/CD: [Catalog project](https://gitlab.com/boundver-project/boundver)
-- Container: `docker run --rm ghcr.io/yzm1/boundver:0.15.0 --version`
+- Container: `docker run --rm ghcr.io/yzm1/boundver:0.15.1 --version`
 - Homebrew: `brew install yzm1/boundver/boundver`
-- Standalone archive: download `boundver-0.15.0.pyz` from
+- Standalone archive: download `boundver-0.15.1.pyz` from
   [GitHub Releases](https://github.com/yzm1/boundver/releases)
 
 The project supports Python 3.10 or newer and requires Git. Release channels

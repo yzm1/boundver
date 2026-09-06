@@ -1792,7 +1792,11 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 print(unavailable_guidance)
             elif not args.update:
                 print()
-                print("Inspect with `boundver why <component>`, then run `boundver verify --update` after review.")
+                print("Inspect with `boundver why <component>`.")
+                print(
+                    "If the drift is intentional, reconcile this source snapshot "
+                    "with `boundver verify --update`."
+                )
         # Regeneration cannot manufacture a facet that the configuration does
         # not define. Treat this as a controlled policy/input error and leave
         # the reviewed lock bytes untouched even when --update was requested.
@@ -2098,7 +2102,7 @@ def _cmd_init(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.0/boundary.config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.1/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered

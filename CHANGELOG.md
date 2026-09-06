@@ -6,8 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-09-06
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
 ### Fixed
 
+- Clarified that historical `review` compares reconciled endpoint commits and
+  is not the human approval step before a lock update. Source-tree-drift
+  failures now name the exact commit, count drifted components, and provide a
+  bounded reconciled first-parent checkpoint hint. The hint checks nearest
+  ancestors in order, including source-only reconciliations, without treating
+  configured endpoint filenames as Git pathspecs. Candidate revalidation stops
+  at the first safety guardrail, and repeated custom-provider execution is
+  skipped according to the endpoint declaration rather than an unused
+  permission flag. Quick-start, Action, GitLab, and pre-commit guidance now
+  distinguishes endpoint-reconciled and periodic-lock workflows, exact patch
+  tags, and mutable release-line aliases.
 - Restored system CA paths for the pinned PyPI publisher and the downstream
   Sigstore provenance checks after neutralizing inherited TLS overrides,
   preventing TUF refreshes from failing with an empty OpenSSL trust store.
@@ -999,7 +1019,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/yzm1/boundver/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/yzm1/boundver/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/yzm1/boundver/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/yzm1/boundver/compare/v0.13.0...v0.14.0
