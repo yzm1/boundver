@@ -1482,6 +1482,11 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "Re-retain the exact recovered OCI image for the protected publisher",
                 "reuse_retained_artifact: ${{ needs.verify-release.outputs.container-artifact-id != '' }}",
                 "retained_artifact_name: ${{ needs.verify-release.outputs.container-artifact-name }}",
+                "release-id: ${{ steps.release-draft.outputs.release-id }}",
+                "release-url: ${{ steps.release-draft.outputs.release-url }}",
+                "url: ${{ needs.prepare-release-draft.outputs.release-url }}",
+                '--release-id "${{ needs.prepare-release-draft.outputs.release-id }}"',
+                "Do not create another release",
             )
         )
         container_workflow = "\n".join(
@@ -3189,6 +3194,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertIn(alias_command, runbook)
         self.assertLess(runbook.index(check_command), runbook.index(start_command))
         self.assertIn("--confirm", runbook)
+        self.assertIn("exact `untagged-*` draft URL", runbook)
+        self.assertIn("Do not use", runbook)
+        self.assertIn("a tag-derived `/releases/edit/vX.Y.Z` URL", runbook)
+        self.assertIn("immutable Release or its tag", runbook)
         self.assertIn("--alias", runbook)
         self.assertIn("--run-id", runbook)
         self.assertIn("#$run_id", runbook)

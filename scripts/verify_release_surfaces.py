@@ -40,6 +40,7 @@ MAX_CHECKSUM_MANIFEST_BYTES = 64 * 1024
 MAX_ARTIFACT_DIRECTORY_ENTRIES = 16
 MAX_JSON_INTEGER_DIGITS = 4300
 MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
+MAX_RELEASE_ID = (1 << 64) - 1
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
@@ -859,6 +860,7 @@ def _verify_github(
     release_notes: str,
     local_assets: Mapping[str, LocalArtifact],
     *,
+    expected_release_id: int | None,
     verify_alias: bool,
 ) -> None:
     release_url = _github_api_url(
@@ -869,6 +871,16 @@ def _verify_github(
         release_url,
         allowed_origins=frozenset({"https://api.github.com"}),
     )
+    if expected_release_id is not None:
+        actual_release_id = release.get("id")
+        if (
+            not isinstance(actual_release_id, int)
+            or isinstance(actual_release_id, bool)
+            or actual_release_id != expected_release_id
+        ):
+            raise ReleaseVerificationError(
+                "GitHub Release identity disagrees with the prepared draft"
+            )
     if release.get("tag_name") != tag:
         raise ReleaseVerificationError("GitHub Release tag disagrees")
     target = release.get("target_commitish")
@@ -1032,6 +1044,7 @@ def _prepare_verification(
     repository: str = DEFAULT_REPOSITORY,
     marketplace_slug: str = DEFAULT_MARKETPLACE_SLUG,
     phase: str = "complete",
+    release_id: int | None = None,
     verify_alias: bool = True,
 ) -> tuple[str, str, dict[str, LocalArtifact], dict[str, LocalArtifact]]:
     match = TAG_RE.fullmatch(tag)
@@ -1066,6 +1079,16 @@ def _prepare_verification(
         raise ReleaseVerificationError(
             f"phase must be one of: {', '.join(sorted(PHASES))}"
         )
+    if release_id is not None and (
+        not isinstance(release_id, int)
+        or isinstance(release_id, bool)
+        or not 1 <= release_id <= MAX_RELEASE_ID
+    ):
+        raise ReleaseVerificationError("release ID must be a positive 64-bit integer")
+    if phase == "marketplace" and release_id is None:
+        raise ReleaseVerificationError(
+            "marketplace phase requires the prepared GitHub Release ID"
+        )
 
     asset_dir = release_assets_dir if release_assets_dir is not None else dist_dir
     distributions, release_assets = _load_local_artifacts(
@@ -1085,6 +1108,7 @@ def _verify_prepared_surfaces(
     repository: str,
     marketplace_slug: str,
     phase: str,
+    release_id: int | None,
     verify_alias: bool,
     release_notes: str,
     distributions: Mapping[str, LocalArtifact],
@@ -1108,6 +1132,7 @@ def _verify_prepared_surfaces(
         version,
         release_notes,
         release_assets,
+        expected_release_id=release_id,
         verify_alias=verify_alias,
     )
     if phase != "github":
@@ -1125,6 +1150,7 @@ def verify_release_surfaces(
     repository: str = DEFAULT_REPOSITORY,
     marketplace_slug: str = DEFAULT_MARKETPLACE_SLUG,
     phase: str = "complete",
+    release_id: int | None = None,
     verify_alias: bool = True,
     fetch: Fetcher | None = None,
 ) -> None:
@@ -1139,6 +1165,7 @@ def verify_release_surfaces(
         repository=repository,
         marketplace_slug=marketplace_slug,
         phase=phase,
+        release_id=release_id,
         verify_alias=verify_alias,
     )
     network = fetch if fetch is not None else _stdlib_fetch
@@ -1151,6 +1178,7 @@ def verify_release_surfaces(
         repository=repository,
         marketplace_slug=marketplace_slug,
         phase=phase,
+        release_id=release_id,
         verify_alias=verify_alias and phase == "complete",
         release_notes=notes,
         distributions=distributions,
@@ -1169,6 +1197,7 @@ def verify_release_surfaces_with_retries(
     repository: str = DEFAULT_REPOSITORY,
     marketplace_slug: str = DEFAULT_MARKETPLACE_SLUG,
     phase: str = "complete",
+    release_id: int | None = None,
     verify_alias: bool = True,
     attempts: int = 12,
     delay_seconds: float = 10.0,
@@ -1191,6 +1220,7 @@ def verify_release_surfaces_with_retries(
         repository=repository,
         marketplace_slug=marketplace_slug,
         phase=phase,
+        release_id=release_id,
         verify_alias=verify_alias,
     )
     network = fetch if fetch is not None else _stdlib_fetch
@@ -1205,6 +1235,7 @@ def verify_release_surfaces_with_retries(
                 repository=repository,
                 marketplace_slug=marketplace_slug,
                 phase=phase,
+                release_id=release_id,
                 verify_alias=verify_alias and phase == "complete",
                 release_notes=notes,
                 distributions=distributions,
@@ -1245,6 +1276,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository", default=DEFAULT_REPOSITORY)
     parser.add_argument("--marketplace-slug", default=DEFAULT_MARKETPLACE_SLUG)
     parser.add_argument(
+        "--release-id",
+        type=int,
+        help="Numeric identity of the exact workflow-prepared GitHub Release",
+    )
+    parser.add_argument(
         "--phase",
         choices=sorted(PHASES),
         default="complete",
@@ -1277,6 +1313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository=args.repository,
             marketplace_slug=args.marketplace_slug,
             phase=args.phase,
+            release_id=args.release_id,
             verify_alias=not args.skip_alias,
             attempts=args.attempts,
             delay_seconds=args.delay_seconds,

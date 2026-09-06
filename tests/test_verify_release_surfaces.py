@@ -196,6 +196,7 @@ def _surface_routes(payloads: dict[str, bytes]) -> dict[str, Any]:
         f"https://api.github.com/repos/yzm1/boundver/releases/tags/{TAG}"
     ] = json.dumps(
         {
+            "id": 42,
             "tag_name": TAG,
             "target_commitish": "main",
             "name": f"boundver {VERSION}",
@@ -277,7 +278,7 @@ def test_marketplace_phase_defers_production_pypi_and_alias(candidate):
     )
     fetch = FakeFetcher(routes)
 
-    _verify(candidate, fetch, phase="marketplace")
+    _verify(candidate, fetch, phase="marketplace", release_id=42)
 
     requested = {url for url, _ in fetch.requests}
     assert not any(url.startswith("https://pypi.org/") for url in requested)
@@ -501,6 +502,55 @@ def test_github_release_title_and_notes_are_exact(
 
     with pytest.raises(verifier.ReleaseVerificationError, match=message):
         _verify(candidate, FakeFetcher(routes))
+
+
+def test_github_release_identity_must_match_the_prepared_draft(candidate):
+    routes = _surface_routes(candidate[2])
+
+    _verify(candidate, FakeFetcher(routes), release_id=42)
+
+    with pytest.raises(
+        verifier.ReleaseVerificationError,
+        match="identity disagrees with the prepared draft",
+    ):
+        _verify(candidate, FakeFetcher(routes), release_id=43)
+
+    url = f"https://api.github.com/repos/yzm1/boundver/releases/tags/{TAG}"
+    payload = json.loads(routes[url])
+    payload["id"] = True
+    routes[url] = json.dumps(payload).encode("utf-8")
+    with pytest.raises(
+        verifier.ReleaseVerificationError,
+        match="identity disagrees with the prepared draft",
+    ):
+        _verify(candidate, FakeFetcher(routes), release_id=1)
+
+
+def test_marketplace_phase_requires_the_prepared_release_identity(candidate):
+    with pytest.raises(
+        verifier.ReleaseVerificationError,
+        match="marketplace phase requires the prepared GitHub Release ID",
+    ):
+        _verify(
+            candidate,
+            FakeFetcher(_surface_routes(candidate[2])),
+            phase="marketplace",
+        )
+
+
+@pytest.mark.parametrize("release_id", [0, -1, True, 1 << 64])
+def test_github_release_identity_is_a_positive_64_bit_integer(
+    candidate, release_id: int
+):
+    with pytest.raises(
+        verifier.ReleaseVerificationError,
+        match="positive 64-bit integer",
+    ):
+        _verify(
+            candidate,
+            FakeFetcher(_surface_routes(candidate[2])),
+            release_id=release_id,
+        )
 
 
 def test_existing_tag_release_may_report_default_branch_target_commitish(candidate):

@@ -205,17 +205,26 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
             commands[1][0], (sys.executable, "-I", "-m", "pytest", "-q")
         )
         self.assertEqual(
-            commands[2][0], ("/tools/bash", "scripts/packaging_smoke.sh")
+            commands[2][0],
+            (sys.executable, "-I", "scripts/demo_consumer_impact.py"),
         )
-        self.assertEqual(commands[2][1]["SOURCE_DATE_EPOCH"], "1700000000")
-        for name in ("BASH_ENV", "ENV", "SHELLOPTS"):
-            self.assertNotIn(name, commands[2][1])
-        self.assertNotIn("SOURCE_DATE_EPOCH", commands[0][1])
         self.assertEqual(
-            commands[3][0][:5],
+            commands[3][0],
+            (sys.executable, "-I", "scripts/demo_range_review.py"),
+        )
+        self.assertEqual(
+            commands[4][0], ("/tools/bash", "scripts/packaging_smoke.sh")
+        )
+        self.assertEqual(commands[4][1]["SOURCE_DATE_EPOCH"], "1700000000")
+        for name in ("BASH_ENV", "ENV", "SHELLOPTS"):
+            self.assertNotIn(name, commands[4][1])
+        for index in range(4):
+            self.assertNotIn("SOURCE_DATE_EPOCH", commands[index][1])
+        self.assertEqual(
+            commands[5][0][:5],
             (sys.executable, "-I", "-m", "twine", "check"),
         )
-        self.assertEqual(commands[3][1]["SAFE_VALUE"], "kept")
+        self.assertEqual(commands[5][1]["SAFE_VALUE"], "kept")
 
     def test_verifier_rejects_wrong_checkout_before_running_candidate_code(self):
         verifier = _load_script()

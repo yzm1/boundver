@@ -1159,6 +1159,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [verify-release, verify-testpypi, prepare-release-notes]
+    outputs:
+      release-id: ${{ steps.release-draft.outputs.release-id }}
+      release-url: ${{ steps.release-draft.outputs.release-url }}
     permissions:
       actions: read
       contents: write
@@ -1181,6 +1184,7 @@ jobs:
           merge-multiple: true
 
       - name: Create or reconcile the exact release draft
+        id: release-draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1485,7 +1489,11 @@ jobs:
                 raw, payload = api_json(
                     f"repos/{repository}/releases/{release_id}", MAX_DETAIL_BYTES
                 )
-                if not isinstance(payload, dict) or payload.get("id") != release_id:
+                if (
+                    not isinstance(payload, dict)
+                    or type(payload.get("id")) is not int
+                    or payload.get("id") != release_id
+                ):
                     raise SystemExit("GitHub Release detail disagrees with its identity")
                 output.write_bytes(raw)
         run: |
@@ -1777,23 +1785,31 @@ jobs:
             echo "GitHub Release API failed during final draft verification" >&2
             exit 1
           fi
+          release_url_file=$(mktemp "$RUNNER_TEMP/release-url.XXXXXX")
           python_clean - \
             "$RELEASE_TAG" \
+            "$GITHUB_REPOSITORY" \
+            "$release_id" \
             "$notes_file" \
             "$release_json_file" \
             "$expected_assets" \
-            "$draft_state" <<'PY'
+            "$draft_state" \
+            "$release_url_file" <<'PY'
           import json
           import math
           import pathlib
+          import re
           import sys
 
           (
               release_tag,
+              repository,
+              release_id_text,
               notes_path,
               release_json_path,
               expected_path,
               draft_state_path,
+              release_url_path,
           ) = sys.argv[1:]
           MAX_RELEASE_JSON_BYTES = 32 * 1024 * 1024
           MAX_NOTES_BYTES = 1024 * 1024
@@ -1868,6 +1884,14 @@ jobs:
               raise SystemExit("GitHub Release response is malformed") from error
           if not isinstance(release, dict):
               raise SystemExit("GitHub Release response is malformed")
+          if (
+              re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None
+              or re.fullmatch(r"[1-9][0-9]{0,19}", release_id_text) is None
+              or int(release_id_text) > (1 << 64) - 1
+              or type(release.get("id")) is not int
+              or release.get("id") != int(release_id_text)
+          ):
+              raise SystemExit("GitHub Release identity changed during reconciliation")
           expected_title = f"boundver {release_tag.removeprefix('v')}"
           expected_notes = read_text_bounded(
               notes_path, MAX_NOTES_BYTES, "release notes"
@@ -1895,6 +1919,23 @@ jobs:
               raise SystemExit(
                   "Public GitHub Release is not immutable or lacks a publication timestamp"
               )
+          release_url = release.get("html_url")
+          draft_url_prefix = f"https://github.com/{repository}/releases/tag/untagged-"
+          public_url = f"https://github.com/{repository}/releases/tag/{release_tag}"
+          if draft:
+              draft_token = (
+                  release_url.removeprefix(draft_url_prefix)
+                  if isinstance(release_url, str)
+                  else ""
+              )
+              if (
+                  not isinstance(release_url, str)
+                  or not release_url.startswith(draft_url_prefix)
+                  or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", draft_token) is None
+              ):
+                  raise SystemExit("GitHub Release draft URL is malformed")
+          elif release_url != public_url:
+              raise SystemExit("Public GitHub Release URL disagrees")
           expected_lines = read_text_bounded(
               expected_path, MAX_EXPECTED_BYTES, "expected release assets"
           ).splitlines()
@@ -1932,6 +1973,7 @@ jobs:
                   f"GitHub Release asset set disagrees; missing={missing}, extra={extra}"
               )
           pathlib.Path(draft_state_path).write_text(str(draft).lower() + "\n")
+          pathlib.Path(release_url_path).write_text(release_url + "\n")
           PY
 
           remote_assets=$(mktemp -d)
@@ -1940,8 +1982,20 @@ jobs:
             <(cd "$asset_dir" && sha256sum * | LC_ALL=C sort) \
             <(cd "$remote_assets" && sha256sum * | LC_ALL=C sort)
           is_draft=$(<"$draft_state")
+          release_url=$(<"$release_url_file")
+          {
+            printf 'release-id=%s\n' "$release_id"
+            printf 'release-url=%s\n' "$release_url"
+          } >> "$GITHUB_OUTPUT"
           if [[ "$is_draft" == true ]]; then
-            echo "Draft is complete. Publish it with the Marketplace checkbox, then approve the marketplace environment."
+            {
+              echo "### Exact GitHub Release draft"
+              echo
+              echo "Publish the existing verified draft: [$RELEASE_TAG draft]($release_url)"
+              echo
+              echo "Do not create another release or use a tag-derived edit URL. Confirm the title and four assets, select the Marketplace checkbox, publish this exact draft, then approve the marketplace environment."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Draft is complete at $release_url. Publish this exact existing draft with the Marketplace checkbox; do not create another release. Then approve the marketplace environment."
           elif [[ "$is_draft" == false ]]; then
             echo "Public immutable GitHub Release exactly matches the retained candidate."
           else
@@ -1954,7 +2008,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [verify-release, verify-testpypi, prepare-release-draft]
-    environment: marketplace
+    environment:
+      name: marketplace
+      url: ${{ needs.prepare-release-draft.outputs.release-url }}
     permissions:
       actions: read
       contents: read
@@ -2022,6 +2078,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --sha "$RELEASE_SHA" \
             --alias "$verification_alias" \
+            --release-id "${{ needs.prepare-release-draft.outputs.release-id }}" \
             --dist-dir dist \
             --release-notes "$RUNNER_TEMP/release-notes.md" \
             --release-assets-dir release-assets \

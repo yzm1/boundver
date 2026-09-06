@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.1/spec/cli-output.status.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/spec/cli-output.status.schema.json",
   "title": "boundver status --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver status --format json`.",
   "type": "object",

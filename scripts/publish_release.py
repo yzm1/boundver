@@ -2614,6 +2614,23 @@ def _surface_inventory(repo: Path) -> str:
         raise GateError(
             "publication workflow is missing release phases: " + ", ".join(absent_jobs)
         )
+    required_marketplace_handoff_contracts = (
+        "release-id: ${{ steps.release-draft.outputs.release-id }}",
+        "release-url: ${{ steps.release-draft.outputs.release-url }}",
+        "url: ${{ needs.prepare-release-draft.outputs.release-url }}",
+        '--release-id "${{ needs.prepare-release-draft.outputs.release-id }}"',
+        "Do not create another release",
+    )
+    missing_marketplace_handoff_contracts = [
+        value
+        for value in required_marketplace_handoff_contracts
+        if value not in publish_workflow
+    ]
+    if missing_marketplace_handoff_contracts:
+        raise GateError(
+            "publication workflow is missing exact Marketplace draft handoff contracts: "
+            + ", ".join(missing_marketplace_handoff_contracts)
+        )
     required_recovery_contracts = (
         "container_run_id:",
         "container-source-run-id:",

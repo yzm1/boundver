@@ -41,7 +41,7 @@ from ._utils import (
 
 BASELINE_SCHEMA = "boundver-verify-baseline/v1"
 BASELINE_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/yzm1/boundver/v0.15.1/"
+    "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/"
     "spec/verify-baseline.schema.json"
 )
 MAX_BASELINE_BYTES = 2 * 1024 * 1024
