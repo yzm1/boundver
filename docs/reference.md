@@ -203,8 +203,10 @@ the endpoints may contain stale locks; the two endpoint commits may not. When
 source-tree drift is found, the error identifies its exact commit, counts
 drifted components, and fully verifies at most the eight nearest first-parent
 commits. It checks commits in order without assuming that a lock or config edit
-caused the reconciliation. Custom-provider review skips that search rather than
-executing repository-declared Python repeatedly.
+caused the reconciliation, and stops at the first safety guardrail.
+Custom-provider declarations skip that search rather than executing repository-
+declared Python repeatedly; merely permitting custom providers does not skip it
+when the endpoint declares none.
 
 Two repository disciplines follow from that rule:
 

@@ -22,9 +22,12 @@ All notable changes to this project are documented here. The format follows
   failures now name the exact commit, count drifted components, and provide a
   bounded reconciled first-parent checkpoint hint. The hint checks nearest
   ancestors in order, including source-only reconciliations, without treating
-  configured endpoint filenames as Git pathspecs. Quick-start, Action, GitLab,
-  and pre-commit guidance now distinguishes endpoint-reconciled and periodic-
-  lock workflows, exact patch tags, and mutable release-line aliases.
+  configured endpoint filenames as Git pathspecs. Candidate revalidation stops
+  at the first safety guardrail, and repeated custom-provider execution is
+  skipped according to the endpoint declaration rather than an unused
+  permission flag. Quick-start, Action, GitLab, and pre-commit guidance now
+  distinguishes endpoint-reconciled and periodic-lock workflows, exact patch
+  tags, and mutable release-line aliases.
 - Restored system CA paths for the pinned PyPI publisher and the downstream
   Sigstore provenance checks after neutralizing inherited TLS overrides,
   preventing TUF refreshes from failing with an empty OpenSSL trust store.

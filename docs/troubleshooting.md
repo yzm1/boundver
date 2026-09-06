@@ -93,10 +93,11 @@ their immutable source trees. Reconcile the branch tip, commit the lock, verify
 A source-tree-drift error names the offending commit and performs a bounded
 first-parent search for a reconciled checkpoint. It fully verifies at most the
 eight nearest commits, including source-only reconciliations that did not edit
-the lock or config. If the repository updates its lock only periodically,
-compare those checkpoints explicitly instead. An unreconciled pull-request tip
-cannot produce a complete `boundver-plan/v1`; do not use a failed or partial
-review result to skip tests.
+the lock or config, and stops at the first safety guardrail. Endpoints declaring
+custom providers skip this search to avoid repeatedly executing repository code.
+If the repository updates its lock only periodically, compare those checkpoints
+explicitly instead. An unreconciled pull-request tip cannot produce a complete
+`boundver-plan/v1`; do not use a failed or partial review result to skip tests.
 
 ## A facet is unavailable
 

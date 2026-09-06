@@ -735,14 +735,69 @@ def test_review_skips_checkpoint_search_with_custom_providers(tmp_path: Path) ->
     hint = review_module._reconciled_checkpoint_hint(
         tmp_path,
         "f" * 40,
-        config_path=tmp_path / "boundary.config.json",
-        lock_path=tmp_path / "boundary.lock.json",
         config_hint="boundary.config.json",
         lock_hint="boundary.lock.json",
-        allow_custom_providers=True,
+        has_custom_providers=True,
     )
 
-    assert "skipped because custom providers are enabled" in hint
+    assert "skipped because the endpoint declares custom providers" in hint
+
+
+def test_review_does_not_skip_checkpoint_search_for_unused_custom_permission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(review_module, "_first_parent_ancestors", lambda *_args: [])
+
+    hint = review_module._reconciled_checkpoint_hint(
+        tmp_path,
+        "f" * 40,
+        config_hint="boundary.config.json",
+        lock_hint="boundary.lock.json",
+        has_custom_providers=False,
+    )
+
+    assert "custom providers" not in hint
+    assert "0 available first-parent commits" in hint
+
+
+def test_review_stops_checkpoint_search_after_a_candidate_guardrail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ancestors = [f"{index:040x}" for index in range(1, 4)]
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        review_module,
+        "_first_parent_ancestors",
+        lambda *_args: ancestors,
+    )
+    monkeypatch.setattr(
+        review_module,
+        "_capture_git_ref_snapshot",
+        lambda _root, candidate, **_kwargs: candidate,
+    )
+
+    def exceed_guardrail(
+        _root: Path,
+        candidate: object,
+        **_kwargs: object,
+    ) -> None:
+        attempted.append(str(candidate))
+        raise GuardrailError("candidate work limit")
+
+    monkeypatch.setattr(review_module, "_load_review_endpoint", exceed_guardrail)
+
+    hint = review_module._reconciled_checkpoint_hint(
+        tmp_path,
+        "f" * 40,
+        config_hint="boundary.config.json",
+        lock_hint="boundary.lock.json",
+        has_custom_providers=False,
+    )
+
+    assert attempted == [ancestors[0]]
+    assert "stopped after a candidate exceeded a safety guardrail" in hint
 
 
 def test_verify_guidance_does_not_refer_ambiguously_to_review(tmp_path: Path) -> None:

@@ -265,17 +265,15 @@ def _reconciled_checkpoint_hint(
     repo_root: Path,
     commit: str,
     *,
-    config_path: Path,
-    lock_path: Path,
     config_hint: str,
     lock_hint: str,
-    allow_custom_providers: bool,
+    has_custom_providers: bool,
 ) -> str:
     """Return bounded recovery guidance without weakening endpoint validation."""
-    if allow_custom_providers:
+    if has_custom_providers:
         return (
-            "Checkpoint search was skipped because custom providers are "
-            "enabled; choose a known reconciled checkpoint explicitly."
+            "Checkpoint search was skipped because the endpoint declares "
+            "custom providers; choose a known reconciled checkpoint explicitly."
         )
     try:
         ancestors = _first_parent_ancestors(repo_root, commit)
@@ -300,6 +298,11 @@ def _reconciled_checkpoint_hint(
                 lock_hint=lock_hint,
                 allow_custom_providers=False,
                 include_reconciliation_hint=False,
+            )
+        except GuardrailError:
+            return (
+                "Checkpoint search stopped after a candidate exceeded a safety "
+                "guardrail; the endpoint remains unreconciled."
             )
         except (BoundverError, ValueError, OSError):
             continue
@@ -448,11 +451,9 @@ def _load_review_endpoint(
                 hint = _reconciled_checkpoint_hint(
                     repo_root,
                     commit,
-                    config_path=config_path,
-                    lock_path=lock_path,
                     config_hint=config_hint,
                     lock_hint=lock_hint,
-                    allow_custom_providers=allow_custom_providers,
+                    has_custom_providers=bool(config.get("providers")),
                 )
             except Exception:
                 # Checkpoint discovery is recovery guidance. An unexpected
