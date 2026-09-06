@@ -462,7 +462,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.15.1/spec/{schema_name}",
+                    f"v0.15.2/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
@@ -608,7 +608,7 @@ class AutomationContractTests(unittest.TestCase):
         self.assertNotIn("gh api --paginate --slurp", workflow)
         self.assertIn("--draft", workflow)
         self.assertIn("SHA256SUMS", workflow)
-        self.assertIn("environment: marketplace", workflow)
+        self.assertIn("name: marketplace", workflow)
         self.assertIn("pypi-attestations verify pypi", workflow)
         self.assertNotIn("--generate-notes", workflow)
         self.assertNotIn("--clobber", workflow)
@@ -818,6 +818,56 @@ class AutomationContractTests(unittest.TestCase):
             self.assertEqual(command_environment["GH_HOST"], "github.com")
             self.assertTrue(command_environment["GH_CONFIG_DIR"])
         sleep.assert_called_once_with(2)
+
+    def test_release_draft_capture_rejects_boolean_release_identity(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+        step = next(
+            item
+            for item in workflow["jobs"]["prepare-release-draft"]["steps"]
+            if item.get("name") == "Create or reconcile the exact release draft"
+        )
+        program = step["env"]["RELEASE_DRAFT_API_PROGRAM"]
+
+        class FakeProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b'{"id":true}')
+                self.stderr = io.BytesIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "release.json"
+            output.touch()
+            environment = {
+                "GITHUB_WORKSPACE": str(REPO_ROOT),
+                "RUNNER_TEMP": temporary,
+            }
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "release-draft-api",
+                        "capture",
+                        "yzm1/boundver",
+                        "1",
+                        str(output),
+                    ],
+                ),
+                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("subprocess.Popen", return_value=FakeProcess()),
+                self.assertRaisesRegex(SystemExit, "detail disagrees"),
+            ):
+                exec(compile(program, "<release-draft-api>", "exec"), {})
 
     def test_elevated_registry_and_release_jobs_isolate_code_execution(self):
         import yaml
@@ -1250,7 +1300,12 @@ class AutomationContractTests(unittest.TestCase):
             test_publish["if"],
             "needs.testpypi-preflight.outputs.upload-required == 'true'",
         )
-        self.assertEqual(jobs["verify-marketplace"]["environment"], "marketplace")
+        marketplace_environment = jobs["verify-marketplace"]["environment"]
+        self.assertEqual(marketplace_environment["name"], "marketplace")
+        self.assertEqual(
+            marketplace_environment["url"],
+            "${{ needs.prepare-release-draft.outputs.release-url }}",
+        )
         self.assertIn("prepare-release-draft", jobs["verify-marketplace"]["needs"])
         self.assertEqual(jobs["publish-pypi"]["environment"], "pypi")
         self.assertIn("pypi-preflight", jobs["publish-pypi"]["needs"])
@@ -1340,6 +1395,53 @@ class AutomationContractTests(unittest.TestCase):
         self.assertFalse(
             any(str(step.get("uses", "")).startswith("actions/checkout@")
                 for step in jobs["publish-testpypi"]["steps"])
+        )
+
+    def test_marketplace_handoff_names_the_exact_prepared_release(self):
+        import yaml
+
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/publish.yml").read_text(
+                encoding="utf-8"
+            )
+        )["jobs"]
+        prepare = jobs["prepare-release-draft"]
+        step = next(
+            item
+            for item in prepare["steps"]
+            if item.get("name") == "Create or reconcile the exact release draft"
+        )
+
+        self.assertEqual(step["id"], "release-draft")
+        self.assertEqual(
+            prepare["outputs"],
+            {
+                "release-id": "${{ steps.release-draft.outputs.release-id }}",
+                "release-url": "${{ steps.release-draft.outputs.release-url }}",
+            },
+        )
+        script = step["run"]
+        self.assertIn("GitHub Release identity changed during reconciliation", script)
+        self.assertIn("GitHub Release draft URL is malformed", script)
+        self.assertIn(
+            'type(payload.get("id")) is not int',
+            step["env"]["RELEASE_DRAFT_API_PROGRAM"],
+        )
+        self.assertIn('type(release.get("id")) is not int', script)
+        self.assertIn("release-id=%s", script)
+        self.assertIn("release-url=%s", script)
+        self.assertIn("$GITHUB_STEP_SUMMARY", script)
+        self.assertIn("Do not create another release", script)
+
+        marketplace_script = next(
+            item["run"]
+            for item in jobs["verify-marketplace"]["steps"]
+            if item.get("name")
+            == "Require public immutable Release and Marketplace version"
+        )
+        self.assertIn(
+            '--release-id "${{ needs.prepare-release-draft.outputs.release-id }}"',
+            marketplace_script,
         )
 
     def test_testpypi_install_cannot_resolve_boundver_from_pypi(self):

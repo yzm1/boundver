@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-09-06
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v2`
+- Lock schema: `boundary-lock/v3`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+### Fixed
+
+- Bound the Marketplace approval to the workflow-prepared GitHub Release's
+  validated numeric ID and exact `untagged-*` draft URL. The protected
+  deployment and job summary now link directly to that draft, the handoff
+  explicitly forbids creating a second release, and public-surface verification
+  rejects a different release object even when it uses the expected tag.
+
+### Distribution recovery
+
+- The v0.15.1 promotion stopped safely after TestPyPI when a second, empty
+  GitHub Release was published instead of the complete workflow-prepared draft.
+  The immutable v0.15.1 release and exact Action tag remain as incident records;
+  v0.15.1 was not promoted to production PyPI, GHCR, Homebrew, GitLab, or the
+  mutable `v0.15` Action alias. Use v0.15.2 for complete distribution coverage.
+
 ## [0.15.1] - 2026-09-06
 
 ### Upgrade contract
@@ -1019,7 +1044,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/yzm1/boundver/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/yzm1/boundver/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/yzm1/boundver/compare/v0.14.1...v0.15.0
 [0.14.1]: https://github.com/yzm1/boundver/compare/v0.14.0...v0.14.1

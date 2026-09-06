@@ -470,16 +470,25 @@ workflows then perform these gates in order:
    incomplete asset set. `gh release create` exposes a URL but no numeric ID,
    while GitHub's exact-tag endpoint excludes drafts, so the workflow performs
    a six-attempt, two-second authenticated-list visibility retry after creation
-   and then binds every later operation to the unique numeric ID. A terminal
-   visibility failure reports the canonical release URL for safe recovery.
-6. Open the prepared GitHub draft. Select **Publish this Action to the GitHub
-   Marketplace**, confirm its categories and version, then publish with 2FA.
-   This owner-only step makes the release immutable, so verify the complete
-   asset set before clicking publish.
+   and then binds every later operation to the unique numeric ID. It exposes
+   that ID and the exact `untagged-*` draft URL in the job summary and as the
+   protected deployment URL.
+6. Open **only** the exact draft URL emitted by `Prepare complete GitHub Release
+   draft` or the `marketplace` deployment's **View deployment** link. Do not use
+   `/releases/new`, a tag-derived `/releases/edit/vX.Y.Z` URL, or **Draft a new
+   release**: GitHub can retain the prepared draft while publishing a second,
+   empty release for the same tag. Confirm the title, notes, and four assets on
+   the existing draft. Select **Publish this Action to the GitHub Marketplace**,
+   confirm its categories and version, then publish that draft with 2FA. On a
+   resumed promotion, if the preparation job instead reports that the exact
+   public immutable Release already matches, inspect its deployment URL and do
+   not create or publish another release.
 7. Keep the original workflow run waiting at the protected `marketplace`
-   environment while the owner publishes the draft. Once approved, that same
-   run revalidates the immutable tag, release assets, Marketplace listing, and
-   TestPyPI candidate. After approval in the `pypi` environment, publish the
+   environment while the owner publishes the exact draft. Approve the
+   environment only after publication. The job requires the public Release's
+   numeric ID to equal the prepared draft's ID, then revalidates the immutable
+   tag, release assets, Marketplace listing, and TestPyPI candidate. After
+   approval in the `pypi` environment, publish the
    read-only preflight's immutable subset of the same identified wheel/sdist
    artifact to production PyPI; the OIDC job executes no repository code.
    Verify its remote hashes, metadata, clean installation, and trusted-publisher
@@ -558,6 +567,13 @@ If any gate fails, stop. PyPI/TestPyPI versions and immutable GitHub releases
 cannot be overwritten. A retry is valid only when every pre-existing remote
 file has the expected digest and **Re-run failed jobs** reuses the original
 successful build and artifact IDs.
+
+If the wrong GitHub Release object is published, or an immutable Release has a
+missing asset, stop and advance to a new patch version. Do not delete the
+immutable Release or its tag: GitHub does not permit that tag name to be reused
+after deletion. Preserve any complete draft and retained workflow artifacts as
+incident evidence until the replacement release verifies, then delete only the
+orphaned draft. See [Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases).
 
 If the original `publish.yml` run is completed with conclusion `failure` and
 cannot continue through **Re-run failed jobs**, recover from a clean, current
