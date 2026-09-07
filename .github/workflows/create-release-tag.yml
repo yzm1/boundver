@@ -683,14 +683,18 @@ env:
                 raise SystemExit(
                     "GitHub returned malformed semantic release metadata"
                 )
-            if release_id in seen_ids or tag in seen_tags:
+            if release_id in seen_ids:
                 raise SystemExit(
                     "GitHub returned duplicate semantic release metadata"
                 )
             seen_ids.add(release_id)
-            seen_tags.add(tag)
             if draft or prerelease or not immutable:
                 continue
+            if tag in seen_tags:
+                raise SystemExit(
+                    "GitHub returned duplicate semantic release metadata"
+                )
+            seen_tags.add(tag)
             if published_at is None:
                 raise SystemExit(
                     "GitHub returned malformed published release metadata"
