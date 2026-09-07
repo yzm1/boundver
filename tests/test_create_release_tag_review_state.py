@@ -398,6 +398,64 @@ class CreateTagReviewStateContracts(unittest.TestCase):
                 {},
             )
 
+    def test_snapshot_ignores_same_tag_draft_but_rejects_public_duplicate(self):
+        helpers = _review_state_runner()
+        helpers["git_text"] = lambda *_arguments: "1" * 40
+        published_at = "2026-08-27T15:05:36Z"
+        publication_runs = {
+            ("v0.14.1", "1" * 40): {
+                "completed_at": "2026-08-27T16:05:36Z",
+            }
+        }
+        draft = {
+            "id": 100,
+            "tag_name": "v0.14.1",
+            "draft": True,
+            "prerelease": False,
+            "immutable": False,
+            "published_at": None,
+        }
+        published = {
+            "id": 101,
+            "tag_name": "v0.14.1",
+            "draft": False,
+            "prerelease": False,
+            "immutable": True,
+            "published_at": published_at,
+        }
+
+        anchors = helpers["published_release_anchors"](
+            [draft, published],
+            (0, 15, 0),
+            {"v0.14.1"},
+            publication_runs,
+        )
+        self.assertEqual([item["id"] for item in anchors], [101])
+
+        duplicate_public = dict(published, id=102)
+        with self.assertRaisesRegex(
+            SystemExit,
+            "duplicate semantic release metadata",
+        ):
+            helpers["published_release_anchors"](
+                [published, duplicate_public],
+                (0, 15, 0),
+                {"v0.14.1"},
+                publication_runs,
+            )
+
+        reused_id = dict(published, id=100)
+        with self.assertRaisesRegex(
+            SystemExit,
+            "duplicate semantic release metadata",
+        ):
+            helpers["published_release_anchors"](
+                [draft, reused_id],
+                (0, 15, 0),
+                {"v0.14.1"},
+                publication_runs,
+            )
+
     def test_snapshot_requires_exact_successful_publication_provenance(self):
         helpers = _review_state_runner()
         tag = "v0.14.1"
