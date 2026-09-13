@@ -41,7 +41,7 @@ from ._utils import (
 
 BASELINE_SCHEMA = "boundver-verify-baseline/v1"
 BASELINE_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/"
+    "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/"
     "spec/verify-baseline.schema.json"
 )
 MAX_BASELINE_BYTES = 2 * 1024 * 1024
@@ -1529,13 +1529,38 @@ def apply_baseline(
         if entry["kind"] == "component-facet" and entry["facet"] == "compat"
     }
     current_compat_subjects = _compat_subjects(issues)
+    identified_issues = _issues_with_identities(issues)
+    current_boundary_subjects = {
+        identity["subject"]
+        for _issue, identity in identified_issues
+        if identity is not None
+        and identity["kind"] == "component-facet"
+        and identity["facet"] in {"boundary", "compat"}
+    }
+    known_boundary_subjects = {
+        entry["subject"]
+        for entry in baseline["violations"]
+        if entry["kind"] == "component-facet"
+        and entry["facet"] in {"boundary", "compat"}
+    }
     observed = set()
     new: List[str] = []
     acknowledged: List[str] = []
-    for issue, identity in _issues_with_identities(issues):
+    for issue, identity in identified_issues:
         if identity is not None:
             observed.add(identity["id"])
         if identity is not None and identity["id"] in known:
+            acknowledged.append(issue)
+        elif (
+            identity is not None
+            and identity["kind"] == "affected-consumers"
+            and identity["subject"] in current_boundary_subjects
+            and identity["subject"] in known_boundary_subjects
+        ):
+            # Consumer impact is an annotation on an owning boundary/compat
+            # mismatch, not independently baselinable debt. If that same
+            # owner is acknowledged, a newly populated consumer list must not
+            # resurrect only the annotation.
             acknowledged.append(issue)
         elif (
             _ancillary_compat_subject(issue) in known_compat_subjects

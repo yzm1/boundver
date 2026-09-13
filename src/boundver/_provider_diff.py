@@ -151,6 +151,12 @@ class StructuralDiffBudget:
 
     def reserve_input(self, label: str, content: bytes) -> None:
         amount = len(label.encode("utf-8", errors="strict")) + len(content)
+        self.reserve_input_bytes(amount)
+
+    def reserve_input_bytes(self, amount: int) -> None:
+        """Charge already-bounded provider source bytes to the aggregate."""
+        if type(amount) is not int or amount < 0:
+            raise ValueError("Structural diff input must be a non-negative integer")
         self.input_bytes += amount
         if self.input_bytes > self.max_input_bytes:
             raise self._limit(

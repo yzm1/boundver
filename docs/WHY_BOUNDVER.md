@@ -80,8 +80,8 @@ consumer-facing artifacts.
 
 - The graph is declared and validated; dependency discovery remains the build
   system's responsibility.
-- Generated artifacts need a separate deterministic freshness check before
-  boundver verification.
+- Generated artifacts can be bound to tracked inputs with data-only derivation
+  receipts; trusted CI still owns generator execution and correctness checks.
 - Canonical providers remove documented formatting or presentation noise; they
   do not establish backward compatibility.
 - Trusted custom providers can fingerprint deterministic derived output, but a

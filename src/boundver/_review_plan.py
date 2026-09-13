@@ -7,7 +7,12 @@ from pathlib import PurePosixPath
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ._review import MAX_REVIEW_RESULT_BYTES, REVIEW_SCHEMA
-from ._utils import ConfigError, GuardrailError, _bounded_json_dumps
+from ._utils import (
+    ConfigError,
+    GuardrailError,
+    _bounded_json_dumps,
+    _safe_display_text,
+)
 
 
 PLAN_SCHEMA = "boundver-plan/v1"
@@ -48,7 +53,16 @@ def _source_path(component_path: object, document_label: object) -> Optional[str
     prefix = "canonical:"
     if not document_label.startswith(prefix):
         return None
-    relative = PurePosixPath(document_label[len(prefix) :])
+    relative_text = document_label[len(prefix) :]
+    values = (component_path, relative_text)
+    if any(
+        "\\" in value
+        or ":" in value
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+        for value in values
+    ):
+        return None
+    relative = PurePosixPath(relative_text)
     root = PurePosixPath(component_path)
     if (
         relative.is_absolute()
@@ -213,22 +227,7 @@ def build_review_plan(review: Mapping[str, object]) -> dict:
 
 
 def _display_text(value: object) -> str:
-    rendered: List[str] = []
-    for character in str(value):
-        codepoint = ord(character)
-        if character == "\n":
-            rendered.append("\\n")
-        elif character == "\r":
-            rendered.append("\\r")
-        elif character == "\t":
-            rendered.append("\\t")
-        elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
-            rendered.append(f"\\x{codepoint:02x}")
-        elif codepoint in {0x2028, 0x2029}:
-            rendered.append(f"\\u{codepoint:04x}")
-        else:
-            rendered.append(character)
-    return "".join(rendered)
+    return _safe_display_text(value, defang_workflow_command=False)
 
 
 def _bounded_text(value: object, max_bytes: int) -> Tuple[str, bool]:
@@ -250,8 +249,29 @@ def _bounded_text(value: object, max_bytes: int) -> Tuple[str, bool]:
 
 
 def _code(value: object) -> Tuple[str, bool]:
-    text, truncated = _bounded_text(value, MAX_PLAN_SUMMARY_FIELD_BYTES)
-    return f"<code>{html.escape(text, quote=True)}</code>", truncated
+    text = _display_text(value)
+    pieces = [
+        "&#96;" if character == "`" else html.escape(character, quote=True)
+        for character in text
+    ]
+    prefix = "<code>"
+    suffix = "</code>"
+    rendered = prefix + "".join(pieces) + suffix
+    if len(rendered.encode("utf-8")) <= MAX_PLAN_SUMMARY_FIELD_BYTES:
+        return rendered, False
+    marker = "..."
+    budget = MAX_PLAN_SUMMARY_FIELD_BYTES - len(
+        (prefix + marker + suffix).encode("utf-8")
+    )
+    kept: List[str] = []
+    used = 0
+    for piece in pieces:
+        size = len(piece.encode("utf-8"))
+        if used + size > budget:
+            break
+        kept.append(piece)
+        used += size
+    return prefix + "".join(kept) + marker + suffix, True
 
 
 def _sequence(value: object) -> Sequence[object]:
@@ -372,13 +392,13 @@ def render_review_plan_markdown(
                 stop = True
                 break
             row, bounded = _render_summary_row(kind, value)
-            field_truncated = field_truncated or bounded
             candidate = "\n".join((*lines, *rendered_section, *section_rows, row))
             if len(candidate.encode("utf-8")) + marker_reserve > max_bytes:
                 byte_truncated = True
                 stop = True
                 break
             section_rows.append(row)
+            field_truncated = field_truncated or bounded
             shown_rows += 1
         if section_rows:
             lines.extend((*rendered_section, *section_rows))

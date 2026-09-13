@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
   "title": "boundver lockfile schema",
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -15,8 +15,8 @@
   "required": ["schema", "config_contract", "config_digest", "project", "components", "slices"],
   "properties": {
     "$schema": {"type": "string", "format": "uri"},
-    "schema": {"const": "boundary-lock/v3"},
-    "config_contract": {"const": "boundver-semantic-config/v2"},
+    "schema": {"const": "boundary-lock/v4"},
+    "config_contract": {"const": "boundver-semantic-config/v3"},
     "config_digest": {
       "$ref": "#/$defs/sha256",
       "description": "SHA-256 of the canonical semantic configuration."

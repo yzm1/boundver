@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v2",
-  "config_digest": "63bbf0fbfe515264b02b8ba10f8b6b919d51c69b646f87d166107b3f0a87ae80",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v4",
+  "config_contract": "boundver-semantic-config/v3",
+  "config_digest": "6e863507b864e6d3e192e87fee5ccc50c99b249744ba5f672deb4c2f56c787a9",
   "project": "example-behavior",
   "components": {
     "payment-svc": {
@@ -33,7 +33,7 @@
       "components": [
         "payment-svc"
       ],
-      "fingerprint": "bd71eeb941b68f80c04707ec2df663e98ae63b6e533085ee7a6d916d0ccddf89",
+      "fingerprint": "a5b631a72632b58ff55e73015a25fa7412bfb6b7ac290ef6dabe21540ec2d669",
       "component_digests": {
         "payment-svc": "8ef1e56a607e4d4a5c12bed4eb0a4e9b753afb38790a34e362cbc954379aa53c"
       }
@@ -44,7 +44,7 @@
       "components": [
         "payment-svc"
       ],
-      "fingerprint": "becff63c026a8a6ca6dbc98b9675d104ce0dcdaf273956830cb07a5eb5514a40",
+      "fingerprint": "4ce3b0adc392eeb5e8cee87c3826d156365baca56dd37fdd67c3b63efa3aca7b",
       "component_digests": {
         "payment-svc": "5a0bfbf69284280a6d8963fe05ff89f36c7dde7a99e5e70d4f833a3bb5ee086b"
       }

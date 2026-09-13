@@ -6,6 +6,263 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-13
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-changing`
+- Lock regeneration: `required`
+
+### Added
+
+- Added tiered test assurance derived from a 620-obligation review: a bounded
+  required PR tier, a scheduled and pre-release exhaustive tier, and a curated
+  12-fault mutation catalog covering high-risk Git, hashing, lock, glob,
+  provider, and output contracts. The release verifier runs both the complete
+  test corpus and mutation gate before packaging.
+- Added compatibility identities for components without their own manifest or
+  tag. `version_source.component` inherits another configured component's
+  resolved version from the same source, with transitive, unknown-target,
+  self-reference, and cycle checks. `version_source.constant` records an
+  explicit validated SemVer identity. Both declarations participate in the
+  semantic config digest.
+- Added data-only generated-artifact freshness declarations and
+  `boundver record-derivation`. Committed, source-consistent receipts bind a
+  logical generator identity to deterministic input and output file-set
+  digests. Validation, generation, and verification now fail closed on missing,
+  malformed, ambiguous, or stale evidence without executing repository
+  commands; staged bootstrap can land a new boundary and receipt without a
+  partial lock.
+- Added `boundver coverage`, a read-only declaration audit for component
+  boundary/behavior selectors and source directories outside every component.
+  `coverage.exclusions` records facet-specific omissions with reasons. The
+  command is advisory by default, supports `--strict` for CI, emits the
+  versioned `boundver-declaration-coverage/v1` result, and does not participate
+  in lock or semantic-config digests.
+- Added a bounded source-divergence notice when `verify --update` reads its
+  config from `head` or `index` while the same working-tree config is
+  semantically different, missing, or unreadable. The selected snapshot remains
+  the only generation input. `--strict-config-source` turns the notice into a
+  fail-closed exit `2`, and the GitHub Action exposes the same opt-in.
+
+### Changed
+
+- Raised the minimum supported Git version to 2.32 and added an operation-start
+  capability check. Boundver now reports the selected Git version, verifies
+  that Git applies the process-local configuration carrying its security
+  controls, and refuses repository inspection if either check fails. Partial
+  clones are now detected from local Git configuration and require Git 2.45 or
+  newer, where lazy object fetching can be disabled.
+- Refreshed the deterministic range-review fixture provenance after the v0.16
+  config-schema and lock-format migration.
+- Gave the complete release-candidate test tier a separate two-hour watchdog
+  for slower supported Windows hosts while retaining the one-hour ceiling for
+  every other candidate-verification command.
+- Split the CLI and behavioral references. Command syntax is generated from
+  the live argparse parser and checked in CI; the cookbook now contains only
+  operational recipes. Added a concise FAQ, public milestone-based roadmap,
+  and hosted `llms.txt`. The documentation policy keeps design RFCs on a
+  specialist profile and records why a subjective prose linter is not a v0.16
+  release gate.
+- Moved the planned first semantic-provider release from v0.16.0 to v0.17.0.
+  Adding a provider class is additive, so semantic versioning treats it as a
+  minor release; the breaking change remains the `custom.*` loader removal that
+  SPC-047 schedules for 1.0. Keeping the two apart preserves the SPC-053
+  withdrawal option and lets any lock-format migration land while the project
+  is still below 1.0. The release gate, review markers, gate scripts, and both
+  governed workflows now name v0.17.0.
+- Made the semantic-provider RFC normative. The document now states its
+  conformance keywords under BCP 14, marks which sections are binding, and
+  spells out that a declarative invariant is a requirement rather than a
+  description.
+- Closed a further red-team round (RTR-004, RTF-055 to RTF-062) against the
+  semantic-provider proposal and added controls SPC-046 to SPC-053 for it. A
+  provider result now has a third terminal state, `bounded-incomplete`, whose
+  hashed omission manifest names every construct a digest contract could not
+  resolve, so fail-closed extraction no longer leaves the legacy trusted-native
+  loader as the only workable path. The `custom.*` class gains a published
+  retirement schedule ending in removal at 1.0, independent of whether the
+  proposal is ever accepted. The proposal gains a review-by date, a governance
+  continuity record covering owner-account loss rather than compromise,
+  conformance vectors that report a runtime defect as a fault instead of as
+  boundary drift, role-specific review reasoning, roster hardening for the
+  publicly named reviewers, and an adversarial corpus requirement for the gate
+  code itself. Implementation and semantic-provider work remain blocked.
+
+### Fixed
+
+- Stopped drift diagnostics from claiming a fetch boundary or the diff target
+  as a precise introducing commit. Shallow history and same-commit lock
+  evidence now use disclosed fallbacks; an impossible current-commit diff is
+  reported as not run, and byte-budget exhaustion is no longer mislabeled as
+  a corrupt lock.
+- Made discovery assign colliding component names in Git's byte order on every
+  host. Digest change displays now expand colliding 12-character prefixes so
+  an actual change never renders as an identity arrow.
+- Made lock-migration refusals and partial-lock update failures name the exact
+  regeneration command that can recover. Migration analysis now also marks a
+  declaration not comparable when its component root is accepted by v0.10 but
+  rejected by the current path contract.
+- Aligned the non-Git filesystem fallback's ignore behavior with Git for
+  directory-only rules, leading whitespace, quoted `!`/`#` prefixes, escaped
+  trailing spaces, invalid UTF-8 bytes, root anchoring, and attempts to
+  re-include descendants of excluded directories. Matching remains bounded,
+  and common exclusion-only rules now use a linear fast path.
+- Made invalid path globs fail closed consistently. The one-shot matcher now
+  raises a bounded guardrail error instead of returning an ordinary non-match,
+  empty candidates cannot satisfy recursive wildcards, and malformed
+  slash-containing `.gitignore` fallback rules are rejected when loaded.
+- Prevented repository-controlled diagnostic text from impersonating the
+  collector's truncation marker and suppressing later failures.
+- Made the Python API's `observations` output list describe only the current
+  verification call, including validation and preflight failures.
+- Aligned slice gate policy output with verification for every member,
+  including malformed direct-API configurations with unknown members.
+- Made review-plan size refusal occur before writing a requested summary file,
+  preserving the command's no-partial-output guarantee.
+- Stopped change summaries from calling unavailable behavior, boundary, or
+  compatibility facets unchanged; absent declarations are now named as absent.
+- Documented the embedding API's differing source defaults directly on
+  `load_config()`, `generate()`, and `verify()`.
+- Matched Git's executable-mode rule in working-tree fingerprints: group or
+  other execute permission alone no longer creates false drift from mode 100644.
+- Corrected a survey obligation that demanded malformed lockfile metadata reach
+  provider hooks; non-object metadata remains a fail-closed lockfile error.
+- Made range-review text show lock-level project, config-contract, and config-
+  digest transitions instead of presenting metadata-only ranges as empty.
+- Kept `slice --format json` stdout machine-clean on unknown names by sending
+  the available-slices hint to stderr with the usage error.
+- Applied `verify --fail-fast` to config and lock preflight reports as well as
+  fingerprint evaluation, while retaining the complete set for the verdict.
+- Rejected non-empty `boundary.paths` on `leaf` components in both the schema
+  and runtime validator instead of silently ignoring the declared files.
+- Rejected explicit `--components` values that contain no names instead of
+  silently widening a computed empty filter into an all-component operation.
+- Treated `--facets` values containing only whitespace and comma separators as
+  an implicit empty selection, consistently applying the configured default
+  instead of unexpectedly gating every facet.
+- Made config-editing guidance describe the values and flags users actually
+  need: `add` reports its normalized stored path, post-edit refusals name the
+  relevant options, and missing non-JSON configs no longer receive an
+  inapplicable `init` hint. `init` now warns when its editable scaffold cannot
+  yet pass validation instead of promising that generation is ready.
+- Made `add` and `remove` compare the live config with the exact bytes they
+  parsed before atomically publishing an edit. A concurrent writer now causes
+  a diagnosed exit `2` instead of being silently overwritten.
+- Made clean sparse checkouts source-stable. An absent `skip-worktree` path is
+  listed and read from its captured index blob in working-tree mode, matching
+  Git's own unchanged verdict and the corresponding HEAD/index fingerprints.
+- Made structural OpenAPI input budgeting charge both endpoint source bytes
+  and canonical entries, eliminating base/target-order-dependent refusals.
+- Kept direct impact reports from listing a malformed component self-edge as
+  a downstream consumer, even when callers bypass configuration validation.
+- Required file-backed version values to be strings across JSON, TOML, YAML,
+  and YML, preventing numeric spellings such as `1.10` from becoming `1.1`.
+- Made glob matching fail closed on impossible lone Unicode surrogates while
+  retaining support for surrogate-escaped non-UTF-8 filenames supplied by Git.
+- Resolved explicit diagnostic base refs to immutable commit IDs before
+  diffing, rejected missing refs as usage errors, and validated malformed refs
+  before any repository subprocess or input read.
+- Kept repository-controlled config text out of JSON, YAML, and TOML parse
+  diagnostics. Duplicate-key errors retain structural locations where the
+  parser exposes them, while arbitrary parser exception text is not echoed to
+  CI logs or embedding callers.
+- Normalized oversized and non-finite JSON numeric token failures to
+  `StrictJSONError`, matching duplicate-key and structural-limit refusals so
+  format consumers can handle every strict-parser rejection consistently.
+- Made public `verify()` selection errors fail as API-usage errors. Unknown or
+  malformed component/facet lists now raise `ConfigError`, matching the CLI's
+  refusal instead of returning a drift string that downstream facet filters
+  could accidentally discard.
+- Preserved the CLI's commit/stage guidance for missing lockfiles while the
+  Python API consistently reports missing locks as `LockfileError`.
+- Made public `load_config()` enforce the same slice-facet availability rules
+  as full `generate()`. A configuration reported as valid by the embedding API
+  can no longer fail generation merely because a slice member cannot supply
+  its selected facet.
+- Canonicalized the equivalent `major` and `semver_major` compatibility modes
+  in the semantic-config digest, and made slice descriptions presentation-only
+  metadata. Alias-only and description-only edits no longer report false
+  drift; regeneration can still refresh the stored description.
+- Made `generate --format json`, the written lockfile, and
+  `dump_lockfile(generate(out_path=None))` byte-identical. Structured stdout
+  now uses the lockfile serializer's stable field order and storage ceiling.
+- Validated recursive `git ls-tree` records against the canonical Git
+  mode/object-type pairs for regular files, executable files, symlinks, and
+  gitlinks. Unknown modes and impossible mode/type combinations now fail
+  closed before they can enter a source snapshot or fingerprint.
+- Normalized missing lockfiles at the embeddable API boundary. `verify()` and
+  `diff()` now raise the documented `LockfileError` instead of leaking a bare
+  `FileNotFoundError`; the original filesystem error remains available as the
+  exception cause.
+- Made `openapi-canonical` position-aware when removing documentation fields.
+  Annotation-looking keys inside `enum`, `const`, `default`, `x-*` extension
+  payloads, and named component maps now remain contract-bearing data, while
+  arbitrary security-scheme names are preserved only in actual top-level or
+  operation-level Security Requirement Objects.
+- Made the OpenAPI reference policy position-aware as well. Non-string real
+  `$ref` values are diagnosed as malformed, while user-defined properties,
+  security-scheme names, extension payloads, and schema data may use the
+  literal key `$ref` without being mistaken for a Reference Object.
+- Restored the dedicated `VENDORED DRIFT` verdict for readable vendored copies
+  whose content differs from their source, with ordinary drift severity.
+  Missing or unreadable vendored inputs remain fail-closed digest errors, and
+  specialized diagnostics no longer duplicate metadata-mismatch noise.
+- Normalized one leading UTF-8 byte-order mark before parsing JSON, TOML, or
+  YAML version sources, eliminating parser-dependent compatibility identities.
+  Unquoted YAML 1.2 `0o` integer spellings now follow the same bounded numeric
+  rejection as JSON and YAML 1.1 alternate-base forms; quoted text is retained.
+- Aligned the native lock validator with the published lock schema for optional
+  arrays/maps and malformed enum values. Explicit null containers are now
+  refused, and list/object values in `boundary_status` or slice `mode` produce
+  bounded exit-2 diagnostics instead of uncaught `TypeError` tracebacks.
+- Tightened declared-path normalization and the packaged/public schemas to
+  reject repeated trailing slashes, control characters, and lone surrogates
+  consistently. Runtime-only UTF-8 byte, segment, and wildcard work ceilings
+  remain explicit guardrails beyond what JSON Schema can express exactly.
+- Bound slice fingerprints to both their selected mode and member-digest map,
+  so two modes can no longer share an aggregate identity when their selected
+  values are both null. Strict low-level generation now also refuses unknown
+  slice members instead of hashing a null placeholder.
+- Made component-scoped generation require a complete base lock even when the
+  missing component is selected for refresh. A partial update can no longer
+  repair an omitted entry and conceal a truncated or foreign base lock.
+- Made direct lockfile diff and serialization APIs fail closed on malformed
+  entry containers, non-finite numbers, oversized integers, and other values
+  their strict readers cannot consume. Malformed input is no longer reported
+  as unchanged or emitted as non-standard JSON.
+- Enforced repository-relative lockfile and generated-config paths consistently
+  across the public API and CLI. Absolute and parent-traversing paths are now
+  refused before any read or write, including working-tree verification and
+  `init --out`.
+- Normalized repository-reader races and other bounded `ValueError` failures at
+  the CLI boundary. `status` and `review` now fail with a diagnosed exit 2
+  instead of respectively reporting drift at exit 0 or exposing a traceback.
+  JSON status output also retains a structured `Verification error` issue when
+  verification fails after its config and lock preflight.
+- Escaped literal backslashes and Unicode directional controls injectively in
+  human output, and defanged GitHub Actions workflow-command prefixes even when
+  repository-controlled text follows boundver's own indentation.
+- Prevented explicitly enabled custom providers from terminating verification
+  with process-control exceptions. Import, construction, attribute access,
+  resolution, validation, and structural-review hooks now convert `SystemExit`,
+  `KeyboardInterrupt`, `GeneratorExit`, and direct `BaseException` failures into
+  bounded fail-closed diagnostics; in particular, `sys.exit(0)` can no longer
+  produce a false-successful verification.
+- Kept custom-provider diagnostics bounded and non-authoritative. Hostile or
+  missing provider names now fall back safely, and `SystemExit`,
+  `KeyboardInterrupt`, or `GeneratorExit` raised by an optional explanation
+  hook can no longer suppress an already-established drift report or alter its
+  exit status.
+- Made ambient Git worktree-configuration inspection fail closed on rejected,
+  ambiguous, malformed, timed-out, or over-budget answers. A silent Git exit 1
+  is now the only result interpreted as “no ambient settings.”
+- Stopped promoting global or system `core.filemode` into repository
+  inspections. Repository-local mode policy remains authoritative, while a
+  user home-directory setting can no longer change working-tree fingerprints.
+
 ## [0.15.2] - 2026-09-07
 
 ### Upgrade contract
@@ -1051,7 +1308,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/yzm1/boundver/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/yzm1/boundver/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/yzm1/boundver/compare/v0.14.1...v0.15.0

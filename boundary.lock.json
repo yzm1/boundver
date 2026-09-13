@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v2",
-  "config_digest": "0be146fd7df021a21d5ad9c71c58f3919473669acdbcecb6031dbaae1668484f",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v4",
+  "config_contract": "boundver-semantic-config/v3",
+  "config_digest": "bf67b611ba2ea5963b57875dc692d9b1fdf88f3167baa5adac1777ad47749daf",
   "project": "boundver",
   "components": {
     "boundver": {
@@ -14,9 +14,9 @@
       "consumers": [],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "d01a1208fd705d9d1c7510541b7a7ab566413c3d6a08739ec70f10bc302cf500",
+        "exact": "6c5727dab291f632555036fcc87c3b4c392d7fbefcc5f440b38ed8998a1cd42d",
         "behavior": null,
-        "boundary": "1cb63fcd409d40f0cc6d1ef10607bee725da7af4a00b4a9552420d6b6a664290",
+        "boundary": "c67b37ef2743be3dfbf886522fc8fde03ef712a3eecf37fa5dd81fa69a777aa9",
         "compat": null
       },
       "semver": {
@@ -36,9 +36,9 @@
       ],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "af43df3c5fea5dc1c9c9d93acfc58c9c976e46c9d8ba2d2b2fb3eef870d0b6a5",
+        "exact": "c06f408a7c23a6b1d3b004aa179269a0021199934b6a81a8a798375a0e33806a",
         "behavior": null,
-        "boundary": "b91182f5fcce0d7d569875d37684fbbae580f474c1518427d530586a342ecce3",
+        "boundary": "2a8965d48f7efee5785e8bde0dd45ce137a3323e739ec2bc34b6532cb7cadeed",
         "compat": null
       },
       "semver": {
@@ -55,9 +55,9 @@
       "components": [
         "boundver"
       ],
-      "fingerprint": "e7800437147b6a2db2c0d31a4797b80fee89ddf89212ad1706edec5d94dcb6cc",
+      "fingerprint": "c636f797c9fec380007159b28abe986a2678e651d858045749b8b7677f3e725a",
       "component_digests": {
-        "boundver": "1cb63fcd409d40f0cc6d1ef10607bee725da7af4a00b4a9552420d6b6a664290"
+        "boundver": "c67b37ef2743be3dfbf886522fc8fde03ef712a3eecf37fa5dd81fa69a777aa9"
       }
     },
     "spec": {
@@ -66,9 +66,9 @@
       "components": [
         "spec"
       ],
-      "fingerprint": "f5fbdd7c3fb58eb673965d00ee7ad943db87f5fe15067a62a5476753ea2ec8a9",
+      "fingerprint": "20b143f11f59da4d507f65e708ad8bfbc164018565f536adccf6fde8ac7724d5",
       "component_digests": {
-        "spec": "af43df3c5fea5dc1c9c9d93acfc58c9c976e46c9d8ba2d2b2fb3eef870d0b6a5"
+        "spec": "c06f408a7c23a6b1d3b004aa179269a0021199934b6a81a8a798375a0e33806a"
       }
     },
     "all": {
@@ -78,10 +78,10 @@
         "boundver",
         "spec"
       ],
-      "fingerprint": "487a7e8c96cf54f99919cf3c473b7b47850195e9ae6dd23ca3c481d6f419cda4",
+      "fingerprint": "1a0d5e076dce2ad5ec569be0e968cee27a2f107c6a94e098e6e44eb7d80cdf05",
       "component_digests": {
-        "boundver": "d01a1208fd705d9d1c7510541b7a7ab566413c3d6a08739ec70f10bc302cf500",
-        "spec": "af43df3c5fea5dc1c9c9d93acfc58c9c976e46c9d8ba2d2b2fb3eef870d0b6a5"
+        "boundver": "6c5727dab291f632555036fcc87c3b4c392d7fbefcc5f440b38ed8998a1cd42d",
+        "spec": "c06f408a7c23a6b1d3b004aa179269a0021199934b6a81a8a798375a0e33806a"
       }
     }
   }

@@ -151,14 +151,23 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
     def test_shared_sequence_uses_exact_commit_epoch_and_artifacts(self):
         verifier = _load_script()
         commands: list[tuple[tuple[str, ...], dict[str, str]]] = []
+        timeouts: list[int] = []
 
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / "dist").mkdir()
 
-            def run(command, *, cwd, env, capture_output=False):
+            def run(
+                command,
+                *,
+                cwd,
+                env,
+                capture_output=False,
+                timeout_seconds=verifier.MAX_COMMAND_SECONDS,
+            ):
                 self.assertEqual(cwd, repo.resolve())
                 commands.append((tuple(command), dict(env)))
+                timeouts.append(timeout_seconds)
                 if command[-1] == "scripts/packaging_smoke.sh":
                     (repo / "dist" / f"boundver-{CURRENT_VERSION}-py3-none-any.whl").touch()
                     (repo / "dist" / f"boundver-{CURRENT_VERSION}.tar.gz").touch()
@@ -202,29 +211,71 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            commands[1][0], (sys.executable, "-I", "-m", "pytest", "-q")
+            commands[1][0],
+            (
+                sys.executable,
+                "-I",
+                "-m",
+                "boundver",
+                "coverage",
+                "--source",
+                "head",
+                "--strict",
+                "--quiet",
+            ),
         )
         self.assertEqual(
             commands[2][0],
-            (sys.executable, "-I", "scripts/demo_consumer_impact.py"),
+            (sys.executable, "-I", "scripts/test_tiers.py", "check"),
         )
         self.assertEqual(
             commands[3][0],
+            (
+                sys.executable,
+                "-I",
+                "scripts/test_tiers.py",
+                "run",
+                "all",
+                "--",
+                "-q",
+            ),
+        )
+        self.assertEqual(verifier.MAX_COMMAND_SECONDS, 3_600)
+        self.assertEqual(verifier.MAX_TEST_TIER_SECONDS, 7_200)
+        self.assertEqual(timeouts[3], verifier.MAX_TEST_TIER_SECONDS)
+        self.assertEqual(timeouts[4], verifier.MAX_TEST_TIER_SECONDS)
+        self.assertTrue(
+            all(
+                timeout == verifier.MAX_COMMAND_SECONDS
+                for index, timeout in enumerate(timeouts)
+                if index not in {3, 4}
+            )
+        )
+        self.assertEqual(
+            commands[4][0],
+            (sys.executable, "-I", "scripts/mutation_check.py"),
+        )
+        self.assertEqual(
+            commands[5][0],
+            (sys.executable, "-I", "scripts/demo_consumer_impact.py"),
+        )
+        self.assertEqual(
+            commands[6][0],
             (sys.executable, "-I", "scripts/demo_range_review.py"),
         )
         self.assertEqual(
-            commands[4][0], ("/tools/bash", "scripts/packaging_smoke.sh")
+            commands[7][0], ("/tools/bash", "scripts/packaging_smoke.sh")
         )
-        self.assertEqual(commands[4][1]["SOURCE_DATE_EPOCH"], "1700000000")
+        self.assertEqual(commands[7][1]["SOURCE_DATE_EPOCH"], "1700000000")
         for name in ("BASH_ENV", "ENV", "SHELLOPTS"):
-            self.assertNotIn(name, commands[4][1])
-        for index in range(4):
+            self.assertNotIn(name, commands[7][1])
+        for index in range(7):
             self.assertNotIn("SOURCE_DATE_EPOCH", commands[index][1])
         self.assertEqual(
-            commands[5][0][:5],
+            commands[8][0][:5],
             (sys.executable, "-I", "-m", "twine", "check"),
         )
-        self.assertEqual(commands[5][1]["SAFE_VALUE"], "kept")
+        self.assertEqual(commands[8][1]["SAFE_VALUE"], "kept")
 
     def test_verifier_rejects_wrong_checkout_before_running_candidate_code(self):
         verifier = _load_script()

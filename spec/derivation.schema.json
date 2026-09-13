@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/derivation.schema.json",
+  "title": "boundver generated-artifact derivation evidence",
+  "description": "A bounded receipt binding one trusted generator identity to the selected input and generated-output file sets.",
+  "type": "object",
+  "required": ["schema", "derivation", "generator", "inputs", "outputs"],
+  "properties": {
+    "schema": {"const": "boundver-derivation/v1"},
+    "derivation": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "generator": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "inputs": {"$ref": "#/$defs/fileSet"},
+    "outputs": {"$ref": "#/$defs/fileSet"}
+  },
+  "$defs": {
+    "fileSet": {
+      "type": "object",
+      "required": ["files", "digest"],
+      "properties": {
+        "files": {"type": "integer", "minimum": 1, "maximum": 50000},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

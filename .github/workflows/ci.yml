@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,6 +18,7 @@ permissions:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -50,11 +54,21 @@ jobs:
       - name: Verify automation dependency locks
         run: python -I scripts/lock_release_tools.py verify
 
+      - name: Report test assurance inventory
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python -I scripts/test_tiers.py check
+
       - name: Reject undefined names and unused code
         run: python -I -m ruff check src tests scripts
 
-      - name: Run tests
-        run: python -I -m pytest -v --tb=long --junit-xml=pytest_results.xml
+      - name: Reject undeclared product source and unexplained selector gaps
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: python -I -m boundver coverage --source head --strict --quiet
+
+      - name: Run required core tests
+        run: >-
+          python -I scripts/test_tiers.py run core --
+          -v --tb=long --junit-xml=pytest_results.xml
 
       - name: Enforce semantic-provider gate branch coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -81,6 +95,119 @@ jobs:
           path: |
             pytest_results.xml
             runtime_benchmark.json
+
+  previous-release:
+    name: Previous release lockfile contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Every legacy lockfile in the suite is synthesized by relabelling one
+      # this build produced, so nothing checks what the previous release
+      # actually wrote. This installs it and asks it to write one.
+      - name: Generate example locks with the previous release
+        run: |
+          python -I -m venv "$RUNNER_TEMP/previous"
+          "$RUNNER_TEMP/previous/bin/python" -I -m pip --isolated install             --disable-pip-version-check --quiet --only-binary=:all:             --index-url https://pypi.org/simple             "boundver==$(python -I scripts/previous_release.py)"
+          "$RUNNER_TEMP/previous/bin/boundver" --version
+          python -I scripts/previous_release_locks.py write             --boundver "$RUNNER_TEMP/previous/bin/boundver"             --out "$RUNNER_TEMP/previous-locks"
+
+      - name: Install this build
+        run: |
+          python -I scripts/install_locked_tools.py ci
+          python -I -m pip --isolated install --no-index --no-deps             --no-build-isolation -e .
+
+      # The contract: verify clean, or refuse with an error naming the axis
+      # that changed. Never a silent mismatch and never a wrong digest.
+      - name: Check the previous release's locks against this build
+        run: |
+          python -I scripts/previous_release_locks.py check             --locks "$RUNNER_TEMP/previous-locks"
+
+  exhaustive:
+    name: Exhaustive obligation suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: test
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'schedule' || needs.test.result == 'success')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dev dependencies
+        run: |
+          python -I scripts/install_locked_tools.py ci
+          python -I -m pip --isolated install --no-index --no-deps --no-build-isolation -e .
+
+      - name: Validate the test-tier catalog
+        run: python -I scripts/test_tiers.py check
+
+      - name: Run the exhaustive obligation suite
+        run: >-
+          python -I scripts/test_tiers.py run exhaustive --
+          -v --tb=long --junit-xml=pytest_exhaustive_results.xml
+
+      - name: Print failures
+        if: failure()
+        run: >-
+          python -I scripts/report_pytest_failures.py
+          pytest_exhaustive_results.xml
+
+      - name: Upload exhaustive test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-exhaustive-results
+          path: pytest_exhaustive_results.xml
+
+  mutation:
+    name: Mutation catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      (github.event_name == 'schedule' || needs.test.result == 'success')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dev dependencies
+        run: |
+          python -I scripts/install_locked_tools.py ci
+          python -I -m pip --isolated install --no-index --no-deps --no-build-isolation -e .
+
+      # Keep a bounded release-focused sample of high-risk faults as executable
+      # evidence that the relevant tests notice incorrect behavior.
+      - name: Run the curated release mutation catalog
+        run: python -I scripts/mutation_check.py
 
   build:
     runs-on: ubuntu-latest

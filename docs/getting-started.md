@@ -12,8 +12,10 @@ lockfile and a useful pull-request gate.
 ## Prerequisites
 
 - Python 3.10 or newer
-- Git
+- Git 2.32 or newer
 - At least one component in a non-root directory
+
+Partial clones require Git 2.45 or newer so boundver can disable lazy fetching.
 
 Run the commands below from the repository root.
 
@@ -32,8 +34,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.15.2"
-python -c "import boundver; assert boundver.__version__ == '0.15.2', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
+python -c "import boundver; assert boundver.__version__ == '0.16.0', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -89,7 +91,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -219,7 +221,7 @@ boundver generate --source working-tree
 
 Strict generation fails if a declared digest, version input, or vendored-copy
 comparison cannot be computed. Inspect the generated lock; it should use
-`boundary-lock/v3` and contain `config_contract` and `config_digest`.
+`boundary-lock/v4` and contain `config_contract` and `config_digest`.
 
 `--allow-partial` does not suppress those computation errors. It only permits
 an intentionally unavailable component facet to be stored as a null input in a
@@ -229,21 +231,27 @@ uses partial-compatible validation deliberately. The standalone
 `validate-config` command checks the normal strict-generation contract unless
 you explicitly give it the matching `--allow-partial` flag.
 
-### Generated contracts need their own freshness check
+### Bind generated contracts to their inputs
 
-If the selected OpenAPI document is generated from code or infrastructure,
-boundver sees the output but cannot prove that it is current. Put the generator's
-check before boundver in every gate:
+If an OpenAPI document is generated from code or infrastructure, declare its
+inputs, outputs, evidence path, and a stable generator identity under
+`derivations`. After running the trusted generator, record a receipt from the
+same source view you will verify:
 
 ```bash
-python ci/generate_platform_openapi.py --check
-boundver verify --source working-tree
+python ci/generate_platform_openapi.py
+git add boundary.config.json infrastructure/template.yaml \
+  infrastructure/openapi.generated.yaml
+boundver record-derivation public-api --source index
+git add infrastructure/openapi.boundver-derivation.json
+boundver generate --source index
+git add boundary.lock.json
+boundver verify --source index
 ```
 
-Do not add an executable generator command to repository config: command trust,
-tool versions, and source materialization are outside the current derivation
-contract. See
-[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator).
+Boundver checks the receipt but never executes the declared generator. See
+[generated-artifact freshness](reference.md#generated-artifact-freshness) for
+the declaration and the staged bootstrap sequence.
 
 ## 6. Commit one source-consistent baseline
 
@@ -272,7 +280,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.15.2
+      - uses: yzm1/boundver@v0.16.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json

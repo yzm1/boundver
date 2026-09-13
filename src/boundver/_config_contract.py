@@ -73,9 +73,30 @@ def component_identifier_problem(
 
 
 ROOT_FIELDS = frozenset(
-    {"$schema", "project", "providers", "defaults", "components", "slices"}
+    {
+        "$schema",
+        "project",
+        "providers",
+        "defaults",
+        "coverage",
+        "derivations",
+        "components",
+        "slices",
+    }
 )
 DEFAULT_FIELDS = frozenset({"compat_mode", "verify_facets"})
+COVERAGE_FIELDS = frozenset({"source_indicators", "exclusions"})
+COVERAGE_EXCLUSION_FIELDS = frozenset({"paths", "facets", "reason"})
+COVERAGE_EXCLUSION_FACETS = frozenset({"ownership", "behavior", "boundary"})
+MAX_COVERAGE_EXCLUSIONS = 1_000
+MAX_COVERAGE_PATHS_PER_EXCLUSION = 256
+MAX_COVERAGE_SOURCE_INDICATORS = 256
+MAX_COVERAGE_REASON_CHARS = 4_096
+DERIVATION_FIELDS = frozenset({"inputs", "outputs", "evidence", "generator"})
+MAX_DERIVATIONS = 256
+MAX_DERIVATION_SELECTORS = 256
+MAX_DERIVATION_GENERATOR_CHARS = 4_096
+DERIVATION_EVIDENCE_SUFFIX = ".boundver-derivation.json"
 PROVIDER_FIELDS = frozenset({"module", "class", "name"})
 COMPONENT_FIELDS = frozenset(
     {
@@ -95,5 +116,13 @@ BOUNDARY_FIELDS = frozenset({"provider", "paths", "options", "note"})
 BEHAVIOR_FIELDS = frozenset({"paths"})
 VERSION_FILE_FIELDS = frozenset({"file", "field"})
 VERSION_TAG_FIELDS = frozenset({"git_tag_prefix"})
-VERSION_SOURCE_FIELDS = VERSION_FILE_FIELDS | VERSION_TAG_FIELDS
+VERSION_COMPONENT_FIELDS = frozenset({"component"})
+VERSION_CONSTANT_FIELDS = frozenset({"constant"})
+VERSION_SOURCE_FIELDS = (
+    VERSION_FILE_FIELDS
+    | VERSION_TAG_FIELDS
+    | VERSION_COMPONENT_FIELDS
+    | VERSION_CONSTANT_FIELDS
+)
+MAX_VERSION_CONSTANT_CHARS = 4_096
 SLICE_FIELDS = frozenset({"description", "mode", "components", "closure_of"})

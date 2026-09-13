@@ -15,7 +15,11 @@ import boundver
 import boundver._config as config_module
 import boundver.core as core
 from boundver._config import validate_config
-from boundver._consumer_graph import affected_consumers, consumer_closure
+from boundver._consumer_graph import (
+    affected_consumers,
+    consumer_closure,
+    resolve_slice_components,
+)
 from boundver._lockfile import generate_lockfile, semantic_config_digest, verify_lockfile
 from boundver._output import why_component
 from boundver._utils import ConfigError
@@ -54,6 +58,44 @@ def _run_main(root: Path, *arguments: str) -> tuple[int, str, str]:
         except SystemExit as exc:
             result = int(exc.code or 0)
     return result, stdout.getvalue(), stderr.getvalue()
+
+
+class UnknownClosureSeedTests(unittest.TestCase):
+    """resolve_slice_components must fail closed on a seed it cannot find.
+
+    Config validation refuses a slice whose closure_of names no component,
+    and it refuses it by name, so the CLI never reaches this branch. That
+    made the branch a second line of defence with nothing exercising it:
+    MUT-HASHING-213 replaced its empty result with every component in the
+    graph and no test noticed. A direct caller of the library can reach it,
+    which is the case these assertions cover.
+    """
+
+    COMPONENTS = {
+        "svc": {"consumers": ["sdk"]},
+        "sdk": {"consumers": []},
+    }
+
+    def test_an_unknown_seed_selects_nothing(self):
+        self.assertEqual(
+            resolve_slice_components({"closure_of": "missing"}, self.COMPONENTS),
+            [],
+        )
+
+    def test_a_non_string_seed_selects_nothing(self):
+        for seed in (None, 1, ["svc"], {"name": "svc"}):
+            with self.subTest(seed=seed):
+                self.assertEqual(
+                    resolve_slice_components({"closure_of": seed}, self.COMPONENTS),
+                    [],
+                )
+
+    def test_a_known_seed_selects_its_closure(self):
+        """The contrast: an empty result is not this function's only answer."""
+        self.assertEqual(
+            resolve_slice_components({"closure_of": "svc"}, self.COMPONENTS),
+            ["sdk", "svc"],
+        )
 
 
 class ConsumerGraphTests(unittest.TestCase):

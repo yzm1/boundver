@@ -3,10 +3,9 @@
 You do not need to model an entire repository on day one. Start with one
 component, make one signal trustworthy, then expand the contract deliberately.
 
-This guide uses the current `boundary-lock/v3` +
-`boundver-semantic-config/v2` contract. If the repository has a v3/v1 lock
-from 0.11 or a v1/v2 lock, [upgrade](reference.md#upgrading) before mixing
-old and new writers.
+This guide uses the current `boundary-lock/v4` +
+`boundver-semantic-config/v3` contract. If the repository has a v1, v2, or v3
+lock, [upgrade](reference.md#upgrading) before mixing old and new writers.
 
 ## Stage 1: record exact drift
 
@@ -150,10 +149,28 @@ For a manifest inside the component:
 {"version_source": {"file": "package.json", "field": "version"}}
 ```
 
+The selected manifest value must be a string in JSON, TOML, YAML, and YML.
+Quote numeric-looking values; Boundver refuses parsed numbers because their
+original spelling cannot be recovered safely.
+
 Or for reachable Git tags:
 
 ```json
 {"version_source": {"git_tag_prefix": "auth-service-v"}}
+```
+
+If a contract directory releases with another configured component, inherit
+that component's resolved version from the same source:
+
+```json
+{"version_source": {"component": "auth-service"}}
+```
+
+For an identity with no file, tag, or owning component, declare a validated
+constant explicitly:
+
+```json
+{"version_source": {"constant": "1.0.0"}}
 ```
 
 With the default major compatibility mode, `compat` rotates when the SemVer
@@ -164,10 +181,9 @@ signal, not an inference that the code is compatible.
 A component without `version_source` has no compatibility fingerprint. The
 implicit fallback policy simply gates the facets that are available, but an
 explicit CLI, component, or default policy that selects `compat` fails with
-usage exit `2`. Either declare a file or `git_tag_prefix` source, or exclude
-`compat` in that component's `verify_facets`. Constant and sibling-component
-version identities remain possible future extensions; boundver does not invent
-one for an unversioned component.
+usage exit `2`. Declare one of the four sources above, or exclude `compat` in
+that component's `verify_facets`. Boundver does not invent an identity for an
+unversioned component.
 
 Tag lookup is evaluated against the commit captured for the operation. A tag on
 an unreachable orphan history cannot become the component version. Prefixes
@@ -235,7 +251,7 @@ boundver add billing-service services/billing --provider path-hash \
   --boundary-path contracts/current.json
 ```
 
-Component-scoped generation is safe only with an existing valid v3 lock. It
+Component-scoped generation is safe only with an existing valid v4 lock. It
 recomputes the complete candidate state, refuses to preserve any stale
 unselected component, replaces the selected entry as one unit, reconciles
 component removals, and recomputes all slices. Run a full `boundver generate`
@@ -368,13 +384,14 @@ temporarily includes an `implicit` component. Missing declared paths, provider
 errors, broken version sources, and vendored-copy errors remain fatal. See
 [reference](reference.md#-allow-partial).
 
-### Fingerprinting a stale generated artifact
+### Leaving a generated artifact unbound
 
-Boundver does not know that an OpenAPI file, GraphQL schema, or descriptor was
-generated from something else, so a stale committed artifact verifies clean.
-Give the generator a deterministic `--check` mode and run it before
-`boundver verify`. See
-[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator).
+A generated OpenAPI file, GraphQL schema, or descriptor needs a `derivations`
+declaration and committed receipt; otherwise only the output itself is
+fingerprinted. Run the trusted generator, use `record-derivation` from the same
+source view, and keep a deterministic generator check in CI when correctness
+or reproducibility matters. See
+[generated-artifact freshness](reference.md#generated-artifact-freshness).
 
 ### Treating canonical output as compatibility proof
 

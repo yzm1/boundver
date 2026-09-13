@@ -56,6 +56,10 @@ _OPENAPI_NAMED_MAP_KEYS = frozenset({
     "dependentRequired", "parameters", "headers", "encoding", "mapping",
     "callbacks", "links", "variables",
 })
+_OPENAPI_DATA_VALUE_KEYS = frozenset({"const", "default", "enum"})
+_OPENAPI_OPERATION_KEYS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
 
 
 def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
@@ -70,17 +74,53 @@ def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
     return path == ("components",) and key in _OPENAPI_COMPONENT_MAPS
 
 
+def _is_security_requirement_array(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI Security Requirement list."""
+    if path == ("security",):
+        return True
+    return bool(path and path[-1] == "security" and _is_openapi_operation(path[:-1]))
+
+
+def _is_openapi_operation(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI Operation Object."""
+    if not path or path[-1] not in _OPENAPI_OPERATION_KEYS:
+        return False
+    if len(path) == 3 and path[0] in {"paths", "webhooks"}:
+        return True
+    if (
+        len(path) == 4
+        and path[:2] == ("components", "pathItems")
+    ):
+        return True
+    if (
+        len(path) == 5
+        and path[:2] == ("components", "callbacks")
+    ):
+        return True
+    # A Callback Object hangs from an Operation Object and maps a callback
+    # name and expression to another Path Item Object.  Apply that grammar
+    # recursively so nested callbacks are recognized without treating any
+    # arbitrary object whose parent key is an HTTP verb as an operation.
+    return (
+        len(path) >= 7
+        and path[-4] == "callbacks"
+        and _is_openapi_operation(path[:-4])
+    )
+
+
 def _strip_openapi(
     obj: Any,
     *,
     path: tuple = (),
     preserve_keys: bool = False,
+    preserve_data: bool = False,
 ) -> Any:
     """Recursively remove non-contract fields from an OpenAPI object.
 
-    Drops:
-    - ``description``, ``summary``, ``externalDocs``, ``example``, ``examples``
-      at any nesting level (documentation-only fields).
+    Drops ``description``, ``summary``, ``externalDocs``, ``example``, and
+    ``examples`` where OpenAPI defines them as documentation-only fields.
+    Identically named keys in data values, extension payloads, and named maps
+    are retained.
 
     OpenAPI explicitly permits ``x-*`` specification extensions.  They can
     affect routing, code generation, authentication, and deployment behavior,
@@ -94,19 +134,31 @@ def _strip_openapi(
     if isinstance(obj, dict):
         stripped = {}
         for key, value in obj.items():
+            named_map = _is_openapi_named_schema_map(path, key)
             is_annotation = key in _OPENAPI_STRIP_KEYS
-            if is_annotation and not preserve_keys:
+            if (
+                is_annotation
+                and not preserve_keys
+                and not preserve_data
+                and not named_map
+            ):
                 continue
 
             # A named-map entry's value is a schema object.  Its arbitrary key
             # must not make that schema object itself behave like a named map.
             child_preserves_keys = (
-                not preserve_keys and _is_openapi_named_schema_map(path, key)
+                not preserve_keys and not preserve_data and named_map
+            )
+            child_preserves_data = (
+                preserve_data
+                or key in _OPENAPI_DATA_VALUE_KEYS
+                or (isinstance(key, str) and key.startswith("x-"))
             )
             stripped[key] = _strip_openapi(
                 value,
                 path=path + (key,),
                 preserve_keys=child_preserves_keys,
+                preserve_data=child_preserves_data,
             )
         return stripped
     if isinstance(obj, list):
@@ -115,7 +167,8 @@ def _strip_openapi(
                 item,
                 path=path,
                 # Security Requirement Object keys are arbitrary scheme names.
-                preserve_keys=(path and path[-1] == "security"),
+                preserve_keys=_is_security_requirement_array(path),
+                preserve_data=preserve_data,
             )
             for item in obj
         ]
@@ -348,12 +401,46 @@ def _openapi_document_error(document: Any) -> Optional[str]:
         for value, value_path in _iter_bounded_json_values(document, path="$"):
             if type(value) is not dict or "$ref" not in value:
                 continue
-            reference = value["$ref"]
-            if type(reference) is str and reference.startswith("#"):
+            segments = []
+            cursor = value_path
+            while cursor.parent is not None:
+                segments.append(cursor.segment)
+                cursor = cursor.parent
+            segments.reverse()
+            semantic_path = tuple(segments)
+            in_data = any(
+                isinstance(segment, str)
+                and (
+                    segment in _OPENAPI_DATA_VALUE_KEYS
+                    or segment.startswith("x-")
+                )
+                for segment in semantic_path
+            )
+            is_named_map = bool(
+                semantic_path
+                and isinstance(semantic_path[-1], str)
+                and _is_openapi_named_schema_map(
+                    semantic_path[:-1], semantic_path[-1]
+                )
+            )
+            is_security_requirement = bool(
+                semantic_path
+                and isinstance(semantic_path[-1], int)
+                and _is_security_requirement_array(semantic_path[:-1])
+            )
+            if in_data or is_named_map or is_security_requirement:
                 continue
+            reference = value["$ref"]
             reference_path = _render_bounded_json_path(
                 _json_path_child(value_path, "$ref")
             )
+            if type(reference) is not str:
+                return (
+                    f"{reference_path} is malformed; expected a string "
+                    "same-document fragment reference beginning with '#'"
+                )
+            if reference.startswith("#"):
+                continue
             return (
                 f"{reference_path} uses an external or local-file reference; "
                 "openapi-canonical accepts only same-document fragment "

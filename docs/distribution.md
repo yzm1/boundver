@@ -3,6 +3,11 @@
 Every channel originates from the same reviewed release commit. Prefer an exact
 version or immutable digest in CI.
 
+The CLI requires Python 3.10 or newer and Git 2.32 or newer. It verifies both
+the selected Git version and the process-local configuration mechanism used by
+its security controls before repository inspection. Partial clones require Git
+2.45 or newer because earlier versions cannot disable lazy object fetching.
+
 ## PyPI and uv
 
 ```bash
@@ -16,12 +21,12 @@ not intended for production installation.
 ## GitHub Action
 
 ```yaml
-- uses: yzm1/boundver@v0.15.2
+- uses: yzm1/boundver@v0.16.0
 ```
 
 Pin the exact patch release used to write the lockfile. The compatibility alias
-such as `v0.15` advances to the newest patch in that line and is intentionally
-mutable. An exact tag such as `v0.15.2` never moves.
+such as `v0.16` advances to the newest patch in that line and is intentionally
+mutable. An exact tag such as `v0.16.0` never moves.
 
 From v0.15, the same Action can emit a source-bound historical test plan. Use
 the exact immutable patch tag, check out full history, and request artifact
@@ -38,7 +43,7 @@ test routing.
     fetch-depth: 0
     persist-credentials: false
 - id: review
-  uses: yzm1/boundver@v0.15.2
+  uses: yzm1/boundver@v0.16.0
   with:
     operation: review
     base: ${{ github.event.pull_request.base.sha }}
@@ -110,7 +115,7 @@ an exact semantic version:
 
 ```yaml
 include:
-  - component: gitlab.com/boundver-project/boundver/boundver@0.15.2
+  - component: gitlab.com/boundver-project/boundver/boundver@0.16.0
     inputs:
       stage: test
       operation: review

@@ -1,0 +1,127 @@
+{
+  "record": "boundver-release-mutation-catalog/v1",
+  "source_survey_commit": "dd63d83ced752acd408c504de1c4ae9aa7434030",
+  "private_catalog_mutants": 750,
+  "mutants": [
+    {
+      "id": "MUT-B2-16",
+      "subsystem": "lockfile",
+      "label": "migrate-lock accepts any string semantic config contract",
+      "file": "src/boundver/_lockfile.py",
+      "tests": ["tests/test_chunk_15_config.py::MigrateLockRefusalTests::test_every_unmigratable_contract_raises_migration_error"],
+      "obligations": ["OBL-LOCKFILE-022"],
+      "search": "    config_contract = lockfile.get(\"config_contract\")\n    if config_contract != SEMANTIC_CONFIG_VERSION:\n",
+      "replace": "    config_contract = lockfile.get(\"config_contract\")\n    if not isinstance(config_contract, str):\n"
+    },
+    {
+      "id": "MUT-B4-03",
+      "subsystem": "git-source",
+      "label": "why_component loads custom providers into the process-global registry",
+      "file": "src/boundver/_output.py",
+      "tests": ["tests/test_provider_registry_conformance.py::ProcessGlobalRegistryIsolationTests::test_every_production_call_site_passes_a_registry"],
+      "obligations": ["OBL-GIT-SOURCE-125"],
+      "search": "        load_errors = load_custom_providers(\n            config.get(\"providers\", []),\n            allow_custom=allow_custom_providers,\n            registry=registry,\n        )\n",
+      "replace": "        load_errors = load_custom_providers(\n            config.get(\"providers\", []),\n            allow_custom=allow_custom_providers,\n        )\n"
+    },
+    {
+      "id": "MUT-BASELINE-001",
+      "subsystem": "lockfile",
+      "label": "a baseline may overwrite the config or the lockfile",
+      "file": "src/boundver/core.py",
+      "tests": ["tests/test_review_shape.py::BaselinePathEquivalenceTests::test_overwriting_the_lock_is_refused_in_either_case"],
+      "obligations": ["OBL-LOCKFILE-009"],
+      "search": "            if baseline_path in {\n                Path(os.path.abspath(config_path)),\n                Path(os.path.abspath(lock_path)),\n            }:",
+      "replace": "            if False:"
+    },
+    {
+      "id": "MUT-GIT-SOURCE-022",
+      "subsystem": "git-source",
+      "label": "any command-scoped configuration is accepted",
+      "file": "src/boundver/_git.py",
+      "tests": ["tests/test_git_command_guards.py"],
+      "obligations": ["OBL-GIT-SOURCE-034"],
+      "search": "                or not args[command_index + 1].startswith(\"safe.directory=\")",
+      "replace": "                or False"
+    },
+    {
+      "id": "MUT-GIT-SOURCE-047",
+      "subsystem": "git-source",
+      "label": "lazy-fetch guard turned off in the hardened git environment",
+      "file": "src/boundver/_git.py",
+      "tests": ["tests/test_partial_clone_fail_closed.py::FailClosedOnAnAbsentBlobTests::test_an_ambient_no_lazy_fetch_of_zero_does_not_weaken_the_guard"],
+      "obligations": ["OBL-GIT-SOURCE-158"],
+      "search": "            \"GIT_CONFIG_NOSYSTEM\": \"1\",\n            \"GIT_NO_LAZY_FETCH\": \"1\",\n            \"GIT_NO_REPLACE_OBJECTS\": \"1\",",
+      "replace": "            \"GIT_CONFIG_NOSYSTEM\": \"1\",\n            \"GIT_NO_LAZY_FETCH\": \"0\",\n            \"GIT_NO_REPLACE_OBJECTS\": \"1\","
+    },
+    {
+      "id": "MUT-GIT-SOURCE-051",
+      "subsystem": "git-source",
+      "label": "cat-file conversion mode is no longer refused",
+      "file": "src/boundver/_git.py",
+      "tests": ["tests/test_telemetry_free.py::test_runtime_processes_are_statically_git_rooted"],
+      "obligations": ["OBL-GIT-SOURCE-034"],
+      "search": "        argument in {\"--filters\", \"--textconv\"}",
+      "replace": "        argument in {\"--filters\"}"
+    },
+    {
+      "id": "MUT-GLOBS-007",
+      "subsystem": "globs",
+      "label": "** compiles to a single-segment wildcard rather than any number",
+      "file": "src/boundver/_utils.py",
+      "tests": ["tests/test_glob_properties.py::SeparatorContainmentTests::test_a_lone_recursive_wildcard_matches_every_valid_path"],
+      "obligations": ["OBL-GLOBS-007"],
+      "search": "            compiled_parts.append((\"recursive\", None))",
+      "replace": "            compiled_parts.append((\"glob\", _compile_text_glob(\"*\", spend_step)))"
+    },
+    {
+      "id": "MUT-HASHING-501",
+      "subsystem": "hashing",
+      "label": "semantic config freezes external_consumers, hiding it from config_digest",
+      "file": "src/boundver/_lockfile.py",
+      "tests": ["tests/test_chunk_10_hashing.py::SemanticConfigFieldCoverageTests::test_mutating_any_semantic_field_changes_the_digest"],
+      "obligations": ["OBL-HASHING-048"],
+      "search": "            component[\"external_consumers\"] = external_consumers",
+      "replace": "            component[\"external_consumers\"] = []"
+    },
+    {
+      "id": "MUT-OUTPUT-030",
+      "subsystem": "output",
+      "label": "the review text ceiling is inverted",
+      "file": "src/boundver/_review.py",
+      "tests": ["tests/test_review_text_output_budget.py::GuardAccountingTests::test_a_review_under_the_ceiling_is_rendered"],
+      "obligations": ["OBL-OUTPUT-027"],
+      "search": "    if rendered_bytes > MAX_REVIEW_RESULT_BYTES:",
+      "replace": "    if rendered_bytes < MAX_REVIEW_RESULT_BYTES:"
+    },
+    {
+      "id": "MUT-PROVIDERS-060",
+      "subsystem": "providers",
+      "label": "git mode stops reaching the hash frame",
+      "file": "src/boundver/_hashing.py",
+      "tests": ["tests/test_provider_registry_conformance.py::GitModeBindingTests::test_each_provider_matches_the_expectation_derived_from_its_own_entries"],
+      "obligations": ["OBL-GIT-SOURCE-028"],
+      "search": "            mode = getattr(content, \"git_mode\", _SEMANTIC_MODE)",
+      "replace": "            mode = _SEMANTIC_MODE"
+    },
+    {
+      "id": "MUT-PROVIDERS-309",
+      "subsystem": "providers",
+      "label": "strict JSON allows a duplicate key when both copies carry the same value",
+      "file": "src/boundver/_structured_data.py",
+      "tests": ["tests/test_structured_data.py::StrictJSONTests::test_rejects_duplicate_key_when_both_copies_carry_the_same_value"],
+      "obligations": ["OBL-PROVIDERS-026"],
+      "search": "    for key, value in pairs:\n        if key in result:\n",
+      "replace": "    for key, value in pairs:\n        if key in result and result[key] != value:\n"
+    },
+    {
+      "id": "MUT-VECTOR-003",
+      "subsystem": "hashing",
+      "label": "the entry label length prefix is dropped",
+      "file": "src/boundver/_hashing.py",
+      "tests": ["tests/test_digest_vectors.py::DigestVectorTests::test_the_recorded_slice_fingerprint_holds"],
+      "obligations": ["OBL-GIT-SOURCE-071"],
+      "search": "    digest.update(_u64(len(label_bytes)))\n    digest.update(label_bytes)",
+      "replace": "    digest.update(label_bytes)"
+    }
+  ]
+}

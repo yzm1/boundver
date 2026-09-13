@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/cli-output.coverage.schema.json",
+  "title": "boundver coverage --format json output",
+  "description": "Versioned declaration-coverage evidence. Coverage is read-only and does not alter fingerprints or verification.",
+  "type": "object",
+  "required": ["schema", "complete", "ok", "issues"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {"properties": {"complete": {"const": true}}, "required": ["complete"]},
+      "then": {
+        "required": ["inputs", "policy", "components", "complete_components", "unowned_source_directories", "summary"],
+        "properties": {"issues": {"maxItems": 0}}
+      }
+    },
+    {
+      "if": {"properties": {"complete": {"const": false}}, "required": ["complete"]},
+      "then": {
+        "properties": {"ok": {"const": false}, "issues": {"minItems": 1}}
+      }
+    },
+    {
+      "if": {"properties": {"ok": {"const": true}}, "required": ["ok"]},
+      "then": {
+        "properties": {
+          "summary": {
+            "properties": {"uncovered_files": {"const": 0}}
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 32768},
+    "exclusion": {
+      "type": "object",
+      "required": ["path", "reason", "declaration"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "declaration": {"type": "string", "pattern": "^/coverage/exclusions/[0-9]+$", "maxLength": 64}
+      }
+    },
+    "coverageGroup": {
+      "type": "object",
+      "required": ["declaration", "uncovered_files", "excluded"],
+      "additionalProperties": false,
+      "properties": {
+        "declaration": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "uncovered_files": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/path"},
+          "uniqueItems": true
+        },
+        "excluded": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": {"$ref": "#/$defs/exclusion"}
+        },
+        "facet": {"enum": ["behavior", "boundary"]},
+        "selected_files": {"type": "integer", "minimum": 0, "maximum": 200000},
+        "directory": {"$ref": "#/$defs/path"}
+      }
+    }
+  },
+  "properties": {
+    "schema": {"const": "boundver-declaration-coverage/v1"},
+    "complete": {"type": "boolean"},
+    "ok": {"type": "boolean"},
+    "issues": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {"type": "string", "maxLength": 8192}
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["source", "tree", "commit", "config"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {"enum": ["head", "index", "working-tree"]},
+        "tree": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
+        "config": {"type": "string", "minLength": 1, "maxLength": 32768}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["source_indicators_declaration", "source_indicators"],
+      "additionalProperties": false,
+      "properties": {
+        "source_indicators_declaration": {"const": "/coverage/source_indicators"},
+        "source_indicators": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "uniqueItems": true
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "required": ["component", "path", "tracked_files", "available_facets", "facets"],
+        "additionalProperties": false,
+        "properties": {
+          "component": {"type": "string", "minLength": 1, "maxLength": 16384},
+          "path": {"$ref": "#/$defs/path"},
+          "tracked_files": {"type": "integer", "minimum": 0, "maximum": 200000},
+          "available_facets": {
+            "type": "array",
+            "items": {"enum": ["exact", "behavior", "boundary", "compat"]},
+            "uniqueItems": true
+          },
+          "facets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 2,
+            "items": {
+              "allOf": [
+                {"$ref": "#/$defs/coverageGroup"},
+                {
+                  "type": "object",
+                  "required": ["facet", "selected_files"],
+                  "properties": {
+                    "facet": {"enum": ["behavior", "boundary"]},
+                    "selected_files": {"type": "integer", "minimum": 0, "maximum": 200000}
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "complete_components": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {"type": "string", "minLength": 1, "maxLength": 16384},
+      "uniqueItems": true
+    },
+    "unowned_source_directories": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "allOf": [
+          {"$ref": "#/$defs/coverageGroup"},
+          {
+            "type": "object",
+            "required": ["directory"],
+            "properties": {"directory": {"$ref": "#/$defs/path"}}
+          }
+        ]
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["tracked_files", "source_indicator_files", "component_facet_groups", "unowned_source_directories", "uncovered_files", "excluded_files"],
+      "additionalProperties": false,
+      "properties": {
+        "tracked_files": {"type": "integer", "minimum": 0, "maximum": 200000},
+        "source_indicator_files": {"type": "integer", "minimum": 0, "maximum": 200000},
+        "component_facet_groups": {"type": "integer", "minimum": 0, "maximum": 2000},
+        "unowned_source_directories": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "uncovered_files": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "excluded_files": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    }
+  }
+}

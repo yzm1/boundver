@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/spec/semantic-provider-proposal.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/semantic-provider-proposal.schema.json",
   "title": "boundver semantic provider proposal assurance record",
   "type": "object",
   "required": [
@@ -74,9 +74,9 @@
     },
     "release_gates": {
       "type": "object",
-      "required": ["v0.16.0"],
+      "required": ["v0.17.0"],
       "properties": {
-        "v0.16.0": {"$ref": "#/$defs/releaseGate"}
+        "v0.17.0": {"$ref": "#/$defs/releaseGate"}
       },
       "additionalProperties": false
     },
@@ -320,8 +320,8 @@
         "maximum_review_age_days": {"const": 14},
         "security_review_required": {"const": true},
         "product_review_required": {"const": true},
-        "security_review_marker": {"const": "semantic-provider-v0.16-release-review/v1"},
-        "product_review_marker": {"const": "semantic-provider-v0.16-product-review/v1"},
+        "security_review_marker": {"const": "semantic-provider-v0.17-release-review/v1"},
+        "product_review_marker": {"const": "semantic-provider-v0.17-product-review/v1"},
         "reviewer_independence_attestation": {"const": "Independent-reviewer: confirmed"},
         "required_attestations": {
           "type": "array",

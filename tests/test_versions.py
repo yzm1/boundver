@@ -114,10 +114,10 @@ class ExtractJsonFieldTests(unittest.TestCase):
             p.write_text("{not valid json")
             self.assertIsNone(_extract_json_field(p, "version"))
 
-    def test_numeric_value_returned_as_string(self):
+    def test_numeric_value_is_not_a_version_identifier(self):
         with tempfile.TemporaryDirectory() as td:
             p = self._write(Path(td), {"count": 42})
-            self.assertEqual(_extract_json_field(p, "count"), "42")
+            self.assertIsNone(_extract_json_field(p, "count"))
 
     def test_intermediate_key_not_dict_returns_none(self):
         with tempfile.TemporaryDirectory() as td:
@@ -251,6 +251,17 @@ class ExtractYamlFieldTests(unittest.TestCase):
 class ExtractVersionTests(unittest.TestCase):
     def test_no_version_source_returns_none(self):
         self.assertIsNone(extract_version(Path("."), ".", None, None))
+
+    def test_constant_version_source_returns_its_declared_value(self):
+        self.assertEqual(
+            extract_version(Path("."), ".", {"constant": "1.2.3"}, None),
+            "1.2.3",
+        )
+
+    def test_component_version_source_requires_graph_resolution(self):
+        self.assertIsNone(
+            extract_version(Path("."), ".", {"component": "package"}, None)
+        )
 
     def test_malformed_version_source_and_component_path_fail_closed(self):
         resolver = MagicMock(return_value="1.2.3")
@@ -497,8 +508,8 @@ class ExtractJsonFromTextTests(unittest.TestCase):
     def test_missing_key(self):
         self.assertIsNone(self._fn('{"name": "x"}', "version"))
 
-    def test_numeric_value_as_string(self):
-        self.assertEqual(self._fn('{"v": 42}', "v"), "42")
+    def test_numeric_value_is_not_a_version_identifier(self):
+        self.assertIsNone(self._fn('{"v": 42}', "v"))
 
     def test_duplicate_keys_and_nonfinite_numbers_are_rejected(self):
         self.assertIsNone(
@@ -533,7 +544,7 @@ class ExtractJsonFromTextTests(unittest.TestCase):
         finally:
             sys.set_int_max_str_digits(original)
 
-        self.assertEqual(results, [digits, digits])
+        self.assertEqual(results, [None, None])
 
 
 class ExtractTomlFromTextTests(unittest.TestCase):
@@ -720,7 +731,7 @@ class ExtractYamlFromTextTests(unittest.TestCase):
         finally:
             sys.set_int_max_str_digits(original)
 
-        self.assertEqual(results, [digits, digits])
+        self.assertEqual(results, [None, None])
 
     def test_yaml_exception_returns_none(self):
         """An authoritative parser failure returns no version."""

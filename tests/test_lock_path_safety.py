@@ -159,10 +159,13 @@ class ConfigAliasSafetyTests(unittest.TestCase):
             config_path = _build_repo(root)
             expected = config_path.read_bytes()
             aliases = (
-                str(config_path.resolve()),
-                (Path("unused") / ".." / config_path.name).as_posix(),
+                (str(config_path.resolve()), "must be relative"),
+                (
+                    (Path("unused") / ".." / config_path.name).as_posix(),
+                    "must not contain parent-directory traversal",
+                ),
             )
-            for alias in aliases:
+            for alias, expected_error in aliases:
                 with self.subTest(alias=alias), patch.object(
                     core, "generate_lockfile"
                 ) as generate_lockfile:
@@ -173,9 +176,9 @@ class ConfigAliasSafetyTests(unittest.TestCase):
                         "working-tree",
                         "--out",
                         alias,
-                    )
+                )
                 self.assertEqual(code, core.EXIT_USAGE, stderr)
-                self.assertIn("aliases the selected config", stderr)
+                self.assertIn(expected_error, stderr)
                 self.assertEqual(config_path.read_bytes(), expected)
                 generate_lockfile.assert_not_called()
 
@@ -263,7 +266,7 @@ class ConfigAliasSafetyTests(unittest.TestCase):
                 )
 
             self.assertEqual(code, core.EXIT_USAGE, stderr)
-            self.assertIn("aliases the selected config", stderr)
+            self.assertIn("must not contain parent-directory traversal", stderr)
             self.assertEqual(config_path.read_bytes(), expected)
             generate_lockfile.assert_not_called()
 
@@ -589,7 +592,7 @@ class VendoredCopyLockSafetyTests(unittest.TestCase):
                 )
 
             self.assertEqual(code, core.EXIT_USAGE, stderr)
-            self.assertIn("inside component root", stderr)
+            self.assertIn("must not contain parent-directory traversal", stderr)
             self.assertFalse((root / "svc" / "boundary.lock.json").exists())
             generate_lockfile.assert_not_called()
 

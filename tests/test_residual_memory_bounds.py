@@ -183,7 +183,7 @@ class FilesystemEnumerationBoundTests(unittest.TestCase):
             (component / "b.txt").write_bytes(b"b")
             with patch("boundver._config.MAX_COMPONENT_EXPANSION_FILES", 1):
                 with self.assertRaisesRegex(GuardrailError, ">1 files"):
-                    _expand_component_paths(root, "svc", ["*.txt"])
+                    _expand_component_paths(root, "svc", ["*.txt"], source=None)
 
     def test_component_discovery_caps_raw_filesystem_traversal(self):
         with tempfile.TemporaryDirectory() as td:
@@ -548,6 +548,17 @@ class AggregateReadBoundTests(unittest.TestCase):
         )
         self._ambient_config.start()
         self.addCleanup(self._ambient_config.stop)
+        # The sibling config read is lru_cached on the repository root. When
+        # some earlier test has already warmed it for this repository these
+        # tests pass, and when they run first the read reaches the patched
+        # Popen below and parses the fake blob stream as config. Neutralizing
+        # it makes the outcome independent of collection order.
+        self._filter_config = patch(
+            "boundver._git._repository_filter_config_overrides",
+            return_value=(),
+        )
+        self._filter_config.start()
+        self.addCleanup(self._filter_config.stop)
 
     @staticmethod
     def _batch_process(stdout):
@@ -610,6 +621,117 @@ class AggregateReadBoundTests(unittest.TestCase):
                         source="working-tree",
                     )
             self.assertEqual(requested_limits, [3, 1])
+
+    @staticmethod
+    def _two_blob_component(root):
+        """Commit two differing blobs under svc/ and capture the HEAD tree.
+
+        The two files hold different content of different lengths, so the
+        second provider read has to be charged for the bytes the first read
+        already spent.
+        """
+        init_git_repo(root, user_email="test@example.com", user_name="Test")
+        component = root / "svc"
+        component.mkdir()
+        (component / "a.txt").write_bytes(b"aa")
+        (component / "b.txt").write_bytes(b"bbb")
+        commit_all(root, "initial")
+        captured = git_helpers._capture_git_source_snapshot(root, "head")
+        descriptors = hashing._tree_entry_descriptors(["svc/a.txt", "svc/b.txt"])
+        blobs = {
+            captured.entries["svc/a.txt"].oid: b"aa",
+            captured.entries["svc/b.txt"].oid: b"bbb",
+        }
+        return captured, descriptors, blobs
+
+    def test_provider_blob_reads_use_remaining_logical_budget(self):
+        """Provider reads are handed what is left, not the whole total.
+
+        When a caller supplies its own blob reader, _stream_tree_digest must
+        hand that reader the aggregate budget minus the content bytes already
+        hashed, so an oversized blob is refused before it is read rather than
+        after. Nothing watched that argument. The suite's only assertion on a
+        limit sequence covers the working-tree branch, which keeps its own copy
+        of the same arithmetic, and no test passed a read_blob_fn that recorded
+        what it was given. Passing the whole constant every time therefore
+        stayed invisible (MUT-GIT-SOURCE-307): the size guardrails still run
+        after the read, so the digest never changes and only the per-read
+        residency ceiling quietly rises to the full total.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            captured, descriptors, blobs = self._two_blob_component(root)
+            requested_limits = []
+
+            def recorder(oid, remaining):
+                requested_limits.append(remaining)
+                return blobs[oid]
+
+            with patch("boundver._hashing.MAX_HASH_TOTAL_BYTES", 100):
+                hashing._stream_tree_digest(
+                    root,
+                    descriptors,
+                    "head",
+                    captured,
+                    domain=hashing.HASH_DOMAIN_EXACT,
+                    read_blob_fn=recorder,
+                )
+            self.assertEqual(requested_limits, [100, 98])
+
+    def test_two_blob_component_premise_charges_the_first_read(self):
+        """The premise: the fixture really moves the budget between reads.
+
+        The sequence [100, 98] separates the remaining budget from the total
+        only if the first blob hashed is genuinely two bytes and the second
+        file is a distinct Git object. Identical content would be served from
+        the duplicate cache and never reach the reader twice, collapsing the
+        sequence to one element and letting the assertion above hold whichever
+        budget the branch passed.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            captured, descriptors, blobs = self._two_blob_component(root)
+            self.assertEqual(
+                [repo_rel for _, repo_rel in descriptors],
+                ["svc/a.txt", "svc/b.txt"],
+            )
+            first_oid = captured.entries["svc/a.txt"].oid
+            second_oid = captured.entries["svc/b.txt"].oid
+            self.assertNotEqual(first_oid, second_oid)
+            self.assertEqual(len(blobs[first_oid]), 2)
+            self.assertEqual(len(blobs[second_oid]), 3)
+
+    def test_provider_blob_reads_still_hash_a_component_that_fits(self):
+        """The contrast: a narrowed budget must still refuse nothing.
+
+        Charging each read for the bytes already hashed must not turn away a
+        component that fits under the aggregate limit. Hashing the same two
+        files through a provider reader with the real limit in force must give
+        the digest the batch-streaming path produces, so an implementation that
+        bought a passing limit sequence by refusing every read fails here.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            captured, descriptors, blobs = self._two_blob_component(root)
+            observed_limits = []
+
+            def reader(oid, remaining):
+                observed_limits.append(remaining)
+                return blobs[oid]
+
+            provider_digest = hashing._stream_tree_digest(
+                root,
+                descriptors,
+                "head",
+                captured,
+                domain=hashing.HASH_DOMAIN_EXACT,
+                read_blob_fn=reader,
+            )
+            streamed_digest = hashing.source_tree_digest(root, "svc", source="head")
+            self.assertEqual(provider_digest, streamed_digest)
+            self.assertEqual(len(observed_limits), 2)
+            for limit in observed_limits:
+                self.assertGreater(limit, 0)
 
     def test_git_tree_stream_rechecks_budget_after_duplicate_blob(self):
         with tempfile.TemporaryDirectory() as td:

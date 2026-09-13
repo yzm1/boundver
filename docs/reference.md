@@ -1,8 +1,10 @@
-# Reference: sources, exit codes, and facet availability
+# Behavior and configuration reference
 
 This page is the single source of truth for the mechanical rules that every
 other guide depends on. The tutorials and recipes link here rather than
 restating them, so there is one place to correct when behavior changes.
+Command syntax and options are generated from the live parser in the
+[CLI reference](cli-reference.md).
 
 ## Source modes
 
@@ -32,17 +34,23 @@ Six rules follow from that model:
    than 0.10, which could combine staged artifacts with unstaged config.
    `verify --format json` records the exact locations and captured object IDs
    under `inputs`; text output names the selected config and lock explicitly.
+   When `verify --update` sees that the same working-tree config is
+   semantically different, absent, or unreadable, it emits a bounded notice but
+   still regenerates only from the selected snapshot. Add
+   `--strict-config-source` to refuse that update with exit `2` instead.
 5. **Fetch history** before using `--changed-from` or a `git_tag_prefix`
    version source. Shallow clones break both.
 6. **Make required Git objects local.** Boundver resolves the host Git binary
-   outside the inspected repository and disables credential prompts,
+   outside the inspected repository, requires Git 2.32 or newer, confirms its
+   process-local security configuration, and disables credential prompts,
    replacement refs, repository hooks, fsmonitor callbacks, and partial-clone
    lazy fetching for every Git subprocess. Repository/worktree Git clean,
    smudge, and process filters are also neutralized, so ordinary inspection
    never executes a filter command from local Git configuration. A missing
    promised object therefore fails closed instead of turning verification into
    an undeclared network request. Fetch the complete history and required
-   objects explicitly before verification. Submodules remain opaque Gitlinks:
+   objects explicitly before verification. Partial clones require Git 2.45 or
+   newer; full repositories retain the Git 2.32 baseline. Submodules remain opaque Gitlinks:
    a changed checked-out Gitlink is visible, while dirty/untracked content and
    local filter configuration inside the submodule are not traversed.
 
@@ -93,6 +101,14 @@ except boundver.ConfigError as error:
     raise SystemExit(f"invalid Boundver config: {error}")
 ```
 
+The Python API requires a Git repository. If Git file listing becomes
+unavailable during a `working-tree` operation after repository validation,
+the bounded low-level reader can emit `WARNING: git file listing failed;
+falling back to filesystem enumeration` on standard error and return a
+filesystem approximation. Embedders that require fail-closed behavior should
+capture standard error and reject that warning. `head` and `index` operations
+fail with `ConfigError` instead of approximating an immutable source.
+
 ### Diagnostic bases
 
 Fingerprint drift accumulates from the source represented by the lock, not
@@ -106,10 +122,13 @@ fallback instead of silently claiming that the previous commit is authoritative.
 The inference avoids adding a commit SHA that would make identical locks differ
 between `head`, `index`, and `working-tree` generation.
 
-Use `--base-ref REF` to override the inference. `index` and `working-tree`
-default to `HEAD`, because their staged or on-disk source does not yet have a
-commit identity. Inference is diagnostic evidence, not lock integrity: verify
-still recomputes every selected fingerprint from the requested source.
+Use `--base-ref REF` to override the inference. Boundver resolves an explicit
+ref once to an immutable commit before the diff and discloses both the requested
+name and resolved object ID. Empty, whitespace-only, missing, or ambiguous refs
+are usage errors. `index` and `working-tree` default to `HEAD`, because their
+staged or on-disk source does not yet have a commit identity. Inference is
+diagnostic evidence, not lock integrity: verify still recomputes every selected
+fingerprint from the requested source.
 
 When `explain` finds no changes in the selected source, text output names the
 other exact `--source` forms without silently reading those additional views.
@@ -130,6 +149,11 @@ maps, full object identities, and stable field names remain JSON-only where the
 text command already provides a bounded summary. JSON source/provenance fields
 and command defaults are unchanged.
 
+Argument and source-ref validation happens before a command result exists.
+Consequently, `--format json` may exit 2 with empty standard output for usage
+errors such as an invalid or ambiguous `--base-ref`; the bounded diagnostic is
+written to standard error and is not an instance of the command's JSON schema.
+
 ### Structured-input limits
 
 Config and lock documents are capped at 10 MiB and 100,000 JSON-compatible
@@ -141,6 +165,57 @@ public tree contract; they do not replace the exact post-parse validation.
 Duplicate object keys, aliases, non-finite numbers, oversized integer or
 floating-point tokens, and format-specific ambiguous values remain
 fail-closed.
+
+## Declaration coverage
+
+`boundver coverage` audits declarations without reading or writing the lock.
+It reports two kinds of omission:
+
+- tracked files under a component root that its available `behavior` or
+  `boundary` selectors do not select;
+- files matching `coverage.source_indicators` whose directories are outside
+  every component path and declared `vendored_copies` tree.
+
+Exact-only components are complete by construction because `exact` covers the
+tracked component tree. Compatibility identity is not a path selector.
+
+```json
+{
+  "coverage": {
+    "source_indicators": ["**/*.py", "**/*.ts"],
+    "exclusions": [
+      {
+        "paths": ["services/api/internal/**"],
+        "facets": ["boundary"],
+        "reason": "private implementation"
+      },
+      {
+        "paths": ["tools/generated/**"],
+        "facets": ["ownership"],
+        "reason": "generated build helpers"
+      }
+    ]
+  }
+}
+```
+
+Coverage paths are repository-relative and use the same glob semantics and
+work budgets as other declarations. Exclusions apply only to the named
+coverage facets and always require a reason. Excluded and uncovered paths are
+reported separately.
+
+```bash
+boundver coverage --source head                 # advisory; exits 0
+boundver coverage --source head --strict        # exits 1 on uncovered paths
+boundver coverage --source index --format json  # boundver-declaration-coverage/v1
+```
+
+The result names the selected config identity and the JSON Pointer responsible
+for every group or exclusion. It reads one source view, follows no symlink, and
+does not change config digests, component identities, slices, locks, or
+`verify` results. Ignored untracked files are absent because coverage begins
+from Git's tracked path set; a deliberately tracked ignored file remains in the
+report.
 
 ## Selector work limits
 
@@ -186,8 +261,8 @@ trees reached by those IDs. A ref moving concurrently cannot create a hybrid
 result. Text and JSON output identify the requested refs, resolved commits,
 tree IDs, and exact `COMMIT:path` config and lock inputs for both endpoints.
 
-Both endpoints must contain a valid `boundary-lock/v3` /
-`boundver-semantic-config/v2` pair whose `config_digest`, component set,
+Both endpoints must contain a valid `boundary-lock/v4` /
+`boundver-semantic-config/v3` pair whose `config_digest`, component set,
 consumer graph, slice membership, and project agree. This deliberately rejects
 an unreconciled partial update, legacy or incompatible contracts, malformed
 digests, and a graph that cannot be reconstructed reliably. Boundver also
@@ -338,6 +413,10 @@ historical `review` returns `0` regardless of whether transitions are present;
 it returns `2` when an endpoint, history, config, lock, or graph cannot be
 reconstructed reliably.
 
+`coverage` is advisory and returns `0` after any complete report. With
+`--strict`, uncovered paths return `1`; reasoned exclusions alone remain
+successful. An incomplete coverage analysis returns `2`.
+
 When several selected facets drift, the highest severity wins. `--fail-fast`
 limits the returned report to one issue; it does not stop boundver from
 evaluating every other component first, so the exit code is still the global
@@ -347,6 +426,11 @@ Exit `2` is categorically different from `1` and `3`–`5`. The latter mean
 "boundver checked, and something drifted." Exit `2` means boundver could not
 perform a reliable check at all. Automation should treat it as a build error,
 never as drift to be accepted:
+
+This includes malformed or unavailable configuration and locks, source-capture
+failures, digest computation errors, unavailable requested facets, derivation
+failures, and incomplete diagnostics. These safety failures always outrank any
+ordinary facet drift reported in the same run.
 
 ```bash
 set +e
@@ -367,9 +451,9 @@ case "$code" in
 esac
 ```
 
-`--format json` exposes issues, non-gating observations, selected facets,
-component selection, update status, exact input provenance, and typed
-`consumer_impact`. `review`, `status`, `why`, `diff`, `slice`, and `discover`
+`--format json` exposes issues, non-gating observations, bounded safety
+`notices`, selected facets, component selection, update status, exact input
+provenance, and typed `consumer_impact`. `review`, `status`, `why`, `diff`, `slice`, and `discover`
 also have `--format json`. `why` distinguishes `observed_drift` from policy-gated
 `drifted`; an exact-only observation does not recommend regeneration when
 `exact` is not gated.
@@ -427,7 +511,9 @@ Two consequences are worth internalizing before you write a policy:
 - **A `leaf` component never supplies `boundary`.** That is the point of
   declaring it a leaf: it consumes a contract without publishing one. It still
   supplies `exact`, and it can supply `behavior` when `behavior.paths` is
-  non-empty and `compat` when `version_source` is declared.
+  non-empty and `compat` when `version_source` is declared. Its
+  `boundary.paths` must therefore be absent or empty; non-empty paths are a
+  configuration error instead of silently ignored input.
 - **A slice inherits this constraint from its members.** A slice in
   `mode: boundary` needs a boundary digest from *every* member. This bites
   most often with `closure_of`, where you do not choose the membership: the
@@ -437,14 +523,37 @@ Two consequences are worth internalizing before you write a policy:
 `validate-config` applies these rules by default, so an unsatisfiable policy is
 reported before `generate` runs.
 
-The current compatibility identity must come from a declared version file or
-a reachable `git_tag_prefix`. Inheriting a sibling component's identity or
-declaring a validated constant is tracked in
-[GitHub issue #40](https://github.com/yzm1/boundver/issues/40); neither spelling
-is accepted by the v2 semantic-config contract.
+The compatibility identity can come from any one of four declarations:
+
+```json
+{"version_source": {"file": "package.json", "field": "version"}}
+{"version_source": {"git_tag_prefix": "service-v"}}
+{"version_source": {"component": "service-package"}}
+{"version_source": {"constant": "1.0.0"}}
+```
+
+`component` inherits the referenced component's resolved version from the same
+selected source. References must name another configured component; self
+references and cycles fail validation and generation. This is useful for a
+schema directory or generated contract that shares the owning package's
+release identity. `constant` must be a bounded, whitespace-free SemVer string
+and is itself part of semantic configuration identity. Use it only when no
+tracked manifest or tag owns the version.
+
+For a file source, the selected JSON, TOML, YAML, or YML value must be a string.
+Quote numeric-looking versions: a parsed number cannot preserve source spelling
+(`1.10` becomes `1.1`), so Boundver refuses it rather than changing identity.
+
+Version inheritance is not a consumer edge: declare `consumers` separately for
+impact routing. A `compat` slice uses each member's resolved identity, including
+inherited and constant versions, exactly as it uses file- and tag-backed ones.
 
 `git_tag_prefix` is a literal prefix, not a glob. It is limited to 4,096
 characters and must be able to form a valid `refs/tags/<prefix><semver>` name.
+If one component's prefix is a strict prefix of another component's prefix,
+the shorter prefix also matches the longer component's tags when the remaining
+suffix is valid SemVer. Use non-overlapping prefixes when components must have
+independent compatibility identities.
 Git-forbidden whitespace and controls, `~`, `^`, `:`, `?`, `*`, `[`, `\`,
 `..`, `@{`, empty path components, dot-prefixed components, and completed
 components ending in `.lock` are rejected during config validation. Unicode
@@ -464,43 +573,68 @@ that temporarily includes an `implicit` component during adoption, for example.
 It does not suppress failures. Missing declared paths, provider errors, broken
 version sources, and vendored-copy mismatches remain fatal with or without it.
 
-## Generated artifacts are not bound to their generator
+## Generated-artifact freshness
 
-Boundver hashes a generated contract. It does not know that the file was
-generated, what produced it, or whether regenerating would change it. A stale
-committed artifact therefore verifies clean.
+Use a top-level `derivations` declaration when a component boundary is generated
+from other tracked files:
 
-Give the generator a deterministic `--check` mode and run it *before*
-verification:
-
-```yaml
-- name: Check generated OpenAPI is current
-  run: python ci/generate_platform_openapi.py --check
-- name: Verify recorded boundaries
-  run: boundver verify --source head
+```json
+{
+  "derivations": {
+    "public-api": {
+      "inputs": ["infrastructure/template.yaml"],
+      "outputs": ["infrastructure/openapi.generated.yaml"],
+      "evidence": "infrastructure/openapi.boundver-derivation.json",
+      "generator": "sam-openapi/v1"
+    }
+  }
+}
 ```
 
-The check must fail when regeneration would change the tracked output. For
-index workflows, stage the derivation source and the generated output together,
-then generate and stage the lock.
+Every input and output selector must match at least one tracked file in the
+selected source. Inputs and outputs cannot overlap. Each output must also be
+selected by a component boundary and cannot belong to two derivations. The
+evidence path is a unique literal ending in `.boundver-derivation.json`.
 
-There is deliberately no executable `derived_from` field. A checked-out config
-is not authorization to execute repository commands, and a sound design also
-has to bind tool identity and source materialization. Declarative
-derived-artifact support is tracked in
-[GitHub issue #39](https://github.com/yzm1/boundver/issues/39).
+Run the trusted generator yourself, then record what it produced:
+
+```bash
+python ci/generate_platform_openapi.py
+git add boundary.config.json infrastructure/template.yaml \
+  infrastructure/openapi.generated.yaml
+boundver record-derivation public-api --source index
+git add infrastructure/openapi.boundver-derivation.json
+boundver generate --source index
+git add boundary.lock.json
+boundver verify --source index
+```
+
+`record-derivation` is the only mutating derivation command. Its receipt binds
+the derivation name, the declared generator identity, and deterministic,
+mode-aware digests of the selected input and output file sets. This permits a
+new derivation, its files, receipt, and lock to land together without a partial
+lock. Use `head`, `index`, or `working-tree` consistently; the receipt is checked
+against that same selected source during validation, generation, and
+verification.
+
+The `generator` value is an identifier, not a command. Boundver never executes
+it or any other repository-configured derivation command. The receipt proves
+that the declared inputs and outputs have not moved since recording; it is not
+a signature, does not attest who ran the generator, and does not prove the
+generator is correct. Keep a deterministic generator `--check` step in trusted
+CI when you need an independent reproducibility check.
 
 ## Upgrading
 
 Boundver pins configuration and CLI-output schemas to the release tag. A
 persisted lock points to the immutable canonical publication of its structural
-lock schema (`boundary-lock/v3` currently uses the v0.13.0 schema URL), so a
+lock schema (`boundary-lock/v4` uses the v0.16.0 schema URL), so a
 digest-neutral package upgrade does not dirty the lock merely to rotate a
 schema annotation. A structural lock change must advance the lock schema and
 select a new canonical publication. The upgrade procedure is:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.15.2"
+python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
 boundver validate-config
 # Stage changed config and every changed or newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml
@@ -516,9 +650,8 @@ commit the config and source changes first and generate afterwards. Update CI,
 local tooling, and automation in the same change.
 
 Hash-bearing locks are never relabelled. `boundver migrate-lock` rejects
-`boundary-lock/v1` and `v2`, and rejects v3 locks carrying
-`boundver-semantic-config/v1`, directing you to regenerate from repository
-content instead. For a current v3 lock, the command only removes supported
+`boundary-lock/v1`, `v2`, and `v3`, directing you to regenerate from repository
+content instead. For a current v4 lock, the command only removes supported
 legacy metadata or fills supported missing maps. An already-normalized lock is
 a true no-op: its representation and file metadata are left untouched.
 `--dry-run` prints prospective normalized JSON only when data would change and

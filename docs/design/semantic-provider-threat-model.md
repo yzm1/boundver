@@ -13,7 +13,7 @@ files, credentials, network, or execution authority.
 
 The design is internally reviewed but not independently accepted. No semantic-
 provider implementation is authorized. v0.15 is separate and contains no such
-implementation; the first planned semantic-provider release is v0.16.0.
+implementation; the first planned semantic-provider release is v0.17.0.
 
 Users looking for the product overview should read the [executive
 summary](../executive-summary.md).
@@ -26,7 +26,8 @@ summary](../executive-summary.md).
 | Status | Review Ready; independent review pending |
 | Parent RFC | [Semantic provider extension system](semantic-provider-rfc.md) |
 | Machine traceability | [`spec/semantic-provider-proposal.json`](https://github.com/yzm1/boundver/blob/main/spec/semantic-provider-proposal.json) |
-| Last full internal red-team pass | 2026-08-30; not independently accepted |
+| Last full internal red-team pass | 2026-09-04 (RTR-004); not independently accepted |
+| Conformance language | Normative keywords follow the parent RFC's [Conformance language](semantic-provider-rfc.md#conformance-language) |
 
 This document assumes that repository contents, provider inputs, provider
 artifacts, package metadata, protocol messages, caches, and diagnostics can be
@@ -684,7 +685,7 @@ the documented prohibition could be bypassed by the ordinary release path.
 
 **Disposition:** closed by SPC-034, SPC-040, and SPC-043. The manifest now
 declares only immutable release-review requirements. The authoritative auditor
-accepts the designated v0.16.0 tag and release SHA externally, requires local
+accepts the designated v0.17.0 tag and release SHA externally, requires local
 `HEAD` and the GitHub release record to match, and proves a separate merged
 release PR's reviewed head tree equals the release commit tree. Two fresh, role-marked
 approvals from the distinct external humans in the pinned gist roster,
@@ -866,6 +867,147 @@ both independent exact-tree reviewers approve that closure. External product
 and security reviewers need only public read access and must not be made
 collaborators.
 
+### RTF-055: fail-closed extraction pushes operators to the legacy path - High
+
+SPC-031 makes an unresolvable construct `unsupported`, SPC-014 makes
+`unsupported` a terminal state with no usable boundary digest, and SPC-010
+forbids fallback. Composed, one unresolved decorator, dynamic attribute,
+conditional type, or merged declaration anywhere in the selected input denies a
+component any boundary digest. Real Python and TypeScript packages contain such
+constructs routinely.
+
+The operator's remaining choices are a narrower contract that excludes the API
+they care about, abandoning semantic providers, or `custom.*` legacy
+trusted-native execution. The human-factors lens covered approval fatigue and
+confusable names but never modelled what a blocked operator does next, so the
+security architecture created a gradient toward the one execution mode this
+proposal opens by calling unacceptable.
+
+**Disposition:** closed by SPC-046. A third terminal state,
+`bounded-incomplete`, carries an omission manifest that names every unresolved
+construct and is hashed into the boundary digest. Named omissions are not silent
+omissions: the digest moves when the omission set moves. Host policy can still
+demand `complete` for a component. SPV-039 verifies that a `bounded-incomplete`
+result never reports as `complete` and that the manifest is inside the digest.
+
+### RTF-056: a quarantined legacy path with no end date is a permanent entrance - High
+
+SPC-032 separates `custom.*` by name, flag, warning, policy kind, provenance,
+and documentation. Every control from SPC-001 to SPC-045 governs the sandboxed
+class only. An attacker who cannot defeat the sandbox does not need to: the
+cheapest route stays convincing a repository to use a legacy provider, which
+executes arbitrary Python with the operator's authority. The proposal contained
+no deprecation, retirement, sunset, or end-of-life statement of any kind.
+
+**Disposition:** closed by SPC-047 and the Legacy retirement schedule. Stages L1
+through L3 fix warning, per-invocation opt-in, and deletion at 1.0, and run
+independently of whether this proposal is ever accepted. SPV-040 verifies the
+stage behavior and the published dates.
+
+### RTF-057: loss of the sole owner account permanently blocks security releases - High
+
+The threat model treated owner-account compromise as an explicit trust root and
+said so clearly. It never treated unavailability. Account `22440724` is the sole
+admin under SPC-045, the sole mutation authority, the author of both v2
+attestations, and the owner of the roster gist. If that account is deleted,
+suspended, or unreachable through credential loss or incapacity, nobody can
+create a tag, rotate a reviewer, or update the roster, and no security fix can
+be published. The design had no state for this and would fail closed
+permanently rather than fail over.
+
+**Disposition:** closed by SPC-048 and the Governance continuity section. The
+project publishes a dormancy period, an archival disposition, and an explicit
+statement that no successor is currently named, so readers do not assume a fix
+can arrive. SPV-041 verifies the record exists and matches the published
+documentation.
+
+### RTF-058: a defect in gate parsing grants release authority - Medium
+
+The authoritative auditor and structural checker are roughly 3,765 lines that
+resolve executables, materialize Git blobs, make paginated authenticated and
+anonymous HTTPS requests, and parse untrusted GitHub and gist JSON. That is the
+same shape of attack surface this proposal requires BPP/1 to specify and fuzz
+before implementation, held to a weaker standard: a 75% combined branch-coverage
+floor across both files, which lets the functions that actually grant authority
+hide behind well-covered validation code.
+
+**Disposition:** closed by SPC-049. Gate code gets the adversarial corpus and
+fuzzing the proposal already demands of protocol parsing, and the
+authority-granting functions carry a separately reported coverage floor.
+SPV-042 verifies the corpus, the fuzzing, and the per-function reporting.
+
+### RTF-059: perfect approval evidence does not mean a review happened - Medium
+
+The review controls are strong on authenticity. They bind numeric account
+identity, exact head SHA, roster precedence, expiry, post-merge edit detection,
+resolved threads, and permission level. Each answers whether an approval is real
+and unmodified. None answers whether anyone read the material. The required
+review body is four fixed lines, which a reviewer can produce in under a minute
+for a proposal of this size. Approval fatigue appeared in the red-team method
+list and produced no finding and no control, making it the one lens that yielded
+nothing.
+
+**Disposition:** closed by SPC-050. Each role must supply free-text reasoning
+bound to the reviewed tree digest: accepted residual risks for security,
+expected unresolved constructs for product. The gate checks presence, bounds,
+encoding, and distinctness, and never judges quality, because a machine cannot.
+A rubber stamp becomes visible to the next reader instead of indistinguishable.
+SPV-043 verifies the checks and the negative cases.
+
+### RTF-060: the public roster is a list of the two people worth attacking - Medium
+
+SPC-044 pins a public gist naming one security and one product reviewer by login
+and numeric account ID. Publishing it is required for a verifiable gate. It also
+tells an attacker exactly which two accounts stand between them and a
+semantic-provider release, and the proposal states plainly that neither holds
+repository authority, so both are ordinary users without organisation-enforced
+controls. The residual-risk list mentioned a compromised reviewer account in the
+abstract; nothing addressed targeted compromise, phishing, or coercion of a
+named individual.
+
+**Disposition:** closed by SPC-051. The residual-risk section now names targeted
+compromise, phishing, and coercion. The roster body carries a hardware-backed
+two-factor attestation, documented honestly as attested and not verifiable
+because GitHub does not expose an arbitrary user's second-factor method. A third
+eligible reviewer is recommended so one lost identity does not stall the gate.
+SPV-044 verifies the roster fields and eligibility.
+
+### RTF-061: a runtime defect surfaces to users as boundary drift - Medium
+
+SPC-036 keeps runtime and sandbox identity out of the portable fingerprint so
+hosts do not rotate everyone's digests, and SPC-018 requires byte-identical
+canonical entries across platforms and runs. Both are correct and both assume
+the runtime is correct. RTF-037 covers an underspecified feature profile and
+RTF-021 covers runtime identity destroying semantics. Neither covers an ordinary
+implementation bug: the reviewed profile is respected, the digest-contract ID
+never moves, and one runtime version canonicalizes an edge case differently from
+the next. Boundver then reports changed boundary drift for a component nobody
+touched. That is not a security failure, and it is worse for adoption, because
+the tool's whole value is that a changed digest means something changed.
+
+**Disposition:** closed by SPC-052. Every digest contract ships conformance
+vectors with known-good canonical digests, evaluated before repository input is
+read. A mismatch is a runtime fault with its own diagnostic and no lock entry.
+SPV-045 verifies that a seeded runtime divergence fails as a fault and never as
+drift.
+
+### RTF-062: an indefinitely pending proposal conceals a cancelled feature - Low
+
+Acceptance requires two independent external humans with exact read-only
+permission, and implementation adds published specifications, reproducible
+builds, SBOM, licence inventory, vulnerability scans, identity-bound
+attestations, differential and metamorphic tests, adversarial logic-bomb
+fixtures, and possibly a second independent provider. That is proportionate to
+the risk and demanding for one maintainer. The record could sit at
+`review-ready` indefinitely, and users reading the roadmap could not tell
+whether semantic providers were coming.
+
+**Disposition:** closed by SPC-053 and the Proposal lifecycle and expiry
+section. The proposal carries a review-by date of 2027-03-31, after which the
+status must move to `superseded` or `rejected` and the RFC is marked historical.
+Withdrawal is stated as a legitimate outcome, and SPC-047 retirement continues
+regardless. SPV-046 verifies the date and the required transition.
+
 ## Threat catalog and traceability
 
 The JSON assurance record is authoritative for automated cross-reference. This
@@ -916,6 +1058,15 @@ table is the human review surface.
 | SPT-041 | Authorized sandboxed provider returns deterministic but false output | False stable or changed boundary | SPC-002, SPC-019, SPC-031, SPC-041 | SPV-016, SPV-026, SPV-036 |
 | SPT-042 | Host parses, compiles, or deserializes provider artifact/evidence before containment | Main-process compromise before sandbox | SPC-008, SPC-009, SPC-021, SPC-042 | SPV-006, SPV-011, SPV-037 |
 | SPT-043 | Self-attested, stale, or unenforced semantic-provider release evidence satisfies promotion | Release-governance bypass | SPC-034, SPC-040, SPC-043, SPC-045 | SPV-024, SPV-035, SPV-038 |
+
+| SPT-044 | Fail-closed extraction leaves no usable result, so the operator selects legacy native execution | Arbitrary execution with operator authority | SPC-010, SPC-014, SPC-046, SPC-047 | SPV-039, SPV-040 |
+| SPT-045 | Quarantined legacy trusted-native execution persists with no retirement date | Sandbox controls bypassed entirely | SPC-032, SPC-047 | SPV-040 |
+| SPT-046 | The sole owner account becomes unavailable rather than compromised | No security release is possible; gate is unsatisfiable | SPC-045, SPC-048 | SPV-041 |
+| SPT-047 | A parsing defect in the auditor or checker grants release authority | Governance and release bypass | SPC-034, SPC-040, SPC-049 | SPV-042 |
+| SPT-048 | A template-perfect approval satisfies the gate without review | Unreviewed design or gate change is accepted | SPC-033, SPC-050 | SPV-043 |
+| SPT-049 | A publicly named roster member is phished, compromised, or coerced | Governance bypass through legitimate identity | SPC-044, SPC-051 | SPV-044 |
+| SPT-050 | A runtime defect changes canonical output without a contract change | False boundary drift; loss of signal credibility | SPC-018, SPC-019, SPC-052 | SPV-045 |
+| SPT-051 | The proposal remains review-ready past any decision point | Cancelled feature is presented as forthcoming | SPC-053 | SPV-046 |
 
 ## Abuse-case test corpus
 
@@ -1025,6 +1176,15 @@ documented ignored and retained construct.
 | SPV-037 | Pre-sandbox manifest/evidence/crypto/decoder/runtime/AOT corpus proves no provider-controlled structure is parsed outside containment |
 | SPV-038 | External exact-tree semantic-provider release attestation roster/identity/permission/repository-collaborator/owner-delegation/review/age/role-marker/edit/expiry/race matrix and local/tag/publish enforcement mutations pass |
 
+| SPV-039 | Bounded-incomplete results carry a canonical hashed omission manifest, never report as complete, and honour a `complete`-only policy |
+| SPV-040 | Legacy retirement stages L1-L3 warn, require the per-invocation flag, and remove the loader on schedule |
+| SPV-041 | The continuity record states dormancy, archival disposition, and roster-root recovery, and matches published documentation |
+| SPV-042 | Adversarial GitHub/gist response corpus and fuzzing pass, with a separately reported coverage floor for authority-granting functions |
+| SPV-043 | Role-specific review reasoning is present, bounded, correctly encoded, and distinct across roles and commits |
+| SPV-044 | Roster records the two-factor attestation and third-reviewer eligibility, and rejects non-conforming rosters |
+| SPV-045 | A seeded runtime divergence fails conformance vectors as a runtime fault and writes no lock entry |
+| SPV-046 | The review-by date is present and an expired review-ready record fails the gate |
+
 ## Residual risks
 
 Even after every gate passes:
@@ -1046,7 +1206,13 @@ Even after every gate passes:
   double snapshots and exact identities narrow but do not erase that root of
   trust; and
 - a user can explicitly run legacy trusted-native code and thereby grant it the
-  user's authority.
+  user's authority, until the SPC-047 retirement schedule removes that loader;
+- the reviewer roster is public by necessity, so the named individuals are
+  identifiable targets for phishing, compromise, or coercion, and the two-person
+  rule raises but does not remove that exposure; and
+- the owner account is a single point of failure for availability as well as
+  integrity; SPC-048 states the archival disposition rather than promising
+  continuity.
 
 These risks must remain visible in user-facing documentation and result
 provenance. A future implementation may reduce them but must not delete or

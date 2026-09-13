@@ -217,7 +217,12 @@ def lockfile_structure_issues(
                     f"LOCKFILE malformed: component '{name}' {field} "
                     "must be a non-empty string"
                 )
-        if component.get("boundary_status") not in {"ok", "partial", "error"}:
+        boundary_status = component.get("boundary_status")
+        if not isinstance(boundary_status, str) or boundary_status not in {
+            "ok",
+            "partial",
+            "error",
+        }:
             issues.append(
                 f"LOCKFILE malformed: component '{name}' boundary_status must be "
                 "one of ok, partial, or error"
@@ -292,7 +297,7 @@ def lockfile_structure_issues(
             "vendored_errors",
         ):
             value = component.get(field)
-            if value is not None and (
+            if field in component and (
                 not isinstance(value, list)
                 or not all(isinstance(item, str) for item in value)
             ):
@@ -307,7 +312,7 @@ def lockfile_structure_issues(
                 "must be an object or null"
             )
         vendored_digests = component.get("vendored_digests")
-        if vendored_digests is not None and (
+        if "vendored_digests" in component and (
             not isinstance(vendored_digests, dict)
             or not all(
                 isinstance(key, str) and is_sha256_digest(value)
@@ -350,7 +355,8 @@ def lockfile_structure_issues(
                 issues.append(
                     f"LOCKFILE malformed: slice '{name}' description must be a string"
                 )
-            if slice_entry.get("mode") not in facet_set:
+            slice_mode = slice_entry.get("mode")
+            if not isinstance(slice_mode, str) or slice_mode not in facet_set:
                 issues.append(
                     f"LOCKFILE malformed: slice '{name}' mode must be one of "
                     "exact, behavior, boundary, or compat"

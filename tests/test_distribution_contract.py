@@ -147,7 +147,16 @@ class _FakeHTTPResponse:
 
 def _release_changelog(version: str, notes: str = "- Shipped safely.\n") -> str:
     upgrade_contract = ""
-    if tuple(int(part) for part in version.split(".")) >= (0, 14, 0):
+    version_tuple = tuple(int(part) for part in version.split("."))
+    if version_tuple >= (0, 16, 0):
+        upgrade_contract = (
+            "### Upgrade contract\n\n"
+            "- Semantic config: `boundver-semantic-config/v3`\n"
+            "- Lock schema: `boundary-lock/v4`\n"
+            "- Fingerprint compatibility: `digest-changing`\n"
+            "- Lock regeneration: `required`\n\n"
+        )
+    elif version_tuple >= (0, 14, 0):
         upgrade_contract = (
             "### Upgrade contract\n\n"
             "- Semantic config: `boundver-semantic-config/v2`\n"
@@ -454,6 +463,8 @@ class AutomationContractTests(unittest.TestCase):
         for schema_name in (
             "verify-baseline.schema.json",
             "cli-output.migrate-lock.schema.json",
+            "cli-output.coverage.schema.json",
+            "derivation.schema.json",
         ):
             with self.subTest(schema=schema_name):
                 schema_path = REPO_ROOT / "spec" / schema_name
@@ -462,7 +473,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.15.2/spec/{schema_name}",
+                    f"v0.16.0/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
@@ -802,7 +813,7 @@ class AutomationContractTests(unittest.TestCase):
                     "argv",
                     ["release-draft-api", "wait", "yzm1/boundver", CURRENT_TAG],
                 ),
-                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("shutil.which", return_value=os.__file__),
                 mock.patch("subprocess.Popen", side_effect=processes) as popen,
                 mock.patch("time.sleep") as sleep,
                 mock.patch.object(sys, "stdout", output),
@@ -863,7 +874,7 @@ class AutomationContractTests(unittest.TestCase):
                         str(output),
                     ],
                 ),
-                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("shutil.which", return_value=os.__file__),
                 mock.patch("subprocess.Popen", return_value=FakeProcess()),
                 self.assertRaisesRegex(SystemExit, "detail disagrees"),
             ):
@@ -2500,6 +2511,18 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(f"exclude docs/{site_only_doc}", manifest)
             self.assertIn(f'docs/{site_only_doc}"', smoke)
+        for internal_assurance_path in (
+            "docs/design/obligation-survey-method.md",
+            "docs/design/obligation-survey-reply.md",
+            "docs/design/obligation-survey-reply-2.md",
+            "docs/design/testing-obligations.md",
+            "spec/mutants.json",
+            "spec/release-mutations.json",
+            "spec/testing-obligations.json",
+            "spec/test-tiers.json",
+        ):
+            self.assertIn(f"exclude {internal_assurance_path}", manifest)
+            self.assertIn(f'{internal_assurance_path}"', smoke)
         contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         homepage = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
         self.assertIn(
@@ -2913,6 +2936,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "BOUNDVER_TRANSITIVE": "false",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "false",
             "BOUNDVER_UPLOAD_ARTIFACT": "false",
             "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         }
@@ -2946,6 +2970,25 @@ print(json.dumps(payload, separators=(",", ":")))
                     text=True,
                 )
                 self.assertEqual(result.stdout.splitlines(), expected + suffix)
+
+        strict_environment = {
+            **base_environment,
+            "BOUNDVER_BASELINE": "",
+            "BOUNDVER_UPDATE": "true",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "true",
+        }
+        strict_result = subprocess.run(
+            [bash, "-c", probe],
+            cwd=REPO_ROOT,
+            env=strict_environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            strict_result.stdout.splitlines(),
+            expected + ["--update", "--strict-config-source"],
+        )
 
     def test_action_review_operation_is_explicit_source_bound_and_artifact_ready(self):
         import yaml
@@ -3029,6 +3072,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "BOUNDVER_TRANSITIVE": "true",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "false",
             "BOUNDVER_UPLOAD_ARTIFACT": "true",
             "BOUNDVER_ARTIFACT_NAME": "review-plan",
         }
@@ -3346,10 +3390,10 @@ class ReleaseChangelogTests(unittest.TestCase):
         self.assertEqual(
             notes,
             "### Upgrade contract\n\n"
-            "- Semantic config: `boundver-semantic-config/v2`\n"
-            "- Lock schema: `boundary-lock/v3`\n"
-            "- Fingerprint compatibility: `digest-neutral`\n"
-            "- Lock regeneration: `not-required`\n\n"
+            "- Semantic config: `boundver-semantic-config/v3`\n"
+            "- Lock schema: `boundary-lock/v4`\n"
+            "- Fingerprint compatibility: `digest-changing`\n"
+            "- Lock regeneration: `required`\n\n"
             "- Shipped safely.\n",
         )
 

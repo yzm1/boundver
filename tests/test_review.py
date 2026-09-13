@@ -21,7 +21,8 @@ from boundver._lockfile import (
 )
 from boundver._review import analyze_review_range
 from boundver._utils import (
-    DIAGNOSTIC_TRUNCATION_SENTINEL,
+    MAX_DIAGNOSTIC_ITEMS,
+    BoundedDiagnosticList,
     GuardrailError,
     LockfileError,
 )
@@ -227,6 +228,39 @@ def _make_range(
     return base, target
 
 
+def _make_external_overlap_range(root: Path) -> tuple[str, str]:
+    """Build a range whose external terminals overlap across the endpoints.
+
+    The main fixture above replaces the whole external consumer list between
+    the two commits, so every external terminal in it belongs to exactly one
+    endpoint. This range keeps ``shared-audit`` on both sides while retiring
+    ``base-audit`` and introducing ``target-audit``, which is what a review has
+    to see before it can tell a union of the two endpoints apart from whichever
+    endpoint it happened to read last.
+    """
+    init_git_repo(root, initial_branch="main")
+    _write_components(root)
+    base_config = _config()
+    base_config["components"]["layer"]["external_consumers"] = [
+        "base-audit",
+        "shared-audit",
+    ]
+    base, _base_lock = _commit_endpoint(root, base_config, "external base")
+
+    target_config = copy.deepcopy(base_config)
+    target_config["components"]["layer"]["external_consumers"] = [
+        "shared-audit",
+        "target-audit",
+    ]
+    target, _target_lock = _commit_endpoint(root, target_config, "external target")
+    return base, target
+
+
+def _external_consumers_at(root: Path, commit: str, component: str) -> list[str]:
+    config = json.loads(_git(root, "show", f"{commit}:boundary.config.json"))
+    return list(config["components"][component]["external_consumers"])
+
+
 def _run_cli(root: Path, *args: str) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT / "src")
@@ -427,6 +461,101 @@ def test_review_uses_conservative_graph_union_with_edge_provenance(tmp_path: Pat
     assert edge_index[("service", "app", "component")] == "both"
     assert edge_index[("layer", "old-audit", "external")] == "base"
     assert edge_index[("layer", "new-audit", "external")] == "target"
+
+
+def test_review_unions_external_consumer_provenance_over_both_endpoints(
+    tmp_path: Path,
+) -> None:
+    """An external terminal on both sides of the range must be labelled "both".
+
+    Until now no test in the suite read the ``source`` label on a row of
+    ``consumer_impact[*].external_consumers`` at all. The union rule for
+    external terminals was only ever discharged indirectly, through the
+    ``edges`` rows, and those are accumulated in a different dictionary. Mutant
+    MUT-GRAPH-502 exploited exactly that gap: it changed the external
+    accumulation in ``_review._consumer_impact`` from
+    ``external_sources.setdefault(name, set()).add(source)`` to
+    ``external_sources[name] = {source}``, so the endpoint read last silently
+    overwrote the provenance the earlier endpoint had recorded. Every existing
+    fixture replaces the whole external consumer list across the range, which
+    leaves no terminal present at both endpoints and makes the overwrite
+    invisible. This range keeps one, so a review that forgets the base
+    endpoint reports ``shared-audit`` as ``target`` and fails here.
+    """
+    base, target = _make_external_overlap_range(tmp_path)
+
+    result = analyze_review_range(tmp_path, base, target, transitive=True)
+
+    impact = next(
+        item for item in result["consumer_impact"] if item["component"] == "layer"
+    )
+    assert impact["external_consumers"] == [
+        {"name": "base-audit", "source": "base"},
+        {"name": "shared-audit", "source": "both"},
+        {"name": "target-audit", "source": "target"},
+    ]
+
+
+def test_review_premise_one_external_terminal_survives_the_whole_range(
+    tmp_path: Path,
+) -> None:
+    """PREMISE for MUT-GRAPH-502: the fixture really spans both endpoints.
+
+    The assertion above is only about a union if the range genuinely offers a
+    terminal to union. Were ``shared-audit`` missing from either committed
+    configuration, or unreachable from ``layer`` at either endpoint, a review
+    that simply reported whichever endpoint it read last could still produce a
+    row saying ``both`` for the wrong reason. This test reads the two
+    configurations back out of git and confirms the overlap is declared, then
+    confirms through the independently accumulated edge provenance that the
+    walk actually reached the terminal from ``layer`` at both endpoints while
+    the two retiring labels were reached at one endpoint each.
+    """
+    base, target = _make_external_overlap_range(tmp_path)
+
+    base_external = _external_consumers_at(tmp_path, base, "layer")
+    target_external = _external_consumers_at(tmp_path, target, "layer")
+    assert base_external == ["base-audit", "shared-audit"]
+    assert target_external == ["shared-audit", "target-audit"]
+    assert set(base_external) & set(target_external) == {"shared-audit"}
+
+    result = analyze_review_range(tmp_path, base, target, transitive=True)
+
+    impact = next(
+        item for item in result["consumer_impact"] if item["component"] == "layer"
+    )
+    assert impact["graph_changed"] is True
+    edge_index = {
+        (edge["from"], edge["to"], edge["kind"]): edge["source"]
+        for edge in impact["edges"]
+    }
+    assert edge_index[("layer", "shared-audit", "external")] == "both"
+    assert edge_index[("layer", "base-audit", "external")] == "base"
+    assert edge_index[("layer", "target-audit", "external")] == "target"
+
+
+def test_review_contrast_endpoint_only_external_terminals_keep_their_endpoint(
+    tmp_path: Path,
+) -> None:
+    """CONTRAST for MUT-GRAPH-502: a union must not smear "both" over everything.
+
+    A labeller that answered ``both`` for every external terminal would satisfy
+    the union assertion above, so the ordinary case has to stay pinned too. The
+    main review fixture retires ``old-audit`` and introduces ``new-audit``, and
+    neither terminal exists at the other endpoint. Their rows must therefore
+    name the single endpoint they came from, exactly as their edges already do.
+    """
+    base, target = _make_range(tmp_path)
+
+    result = analyze_review_range(tmp_path, base, target, transitive=True)
+
+    impact = next(
+        item for item in result["consumer_impact"] if item["component"] == "layer"
+    )
+    assert impact["external_consumers"] == [
+        {"name": "new-audit", "source": "target"},
+        {"name": "old-audit", "source": "base"},
+    ]
 
 
 def test_review_direct_mode_stops_after_immediate_consumers(tmp_path: Path) -> None:
@@ -685,7 +814,11 @@ def test_review_labels_a_truncated_component_count_as_a_lower_bound(
         assert isinstance(drifted_components, set)
         assert isinstance(observations, list)
         drifted_components.add("layer")
-        observations.append(DIAGNOSTIC_TRUNCATION_SENTINEL)
+        truncated = BoundedDiagnosticList(
+            [f"failure {index}" for index in range(MAX_DIAGNOSTIC_ITEMS)]
+        )
+        assert truncated.truncated
+        observations.append(truncated[-1])
         return []
 
     monkeypatch.setattr(review_module, "verify_lockfile", truncated_verify)

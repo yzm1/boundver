@@ -417,6 +417,16 @@ class TestProviderHooks(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("boom", errors[0])
 
+    def test_validation_helper_converts_process_control_exception_to_error(self):
+        class ExitingProvider(self.HookProvider):
+            def validate_config(self, boundary_cfg, component_path, repo_root):
+                raise SystemExit(0)
+
+        errors = validate_provider_config(ExitingProvider(), {}, "svc", ROOT)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("config validation failed", errors[0])
+        self.assertIn("SystemExit", errors[0])
+
     def test_validation_helper_rejects_a_malformed_result(self):
         class BrokenProvider(self.HookProvider):
             def validate_config(self, boundary_cfg, component_path, repo_root):

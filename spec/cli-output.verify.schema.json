@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/spec/cli-output.verify.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/cli-output.verify.schema.json",
   "title": "boundver verify --format json output",
   "description": "Schema for the JSON object printed to stdout by `boundver verify --format json`.",
   "type": "object",
-  "required": ["ok", "updated", "issues", "resolved_issues", "observations", "facets", "facet_policy", "components_filter", "changed_components", "inputs", "consumer_impact"],
+  "required": ["ok", "updated", "issues", "resolved_issues", "observations", "facets", "facet_policy", "components_filter", "changed_components", "inputs", "notices", "consumer_impact"],
   "additionalProperties": false,
   "allOf": [
     {
@@ -202,6 +202,40 @@
         "commit": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40,64}$"},
         "config": {"type": "string", "minLength": 1, "maxLength": 32768},
         "lock": {"type": "string", "minLength": 1, "maxLength": 32768}
+      }
+    },
+    "notices": {
+      "type": "array",
+      "description": "Bounded safety notices that do not fail verification unless their corresponding strict mode is enabled.",
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["code", "message", "source", "selected_config", "working_tree_config"],
+        "additionalProperties": false,
+        "properties": {
+          "code": {"const": "working-tree-config-diverges"},
+          "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "source": {"enum": ["head", "index"]},
+          "selected_config": {
+            "type": "object",
+            "required": ["identity", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "identity": {"type": "string", "minLength": 1, "maxLength": 32768},
+              "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          },
+          "working_tree_config": {
+            "type": "object",
+            "required": ["identity", "status", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "identity": {"type": "string", "minLength": 1, "maxLength": 32768},
+              "status": {"enum": ["different", "missing", "invalid-or-unreadable"]},
+              "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
       }
     },
     "consumer_impact": {

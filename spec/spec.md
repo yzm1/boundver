@@ -1,20 +1,18 @@
-# boundver Spec Overview (v3)
+# boundver Spec Overview (v4)
 
 ## Lockfile schema
 
-- Lockfile schema identifier: `boundary-lock/v3`.
+- Lockfile schema identifier: `boundary-lock/v4`.
 - Canonical schema file: `spec/boundary.lock.schema.json`.
-- v1 and v2 hash-bearing locks require regeneration; migration cannot infer
-  v3 mode/type or semantic-config inputs from an old lockfile. A v3 lock with
-  `boundver-semantic-config/v1` also requires regeneration because its digest
-  has a different semantic field set and cannot be relabelled as v2.
-- Every lock records `boundver-semantic-config/v2` and a digest covering all
+- v1, v2, and v3 hash-bearing locks require regeneration; migration cannot
+  infer the complete v4 semantic configuration from an old lockfile.
+- Every lock records `boundver-semantic-config/v3` and a digest covering all
   contract-relevant config, including boundary paths/globs/options, behavior paths,
   version sources, vendored copies, compatibility mode, internal and external
   consumers, provider declarations, slice declarations, and default/component
-  verification policy. Presentation-only component `ecosystem` and `note`
-  annotations, plus boundary `note` annotations, are excluded from v2 alongside
-  `$schema`.
+  verification policy, plus generated-artifact derivation declarations.
+  Presentation-only component `ecosystem` and `note` annotations, plus boundary
+  `note` annotations, are excluded from v3 alongside `$schema`.
 
 ## Component facets
 
@@ -37,9 +35,11 @@ declared behavior paths are disjoint.
 
 ## Contract version axes
 
-- `boundary-lock/v3` identifies the persisted lock shape and the core v3
-  entry/framing domains used by exact, behavior, compatibility, and slices.
-- `boundver-semantic-config/v2` independently identifies the normalized
+- `boundary-lock/v4` identifies the persisted lock shape. It retains the v3
+  component entry/framing domains for exact, behavior, and compatibility
+  fingerprints, while slice fingerprints bind both the selected mode and the
+  member-digest map.
+- `boundver-semantic-config/v3` independently identifies the normalized
   configuration field set and canonical digest domain.
 - Each built-in provider independently versions its selection, validation,
   normalization, and output identity in `boundary_provider_version`.
@@ -50,6 +50,15 @@ axis to match, and non-equivalent digests must be regenerated from source.
 
 ## Version sources
 
+- A component may inherit the resolved version of another configured component.
+  Resolution uses the same captured source, is transitive, and rejects unknown
+  targets, self-references, and cycles. The identity relation does not create a
+  consumer edge; impact routing remains governed by `consumers`.
+- A component may declare a bounded explicit SemVer constant. The declaration
+  participates in the semantic config digest and is intended for identities
+  with no repository-owned manifest or tag.
+- Compat slices consume the resolved compatibility fingerprint without
+  distinguishing which of the four version-source forms supplied it.
 - File-backed version fields are textual identifiers. TOML version values must
   be quoted strings; numeric TOML values are rejected so extraction cannot vary
   with the parser or Python's process-wide decimal conversion limit.
@@ -74,7 +83,8 @@ axis to match, and non-equivalent digests must be regenerated from source.
 - `closure_of` resolves to the seed plus every configured component reachable
   by following downstream `consumers` edges. Resolution is sorted and
   cycle-safe, and the resolved membership is persisted in the lock entry.
-- Its fingerprint is stable for unchanged selected component digests.
+- Its fingerprint is the digest of its mode and selected component-digest map;
+  it is stable only while both remain unchanged.
 - Adding unrelated components does not change a slice unless its declaration
   or membership changes; those declaration changes are still visible through
   the lock's semantic config digest.
@@ -156,7 +166,7 @@ verification.
 ## Machine-readable CLI output
 
 Canonical schemas live in `spec/cli-output.*.schema.json`. `verify`, `status`,
-`diff`, `discover`, `why`, `slice`, and historical `review` support
+`coverage`, `diff`, `discover`, `why`, `slice`, and historical `review` support
 `--format json`;
 `migrate-lock --explain` also supports a bounded JSON selector audit.
 `discover --diff-config` adds a deterministic registered/unregistered path
@@ -164,18 +174,25 @@ comparison to the discovery payload. Baseline-aware verification adds its
 action, acknowledged issues, stale identities, and shrink delta under the
 optional `baseline` member.
 
+Declaration coverage uses `boundver-declaration-coverage/v1`. It reports
+unselected component paths and unowned source-indicator paths, binds them to
+the selected config source and responsible JSON Pointer, and separates
+reasoned exclusions from uncovered paths. Coverage policy is intentionally
+absent from the semantic-config projection: this read-only advisory cannot
+change a component, slice, or lock identity.
+
 `diff` is a non-mutating review surface. It accepts canonical
-`boundary-lock/v3` inputs using the explicitly supported semantic-config/v1 or
-v2 contracts, reports a contract transition under `changed_metadata`, and does
-not relabel or trust a historical digest as current. Different lock schemas,
+`boundary-lock/v4` inputs using `boundver-semantic-config/v3`, reports metadata
+transitions under `changed_metadata`, and does not relabel or trust a historical
+digest as current. Different lock schemas,
 unknown semantic contracts, and structures whose changes cannot be represented
 by the diff output contract are rejected before comparison. Generation and
-verification outputs continue to use semantic-config/v2: full generation
-recomputes it from repository content, while verification and generation paths
-that reuse an existing lock reject semantic-config/v1 input.
+verification outputs use semantic-config/v3: full generation recomputes it from
+repository content, while verification and generation paths that reuse an
+existing lock reject every older contract.
 
 Historical range output uses the versioned `boundver-review/v1` contract. It
-binds two reconciled v3/v2 config-lock pairs to explicit immutable commit/tree
+binds two reconciled v4/v3 config-lock pairs to explicit immutable commit/tree
 identities, compares every facet, and records conservative base/target consumer
 edge provenance plus slice impact. Boundary transitions also carry a typed,
 provider/version/digest-bound structural report. The first supported report is
@@ -196,11 +213,16 @@ complete plan file never contains a partial closure.
 
 ## Derived artifacts
 
-The v3 contract fingerprints declared artifacts but has no first-class
-source-to-derived-output relationship and executes no generator command from
-config. A workflow must run a deterministic generator freshness check before
-verification. Declarative derivation semantics are reserved for a future
-contract revision.
+The config may declare data-only relations between tracked generator inputs,
+generated boundary outputs, a unique evidence path, and a logical generator
+identity. `record-derivation` writes a bounded receipt for one explicit source
+view. Validation, generation, and verification fail closed unless the receipt
+matches both selected file sets and the declaration. Every output must belong
+to a component boundary and to at most one derivation.
+
+No repository-configured generator is executed. A receipt detects stale or
+post-recording files; it is not an execution authorization, provenance
+signature, or correctness proof.
 
 ## Forward approach
 

@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v2",
-  "config_digest": "14d2a38e8ac9228866b422277d5c0726a9267dfde1cb0ce1aacd7c4a38cfbf9b",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v4",
+  "config_contract": "boundver-semantic-config/v3",
+  "config_digest": "94b77a9c1b9716b784f37122e05b4d7fde2c95e6390b99c31b78084d10d94649",
   "project": "consumer-impact-demo",
   "components": {
     "payments-api": {

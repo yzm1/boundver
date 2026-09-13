@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import boundver
 from boundver import core
+from boundver._lockfile import SEMANTIC_CONFIG_VERSION
 from tests._repo_fixtures import commit_all, init_git_repo
 
 
@@ -43,6 +44,19 @@ def _component(path: str) -> dict:
 
 
 class CrossSchemaDiffTests(unittest.TestCase):
+    """Cover the cross-schema diff refusal that OBL-LOCKFILE-042 requires.
+
+    The obligation asks for one compatibility diagnostic that names both
+    lockfile schemas, so a reader learns which two versions collided and not
+    merely that they collided. These tests used to check only the fixed prose
+    around those names, which is why MUT-LOCKFILE-305 survives: deleting the
+    ``new=`` clause from the message in ``require_compatible_lockfile_schemas``
+    leaves every assertion here true while the diagnostic names only the old
+    lock's schema. The tests now assert that both endpoints appear in the one
+    error line, and that both of them travel through the bounded diagnostic
+    renderer rather than only the first.
+    """
+
     def _lock(self, schema: str) -> dict:
         return {
             "schema": schema,
@@ -51,7 +65,21 @@ class CrossSchemaDiffTests(unittest.TestCase):
             "slices": {},
         }
 
+    def _current_schema_lock(self, digest: str) -> dict:
+        """Build a lockfile that the read-only diff accepts end to end."""
+        lock = self._lock(core.LOCKFILE_SCHEMA)
+        lock["config_contract"] = SEMANTIC_CONFIG_VERSION
+        lock["config_digest"] = digest
+        return lock
+
     def test_cross_schema_diff_reports_one_regeneration_diagnostic(self):
+        """Refuse a v2-against-v3 diff once, naming both of its schemas.
+
+        A message that names only the old schema tells the user their lockfiles
+        disagree without telling them what the other side is, so it does not
+        satisfy the obligation. The two substring assertions below are what
+        MUT-LOCKFILE-305 breaks.
+        """
         with tempfile.TemporaryDirectory() as td:
             old = Path(td, "old.json")
             new = Path(td, "new.json")
@@ -66,6 +94,52 @@ class CrossSchemaDiffTests(unittest.TestCase):
         self.assertIn("incompatible schemas", err)
         self.assertIn("regenerate both", err)
         self.assertNotIn("malformed", err)
+        # The single diagnostic has to name both endpoints. The premise test
+        # below establishes that matching both of these substrings really does
+        # take two renderings and cannot be satisfied by one of them.
+        self.assertIn("boundary-lock/v2", err)
+        self.assertIn("boundary-lock/v3", err)
+
+    def test_cross_schema_fixture_endpoints_are_distinguishable(self):
+        """PREMISE: the two fixture schemas cannot stand in for each other.
+
+        The test above concludes that both schemas were rendered because both
+        of their names appear in the error. That conclusion only holds while
+        the two names are different and neither one contains the other; if the
+        fixture used, say, ``lock/v2`` and ``lock/v2x``, a single rendering
+        would satisfy both assertions and the check would be vacuous.
+        """
+        old_schema = self._lock("boundary-lock/v2")["schema"]
+        new_schema = self._lock("boundary-lock/v3")["schema"]
+
+        self.assertNotEqual(old_schema, new_schema)
+        self.assertNotIn(old_schema, new_schema)
+        self.assertNotIn(new_schema, old_schema)
+
+    def test_matching_current_schema_locks_still_diff_cleanly(self):
+        """CONTRAST: the guard still lets an ordinary diff through.
+
+        A guard that named both schemas by refusing every comparison would pass
+        the assertions above and be useless, so this pins the accepting case:
+        two lockfiles that already carry the current schema compare normally,
+        report their one changed field, and emit no diagnostic at all.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            old = Path(td, "old.json")
+            new = Path(td, "new.json")
+            old.write_text(json.dumps(self._current_schema_lock("a" * 64)))
+            new.write_text(json.dumps(self._current_schema_lock("b" * 64)))
+
+            code, out, err = _run_main(
+                "diff", str(old), str(new), "--format", "json"
+            )
+
+        self.assertEqual(code, core.EXIT_OK, err)
+        self.assertEqual(err, "")
+        self.assertEqual(
+            json.loads(out)["changed_metadata"]["config_digest"],
+            {"old": "a" * 64, "new": "b" * 64},
+        )
 
     def test_same_legacy_schema_diff_reports_one_unsupported_diagnostic(self):
         with tempfile.TemporaryDirectory() as td:
@@ -85,11 +159,27 @@ class CrossSchemaDiffTests(unittest.TestCase):
         self.assertNotIn("malformed", err)
 
     def test_schema_diagnostic_is_bounded_for_oversized_values(self):
+        """Render both oversized schemas, and truncate both of them.
+
+        The size bound alone is satisfied by a message that simply leaves the
+        new schema out, which is exactly what MUT-LOCKFILE-305 does, so the
+        bound proved nothing about the new lock's rendering. Asserting that the
+        leading marker of each schema survives turns the bound into a claim
+        about two truncated values rather than one.
+        """
+        old_schema = "old-" + "x" * 100_000
+        new_schema = "new-" + "y" * 100_000
+        # PREMISE: each schema on its own is far longer than the size limit the
+        # message is checked against below, so a short error is evidence that
+        # the renderer truncated something and not that the input was small.
+        self.assertGreater(len(old_schema), 10_000)
+        self.assertGreater(len(new_schema), 10_000)
+
         with tempfile.TemporaryDirectory() as td:
             old = Path(td, "old.json")
             new = Path(td, "new.json")
-            old.write_text(json.dumps(self._lock("old-" + "x" * 100_000)))
-            new.write_text(json.dumps(self._lock("new-" + "y" * 100_000)))
+            old.write_text(json.dumps(self._lock(old_schema)))
+            new.write_text(json.dumps(self._lock(new_schema)))
 
             code, out, err = _run_main("diff", str(old), str(new))
 
@@ -98,9 +188,19 @@ class CrossSchemaDiffTests(unittest.TestCase):
         self.assertEqual(err.count("ERROR:"), 1)
         self.assertLess(len(err), 10_000)
         self.assertIn("incompatible schemas", err)
+        self.assertIn("old-xxx", err)
+        self.assertIn("new-yyy", err)
 
 
 class SemanticContractMigrationReviewTests(unittest.TestCase):
+    # Contract strings that match the historical ``boundver-semantic-config/v``
+    # prefix but do not name a version number after it.
+    NON_NUMERIC_PREFIX_CONTRACTS = (
+        "boundver-semantic-config/vNEXT",
+        "boundver-semantic-config/v",
+        "boundver-semantic-config/v2beta",
+    )
+
     def _locks(self, root: Path):
         init_git_repo(root)
         (root / "svc").mkdir()
@@ -128,6 +228,8 @@ class SemanticContractMigrationReviewTests(unittest.TestCase):
         (root / "boundary.config.json").write_text(json.dumps(config))
         commit_all(root, "migration review fixture")
         current = core.generate_lockfile(config, root, source="head")
+        current["schema"] = "boundary-lock/v3"
+        current["config_contract"] = "boundver-semantic-config/v2"
         legacy = copy.deepcopy(current)
         legacy["config_contract"] = "boundver-semantic-config/v1"
         legacy["config_digest"] = "1" * 64
@@ -186,6 +288,123 @@ class SemanticContractMigrationReviewTests(unittest.TestCase):
         self.assertIn("boundver-semantic-config/v1", err)
         self.assertIn("boundver-semantic-config/v2", err)
         self.assertNotIn("LOCKFILE malformed", err)
+
+    def test_diff_reports_the_full_structure_for_a_non_numeric_contract(self):
+        """Assert that only a numeric ``vN`` suffix short-circuits the report.
+
+        In read-only historical mode the validator returns exactly one
+        "unsupported for this read-only comparison" diagnostic when the lock
+        names a recognisable ``boundver-semantic-config/vN`` contract, and for
+        every other unaccepted value it appends one malformed-field issue and
+        continues into the full structural report. Nothing pinned that split
+        before, because every ``config_contract`` string in the suite that
+        matched the prefix also had a numeric suffix, so MUT-LOCKFILE-507 was
+        free to delete the ``isdigit`` test and still pass. The contracts
+        below match the prefix and carry a suffix that is not a version
+        number, so they belong on the append-and-continue side of the branch.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, legacy, current = self._locks(root)
+            old = root / "old.lock.json"
+            new = root / "new.lock.json"
+            new.write_text(json.dumps(current))
+
+            for contract in self.NON_NUMERIC_PREFIX_CONTRACTS:
+                with self.subTest(contract=contract):
+                    legacy["config_contract"] = contract
+                    old.write_text(json.dumps(legacy))
+
+                    code, out, err = _run_main("diff", str(old), str(new))
+                    with self.assertRaisesRegex(
+                        boundver.LockfileError, "config_contract must be one of"
+                    ):
+                        boundver.diff(str(old), str(new))
+
+                    self.assertEqual(code, core.EXIT_USAGE)
+                    self.assertEqual(out, "")
+                    self.assertIn("LOCKFILE malformed", err)
+                    self.assertIn("config_contract must be one of", err)
+                    self.assertIn("boundver-semantic-config/v1", err)
+                    self.assertIn("boundver-semantic-config/v2", err)
+                    self.assertNotIn(
+                        "unsupported for this read-only comparison", err
+                    )
+                    self.assertNotIn("Traceback", err)
+
+    def test_non_numeric_contract_fixtures_sit_on_the_branch_edge(self):
+        """PREMISE: the fixtures really are prefix matches without a number.
+
+        The test above only pins the missing ``isdigit`` guard while each
+        contract string starts with ``boundver-semantic-config/v``, has a
+        suffix that is not a run of digits, and is not itself one of the
+        contracts this comparison accepts. A string that failed any of those
+        three conditions would reach the append-and-continue branch for some
+        unrelated reason, and the assertion would hold vacuously. This test
+        states the three conditions directly. It then diffs the untouched
+        fixture pair to show that the lock is otherwise structurally sound, so
+        the malformed diagnostic above can only have come from the contract
+        field.
+        """
+        prefix = "boundver-semantic-config/v"
+        for contract in self.NON_NUMERIC_PREFIX_CONTRACTS:
+            with self.subTest(contract=contract):
+                self.assertTrue(contract.startswith(prefix))
+                self.assertFalse(contract[len(prefix) :].isdigit())
+                self.assertNotIn(
+                    contract, core.DIFFABLE_SEMANTIC_CONFIG_VERSIONS
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, legacy, current = self._locks(root)
+            old = root / "old.lock.json"
+            new = root / "new.lock.json"
+            old.write_text(json.dumps(legacy))
+            new.write_text(json.dumps(current))
+
+            code, out, err = _run_main("diff", str(old), str(new))
+
+        self.assertEqual(code, core.EXIT_OK, err)
+        self.assertEqual(err, "")
+        self.assertNotIn("LOCKFILE malformed", out)
+
+    def test_numeric_contract_keeps_the_single_diagnostic_branch(self):
+        """CONTRAST: a numbered contract still gets the one short message.
+
+        A validator that had lost its single-diagnostic branch altogether, and
+        that sent every unaccepted contract into the full structural report,
+        would satisfy the assertions above while being wrong in the other
+        direction. This pins the branch that has to keep firing: an unreviewed
+        but numbered contract produces the one "unsupported" line naming both
+        supported contracts, and no malformed-field line at all.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _, legacy, current = self._locks(root)
+            old = root / "old.lock.json"
+            new = root / "new.lock.json"
+            new.write_text(json.dumps(current))
+
+            for contract in (
+                "boundver-semantic-config/v0",
+                "boundver-semantic-config/v99",
+            ):
+                with self.subTest(contract=contract):
+                    legacy["config_contract"] = contract
+                    old.write_text(json.dumps(legacy))
+
+                    code, out, err = _run_main("diff", str(old), str(new))
+
+                    self.assertEqual(code, core.EXIT_USAGE)
+                    self.assertEqual(out, "")
+                    self.assertIn(
+                        "unsupported for this read-only comparison", err
+                    )
+                    self.assertIn("boundver-semantic-config/v1", err)
+                    self.assertIn("boundver-semantic-config/v2", err)
+                    self.assertNotIn("LOCKFILE malformed", err)
+                    self.assertNotIn("Traceback", err)
 
     def test_two_canonical_v1_locks_remain_diffable(self):
         with tempfile.TemporaryDirectory() as td:
@@ -275,6 +494,7 @@ class SemanticContractMigrationReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _, legacy, _ = self._locks(root)
+            legacy["schema"] = core.LOCKFILE_SCHEMA
             lock_path = root / "boundary.lock.json"
             lock_path.write_text(json.dumps(legacy))
             before = lock_path.read_bytes()
@@ -291,9 +511,9 @@ class SemanticContractMigrationReviewTests(unittest.TestCase):
             self.assertEqual(code, core.EXIT_USAGE)
             self.assertEqual(out, "")
             self.assertIn("semantic configuration contract mismatch", err)
-            self.assertIn("boundary-lock/v3", err)
+            self.assertIn(core.LOCKFILE_SCHEMA, err)
             self.assertIn("boundver-semantic-config/v1", err)
-            self.assertIn("boundver-semantic-config/v2", err)
+            self.assertIn(SEMANTIC_CONFIG_VERSION, err)
             self.assertIn("boundver 0.13.0", err)
             self.assertIn("repository-pinned", err)
             self.assertIn("boundver generate", err)
@@ -304,6 +524,7 @@ class SemanticContractMigrationReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _, legacy, _ = self._locks(root)
+            legacy["schema"] = core.LOCKFILE_SCHEMA
             lock_path = root / "boundary.lock.json"
             lock_path.write_text(json.dumps(legacy))
             commit_all(root, "record legacy lock")
@@ -632,7 +853,7 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
         )
         jsonschema.validate(payload, schema)
 
-    def test_analysis_uses_v010_trimmed_component_root(self):
+    def test_analysis_reports_v010_trimmed_component_root_as_current_rejected(self):
         config = {
             "project": "p",
             "components": {
@@ -646,23 +867,14 @@ class MigrationSelectorAnalysisTests(unittest.TestCase):
             },
             "slices": {},
         }
-        with patch(
-            "boundver._migration_analysis._component_files",
-            return_value=["api/route.yaml"],
-        ) as list_files:
+        with patch("boundver._migration_analysis._component_files") as list_files:
             payload = self._analyze(config, Path("unused"))
 
-        list_files.assert_called_once_with(
-            Path("unused"),
-            "svc",
-            "working-tree",
-            None,
-            path_index=None,
-            step_consumer=unittest.mock.ANY,
-        )
+        list_files.assert_not_called()
         declaration = payload["declarations"][0]
-        self.assertEqual(declaration["analysis_status"], "compared")
-        self.assertEqual(declaration["impact"], "unchanged")
+        self.assertEqual(declaration["analysis_status"], "current-rejected")
+        self.assertEqual(declaration["impact"], "not-comparable")
+        self.assertIn("Boundver 0.10 evaluated 'svc'", declaration["detail"])
 
     def test_legacy_provider_rejection_precedes_current_path_rejection(self):
         config = {

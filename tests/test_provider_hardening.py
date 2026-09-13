@@ -26,13 +26,20 @@ from boundver.providers import (
 )
 
 
-def _context(raw=b"{}", *, filename="contract.json", provider="custom.test"):
+def _context(
+    raw=b"{}",
+    *,
+    filename="contract.json",
+    provider="custom.test",
+    paths=None,
+):
     path = f"svc/{filename}"
     files = {path: raw}
+    selected_paths = [filename] if paths is None else paths
     return ProviderContext(
         repo_root=Path("/repo"),
         component_path="svc",
-        boundary_cfg={"provider": provider, "paths": [filename]},
+        boundary_cfg={"provider": provider, "paths": selected_paths},
         source="working-tree",
         read_file=lambda repo_path: files[repo_path],
         list_files=lambda prefix: sorted(
@@ -144,6 +151,19 @@ class TestProviderObjectContract(unittest.TestCase):
         self.assertEqual(result[0:2], (None, "error"))
         self.assertIn("resolve() failed", result[2][0])
         self.assertIn("parser exploded", result[2][0])
+
+    def test_resolve_process_control_exception_becomes_controlled_error(self):
+        class Exiting:
+            name = "custom.exiting"
+            version = "1"
+
+            def resolve(self, ctx):
+                raise SystemExit(0)
+
+        result = compute_boundary(Exiting(), _context())
+        self.assertEqual(result[0:2], (None, "error"))
+        self.assertIn("resolve() failed", result[2][0])
+        self.assertIn("SystemExit", result[2][0])
 
     def test_invalid_identity_becomes_controlled_error(self):
         class MissingVersion:
@@ -477,7 +497,7 @@ class TestResolvedBoundaryContract(unittest.TestCase):
         self.assertIn("without publishing entries", error)
 
         self.assertEqual(
-            compute_boundary(LeafProvider(), _context()),
+            compute_boundary(LeafProvider(), _context(provider="leaf", paths=[])),
             (None, "ok", []),
         )
         implicit = compute_boundary(
@@ -668,6 +688,15 @@ paths:
         )
         self.assertEqual(result.status, "error")
         self.assertIn("quote numeric response keys", result.errors[0])
+        # Two independent guards refuse a non-string mapping key and both
+        # end with that same advice: the YAML constructor, which never
+        # builds the mapping, and the JSON-tree check, which rejects one
+        # already built. Asserting only the shared suffix cannot tell them
+        # apart, so deleting the constructor guard left this test green
+        # (MUT-PROVIDERS-202). Name the layer that is supposed to fire.
+        self.assertIn(
+            "YAML/OpenAPI mapping keys must be strings", result.errors[0]
+        )
 
     def test_yaml_12_boolean_semantics_and_extensions_are_retained(self):
         canonical = self._canonical(

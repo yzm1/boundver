@@ -34,11 +34,13 @@ def facet_policy_payload(
             continue
         mode = definition.get("mode", "exact")
         members = resolve_slice_components(definition, components)
-        gated = (
-            mode in explicit_facets
-            if explicit_facets is not None
-            else any(mode in effective_components.get(member, []) for member in members)
-        )
+        if explicit_facets is not None:
+            gated = mode in explicit_facets
+        else:
+            gated = any(
+                mode in _effective_component_facets(config, member, None)
+                for member in members
+            )
         effective_slices[name] = {"mode": mode, "gated": gated}
     return {
         "explicit": explicit_facets,

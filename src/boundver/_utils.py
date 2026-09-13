@@ -72,6 +72,74 @@ DIAGNOSTIC_TRUNCATION_SENTINEL = (
 )
 
 
+class _DiagnosticTruncationMarker(str):
+    """Collector-owned marker distinguishable from untrusted equal text."""
+
+
+_DIAGNOSTIC_TRUNCATION_MARKER = _DiagnosticTruncationMarker(
+    DIAGNOSTIC_TRUNCATION_SENTINEL
+)
+
+# Unicode formatting controls can reorder or hide adjacent terminal text even
+# though they are not C0/C1 controls. Render them explicitly wherever
+# repository-controlled text reaches a human-facing stream.
+_INVISIBLE_DISPLAY_CODEPOINTS = frozenset(
+    {
+        0x061C,  # Arabic letter mark
+        0x200B,  # zero-width space
+        0x200C,  # zero-width non-joiner
+        0x200D,  # zero-width joiner
+        0x200E,  # left-to-right mark
+        0x200F,  # right-to-left mark
+        0x202A,  # left-to-right embedding
+        0x202B,  # right-to-left embedding
+        0x202C,  # pop directional formatting
+        0x202D,  # left-to-right override
+        0x202E,  # right-to-left override
+        0x2060,  # word joiner
+        0x2066,  # left-to-right isolate
+        0x2067,  # right-to-left isolate
+        0x2068,  # first strong isolate
+        0x2069,  # pop directional isolate
+        0xFEFF,  # zero-width no-break space / BOM
+    }
+)
+
+
+def _safe_display_text(value: object, *, defang_workflow_command: bool = True) -> str:
+    """Return an injective, single-line rendering for untrusted human text."""
+    rendered: List[str] = []
+    for character in str(value):
+        codepoint = ord(character)
+        if character == "\\":
+            rendered.append("\\\\")
+        elif character == "\n":
+            rendered.append("\\n")
+        elif character == "\r":
+            rendered.append("\\r")
+        elif character == "\t":
+            rendered.append("\\t")
+        elif character == "\b":
+            rendered.append("\\b")
+        elif character == "\f":
+            rendered.append("\\f")
+        elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
+            rendered.append(f"\\x{codepoint:02x}")
+        elif 0xD800 <= codepoint <= 0xDFFF:
+            rendered.append(f"\\u{codepoint:04x}")
+        elif codepoint in _INVISIBLE_DISPLAY_CODEPOINTS or codepoint in {
+            0x2028,
+            0x2029,
+        }:
+            rendered.append(f"\\u{codepoint:04x}")
+        else:
+            rendered.append(character)
+    text = "".join(rendered)
+    if defang_workflow_command and text.startswith("::"):
+        return "\\x3a" + text[1:]
+    return text
+
+
 def _bounded_yaml_compose_node(
     loader: Any,
     parent: Any,
@@ -315,11 +383,19 @@ def _bounded_exception_text(
     output layer so structured output retains ordinary diagnostic characters.
     """
     try:
+        exception_name = type.__getattribute__(type(exc), "__name__")
+    except BaseException:
+        exception_name = "BaseException"
+    if type(exception_name) is not str or not exception_name:
+        exception_name = "BaseException"
+    try:
         detail = str(exc).strip()
-    except Exception:
+    except BaseException:
         detail = ""
+    if not isinstance(exc, Exception):
+        detail = f"{exception_name}: {detail}" if detail else exception_name
     return _bounded_diagnostic_text(
-        detail or type(exc).__name__,
+        detail or exception_name,
         max_chars=max_chars,
     )
 
@@ -375,13 +451,13 @@ class BoundedDiagnosticList(list):
         while self and self.utf8_bytes + sentinel_bytes > MAX_DIAGNOSTIC_BYTES:
             removed = super().pop()
             self.utf8_bytes -= len(removed.encode("utf-8"))
-        super().append(DIAGNOSTIC_TRUNCATION_SENTINEL)
+        super().append(_DIAGNOSTIC_TRUNCATION_MARKER)
         self.utf8_bytes += sentinel_bytes
 
     def append(self, value: Any) -> None:
         if self.truncated:
             return
-        if type(value) is str and value == DIAGNOSTIC_TRUNCATION_SENTINEL:
+        if isinstance(value, _DiagnosticTruncationMarker):
             self._mark_truncated()
             return
         rendered = _bounded_diagnostic_utf8(value)
@@ -467,6 +543,10 @@ def _bounded_json_dumps(
 
     def emit_quoted(text: str) -> None:
         """Emit one JSON string without allocating its complete escaped form."""
+        if any(0xD800 <= ord(character) <= 0xDFFF for character in text):
+            raise GuardrailError(
+                "JSON output contains a lone surrogate and is not portable"
+            )
         if max_bytes is None:
             emit(json.dumps(text, ensure_ascii=ensure_ascii))
             return
@@ -1276,7 +1356,11 @@ def _is_glob(pattern: str) -> bool:
     return any(c in pattern for c in ("*", "?", "["))
 
 
-def _validate_glob_pattern_complexity(pattern: str) -> None:
+def _validate_glob_pattern_complexity(
+    pattern: str,
+    *,
+    _allow_surrogate_pattern: bool = False,
+) -> None:
     """Reject wildcard segments that exceed the public matching contract.
 
     Whole declared paths have their own byte and segment limits.  These
@@ -1287,7 +1371,14 @@ def _validate_glob_pattern_complexity(pattern: str) -> None:
         if not _is_glob(segment):
             continue
         try:
-            segment_bytes = len(segment.encode("utf-8"))
+            segment_bytes = len(
+                segment.encode(
+                    "utf-8",
+                    errors=(
+                        "surrogateescape" if _allow_surrogate_pattern else "strict"
+                    ),
+                )
+            )
         except UnicodeEncodeError as exc:
             raise ValueError("glob segments must contain valid Unicode") from exc
         if segment_bytes > MAX_GLOB_PATTERN_SEGMENT_BYTES:
@@ -1321,6 +1412,8 @@ def _normalize_declared_path(path: str) -> str:
         encoded_path = path.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise ValueError("must contain valid Unicode") from exc
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in path):
+        raise ValueError("must not contain control characters")
     if len(encoded_path) > MAX_DECLARED_PATH_BYTES:
         raise ValueError(
             f"must not exceed {MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
@@ -1329,7 +1422,7 @@ def _normalize_declared_path(path: str) -> str:
         raise ValueError("must use '/' separators")
     if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
         raise ValueError("must be relative")
-    normalized = path.rstrip("/")
+    normalized = path[:-1] if path.endswith("/") else path
     parts = normalized.split("/")
     if len(parts) > MAX_GLOB_SEGMENTS:
         raise ValueError(f"must not exceed {MAX_GLOB_SEGMENTS} path segments")
@@ -1597,15 +1690,23 @@ def _match_text_glob(
     pattern: str,
     *,
     _step_consumer: Optional[Callable[[int], None]] = None,
+    _allow_surrogate_pattern: bool = False,
 ) -> bool:
     """Match a bounded shell-style glob against text, including ``/``."""
     if not isinstance(candidate, str) or not isinstance(pattern, str):
         return False
     try:
         candidate_bytes = len(candidate.encode("utf-8", errors="surrogateescape"))
-        pattern_bytes = len(pattern.encode("utf-8"))
-    except UnicodeEncodeError:
-        return False
+        pattern_bytes = len(
+            pattern.encode(
+                "utf-8",
+                errors=("surrogateescape" if _allow_surrogate_pattern else "strict"),
+            )
+        )
+    except UnicodeEncodeError as exc:
+        raise GuardrailError(
+            "Glob match failed closed: candidate or pattern contains invalid Unicode"
+        ) from exc
     if candidate_bytes > MAX_GLOB_PATH_BYTES:
         raise GuardrailError(
             "Glob match guardrail exceeded: candidate path exceeds "
@@ -1617,7 +1718,10 @@ def _match_text_glob(
             f"{MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
         )
     try:
-        _validate_glob_pattern_complexity(pattern)
+        _validate_glob_pattern_complexity(
+            pattern,
+            _allow_surrogate_pattern=_allow_surrogate_pattern,
+        )
     except ValueError as exc:
         raise GuardrailError(
             "Glob match guardrail exceeded: " f"{_bounded_exception_text(exc)}"
@@ -1673,12 +1777,14 @@ def _glob_step_spender(
 
 
 def _validated_path_glob_candidate(path: object) -> Optional[Tuple[str, ...]]:
-    if not isinstance(path, str) or path.startswith("/"):
+    if not isinstance(path, str) or not path or path.startswith("/"):
         return None
     try:
         path_bytes = len(path.encode("utf-8", errors="surrogateescape"))
-    except UnicodeEncodeError:
-        return None
+    except UnicodeEncodeError as exc:
+        raise GuardrailError(
+            "Glob match failed closed: candidate path contains invalid Unicode"
+        ) from exc
     if path_bytes > MAX_GLOB_PATH_BYTES:
         raise GuardrailError(
             "Glob match guardrail exceeded: candidate path exceeds "
@@ -1698,20 +1804,29 @@ def _validated_path_glob_candidate(path: object) -> Optional[Tuple[str, ...]]:
 def _compile_path_glob_with_spender(
     pattern: object,
     spend_step: Callable[[], None],
+    *,
+    allow_surrogate_pattern: bool = False,
 ) -> Optional[_CompiledPathGlob]:
-    if not isinstance(pattern, str) or pattern.startswith("/"):
+    if not isinstance(pattern, str) or not pattern or pattern.startswith("/"):
         return None
     try:
-        pattern_bytes = len(pattern.encode("utf-8"))
-    except UnicodeEncodeError:
-        return None
+        pattern_bytes = len(
+            pattern.encode(
+                "utf-8",
+                errors=("surrogateescape" if allow_surrogate_pattern else "strict"),
+            )
+        )
+    except UnicodeEncodeError as exc:
+        raise GuardrailError(
+            "Glob match failed closed: path glob contains invalid Unicode"
+        ) from exc
     if pattern_bytes > MAX_DECLARED_PATH_BYTES:
         raise GuardrailError(
             "Glob match guardrail exceeded: pattern exceeds "
             f"{MAX_DECLARED_PATH_BYTES} UTF-8 bytes"
         )
     pattern_parts = tuple(pattern.split("/")) if pattern else tuple()
-    if any(part == "" for part in pattern_parts):
+    if any(part in {"", ".", ".."} for part in pattern_parts):
         return None
     if len(pattern_parts) > MAX_GLOB_SEGMENTS:
         raise GuardrailError(
@@ -1719,7 +1834,10 @@ def _compile_path_glob_with_spender(
             f"{MAX_GLOB_SEGMENTS} segments"
         )
     try:
-        _validate_glob_pattern_complexity(pattern)
+        _validate_glob_pattern_complexity(
+            pattern,
+            _allow_surrogate_pattern=allow_surrogate_pattern,
+        )
     except ValueError as exc:
         raise GuardrailError(
             "Glob match guardrail exceeded: " f"{_bounded_exception_text(exc)}"
@@ -1750,11 +1868,13 @@ def _compile_path_glob(
     pattern: object,
     *,
     _step_consumer: Optional[Callable[[int], None]] = None,
+    _allow_surrogate_pattern: bool = False,
 ) -> Optional[_CompiledPathGlob]:
     """Compile one bounded path glob for reuse across candidate paths."""
     return _compile_path_glob_with_spender(
         pattern,
         _glob_step_spender(_step_consumer),
+        allow_surrogate_pattern=_allow_surrogate_pattern,
     )
 
 
@@ -1901,6 +2021,7 @@ def _match_path_glob(
     *,
     _step_consumer: Optional[Callable[[int], None]] = None,
     _allow_descendants: bool = False,
+    _allow_surrogate_pattern: bool = False,
 ) -> bool:
     """Match a POSIX path with deterministic, segment-aware glob semantics.
 
@@ -1913,14 +2034,26 @@ def _match_path_glob(
     every compile/state/epsilon transition to an aggregate work budget.  The
     ordinary two-argument API and boolean result remain unchanged.
     """
-    if not isinstance(path, str) or not isinstance(pattern, str):
+    if not isinstance(pattern, str):
+        raise GuardrailError(
+            "Glob match failed closed: invalid path glob "
+            f"{_bounded_diagnostic_repr(pattern)}"
+        )
+    spend_step = _glob_step_spender(_step_consumer)
+    compiled = _compile_path_glob_with_spender(
+        pattern,
+        spend_step,
+        allow_surrogate_pattern=_allow_surrogate_pattern,
+    )
+    if compiled is None:
+        raise GuardrailError(
+            "Glob match failed closed: invalid path glob "
+            f"{_bounded_diagnostic_repr(pattern)}"
+        )
+    if not isinstance(path, str):
         return False
     path_parts = _validated_path_glob_candidate(path)
     if path_parts is None:
-        return False
-    spend_step = _glob_step_spender(_step_consumer)
-    compiled = _compile_path_glob_with_spender(pattern, spend_step)
-    if compiled is None:
         return False
     return _match_compiled_path_glob_with_spender(
         path_parts,
@@ -2020,7 +2153,7 @@ def _short(h: Optional[str]) -> str:
     """Truncate a hex digest for display."""
     if h is None:
         return "none"
-    return h[:12] + "..."
+    return h if len(h) <= 12 else h[:12] + "..."
 
 
 def _is_within(base: Path, candidate: Path) -> bool:

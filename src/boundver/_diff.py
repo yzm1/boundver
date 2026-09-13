@@ -2,15 +2,42 @@
 
 from typing import Dict
 
-from ._lockfile import COMPONENT_METADATA_FIELDS, LOCKFILE_SCHEMA
+from ._lockfile import (
+    COMPONENT_METADATA_FIELDS,
+    DIFFABLE_LOCK_CONTRACTS,
+)
 from ._utils import FACETS, LockfileError, _bounded_diagnostic_repr
 
 
 LOCKFILE_METADATA_FIELDS = ("project", "config_contract", "config_digest")
 
 
+def _diff_mapping(lockfile: dict, field: str) -> dict:
+    """Return one required diff mapping without coercing malformed input."""
+    value = lockfile.get(field, {})
+    if not isinstance(value, dict):
+        raise LockfileError(f"lockfile {field} must be an object")
+    for name, entry in value.items():
+        if not isinstance(name, str) or not name:
+            raise LockfileError(
+                f"lockfile {field} names must be non-empty strings; got "
+                f"{_bounded_diagnostic_repr(name)}"
+            )
+        if not isinstance(entry, dict):
+            raise LockfileError(
+                f"lockfile {field} entry {_bounded_diagnostic_repr(name)} "
+                "must be an object"
+            )
+        if field == "components" and not isinstance(entry.get("fingerprints"), dict):
+            raise LockfileError(
+                f"lockfile component {_bounded_diagnostic_repr(name)} "
+                "must contain a fingerprints object"
+            )
+    return value
+
+
 def require_compatible_lockfile_schemas(old: dict, new: dict) -> None:
-    """Reject cross-schema or legacy-schema diffs with one actionable error."""
+    """Reject cross-schema or unsupported-schema diffs with one clear error."""
     if not isinstance(old, dict) or not isinstance(new, dict):
         raise LockfileError("lockfiles must each contain a JSON object")
     old_schema = old.get("schema")
@@ -22,17 +49,23 @@ def require_compatible_lockfile_schemas(old: dict, new: dict) -> None:
             f"new={_bounded_diagnostic_repr(new_schema)}); regenerate both "
             "lockfiles with the same Boundver version before diffing"
         )
-    if old_schema != LOCKFILE_SCHEMA:
+    if (
+        not isinstance(old_schema, str)
+        or old_schema not in DIFFABLE_LOCK_CONTRACTS
+    ):
+        supported = ", ".join(repr(item) for item in DIFFABLE_LOCK_CONTRACTS)
         raise LockfileError(
             "lockfiles use unsupported schema "
-            f"{_bounded_diagnostic_repr(old_schema)} (expected "
-            f"{LOCKFILE_SCHEMA!r}); regenerate both lockfiles with this "
+            f"{_bounded_diagnostic_repr(old_schema)} (supported schemas: "
+            f"{supported}); regenerate both lockfiles with a supported "
             "Boundver version before diffing"
         )
 
 
 def diff_lockfiles(old: dict, new: dict) -> dict:
     """Produce a human-readable diff between two lockfiles."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        raise LockfileError("lockfiles must each contain a JSON object")
     result: Dict[str, dict] = {
         "changed_metadata": {},
         "components": {"added": [], "removed": [], "changed": [], "unchanged": []},
@@ -48,17 +81,13 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
                 "new": new_value,
             }
 
-    old_comps = old.get("components") or {}
-    new_comps = new.get("components") or {}
-    if not isinstance(old_comps, dict):
-        old_comps = {}
-    if not isinstance(new_comps, dict):
-        new_comps = {}
+    old_comps = _diff_mapping(old, "components")
+    new_comps = _diff_mapping(new, "components")
 
     all_names = sorted(set(old_comps.keys()) | set(new_comps.keys()))
     for name in all_names:
-        old_entry = old_comps.get(name) if isinstance(old_comps.get(name), dict) else {}
-        new_entry = new_comps.get(name) if isinstance(new_comps.get(name), dict) else {}
+        old_entry = old_comps.get(name, {})
+        new_entry = new_comps.get(name, {})
         if name not in old_comps:
             result["components"]["added"].append(
                 {
@@ -97,7 +126,7 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
                     "changed_metadata": metadata_changes,
                 }
                 entry["summary"] = (
-                    _summarize_change(changes)
+                    _summarize_change(changes, old_fp, new_fp)
                     if changes
                     else "component metadata changed"
                 )
@@ -106,15 +135,11 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
                 result["components"]["unchanged"].append(name)
 
     # Slice diffs
-    old_slices = old.get("slices") or {}
-    new_slices = new.get("slices") or {}
-    if not isinstance(old_slices, dict):
-        old_slices = {}
-    if not isinstance(new_slices, dict):
-        new_slices = {}
+    old_slices = _diff_mapping(old, "slices")
+    new_slices = _diff_mapping(new, "slices")
     for sname in sorted(set(old_slices.keys()) | set(new_slices.keys())):
-        old_s = old_slices.get(sname) if isinstance(old_slices.get(sname), dict) else {}
-        new_s = new_slices.get(sname) if isinstance(new_slices.get(sname), dict) else {}
+        old_s = old_slices.get(sname, {})
+        new_s = new_slices.get(sname, {})
         if sname not in old_slices:
             result["slices"]["added"].append(
                 {
@@ -157,14 +182,53 @@ def diff_lockfiles(old: dict, new: dict) -> dict:
     return result
 
 
-def _summarize_change(changes: dict) -> str:
+def _summarize_change(
+    changes: dict,
+    old_fingerprints: dict | None = None,
+    new_fingerprints: dict | None = None,
+) -> str:
+    available = {
+        facet
+        for facet in FACETS
+        if any(
+            isinstance(fingerprints, dict)
+            and fingerprints.get(facet) is not None
+            for fingerprints in (old_fingerprints, new_fingerprints)
+        )
+    }
     facets = list(changes.keys())
     if facets == ["exact"]:
-        return "implementation-only by declaration: exact content changed; declared behavior and boundary artifacts are unchanged"
+        unchanged = []
+        absent = []
+        for facet in ("behavior", "boundary"):
+            if facet in available:
+                unchanged.append(facet)
+            else:
+                absent.append(facet)
+        if unchanged and not absent:
+            detail = "declared behavior and boundary artifacts are unchanged"
+        elif unchanged:
+            detail = (
+                f"declared {unchanged[0]} artifact is unchanged; "
+                f"no {absent[0]} artifact is declared"
+            )
+        else:
+            detail = "no behavior or boundary artifact is declared"
+        return f"implementation-only by declaration: exact content changed; {detail}"
     elif set(facets) == {"exact", "behavior"}:
-        return "behavioral artifacts changed; declared boundary artifacts are unchanged"
+        boundary = (
+            "declared boundary artifact is unchanged"
+            if "boundary" in available
+            else "no boundary artifact is declared"
+        )
+        return f"behavioral artifacts changed; {boundary}"
     elif "boundary" in facets and "compat" not in facets:
-        return "declared boundary changed; compatibility family is unchanged"
+        compat = (
+            "compatibility family is unchanged"
+            if "compat" in available
+            else "no compatibility identity is declared"
+        )
+        return f"declared boundary changed; {compat}"
     elif "compat" in facets:
         return "BREAKING-policy signal: declared compatibility family changed"
     return "changed: " + ", ".join(facets)

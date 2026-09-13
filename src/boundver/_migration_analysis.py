@@ -28,7 +28,7 @@ from .providers import MAX_PROVIDER_DECLARATIONS
 
 MIGRATION_ANALYSIS_SCHEMA = "boundver-migration-analysis/v1"
 MIGRATION_ANALYSIS_SCHEMA_URL = (
-    "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/"
+    "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/"
     "spec/cli-output.migrate-lock.schema.json"
 )
 MAX_ANALYZED_DECLARATIONS = min(MAX_PROVIDER_DECLARATIONS, 2_000)
@@ -249,6 +249,12 @@ def _prepare_component_declarations(
     # before any provider saw them. Use POSIX spelling here because the v0.10
     # schema required '/' separators and Git paths are POSIX on every host.
     legacy_component_path = posixpath.normpath(raw_component_path.strip())
+    try:
+        _normalize_declared_path(raw_component_path)
+    except ValueError as exc:
+        current_component_error: Optional[ValueError] = exc
+    else:
+        current_component_error = None
     if legacy_component_path == ".":
         component_path = "."
     else:
@@ -315,6 +321,13 @@ def _prepare_component_declarations(
                 current_error = None
             if legacy_status != "compared":
                 analysis_status, detail = legacy_status, legacy_detail
+            elif current_component_error is not None:
+                detail = _bounded_label(
+                    "Current Boundver rejects component path "
+                    f"{raw_component_path!r} ({current_component_error}); "
+                    f"Boundver 0.10 evaluated {legacy_component_path!r}"
+                )
+                analysis_status = "current-rejected"
             elif current_error is not None:
                 legacy_preview = _preview_path(legacy_selector)
                 detail = _bounded_label(

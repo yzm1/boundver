@@ -63,6 +63,10 @@ inputs:
     description: Refresh the lockfile after reporting drift.
     required: false
     default: "false"
+  strict-config-source:
+    description: Refuse update when the selected snapshot config differs from the working tree.
+    required: false
+    default: "false"
   python-version:
     description: Python version used by the action.
     required: false
@@ -178,6 +182,7 @@ runs:
         BOUNDVER_TRANSITIVE: ${{ inputs.transitive }}
         BOUNDVER_FAIL_FAST: ${{ inputs.fail-fast }}
         BOUNDVER_UPDATE: ${{ inputs.update }}
+        BOUNDVER_STRICT_CONFIG_SOURCE: ${{ inputs.strict-config-source }}
         BOUNDVER_UPLOAD_ARTIFACT: ${{ inputs.upload-artifact }}
         BOUNDVER_ARTIFACT_NAME: ${{ inputs.artifact-name }}
       run: |
@@ -202,6 +207,10 @@ runs:
         case "$BOUNDVER_UPDATE" in
           true|false) ;;
           *) echo "update must be true or false" >&2; exit 2 ;;
+        esac
+        case "$BOUNDVER_STRICT_CONFIG_SOURCE" in
+          true|false) ;;
+          *) echo "strict-config-source must be true or false" >&2; exit 2 ;;
         esac
         case "$BOUNDVER_MERGE_BASE" in
           true|false) ;;
@@ -243,13 +252,16 @@ runs:
           if [[ "$BOUNDVER_UPDATE" == true ]]; then
             command+=(--update)
           fi
+          if [[ "$BOUNDVER_STRICT_CONFIG_SOURCE" == true ]]; then
+            command+=(--strict-config-source)
+          fi
         else
           if [[ -z "$BOUNDVER_BASE" || -z "$BOUNDVER_TARGET" ]]; then
             echo "operation review requires both base and target" >&2
             exit 2
           fi
-          if [[ "$BOUNDVER_SOURCE" != head || -n "$BOUNDVER_COMPONENTS" || -n "$BOUNDVER_CHANGED_FROM" || -n "$BOUNDVER_BASELINE" || "$BOUNDVER_FAIL_FAST" != false || "$BOUNDVER_UPDATE" != false ]]; then
-            echo "source, components, changed-from, baseline, fail-fast, and update are verify-only controls" >&2
+          if [[ "$BOUNDVER_SOURCE" != head || -n "$BOUNDVER_COMPONENTS" || -n "$BOUNDVER_CHANGED_FROM" || -n "$BOUNDVER_BASELINE" || "$BOUNDVER_FAIL_FAST" != false || "$BOUNDVER_UPDATE" != false || "$BOUNDVER_STRICT_CONFIG_SOURCE" != false ]]; then
+            echo "source, components, changed-from, baseline, fail-fast, update, and strict-config-source are verify-only controls" >&2
             exit 2
           fi
           command=(

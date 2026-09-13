@@ -30,6 +30,10 @@ after inspecting their exact system targets.
 Git subprocesses are constrained to local inspection. Boundver disables hooks,
 filters, external diff and text-conversion helpers, filesystem monitors,
 pagers, prompts, signature helpers, trace sinks, and partial-clone lazy fetches.
+It requires Git 2.32 or newer and confirms that the selected executable applies
+the process-local configuration block carrying those controls before inspection.
+Partial-clone configuration is detected explicitly; such repositories require
+Git 2.45 or newer so missing objects cannot trigger an undeclared fetch.
 Unsupported or over-budget input needed for an authoritative digest or
 comparison fails closed with exit `2`. Optional structural explanations from
 range review are separate: an unsupported provider or exhausted explanation
@@ -42,10 +46,12 @@ interpreter, selected Git executable, or invoking account.
 
 ## Data-only configuration
 
-`boundary.config.json` declares paths, providers, options, versions, and graph
-edges. Ordinary configuration cannot execute a command or enable custom Python
-providers by itself. Generated artifacts therefore need a separate,
-deterministic freshness check before boundver verifies their output.
+`boundary.config.json` declares paths, providers, options, versions, graph
+edges, and data-only generated-artifact relations. Ordinary configuration
+cannot execute a command or enable custom Python providers by itself. A
+derivation receipt binds selected inputs, outputs, and a logical generator
+identity, while trusted CI remains responsible for running and validating the
+generator.
 
 Built-in providers parse or hash data under size, count, nesting, and work
 limits. A digest proves that the declared identity is unchanged; it is not a
@@ -69,7 +75,8 @@ providers or wrappers supplied by another project.
 - Keep custom providers disabled for untrusted changes.
 - Generate and verify from the same explicit source mode.
 - Treat exit `2` as a failed check, never as “no drift.”
-- Run generated-artifact freshness checks before boundver.
+- Record derivation evidence after trusted generation, and keep an independent
+  deterministic generator check in CI where reproducibility matters.
 - For an untrusted repository, prefer the release container with no network,
   no capabilities, `no-new-privileges`, and read-only mounts.
 

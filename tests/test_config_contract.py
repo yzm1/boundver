@@ -11,7 +11,10 @@ from boundver._config_contract import (
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
     COMPONENT_IDENTIFIER_PATTERN,
+    COVERAGE_EXCLUSION_FIELDS,
+    COVERAGE_FIELDS,
     DEFAULT_FIELDS,
+    DERIVATION_FIELDS,
     GIT_TAG_PREFIX_PATTERN,
     MAX_CONSUMER_GRAPH_ITEMS,
     MAX_CONSUMER_IDENTIFIER_CHARS,
@@ -20,6 +23,8 @@ from boundver._config_contract import (
     ROOT_FIELDS,
     SLICE_FIELDS,
     VERSION_FILE_FIELDS,
+    VERSION_COMPONENT_FIELDS,
+    VERSION_CONSTANT_FIELDS,
     VERSION_TAG_FIELDS,
 )
 from boundver._utils import ConfigError
@@ -79,6 +84,17 @@ class ConfigContractParityTests(unittest.TestCase):
             set(properties["defaults"]["properties"]), set(DEFAULT_FIELDS)
         )
         self.assertEqual(
+            set(properties["coverage"]["properties"]), set(COVERAGE_FIELDS)
+        )
+        self.assertEqual(
+            set(properties["coverage"]["properties"]["exclusions"]["items"]["properties"]),
+            set(COVERAGE_EXCLUSION_FIELDS),
+        )
+        self.assertEqual(
+            set(properties["derivations"]["additionalProperties"]["properties"]),
+            set(DERIVATION_FIELDS),
+        )
+        self.assertEqual(
             set(properties["providers"]["items"]["properties"]),
             set(PROVIDER_FIELDS),
         )
@@ -96,7 +112,12 @@ class ConfigContractParityTests(unittest.TestCase):
         object_cases = [case for case in version_cases if case.get("type") == "object"]
         self.assertEqual(
             {frozenset(case["properties"]) for case in object_cases},
-            {VERSION_FILE_FIELDS, VERSION_TAG_FIELDS},
+            {
+                VERSION_FILE_FIELDS,
+                VERSION_TAG_FIELDS,
+                VERSION_COMPONENT_FIELDS,
+                VERSION_CONSTANT_FIELDS,
+            },
         )
         self.assertEqual(
             set(properties["slices"]["additionalProperties"]["properties"]),

@@ -50,6 +50,7 @@ from ._utils import (
     ProviderError,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
+    _bounded_json_dumps,
     _is_glob,
     _json_integer_is_bounded,
     _normalize_declared_path,
@@ -306,6 +307,33 @@ def _bounded_provider_error_text(message: str) -> str:
     )
 
 
+def _class_name_for_message(value: Any, *, fallback: str) -> str:
+    """Return a bounded class name without invoking instance hooks."""
+    try:
+        name = type.__getattribute__(type(value), "__name__")
+    except BaseException:
+        return fallback
+    if type(name) is not str or not name:
+        return fallback
+    bounded = _bounded_diagnostic_text(name)
+    return bounded if bounded.strip() else fallback
+
+
+def _provider_name_for_message(provider: Any) -> str:
+    """Return a bounded plain-string provider label for diagnostics."""
+    class_name = _class_name_for_message(provider, fallback="provider")
+    try:
+        value = getattr(provider, "name")
+    except BaseException:
+        return class_name
+    if type(value) is not str or not value:
+        return class_name
+    bounded = _bounded_diagnostic_text(value)
+    if not bounded.strip():
+        return class_name
+    return bounded
+
+
 def _append_builtin_provider_error(errors: List[str], message: str) -> bool:
     """Append a bounded error, returning false when collection must stop."""
     if len(errors) >= MAX_PROVIDER_ERRORS - 1:
@@ -466,30 +494,43 @@ def _safe_provider_attribute(provider: Any, attribute: str) -> Any:
     """Read an extension attribute without allowing a descriptor to escape."""
     try:
         return getattr(provider, attribute)
-    except Exception as exc:
+    except BaseException as exc:
         raise ProviderError(
             f"Provider attribute '{attribute}' could not be read: "
             f"{_bounded_exception(exc)}"
         ) from exc
 
 
-def _bounded_exception(exc: Exception) -> str:
+def _bounded_exception(exc: BaseException) -> str:
     """Return a useful, bounded exception description for user-facing errors."""
+    exception_name = _class_name_for_message(exc, fallback="provider error")
     try:
         detail = str(exc).strip()
-    except Exception:
+    except BaseException:
         detail = ""
-    detail = detail or exc.__class__.__name__
+    if not isinstance(exc, Exception):
+        detail = f"{exception_name}: {detail}" if detail else exception_name
+    detail = detail or exception_name
     return _bounded_diagnostic_text(detail)
 
 
-def _provider_identity_error(provider: Any) -> Optional[str]:
+_UNCAPTURED_PROVIDER_NAME = object()
+
+
+def _provider_identity_error(
+    provider: Any,
+    *,
+    provider_name: Any = _UNCAPTURED_PROVIDER_NAME,
+) -> Optional[str]:
     """Return a provider protocol error, or ``None`` for a usable provider."""
     for attribute in ("name", "version"):
-        try:
-            value = _safe_provider_attribute(provider, attribute)
-        except ProviderError as exc:
-            return str(exc)
+        if attribute == "name" and provider_name is not _UNCAPTURED_PROVIDER_NAME:
+            value = provider_name
+        else:
+            try:
+                value = _safe_provider_attribute(provider, attribute)
+            except ProviderError as exc:
+                return str(exc)
         if type(value) is not str or not value.strip():
             return f"Provider {attribute} must be a non-empty string"
         if value != value.strip():
@@ -607,7 +648,7 @@ def _metadata_error(metadata: Any) -> Optional[str]:
     return None
 
 
-def _resolved_boundary_error(resolved: Any) -> Optional[str]:
+def _unbounded_resolved_boundary_error(resolved: Any) -> Optional[str]:
     """Validate the complete, untrusted result returned by ``resolve()``."""
     if type(resolved) is not ResolvedBoundary:
         return "resolve() must return exactly ResolvedBoundary"
@@ -696,6 +737,12 @@ def _resolved_boundary_error(resolved: Any) -> Optional[str]:
     return None
 
 
+def _resolved_boundary_error(resolved: Any) -> Optional[str]:
+    """Return one result-contract error within the public error ceiling."""
+    error = _unbounded_resolved_boundary_error(resolved)
+    return None if error is None else _bounded_provider_error_text(error)
+
+
 def _controlled_boundary_error(
     message: str,
     *,
@@ -746,7 +793,7 @@ def compute_boundary(
         )
     try:
         resolved = resolver(ctx)
-    except Exception as exc:
+    except BaseException as exc:
         return _controlled_boundary_error(
             f"Provider '{provider_name}' resolve() failed: {_bounded_exception(exc)}",
             include_metadata=include_metadata,
@@ -809,27 +856,24 @@ def validate_provider_config(
     """
     try:
         validator = getattr(provider, "validate_config", None)
-    except Exception as exc:
+    except BaseException as exc:
         return [
             "Provider config validation hook could not be read: "
             f"{_bounded_exception(exc)}"
         ]
     if not callable(validator):
         return []
-    try:
-        provider_name = getattr(provider, "name", provider.__class__.__name__)
-    except Exception:
-        provider_name = provider.__class__.__name__
+    provider_name = _provider_name_for_message(provider)
     try:
         errors = validator(boundary_cfg, component_path, repo_root)
-    except Exception as exc:
+    except BaseException as exc:
         return [
             f"Provider '{provider_name}' config validation failed: "
             f"{_bounded_exception(exc)}"
         ]
     if errors is None:
         return []
-    if not isinstance(errors, list):
+    if type(errors) is not list:
         return [
             f"Provider '{provider_name}' validate_config() must return a list of errors"
         ]
@@ -871,47 +915,47 @@ def validate_provider_environment(
     """
     try:
         validator = getattr(provider, "validate_environment", None)
-    except Exception as exc:
-        return [
+    except BaseException as exc:
+        return [_bounded_provider_error_text(
             "Provider environment validation hook could not be read: "
             f"{_bounded_exception(exc)}"
-        ]
+        )]
     if not callable(validator):
         return []
     try:
-        provider_name = getattr(provider, "name", provider.__class__.__name__)
-    except Exception:
-        provider_name = provider.__class__.__name__
+        provider_name = _provider_name_for_message(provider)
+    except BaseException:  # pragma: no cover - helper is fail-closed
+        provider_name = "provider"
     try:
         errors = validator(boundary_cfg)
-    except Exception as exc:
-        return [
+    except BaseException as exc:
+        return [_bounded_provider_error_text(
             f"Provider '{provider_name}' environment validation failed: "
             f"{_bounded_exception(exc)}"
-        ]
+        )]
     if errors is None:
         return []
-    if not isinstance(errors, list):
-        return [
+    if type(errors) is not list:
+        return [_bounded_provider_error_text(
             f"Provider '{provider_name}' validate_environment() must return "
             "a list of errors"
-        ]
+        )]
     if len(errors) > MAX_PROVIDER_ERRORS:
-        return [
+        return [_bounded_provider_error_text(
             f"Provider '{provider_name}' validate_environment() returned more "
             f"than {MAX_PROVIDER_ERRORS} errors"
-        ]
+        )]
     for error in errors:
         if type(error) is not str or not error.strip():
-            return [
+            return [_bounded_provider_error_text(
                 f"Provider '{provider_name}' validate_environment() must return "
                 "only non-empty error strings"
-            ]
+            )]
         if len(error.encode("utf-8", errors="replace")) > MAX_PROVIDER_ERROR_BYTES:
-            return [
+            return [_bounded_provider_error_text(
                 f"Provider '{provider_name}' validate_environment() returned an "
                 f"error longer than {MAX_PROVIDER_ERROR_BYTES} bytes"
-            ]
+            )]
     return list(errors)
 
 
@@ -923,27 +967,40 @@ def explain_provider_diff(
 ) -> str:
     """Return a provider-specific diff summary with a useful fallback."""
     try:
-        provider_name = getattr(provider, "name", provider.__class__.__name__)
-    except Exception:
-        provider_name = provider.__class__.__name__
-    fallback = f"{provider_name} boundary changed"
+        provider_name = _provider_name_for_message(provider)
+    except BaseException:  # pragma: no cover - helper is fail-closed
+        provider_name = "provider"
+    fallback = _bounded_provider_error_text(f"{provider_name} boundary changed")
     try:
         explainer = getattr(provider, "explain_diff", None)
-    except Exception:
+    except BaseException:
         return fallback
     if not callable(explainer):
         return fallback
     try:
         explanation = explainer(old_metadata, new_metadata, ctx)
-    except Exception as exc:
-        return (
+    except BaseException as exc:
+        return _bounded_provider_error_text(
             f"{fallback} (provider explanation unavailable: "
             f"{_bounded_exception(exc)})"
         )
-    if isinstance(explanation, str) and explanation.strip():
+    if type(explanation) is str:
         explanation = explanation.strip()
-        if len(explanation.encode("utf-8", errors="replace")) <= MAX_PROVIDER_ERROR_BYTES:
-            return explanation
+        try:
+            explanation_bytes = explanation.encode("utf-8")
+        except UnicodeEncodeError:
+            explanation_bytes = b""
+        if explanation and explanation_bytes and len(explanation_bytes) <= MAX_PROVIDER_ERROR_BYTES:
+            try:
+                _bounded_json_dumps(
+                    {"provider_detail": explanation},
+                    sort_keys=True,
+                    max_bytes=2 * MAX_PROVIDER_ERROR_BYTES,
+                )
+            except (GuardrailError, UnicodeEncodeError):
+                pass
+            else:
+                return explanation
     return fallback
 
 
@@ -983,18 +1040,19 @@ class PathHashProvider:
                 content = _read_provider_file(
                     ctx,
                     repo_rel,
-                    max_bytes=collector.remaining_output_bytes,
+                    max_bytes=collector.remaining_source_bytes,
                 )
+                collector.add_source(content)
                 if b"\r\n" in content and b"\x00" not in content:
                     content = content.replace(b"\r\n", b"\n")
                 collector.add(f"file:{child_rel}", content)
             except (OSError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
-                    errors=[
+                    errors=[_bounded_provider_error_text(
                         f"Boundary content collection failed for {child_rel}: "
                         f"{_bounded_exception(exc)}"
-                    ],
+                    )],
                 )
         if not collector.entries:
             return ResolvedBoundary(
@@ -1107,6 +1165,14 @@ class LeafProvider:
     version = "1"
 
     def resolve(self, ctx: ProviderContext) -> ResolvedBoundary:
+        if ctx.boundary_cfg.get("paths"):
+            return ResolvedBoundary(
+                status="error",
+                errors=[
+                    "Leaf boundary provider cannot declare paths; remove "
+                    "boundary.paths or select a publishing provider"
+                ],
+            )
         return ResolvedBoundary(entries=[], status="ok")
 
     def validate_config(
@@ -1115,6 +1181,11 @@ class LeafProvider:
         component_path: str,
         repo_root: Path,
     ) -> List[str]:
+        if boundary_cfg.get("paths"):
+            return [
+                "Leaf boundary provider cannot declare paths; remove "
+                "boundary.paths or select a publishing provider"
+            ]
         return []
 
     def explain_diff(
@@ -1207,10 +1278,10 @@ class JsonCanonicalProvider:
             except (ProviderError, UnicodeDecodeError, OSError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
-                    errors=[
+                    errors=[_bounded_provider_error_text(
                         f"JSON canonicalization failed for {child_rel}: "
                         f"{_bounded_exception(exc)}"
-                    ],
+                    )],
                 )
         if not collector.entries:
             return ResolvedBoundary(
@@ -1245,7 +1316,8 @@ class OpenApiCanonicalProvider:
     **What is stripped (non-contract):**
     - Top-level ``info``, ``servers``, ``tags`` blocks (metadata / deployment details).
     - ``description``, ``summary``, ``externalDocs``, ``example``, ``examples``
-      at any nesting depth.
+      where OpenAPI defines them as documentation-only fields. Identically
+      named keys in data values and extension payloads are kept.
 
     **What is kept (contract):**
     - ``paths``, ``components``, ``security``, ``webhooks`` and all their
@@ -1263,8 +1335,10 @@ class OpenApiCanonicalProvider:
 
     name = "openapi-canonical"
     structural_diff_interface = STRUCTURAL_DIFF_INTERFACE
-    # v4 adds bounded parsing/canonicalization and rejects non-JSON integer
-    # spellings, Unicode patch digits, and over-limit aggregate output.
+    # v4 adds bounded, position-aware parsing/canonicalization; rejects
+    # non-JSON integer spellings, Unicode patch digits, and over-limit
+    # aggregate output; and preserves contract data inside extensions and
+    # enum/const/default values.
     version = "4"
 
     def validate_environment(self, boundary_cfg: dict) -> List[str]:
@@ -1342,18 +1416,18 @@ class OpenApiCanonicalProvider:
                     raise
                 return ResolvedBoundary(
                     status="error",
-                    errors=[
+                    errors=[_bounded_provider_error_text(
                         f"OpenAPI canonicalization failed for {child_rel}: "
                         f"{_bounded_exception(exc)}"
-                    ],
+                    )],
                 )
             except (ProviderError, OSError, RecursionError, ValueError) as exc:
                 return ResolvedBoundary(
                     status="error",
-                    errors=[
+                    errors=[_bounded_provider_error_text(
                         f"OpenAPI canonicalization failed for {child_rel}: "
                         f"{_bounded_exception(exc)}"
-                    ],
+                    )],
                 )
         if not collector.entries:
             return ResolvedBoundary(
@@ -1396,6 +1470,7 @@ class OpenApiCanonicalProvider:
                     f"Cannot resolve {label} OpenAPI structure: "
                     f"{_bounded_diagnostic_text(detail)}"
                 )
+            budget.reserve_input_bytes(collector.total_source_bytes)
             for entry_label, content in boundary.entries:
                 budget.reserve_input(entry_label, content)
             resolved.append(boundary.entries)
@@ -1460,14 +1535,13 @@ def register_provider(
 
     If *registry* is provided, registers into that dict instead of the global registry.
     """
-    contract_error = _provider_identity_error(p)
+    try:
+        provider_name = _safe_provider_attribute(p, "name")
+    except ProviderError as exc:
+        raise ProviderError(f"Cannot register boundary provider: {exc}") from exc
+    contract_error = _provider_identity_error(p, provider_name=provider_name)
     if contract_error:
         raise ProviderError(f"Cannot register boundary provider: {contract_error}")
-    provider_name = _safe_provider_attribute(p, "name")
-    if type(provider_name) is not str:
-        raise ProviderError(
-            "Cannot register boundary provider: provider name changed during validation"
-        )
     target = registry if registry is not None else _REGISTRY
     target[provider_name] = p
 
@@ -1575,7 +1649,7 @@ def load_custom_providers(
             continue
         try:
             mod = importlib.import_module(module_name)
-        except Exception as exc:
+        except BaseException as exc:
             errors.append(
                 f"Failed to import provider module '{module_name}': "
                 f"{_bounded_exception(exc)}"
@@ -1583,7 +1657,7 @@ def load_custom_providers(
             continue
         try:
             cls = getattr(mod, class_name, None)
-        except Exception as exc:
+        except BaseException as exc:
             errors.append(
                 f"Failed to read '{module_name}.{class_name}': "
                 f"{_bounded_exception(exc)}"
@@ -1596,7 +1670,7 @@ def load_custom_providers(
             continue
         try:
             instance = cls()
-        except Exception as exc:
+        except BaseException as exc:
             errors.append(
                 f"Failed to instantiate '{module_name}.{class_name}': "
                 f"{_bounded_exception(exc)}"
@@ -1646,17 +1720,15 @@ def load_custom_providers(
                 "refusing to replace it while loading config"
             )
             continue
-        contract_error = _provider_identity_error(instance)
+        contract_error = _provider_identity_error(
+            instance,
+            provider_name=provider_name,
+        )
         if contract_error:
             errors.append(
                 f"Provider '{module_name}.{class_name}' is invalid: {contract_error}"
             )
             continue
-        try:
-            register_provider(instance, registry=registry)
-            loaded_names.add(provider_name)
-        except ProviderError as exc:
-            errors.append(
-                f"Provider '{module_name}.{class_name}' could not be registered: {exc}"
-            )
-    return errors
+        target_registry[provider_name] = instance
+        loaded_names.add(provider_name)
+    return [_bounded_provider_error_text(error) for error in errors]

@@ -29,6 +29,11 @@ MAX_DISCOVERY_EXCLUSIONS = 1_000
 MAX_DISCOVERY_EXCLUSION_BYTES = 1024 * 1024
 
 
+def _manifest_available(path: Path) -> bool:
+    """Return whether an indexed manifest can be inspected in this worktree."""
+    return path.exists() or path.is_symlink()
+
+
 def normalize_discovery_exclusions(excluded_paths: Optional[List[str]]) -> List[str]:
     """Validate, normalize, deduplicate, and bound discovery path prefixes."""
     raw_paths = excluded_paths or []
@@ -171,6 +176,13 @@ def discover_components(
             relative == excluded or relative.startswith(excluded + "/")
             for excluded in normalized_exclusions
         )
+
+    def is_ignored(path: Path) -> bool:
+        try:
+            relative = path.relative_to(repo_root)
+        except ValueError:
+            return True
+        return bool(_ignored_dirs & set(relative.parts[:-1]))
     found: Dict[str, dict] = {}
     seen_directories: Set[str] = set()
     root_manifest_component: Optional[str] = None
@@ -279,9 +291,26 @@ def discover_components(
                 tracked_detection = True
 
     candidate_paths = [
-        path for path in candidate_paths if not is_excluded(path)
+        path
+        for path in candidate_paths
+        if not is_excluded(path) and not is_ignored(path)
     ]
     enforce_manifest_limit(candidate_paths)
+    manifest_names = {manifest for manifest, _field in manifest_specs}
+    unavailable_manifests = [
+        path
+        for path in candidate_paths
+        if tracked_detection
+        and path.name in manifest_names
+        and not _manifest_available(path)
+    ]
+    if unavailable_manifests:
+        relative = unavailable_manifests[0].relative_to(repo_root).as_posix()
+        raise ConfigError(
+            "Component discovery found an indexed manifest that is unavailable "
+            f"in the working tree: {relative}. Restore or stage its deletion "
+            "before running discovery."
+        )
     # Manifests are discovered from the selected Git name set so an unstaged
     # deletion does not erase an indexed component. Provider evidence must also
     # be readable, and in bootstrap mode comes from the exact same non-ignored
@@ -289,7 +318,7 @@ def discover_components(
     provider_candidate_paths = [
         path
         for path in candidate_paths
-        if path.exists() or path.is_symlink()
+        if _manifest_available(path)
     ]
 
     # A repository-root manifest is common for single-package projects, but a
@@ -331,19 +360,33 @@ def discover_components(
         if root_manifest_component is not None:
             break
         if any(
-            path == conventional or path.startswith(conventional + "/")
+            path.startswith(conventional + "/")
             for path in tracked_relative
         ):
             root_manifest_component = conventional
             break
 
+    nested_manifest_directories = {
+        path.parent.relative_to(repo_root).as_posix()
+        for path in candidate_paths
+        if path.name in manifest_names and path.parent != repo_root
+    }
+
     for manifest, version_field in manifest_specs:
-        for mf in sorted(p for p in candidate_paths if p.name == manifest):
+        manifests = (path for path in candidate_paths if path.name == manifest)
+        for mf in sorted(
+            manifests,
+            key=lambda path: path.relative_to(repo_root)
+            .as_posix()
+            .encode("utf-8", errors="surrogateescape"),
+        ):
             if _ignored_dirs & set(mf.relative_to(repo_root).parts):
                 continue
             rel_dir = mf.parent.relative_to(repo_root)
             if str(rel_dir) == ".":
                 if root_manifest_component is None:
+                    continue
+                if root_manifest_component in nested_manifest_directories:
                     continue
                 rel_path = root_manifest_component
             else:

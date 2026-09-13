@@ -32,6 +32,30 @@ boundver verify --source head          # committed HEAD
 Source flags apply to one invocation. Repeat the flag on the next command, and
 generate and verify from the same source.
 
+## `verify --update` used my old config
+
+`head` and `index` read the config, lock, and component files from one captured
+Git snapshot. If the config at the same working-tree path is semantically
+different, missing, or unreadable, `verify --update` prints a notice naming both
+config identities. It still regenerates from the selected snapshot; it never
+mixes the working-tree graph into a committed or staged verification.
+
+Use the source that represents the lock you intend to write:
+
+```bash
+# Reconcile local edits directly.
+boundver verify --source working-tree --update
+
+# Or stage the complete candidate before reconciling the index.
+git add boundary.config.json path/to/changed-contract
+boundver verify --source index --update --strict-config-source
+```
+
+Add `--strict-config-source` when a stale or missing working-tree config must
+block regeneration. The command then exits `2` without modifying the lock. In
+JSON output, inspect `notices[*].selected_config`,
+`notices[*].working_tree_config`, and `notices[*].source`.
+
 ## A new declared file is missing from the index
 
 `--source index` can only read staged files. Stage the new contract artifact
@@ -59,19 +83,41 @@ contract unwatched. Check that:
 Use `boundver status` and `boundver why COMPONENT --source SOURCE` to inspect
 the effective declaration.
 
-## A generated contract is stale
+## A valid config still misses source files
 
-Boundver fingerprints the generated artifact, not the command that produced
-it. Run the project's deterministic generator check first:
+`validate-config` proves that declarations are valid, not complete. Run the
+read-only coverage audit to find tracked files outside behavior/boundary
+selectors and source directories outside component roots:
 
 ```bash
-python path/to/generator.py --check
-boundver verify --source head
+boundver coverage --source head
+boundver coverage --source head --strict  # gate uncovered paths in CI
 ```
 
-If the generator has no check mode, generate into a temporary location and
-compare it in CI before verification. Do not place an executable command in
-the boundver config.
+Declare `coverage.source_indicators` for repository-level ownership checks.
+For intentional omissions, add a repository-relative `coverage.exclusions`
+entry with the affected `ownership`, `behavior`, or `boundary` facet and a
+reason. The report keeps exclusions separate from uncovered files.
+
+## A generated contract is stale
+
+When a configured derivation receipt reports stale inputs, rerun the trusted
+generator and record fresh evidence from the source you intend to verify:
+
+```bash
+python path/to/generator.py
+boundver record-derivation public-api --source working-tree
+boundver verify --source working-tree --update
+```
+
+If outputs changed after evidence was recorded, determine what modified them,
+then rerun and record rather than editing the receipt. For `index`, stage the
+inputs and outputs before recording, then stage the receipt and regenerated
+lock. For `head`, all four must already be committed.
+
+The config's `generator` value is data and is never executed. A deterministic
+generator `--check` remains useful in trusted CI because the receipt detects
+drift but does not attest that the generator itself is correct.
 
 ## Range review cannot find its base
 
@@ -122,7 +168,8 @@ out configuration cannot grant itself that authority.
 
 ## I need more detail
 
-- [Reference](reference.md): commands, selectors, source modes, and exit codes
+- [CLI reference](cli-reference.md): generated command syntax and options
+- [Behavioral reference](reference.md): selectors, source modes, and exit codes
 - [Glossary](glossary.md): project terminology
 - [CI cookbook](ci-cookbook.md): maintained CI recipes
 - [Migration and ratcheting](migration-and-ratcheting.md): existing repositories

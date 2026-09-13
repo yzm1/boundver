@@ -34,7 +34,7 @@ from ._lockfile import (
 )
 from ._structural_review import structural_boundary_changes
 from ._utils import (
-    DIAGNOSTIC_TRUNCATION_SENTINEL,
+    _DiagnosticTruncationMarker,
     FACETS,
     FACET_SET,
     BoundverError,
@@ -42,6 +42,7 @@ from ._utils import (
     GuardrailError,
     LockfileError,
     _bounded_json_dumps,
+    _safe_display_text,
 )
 
 
@@ -136,7 +137,7 @@ def parse_review_facets(raw: str) -> Optional[List[str]]:
             "Unknown review facet(s): " + ", ".join(sorted(unknown))
         )
     if not requested:
-        raise ConfigError("--facets must name at least one review facet")
+        return None
     return [facet for facet in FACETS if facet in requested]
 
 
@@ -429,7 +430,10 @@ def _load_review_endpoint(
         if commit is None:
             raise ValueError("Review snapshot is missing its exact commit identity")
         component_count = len(drifted_components)
-        diagnostics_truncated = DIAGNOSTIC_TRUNCATION_SENTINEL in endpoint_drift
+        diagnostics_truncated = any(
+            isinstance(message, _DiagnosticTruncationMarker)
+            for message in endpoint_drift
+        )
         component_summary = (
             f" in {'at least ' if diagnostics_truncated else ''}{component_count} "
             f"{'component' if component_count == 1 else 'components'}"
@@ -1081,12 +1085,25 @@ def _short_identity(value: object) -> str:
     return "invalid"
 
 
+def _review_list_label(value: object) -> str:
+    """Render one label without retaining the list's comma separator."""
+    return _safe_display_text(value).replace(",", "\\x2c")
+
+
+def _review_metadata_value(value: object) -> str:
+    """Render one lock-level metadata value completely and safely."""
+    return _safe_display_text(
+        _bounded_json_dumps(value, ensure_ascii=True, sort_keys=True)
+    )
+
+
 def review_text_lines(result: dict) -> List[str]:
     """Render a concise complete human view of the versioned review result."""
     request = result["request"]
     endpoints = result["endpoints"]
     history = result["history"]
     policy = result["policy"]
+    metadata = result["metadata"]
     changed = result["components"]["changed"]
     impacts = {item["component"]: item for item in result["consumer_impact"]}
     structural_reports = {
@@ -1117,11 +1134,21 @@ def review_text_lines(result: dict) -> List[str]:
             + ("shallow; " if history["repository_shallow"] else "complete; ")
             + history["requirement"]
         ),
-        "Compared facets: " + ", ".join(policy["compared_facets"]),
+        "Compared facets: "
+        + ", ".join(policy["explicit_facets"] or policy["compared_facets"]),
         "Impact mode: " + policy["impact"],
         "",
-        f"CHANGED COMPONENTS ({len(changed)})",
+        f"LOCKFILE METADATA CHANGES ({len(metadata)})",
     ]
+    if not metadata:
+        lines.append("  none")
+    else:
+        for field, transition in metadata.items():
+            lines.append(
+                f"  {field}: {_review_metadata_value(transition['before'])} -> "
+                f"{_review_metadata_value(transition['after'])}"
+            )
+    lines.extend(["", f"CHANGED COMPONENTS ({len(changed)})"])
     if not changed:
         lines.append("  none")
     for component in changed:
@@ -1170,11 +1197,11 @@ def review_text_lines(result: dict) -> List[str]:
         impact = impacts.get(component["name"])
         if impact is not None:
             internal = ", ".join(
-                f"{item['name']} ({item['source']})"
+                f"{_review_list_label(item['name'])} ({item['source']})"
                 for item in impact["components"]
             ) or "none"
             external = ", ".join(
-                f"{item['name']} ({item['source']})"
+                f"{_review_list_label(item['name'])} ({item['source']})"
                 for item in impact["external_consumers"]
             ) or "none"
             lines.append(f"    Affected components: {internal}")
@@ -1214,10 +1241,13 @@ def review_text_lines(result: dict) -> List[str]:
             "Review complete. Changes do not alter the exit status; run verify as the integrity gate.",
         ]
     )
-    rendered_bytes = sum(
-        len(line.encode("utf-8", errors="backslashreplace")) + 1
-        for line in lines
-    )
+    rendered_bytes = 0
+    for line in lines:
+        display = _safe_display_text(line)
+        rendered_bytes += max(
+            len(display.encode("utf-8")),
+            len(display.encode("ascii", errors="backslashreplace")),
+        ) + 1
     if rendered_bytes > MAX_REVIEW_RESULT_BYTES:
         raise GuardrailError(
             "Range review text exceeds the "

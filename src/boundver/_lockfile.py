@@ -5,7 +5,7 @@ import os
 import posixpath
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from ._config import _json_value_issues, _snapshot_relative_path
 from ._config_contract import git_tag_prefix_error
@@ -15,6 +15,7 @@ from ._consumer_graph import (
     resolve_slice_components,
 )
 from ._structured_data import strict_json_loads
+from ._derivations import verify_derivations
 
 from ._git import (
     _GitBlobSession,
@@ -48,9 +49,11 @@ from ._lockfile_validation import (
 )
 from ._utils import (
     BoundedDiagnosticList,
-    DIAGNOSTIC_TRUNCATION_SENTINEL,
+    _DIAGNOSTIC_TRUNCATION_MARKER,
+    _DiagnosticTruncationMarker,
     FACETS,
     FACET_SET,
+    MAX_DIAGNOSTIC_VALUE_CHARS,
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
@@ -76,19 +79,27 @@ from .providers import (
 )
 from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
 
-LOCKFILE_SCHEMA = "boundary-lock/v3"
-# v0.13.0 is the immutable canonical publication of the v3 schema.  Keep this
+LOCKFILE_SCHEMA = "boundary-lock/v4"
+# v0.16.0 is the immutable canonical publication of the v4 schema. Keep this
 # URL stable across digest-neutral package upgrades; changing the persisted
 # annotation would otherwise dirty every regenerated lock despite identical
 # schema, configuration, and component content.  A structural schema change
 # must advance LOCKFILE_SCHEMA and select a new canonical publication.
-LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json"
-SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v2"
-# Historical semantic contracts that retain the current boundary-lock/v3
-# structure closely enough for a bounded, read-only comparison.  Mutation and
-# verification paths continue to accept only ``SEMANTIC_CONFIG_VERSION``.
+LOCKFILE_SCHEMA_URL = "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json"
+SEMANTIC_CONFIG_VERSION = "boundver-semantic-config/v3"
+# Read-only ``diff`` retains the published v3 review surface while accepting
+# the current v4 contract. Mutation, verification, and range review still
+# require the exact current pair.
+DIFFABLE_LOCK_CONTRACTS = {
+    "boundary-lock/v3": frozenset(
+        {"boundver-semantic-config/v1", "boundver-semantic-config/v2"}
+    ),
+    LOCKFILE_SCHEMA: frozenset({SEMANTIC_CONFIG_VERSION}),
+}
 DIFFABLE_SEMANTIC_CONFIG_VERSIONS = frozenset(
-    {"boundver-semantic-config/v1", SEMANTIC_CONFIG_VERSION}
+    contract
+    for contracts in DIFFABLE_LOCK_CONTRACTS.values()
+    for contract in contracts
 )
 MAX_LOCKFILE_BYTES = 10 * 1024 * 1024
 
@@ -108,10 +119,17 @@ def dump_lockfile(value: dict) -> str:
     """Render one lock under the same UTF-8 limit accepted by its loader."""
     if MAX_LOCKFILE_BYTES < 1:  # pragma: no cover - production invariant
         raise LockfileError("Lockfile storage limit must leave room for a newline")
+    value_issues = _json_value_issues(value, path="lockfile")
+    if value_issues:
+        raise LockfileError(
+            "Lockfile contains values that cannot be represented as deterministic "
+            "JSON; no file was written:\n" + "\n".join(value_issues)
+        )
     try:
         body = _bounded_json_dumps(
             value,
             indent=2,
+            allow_nan=False,
             max_bytes=MAX_LOCKFILE_BYTES - 1,
         )
     except GuardrailError as exc:
@@ -119,6 +137,11 @@ def dump_lockfile(value: dict) -> str:
             "Lockfile output exceeds the "
             f"{MAX_LOCKFILE_BYTES}-byte storage limit; no file was written. "
             "Reduce generated component or provider metadata before retrying."
+        ) from exc
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise LockfileError(
+            "Lockfile could not be represented as deterministic JSON; "
+            f"no file was written: {_bounded_diagnostic_text(exc)}"
         ) from exc
     return body + "\n"
 
@@ -158,6 +181,20 @@ def parse_lockfile_bytes(data: bytes, path_label: object = "lockfile") -> dict:
             f"Lockfile is not valid UTF-8 at {path_label}: {exc}"
         ) from exc
     return parse_lockfile_text(text, path_label)
+
+
+def _ensure_generated_lockfile_loadable(value: dict) -> dict:
+    """Refuse generated output that the bounded lock reader cannot consume."""
+    try:
+        rendered = dump_lockfile(value).encode("utf-8")
+        parse_lockfile_bytes(rendered, "generated lockfile")
+    except LockfileError as exc:
+        raise LockfileError(
+            "Generated lockfile cannot pass the lock reader safety limits; "
+            "reduce component, slice, consumer, or provider metadata: "
+            f"{_bounded_diagnostic_text(str(exc))}"
+        ) from exc
+    return value
 
 
 def load_lockfile_file(
@@ -259,6 +296,9 @@ def _semantic_config(config: dict) -> dict:
     verify_facets = defaults.get("verify_facets")
     if isinstance(verify_facets, list):
         verify_facets = sorted(verify_facets, key=lambda item: canonical_json(item))
+    compat_mode = defaults.get("compat_mode", "major")
+    if compat_mode == "semver_major":
+        compat_mode = "major"
     semantic: dict = {
         "project": config.get("project", "unknown"),
         "providers": config.get("providers", []),
@@ -268,12 +308,35 @@ def _semantic_config(config: dict) -> dict:
                 for key, value in defaults.items()
                 if key not in {"compat_mode", "verify_facets"}
             },
-            "compat_mode": defaults.get("compat_mode", "major"),
+            "compat_mode": compat_mode,
             "verify_facets": verify_facets,
         },
         "components": {},
         "slices": {},
+        "derivations": {},
     }
+
+    derivations = config.get("derivations", {})
+    if isinstance(derivations, dict):
+        for name, raw_derivation in derivations.items():
+            if not isinstance(raw_derivation, dict):
+                semantic["derivations"][name] = raw_derivation
+                continue
+            normalized_derivation = dict(raw_derivation)
+            for field in ("inputs", "outputs"):
+                selectors = normalized_derivation.get(field)
+                if isinstance(selectors, list):
+                    normalized_derivation[field] = sorted(
+                        (
+                            _normalized_semantic_path(selector)
+                            for selector in selectors
+                        ),
+                        key=lambda item: canonical_json(item),
+                    )
+            normalized_derivation["evidence"] = _normalized_semantic_path(
+                normalized_derivation.get("evidence")
+            )
+            semantic["derivations"][name] = normalized_derivation
 
     components = config.get("components", {})
     if isinstance(components, dict):
@@ -339,7 +402,7 @@ def _semantic_config(config: dict) -> dict:
                 semantic["slices"][name] = raw_slice
                 continue
             slice_value = dict(raw_slice)
-            slice_value.setdefault("description", "")
+            slice_value.pop("description", None)
             slice_value.setdefault("mode", "exact")
             members = slice_value.get("components")
             if isinstance(members, list):
@@ -436,12 +499,30 @@ def generate_lockfile(
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
     generation_errors = BoundedDiagnosticList()
     with accessor:
+        freshness_issues = verify_derivations(config, accessor)
+        if freshness_issues:
+            raise ConfigError(
+                "Generated-artifact freshness failed:\n"
+                + "\n".join(freshness_issues)
+            )
         accessor.prime_latest_tags(tag_prefixes)
+        resolved_versions = _resolve_component_versions(
+            components_config,
+            repo_root,
+            accessor,
+        )
 
         # --- Components ---
         for name, comp in components_config.items():
             component_entry = _compute_component_entry(
-                name, comp, repo_root, source, defaults, accessor, registry,
+                name,
+                comp,
+                repo_root,
+                source,
+                defaults,
+                accessor,
+                registry,
+                version_result=resolved_versions.get(name),
             )
             lockfile["components"][name] = component_entry
             generation_errors.extend(
@@ -464,7 +545,7 @@ def generate_lockfile(
             slice_name, slice_def, lockfile["components"], strict=strict
         )
 
-    return lockfile
+    return _ensure_generated_lockfile_loadable(lockfile)
 
 
 # ---------------------------------------------------------------------------
@@ -557,19 +638,33 @@ class _SourceAccessor:
                 if self.snapshot is not None
                 else None
             )
-            data = _read_path_content(
-                self.repo_root,
-                full,
-                "working-tree",
-                max_bytes=effective_limit,
-                tracked_entry=tracked_entry,
-                core_filemode=(
-                    self.snapshot.filemode if self.snapshot is not None else True
-                ),
-                normalize=False,
+            sparse_absent = (
+                self.snapshot is not None
+                and repo_rel in self.snapshot.skip_worktree_paths
+                and not full.exists()
+                and not full.is_symlink()
             )
-            mode = data.git_mode
-            object_type = data.git_object_type
+            if sparse_absent:
+                if tracked_entry is None:  # pragma: no cover - snapshot invariant
+                    raise ValueError(
+                        f"Sparse path is absent from captured index: {repo_rel}"
+                    )
+                data = self.read_blob_limited(tracked_entry.oid, effective_limit)
+                mode, object_type = tracked_entry.mode, tracked_entry.object_type
+            else:
+                data = _read_path_content(
+                    self.repo_root,
+                    full,
+                    "working-tree",
+                    max_bytes=effective_limit,
+                    tracked_entry=tracked_entry,
+                    core_filemode=(
+                        self.snapshot.filemode if self.snapshot is not None else True
+                    ),
+                    normalize=False,
+                )
+                mode = data.git_mode
+                object_type = data.git_object_type
         _enforce_content_size(data, repo_rel)
         return _ModeAwareBytes(
             data,
@@ -580,9 +675,9 @@ class _SourceAccessor:
 
     def read_blob_limited(self, oid: str, max_bytes: int) -> bytes:
         """Read one captured blob through this operation's shared transport."""
-        if self.source not in {"head", "index"}:
+        if self.source not in {"head", "index"} and self.snapshot is None:
             raise ValueError(
-                "Immutable Git blob reads require head or index source"
+                "Immutable Git blob reads require a captured Git source"
             )
         if self._closed:
             raise ValueError("Source accessor is closed")
@@ -604,6 +699,7 @@ class _SourceAccessor:
                     for rel in files
                     if (self.repo_root / rel).exists()
                     or (self.repo_root / rel).is_symlink()
+                    or rel in self.snapshot.skip_worktree_paths
                 ]
             return files
         return _list_files_for_source(self.repo_root, prefix, self.source)
@@ -693,6 +789,91 @@ class _SourceAccessor:
 # Per-component fingerprint computation
 # ---------------------------------------------------------------------------
 
+def _resolve_component_versions(
+    components: dict,
+    repo_root: Path,
+    accessor: "_SourceAccessor",
+    *,
+    required: Optional[Set[str]] = None,
+) -> Dict[str, Tuple[Optional[str], Optional[str]]]:
+    """Resolve local, constant, and inherited versions once per source view."""
+    resolved: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+    visiting: List[str] = []
+
+    def resolve(name: str) -> Tuple[Optional[str], Optional[str]]:
+        if name in resolved:
+            return resolved[name]
+        if name in visiting:
+            offset = visiting.index(name)
+            cycle = visiting[offset:] + [name]
+            preview = " -> ".join(cycle[:9])
+            if len(cycle) > 9:
+                preview += f" -> ... (+{len(cycle) - 9} nodes)"
+            error = (
+                "Configured version source inheritance cycle: "
+                f"{_bounded_diagnostic_text(preview)}"
+            )
+            for member in cycle[:-1]:
+                resolved[member] = (None, error)
+            return None, error
+        component = components.get(name)
+        if not isinstance(component, dict):
+            result = (None, "Configured version source component is invalid")
+            resolved[name] = result
+            return result
+        visiting.append(name)
+        source = component.get("version_source")
+        if isinstance(source, dict) and "component" in source:
+            target = source.get("component")
+            if not isinstance(target, str) or target not in components:
+                result = (
+                    None,
+                    "Configured version source references unknown component: "
+                    f"{_bounded_diagnostic_repr(target)}",
+                )
+            else:
+                target_version, target_error = resolve(target)
+                if target_error is not None:
+                    result = (None, target_error)
+                elif target_version is None:
+                    result = (
+                        None,
+                        "Configured version source component did not produce a "
+                        f"version: {_bounded_diagnostic_repr(target)}",
+                    )
+                else:
+                    result = (target_version, None)
+        elif isinstance(source, dict) and "constant" in source:
+            constant = source.get("constant")
+            result = (
+                (constant, None)
+                if isinstance(constant, str)
+                else (None, "Configured version constant is not a string")
+            )
+        else:
+            result = (
+                extract_version(
+                    repo_root,
+                    component.get("path"),
+                    source,
+                    accessor.latest_tag,
+                    read_file_fn=accessor.version_read_file,
+                ),
+                None,
+            )
+        visiting.pop()
+        if name not in resolved:
+            resolved[name] = result
+        return resolved[name]
+
+    names = components if required is None else required
+    for component_name in sorted(
+        name for name in names if isinstance(name, str) and name in components
+    ):
+        resolve(component_name)
+    return resolved
+
+
 def _compute_component_entry(
     name: str,
     comp: dict,
@@ -701,6 +882,7 @@ def _compute_component_entry(
     defaults: dict,
     accessor: "_SourceAccessor",
     registry: Optional[dict] = None,
+    version_result: Optional[Tuple[Optional[str], Optional[str]]] = None,
 ) -> dict:
     """Compute the lockfile entry for a single component."""
     raw_path = comp.get("path")
@@ -711,15 +893,35 @@ def _compute_component_entry(
         )
     comp_path = _to_posix(os.path.normpath(raw_path.strip()))
     comp_path_display = _bounded_diagnostic_text(comp_path)
-    version = extract_version(
-        repo_root, comp_path, comp.get("version_source"), accessor.latest_tag,
-        read_file_fn=accessor.version_read_file,
-    )
+    if version_result is None:
+        version = extract_version(
+            repo_root,
+            comp_path,
+            comp.get("version_source"),
+            accessor.latest_tag,
+            read_file_fn=accessor.version_read_file,
+        )
+        version_resolution_error = None
+    else:
+        version, version_resolution_error = version_result
     compat, api_ver, exact_ver = parse_semver(version)
     version_errors: List[str] = []
     if comp.get("version_source") is not None:
-        if version is None:
-            version_errors.append("Configured version source did not produce a version")
+        if version_resolution_error is not None:
+            version_errors.append(version_resolution_error)
+        elif version is None:
+            message = "Configured version source did not produce a version"
+            version_source = comp.get("version_source")
+            if (
+                isinstance(version_source, dict)
+                and isinstance(version_source.get("file"), str)
+                and isinstance(version_source.get("field"), str)
+            ):
+                message += (
+                    f" (file {_bounded_diagnostic_repr(version_source['file'])}, "
+                    f"field {_bounded_diagnostic_repr(version_source['field'])})"
+                )
+            version_errors.append(message)
         elif compat is None:
             version_errors.append(
                 "Configured version is not valid SemVer: "
@@ -932,14 +1134,18 @@ def _compute_component_entry(
     return entry
 
 
-def _generation_errors(lockfile: dict) -> List[str]:
+def _generation_errors(
+    lockfile: dict,
+    *,
+    include_vendored: bool = True,
+) -> List[str]:
     """Return fingerprint computation failures that make a lock unsafe to bless."""
     errors = BoundedDiagnosticList()
 
     def append_messages(name: str, messages: List[str]) -> None:
         for message in messages:
-            if message == DIAGNOSTIC_TRUNCATION_SENTINEL:
-                errors.append(DIAGNOSTIC_TRUNCATION_SENTINEL)
+            if isinstance(message, _DiagnosticTruncationMarker):
+                errors.append(message)
             else:
                 errors.append(
                     f"{name}: {_bounded_diagnostic_text(message)}"
@@ -954,7 +1160,8 @@ def _generation_errors(lockfile: dict) -> List[str]:
         append_messages(name, entry.get("version_errors", []))
         append_messages(name, entry.get("exact_errors", []))
         append_messages(name, entry.get("behavior_errors", []))
-        append_messages(name, entry.get("vendored_errors", []))
+        if include_vendored:
+            append_messages(name, entry.get("vendored_errors", []))
         boundary_status = entry.get("boundary_status")
         boundary_provider = entry.get("boundary_provider")
         if boundary_status == "error":
@@ -1002,6 +1209,10 @@ def _recompute_slice_entry(
     for cname in sorted(component_names):
         comp_entry = components_map.get(cname)
         if comp_entry is None:
+            if strict:
+                raise ConfigError(
+                    f"Slice '{slice_name}' references unknown component: {cname}"
+                )
             digest_parts[cname] = None
             continue
         fp = comp_entry.get("fingerprints", {})
@@ -1025,7 +1236,14 @@ def _recompute_slice_entry(
         "description": slice_def.get("description", ""),
         "mode": mode,
         "components": sorted(component_names),
-        "fingerprint": sha256_hex(canonical_json(digest_parts)),
+        "fingerprint": sha256_hex(
+            canonical_json(
+                {
+                    "mode": mode,
+                    "component_digests": digest_parts,
+                }
+            )
+        ),
         "component_digests": digest_parts,
     }
 
@@ -1110,6 +1328,16 @@ def generate_lockfile_for_components(
             "Run a full `boundver generate`."
         )
 
+    configured_names = set(components_cfg)
+    locked_names = set(merged["components"])
+    missing_entries = sorted(configured_names - locked_names)
+    if missing_entries:
+        raise ConfigError(
+            "Cannot partially generate because the existing lockfile has no entry for: "
+            + _diagnostic_list_preview(missing_entries)
+            + ". Run a full `boundver generate`."
+        )
+
     # Recompute every component before merging. This makes component-scoped
     # generation an output-selection convenience, not a way to preserve stale
     # digests after config/default/provider changes.
@@ -1138,7 +1366,6 @@ def generate_lockfile_for_components(
         merged["components"][name] = current_lock["components"][name]
 
     # A partial refresh must still reconcile config removals and every slice.
-    configured_names = set(components_cfg)
     merged["components"] = {
         name: entry
         for name, entry in merged["components"].items()
@@ -1165,12 +1392,16 @@ def generate_lockfile_for_components(
     if errors:
         raise ConfigError("Lockfile generation failed:\n" + "\n".join(errors))
 
-    return merged
+    return _ensure_generated_lockfile_loadable(merged)
 
 
-def _lockfile_schema_issues(lockfile: dict) -> List[str]:
+def _lockfile_schema_issues(
+    lockfile: dict,
+    *,
+    expected_schema: str = LOCKFILE_SCHEMA,
+) -> List[str]:
     """Compatibility wrapper for the lockfile validation subsystem."""
-    return _lockfile_schema_issues_impl(lockfile, LOCKFILE_SCHEMA)
+    return _lockfile_schema_issues_impl(lockfile, expected_schema)
 
 
 def _is_sha256_digest(value: object) -> bool:
@@ -1183,6 +1414,7 @@ def _lockfile_structure_issues(
     *,
     allowed_config_contracts: Optional[Set[str]] = None,
     running_version: Optional[str] = None,
+    expected_schema: str = LOCKFILE_SCHEMA,
 ) -> List[str]:
     """Compatibility wrapper for complete structural lock validation."""
     return _lockfile_structure_issues_impl(
@@ -1190,7 +1422,7 @@ def _lockfile_structure_issues(
         semantic_config_version=SEMANTIC_CONFIG_VERSION,
         facets=FACETS,
         component_metadata_fields=COMPONENT_METADATA_FIELDS,
-        expected_schema=LOCKFILE_SCHEMA,
+        expected_schema=expected_schema,
         allowed_config_contracts=allowed_config_contracts,
         running_version=running_version,
     )
@@ -1220,7 +1452,12 @@ def verify_lockfile(
     When supplied, *drifted_components* receives component names associated
     with both gating and non-gating drift. A truncated diagnostic result may
     leave that set incomplete, so callers must retain the truncation signal.
+    *observations* is an output list: each invocation replaces its contents.
     """
+    if observations is not None:
+        if not isinstance(observations, list):
+            raise TypeError("observations must be a list or None")
+        observations[:] = []
     source = _normalize_source(source)
     # Compute all selected entries even when only one issue is requested. This
     # is necessary to preserve the global highest-severity exit-code contract
@@ -1311,14 +1548,14 @@ def verify_lockfile(
             "Unknown verification facet(s): "
             + _diagnostic_list_preview(sorted(unknown_facets))
         ]
-    non_gating = BoundedDiagnosticList(observations or [])
+    non_gating = BoundedDiagnosticList()
     impact_groups_by_component: Dict[str, Dict[str, List[str]]] = {}
 
     def truncated_issue_result() -> List[str]:
         if observations is not None:
             observations[:] = list(non_gating)
         if limit_report:
-            return [DIAGNOSTIC_TRUNCATION_SENTINEL]
+            return [_DIAGNOSTIC_TRUNCATION_MARKER]
         return list(issues)
 
     # Determine which components to check.
@@ -1348,7 +1585,26 @@ def verify_lockfile(
     # rendering below operate only on the resulting in-memory entries.
     computed_entries: Dict[str, dict] = {}
     slices_config = config.get("slices", {})
+    slice_component_names: Set[str] = set()
+    if slices_config:
+        for sdef in slices_config.values():
+            slice_component_names.update(
+                resolve_slice_components(sdef, all_components)
+            )
+    required_versions = set(check_components) | slice_component_names
     with accessor:
+        freshness_issues = verify_derivations(config, accessor)
+        if freshness_issues:
+            return [
+                f"DERIVATION ERROR {_bounded_diagnostic_text(issue)}"
+                for issue in freshness_issues
+            ]
+        resolved_versions = _resolve_component_versions(
+            all_components,
+            repo_root,
+            accessor,
+            required=required_versions,
+        )
         for name, comp_cfg in check_components.items():
             computed_entries[name] = _compute_component_entry(
                 name,
@@ -1358,13 +1614,9 @@ def verify_lockfile(
                 defaults,
                 accessor,
                 registry,
+                version_result=resolved_versions.get(name),
             )
         if slices_config:
-            slice_component_names = set()
-            for sdef in slices_config.values():
-                slice_component_names.update(
-                    resolve_slice_components(sdef, all_components)
-                )
             for name in sorted(slice_component_names):
                 if name not in computed_entries and name in all_components:
                     computed_entries[name] = _compute_component_entry(
@@ -1375,13 +1627,27 @@ def verify_lockfile(
                         defaults,
                         accessor,
                         registry,
+                        version_result=resolved_versions.get(name),
                     )
+
+    def identity_label(value: str) -> str:
+        """Return a bounded display label that remains identity-distinct."""
+        rendered = _bounded_diagnostic_text(value)
+        if rendered == value:
+            return rendered
+        digest = sha256_hex(value)[:16]
+        suffix = f"...#{digest}"
+        prefix_limit = MAX_DIAGNOSTIC_VALUE_CHARS - len(suffix)
+        return _bounded_diagnostic_text(
+            value[:prefix_limit],
+            max_chars=prefix_limit,
+        ) + suffix
 
     # Per-component verification with optional early exit.
     for name, comp_cfg in check_components.items():
         if issues.truncated:
             return truncated_issue_result()
-        display_name = _bounded_diagnostic_text(name)
+        display_name = identity_label(name)
         component_gated_facets = explicit_gated_facets
         configured_component_facets = comp_cfg.get("verify_facets")
         if component_gated_facets is None:
@@ -1397,6 +1663,9 @@ def verify_lockfile(
             or has_explicit_default_facets
         )
         current_comp = computed_entries[name]
+        current_vendored_issues = current_comp.get("vendored_errors", [])
+        if not isinstance(current_vendored_issues, list):
+            current_vendored_issues = []
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
             if drifted_components is not None:
@@ -1405,7 +1674,10 @@ def verify_lockfile(
             if fail_fast:
                 return issues
             continue
-        current_errors = _generation_errors({"components": {name: current_comp}})
+        current_errors = _generation_errors(
+            {"components": {name: current_comp}},
+            include_vendored=False,
+        )
         locked_errors = _generation_errors({"components": {name: locked_comp}})
         for message in current_errors:
             if drifted_components is not None:
@@ -1507,6 +1779,11 @@ def verify_lockfile(
                     non_gating.append(message)
 
         for field in COMPONENT_METADATA_FIELDS:
+            if current_vendored_issues and field in {
+                "vendored_digests",
+                "vendored_errors",
+            }:
+                continue
             if locked_comp.get(field) != current_comp.get(field):
                 if drifted_components is not None:
                     drifted_components.add(name)
@@ -1519,14 +1796,20 @@ def verify_lockfile(
                 if fail_fast:
                     return issues
 
-        # Check for vendored copy drift
-        for warning in current_comp.get("warnings", []):
+        # A readable vendored copy whose content differs is ordinary drift.
+        # Missing/unreadable vendored inputs remain digest-computation errors.
+        for vendored_issue in current_vendored_issues:
             if drifted_components is not None:
                 drifted_components.add(name)
-            issues.append(
-                f"VENDORED DRIFT {display_name}: "
-                f"{_bounded_diagnostic_text(warning)}"
-            )
+            rendered_issue = _bounded_diagnostic_text(vendored_issue)
+            if " differs from source (source=" in vendored_issue:
+                issues.append(
+                    f"VENDORED DRIFT {display_name}: {rendered_issue}"
+                )
+            else:
+                issues.append(
+                    f"CURRENT DIGEST ERROR {display_name}: {rendered_issue}"
+                )
             if issues.truncated:
                 break
             if fail_fast:
@@ -1635,9 +1918,19 @@ def verify_lockfile(
                     if fail_fast:
                         return issues
                     continue
-            if locked_slice is not None and locked_slice != current_slice:
+            locked_identity = (
+                {key: value for key, value in locked_slice.items() if key != "description"}
+                if isinstance(locked_slice, dict)
+                else locked_slice
+            )
+            current_identity = {
+                key: value
+                for key, value in current_slice.items()
+                if key != "description"
+            }
+            if locked_slice is not None and locked_identity != current_identity:
                 message = (
-                    f"SLICE MISMATCH {_bounded_diagnostic_text(sname)}."
+                    f"SLICE MISMATCH {identity_label(sname)}."
                     f"{sdef.get('mode', 'exact')}: "
                     f"lockfile={_short(locked_slice.get('fingerprint'))} "
                     f"current={_short(current_slice.get('fingerprint'))}"
@@ -1662,8 +1955,8 @@ def verify_lockfile(
     if observations is not None:
         observations[:] = list(non_gating)
     if limit_report and issues:
-        if DIAGNOSTIC_TRUNCATION_SENTINEL in issues:
-            return [DIAGNOSTIC_TRUNCATION_SENTINEL]
+        if issues.truncated:
+            return [_DIAGNOSTIC_TRUNCATION_MARKER]
         safety_prefixes = (
             "Config root",
             "LOCKFILE",
@@ -1702,7 +1995,9 @@ def verify_lockfile(
 
 # All known schemas. Hash-bearing older locks are recognized only so their
 # rejection can explain that repository content must be regenerated.
-KNOWN_SCHEMAS = frozenset({"boundary-lock/v1", "boundary-lock/v2", "boundary-lock/v3"})
+KNOWN_SCHEMAS = frozenset(
+    {"boundary-lock/v1", "boundary-lock/v2", "boundary-lock/v3", LOCKFILE_SCHEMA}
+)
 
 
 class MigrationError(ValueError):
@@ -1716,27 +2011,36 @@ def migrate_lockfile(lockfile: dict) -> dict:
     Raises ``MigrationError`` if the schema is absent, unrecognised, or needs
     repository content to regenerate its fingerprints.
 
-    Hash contract v1/v2 lockfiles and v3 locks with an older semantic-config
-    contract cannot be mechanically upgraded because their fingerprints must
-    be recomputed from repository content.
+    Hash contract v1/v2 lockfiles and v3 locks cannot be mechanically upgraded
+    because their fingerprints or semantic configuration must be recomputed
+    from repository content.
     """
     schema = lockfile.get("schema")
     if schema is None:
         raise MigrationError(
-            "Lockfile has no 'schema' field — cannot determine version to migrate from."
+            "Lockfile has no 'schema' field — cannot determine version to migrate "
+            f"from. Run `boundver generate` to create a {LOCKFILE_SCHEMA} lockfile."
         )
     if not isinstance(schema, str) or schema not in KNOWN_SCHEMAS:
         raise MigrationError(
             "Unknown lockfile schema "
             f"{_bounded_diagnostic_repr(schema)}. "
             f"Supported: {', '.join(sorted(KNOWN_SCHEMAS))}. "
-            "You may need to upgrade boundver."
+            "Upgrade boundver if needed, then run `boundver generate` to create "
+            f"a {LOCKFILE_SCHEMA} lockfile."
         )
     if schema in {"boundary-lock/v1", "boundary-lock/v2"}:
         raise MigrationError(
             f"{schema} does not bind every file's Git mode/type and semantic "
             "configuration, so it cannot be migrated without repository content. "
             f"Run `boundver generate` to create a {LOCKFILE_SCHEMA} lockfile."
+        )
+    if schema == "boundary-lock/v3":
+        raise MigrationError(
+            "boundary-lock/v3 does not bind the complete "
+            f"{SEMANTIC_CONFIG_VERSION} declaration set, so it cannot be "
+            "migrated without repository content. Run `boundver generate` to "
+            f"create a {LOCKFILE_SCHEMA} lockfile."
         )
     config_contract = lockfile.get("config_contract")
     if config_contract != SEMANTIC_CONFIG_VERSION:
@@ -1748,9 +2052,20 @@ def migrate_lockfile(lockfile: dict) -> dict:
             "cannot be relabelled or migrated without repository content. Run "
             f"`boundver generate` to create a current {LOCKFILE_SCHEMA} lockfile."
         )
+    if not isinstance(lockfile.get("components"), dict):
+        raise MigrationError(
+            "Current lockfile has no usable 'components' map. Component "
+            "fingerprints cannot be reconstructed by migration; run "
+            f"`boundver generate` to create a current {LOCKFILE_SCHEMA} lockfile."
+        )
+    if "slices" in lockfile and not isinstance(lockfile["slices"], dict):
+        raise MigrationError(
+            "Current lockfile has an invalid 'slices' value. Slice fingerprints "
+            "cannot be reconstructed by migration; run `boundver generate` to "
+            f"create a current {LOCKFILE_SCHEMA} lockfile."
+        )
     migrated = dict(lockfile)
     migrated.pop("generated_at", None)          # legacy field removed in v1 final
     migrated["schema"] = LOCKFILE_SCHEMA        # normalise to current constant
-    migrated.setdefault("components", {})
     migrated.setdefault("slices", {})
     return migrated

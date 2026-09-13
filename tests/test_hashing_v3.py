@@ -13,6 +13,7 @@ from boundver._git import _resolve_head_oid, git_latest_tag
 from boundver._hashing import _content_only_digest, source_tree_digest
 from boundver._lockfile import (
     LOCKFILE_SCHEMA,
+    SEMANTIC_CONFIG_VERSION,
     MigrationError,
     _SourceAccessor,
     generate_lockfile,
@@ -451,14 +452,14 @@ class LockV3SafetyTests(unittest.TestCase):
         (vendor / "behavior.txt").write_bytes(b"stable")
         _commit(root, "vendored")
 
-    def test_strict_generated_v3_lock_immediately_verifies(self):
+    def test_strict_generated_current_lock_immediately_verifies(self):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
             root = Path(td)
             self._write_vendored_repo(root)
             config = _config(vendored=True)
             lock = generate_lockfile(config, root, source="head", strict=True)
 
-            self.assertEqual(lock["schema"], "boundary-lock/v3")
+            self.assertEqual(lock["schema"], LOCKFILE_SCHEMA)
             self.assertEqual(lock["config_digest"], semantic_config_digest(config))
             self.assertEqual(
                 verify_lockfile(config, lock, root, source="head"), []
@@ -515,7 +516,7 @@ class LockV3SafetyTests(unittest.TestCase):
                 }
             )
 
-    def test_json_schema_requires_v3_config_metadata(self):
+    def test_json_schema_requires_current_config_metadata(self):
         try:
             import jsonschema
         except ImportError:
@@ -524,7 +525,7 @@ class LockV3SafetyTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         minimal = {
             "schema": LOCKFILE_SCHEMA,
-            "config_contract": "boundver-semantic-config/v2",
+            "config_contract": SEMANTIC_CONFIG_VERSION,
             "config_digest": "0" * 64,
             "project": "demo",
             "components": {},

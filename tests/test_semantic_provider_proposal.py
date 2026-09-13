@@ -73,14 +73,18 @@ def validate_proposal(repo, manifest, **options):
             )
             manifest = validation_root / "manifest.json"
             manifest.write_text("{}\n", encoding="utf-8")
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "GH_TOKEN": "secret",
-                    "GITHUB_TOKEN": "secret",
-                    "BOUNDVER_RELEASE_REVIEW_TOKEN": "secret",
-                    "AWS_SECRET_ACCESS_KEY": "secret",
-                },
+            trusted_python = getattr(sys, "_base_executable", sys.executable)
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "GH_TOKEN": "secret",
+                        "GITHUB_TOKEN": "secret",
+                        "BOUNDVER_RELEASE_REVIEW_TOKEN": "secret",
+                        "AWS_SECRET_ACCESS_KEY": "secret",
+                    },
+                ),
+                mock.patch.object(_AUDITOR.sys, "executable", trusted_python),
             ):
                 result = _AUDITOR._run_checker(
                     ROOT,
@@ -185,7 +189,7 @@ def validate_proposal(repo, manifest, **options):
         return self._manifest()["review_requirements"]
 
     def _release_requirements(self):
-        return self._manifest()["release_gates"]["v0.16.0"]
+        return self._manifest()["release_gates"]["v0.17.0"]
 
     @staticmethod
     def _configured_roster_body(
@@ -527,9 +531,9 @@ def validate_proposal(repo, manifest, **options):
         result = _CHECKER.validate_proposal(ROOT, MANIFEST)
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "review-ready")
-        self.assertEqual(result["threats"], 43)
-        self.assertEqual(result["controls"], 45)
-        self.assertEqual(result["verifications"], 38)
+        self.assertEqual(result["threats"], 51)
+        self.assertEqual(result["controls"], 53)
+        self.assertEqual(result["verifications"], 46)
         self.assertFalse(result["implementation_allowed"])
         self.assertFalse(result["semantic_provider_work_allowed"])
         self.assertFalse(result["semantic_provider_release_allowed"])
@@ -537,7 +541,7 @@ def validate_proposal(repo, manifest, **options):
 
     def test_range_release_is_decoupled_while_semantic_release_stays_gated(self):
         manifest = self._manifest()
-        self.assertEqual(set(manifest["release_gates"]), {"v0.16.0"})
+        self.assertEqual(set(manifest["release_gates"]), {"v0.17.0"})
 
         governed_paths = (
             ROOT / ".github" / "workflows" / "create-release-tag.yml",
@@ -551,8 +555,8 @@ def validate_proposal(repo, manifest, **options):
         self.assertNotIn('if tag == "v0.15.0":', governed_text)
         self.assertNotIn('[[ "$RELEASE_TAG" == v0.15.0 ]]', governed_text)
         self.assertIn("--gate semantic-provider-release", governed_text)
-        self.assertIn('if tag == "v0.16.0":', governed_text)
-        self.assertIn('[[ "$RELEASE_TAG" == v0.16.0 ]]', governed_text)
+        self.assertIn('if tag == "v0.17.0":', governed_text)
+        self.assertIn('[[ "$RELEASE_TAG" == v0.17.0 ]]', governed_text)
 
         for parser, arguments in (
             (_CHECKER._parser(), ["--require-v0-15-release"]),
@@ -883,41 +887,41 @@ def validate_proposal(repo, manifest, **options):
             ),
             (
                 "release fields",
-                lambda value: value["release_gates"]["v0.16.0"].update({"extra": True}),
+                lambda value: value["release_gates"]["v0.17.0"].update({"extra": True}),
             ),
             (
                 "release evidence source",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"evidence_source": "manifest-self-attestation/v1"}
                 ),
             ),
             (
                 "release reviewer authority",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"reviewer_authority": "repository-write/v1"}
                 ),
             ),
             (
                 "release reviewer roster",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"review_roster_gist_id": "attacker"}
                 ),
             ),
             (
                 "release distinct roster",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"distinct_roster_reviewers_required": False}
                 ),
             ),
             (
                 "release owner-exclusive mutation authority",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"owner_exclusive_repository_collaborators_required": False}
                 ),
             ),
             (
                 "release owner mutation attestation",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {
                         "owner_exclusive_mutation_authority_attestation_required": False
                     }
@@ -925,25 +929,25 @@ def validate_proposal(repo, manifest, **options):
             ),
             (
                 "release product marker",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"product_review_marker": "looks-approved"}
                 ),
             ),
             (
                 "release repository ID",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"repository_id": 1}
                 ),
             ),
             (
                 "release exact tree",
-                lambda value: value["release_gates"]["v0.16.0"].update(
+                lambda value: value["release_gates"]["v0.17.0"].update(
                     {"exact_tree_required": False}
                 ),
             ),
             (
                 "release attestation order",
-                lambda value: value["release_gates"]["v0.16.0"][
+                lambda value: value["release_gates"]["v0.17.0"][
                     "required_attestations"
                 ].reverse(),
             ),
@@ -1610,12 +1614,12 @@ def validate_proposal(repo, manifest, **options):
         for body in (
             "",
             (
-                "semantic-provider-v0.16-product-review/v1\n"
+                "semantic-provider-v0.17-product-review/v1\n"
                 f"Reviewed-commit: {'9' * 40}\n"
                 "Verdict: approved\n"
             ),
             (
-                "semantic-provider-v0.16-product-review/v1\n"
+                "semantic-provider-v0.17-product-review/v1\n"
                 f"Reviewed-commit: {'7' * 40}\n"
                 "Independent-reviewer: confirmed\n"
                 "Verdict: approved\n"
@@ -1661,7 +1665,7 @@ def validate_proposal(repo, manifest, **options):
         self.assertNotIn("exact_candidate_commit", requirements)
         self.assertNotIn("release_allowed", requirements)
         value = self._manifest()
-        value["release_gates"]["v0.16.0"]["maximum_review_age_days"] = 15
+        value["release_gates"]["v0.17.0"]["maximum_review_age_days"] = 15
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "proposal.json"
             path.write_text(json.dumps(value), encoding="utf-8")
@@ -1680,7 +1684,7 @@ def validate_proposal(repo, manifest, **options):
                 '--release-sha "$CONTROL_SHA"',
             ),
             "semantic-provider local release gate": (
-                'if tag == "v0.16.0":',
+                'if tag == "v0.17.0":',
                 'if tag == "never":',
             ),
         }
@@ -2029,7 +2033,7 @@ def validate_proposal(repo, manifest, **options):
                 "--gate",
                 "semantic-provider-release",
                 "--release-tag",
-                "v0.16.1",
+                "v0.17.1",
                 "--release-sha",
                 "e" * 40,
             ],
@@ -2110,7 +2114,7 @@ def validate_proposal(repo, manifest, **options):
                     "--gate",
                     "semantic-provider-release",
                     "--release-tag",
-                    "v0.16.0",
+                    "v0.17.0",
                     "--release-sha",
                     "e" * 40,
                     "--format",

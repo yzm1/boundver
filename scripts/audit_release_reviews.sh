@@ -9,6 +9,7 @@ fi
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 python_command=${PYTHON:-python3}
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 # Review history must be the exact local object graph.  Never let replace refs,
 # lazy promisor fetches, interactive helpers, or an alternate gh host redefine
@@ -135,13 +136,40 @@ capture_bounded() {
   rm -f -- "$target"
 }
 
+run_github_api_bounded_to_file() {
+  local limit=$1
+  local label=$2
+  local target=$3
+  shift 3
+  "$python_command" -I "$script_dir/github_api_read.py" \
+    --output "$target" --limit "$limit" --label "$label" -- "$@"
+}
+
+capture_github_api_bounded() {
+  local destination=$1
+  local label=$2
+  local limit=$3
+  shift 3
+  capture_index=$((capture_index + 1))
+  local target="$capture_temp_dir/capture-$capture_index"
+  if ! run_github_api_bounded_to_file "$limit" "$label" "$target" "$@"; then
+    rm -f -- "$target"
+    return 1
+  fi
+  if ! printf -v "$destination" '%s' "$(<"$target")"; then
+    rm -f -- "$target"
+    return 1
+  fi
+  rm -f -- "$target"
+}
+
 git fetch --force --tags origin
 # GitHub's immutable flag prevents later edits; it does not prove that the
 # release passed this repository's publication workflow.  Keep release, tag,
 # workflow, run, and candidate-history evidence separate until the bounded
 # selector below binds all five identities.
 published_releases_file="$capture_temp_dir/published-releases"
-if ! run_bounded_to_file "$max_capture_bytes" "published GitHub releases" \
+if ! run_github_api_bounded_to_file "$max_capture_bytes" "published GitHub releases" \
     "$published_releases_file" gh api --paginate \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -165,7 +193,7 @@ if ! run_bounded_to_file "$max_capture_bytes" "merged release commits" \
   exit 1
 fi
 publication_workflow_file="$capture_temp_dir/publication-workflow"
-if ! run_bounded_to_file "$max_small_capture_bytes" "publication workflow" \
+if ! run_github_api_bounded_to_file "$max_small_capture_bytes" "publication workflow" \
     "$publication_workflow_file" gh api \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -175,7 +203,7 @@ if ! run_bounded_to_file "$max_small_capture_bytes" "publication workflow" \
   exit 1
 fi
 publication_runs_file="$capture_temp_dir/publication-runs"
-if ! run_bounded_to_file "$max_capture_bytes" "publication workflow runs" \
+if ! run_github_api_bounded_to_file "$max_capture_bytes" "publication workflow runs" \
     "$publication_runs_file" gh api --paginate \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -464,7 +492,7 @@ if (( ${#release_commits[@]} > max_records )); then
   exit 1
 fi
 for commit_sha in "${release_commits[@]}"; do
-  if ! capture_bounded associated_output \
+  if ! capture_github_api_bounded associated_output \
     "associated pull requests for $commit_sha" "$max_capture_bytes" \
     gh api --paginate \
     -H "Accept: application/vnd.github+json" \
@@ -568,7 +596,7 @@ github_timestamp_is_valid() {
     "$year" "$month" "$day" "$hour" "$minute" "$second" "$fraction")
 }
 
-if ! capture_bounded repository_owner "repository ownership" \
+if ! capture_github_api_bounded repository_owner "repository ownership" \
   "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" \
   --jq '[ (.owner.id | tostring), .owner.login, .owner.type ] | join("|")'; then
   echo "GitHub API failed while reading repository ownership." >&2
@@ -605,7 +633,7 @@ resolve_evidence_sha() {
   if [[ ! "$candidate" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
     return 1
   fi
-  if ! capture_bounded output "review evidence for PR #$pr_number" \
+  if ! capture_github_api_bounded output "review evidence for PR #$pr_number" \
     "$max_small_capture_bytes" \
     gh api "repos/${GITHUB_REPOSITORY}/commits/${candidate}" --jq '.sha'; then
     echo "GitHub API failed while resolving review evidence '$candidate' for PR #$pr_number." >&2
@@ -852,7 +880,7 @@ while IFS= read -r sorted_pr; do
   sorted_prs+=("$sorted_pr")
 done <<< "$sorted_output"
 for pr_number in "${sorted_prs[@]}"; do
-  if ! capture_bounded pr_metadata "metadata for PR #$pr_number" \
+  if ! capture_github_api_bounded pr_metadata "metadata for PR #$pr_number" \
     "$max_small_capture_bytes" \
     gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
     --jq '[ (.user.id | tostring), .user.login, .user.type, .head.sha, (.merge_commit_sha // ""), ([ (.requested_reviewers // [])[] | select(.type == "User") ] | length | tostring), ([ (.requested_teams // [])[] ] | length | tostring), .state, (.merged_at // ""), (.base.repo.full_name // ""), (.base.ref // "") ] | join("|")'; then
@@ -894,7 +922,7 @@ for pr_number in "${sorted_prs[@]}"; do
     continue
   fi
 
-  if ! capture_bounded decision "review decision for PR #$pr_number" \
+  if ! capture_github_api_bounded decision "review decision for PR #$pr_number" \
     "$max_small_capture_bytes" gh api graphql \
     -f query="$decision_query" \
     -F owner="$owner" \
@@ -909,7 +937,7 @@ for pr_number in "${sorted_prs[@]}"; do
     exit 1
   fi
 
-  if ! capture_bounded unresolved_output "review threads for PR #$pr_number" \
+  if ! capture_github_api_bounded unresolved_output "review threads for PR #$pr_number" \
       "$max_capture_bytes" gh api graphql --paginate \
       -f query="$threads_query" \
       -F owner="$owner" \
@@ -938,7 +966,7 @@ for pr_number in "${sorted_prs[@]}"; do
     unresolved=$((unresolved + count))
   done <<< "$unresolved_output"
 
-  if ! capture_bounded reviews_output "reviews for PR #$pr_number" \
+  if ! capture_github_api_bounded reviews_output "reviews for PR #$pr_number" \
       "$max_capture_bytes" gh api --paginate \
       "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/reviews?per_page=100" \
       --jq '.[] | [ .state, ((.id // "") | tostring), (.submitted_at // ""), ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), (.commit_id // ""), ((.body // "") | @base64) ] | join("|")'; then
@@ -995,7 +1023,7 @@ for pr_number in "${sorted_prs[@]}"; do
           { [[ "$resolved_evidence_sha" == "$pr_head_sha" ]] || \
             { [[ -n "$pr_merge_sha" ]] && \
               [[ "$resolved_evidence_sha" == "$pr_merge_sha" ]]; }; }; then
-        if ! capture_bounded reviewer_permission \
+        if ! capture_github_api_bounded reviewer_permission \
           "repository permission for $reviewer_login" \
           "$max_small_capture_bytes" gh api \
           "repos/${GITHUB_REPOSITORY}/collaborators/${reviewer_login}/permission" \
@@ -1076,7 +1104,7 @@ for pr_number in "${sorted_prs[@]}"; do
   done
   fi
 
-  if ! capture_bounded comments_output "issue comments for PR #$pr_number" \
+  if ! capture_github_api_bounded comments_output "issue comments for PR #$pr_number" \
       "$max_capture_bytes" gh api --paginate \
       "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/comments?per_page=100" \
       --jq '.[] | [ ((.id // "") | tostring), (.created_at // ""), ((.user.id // "") | tostring), (.user.login // ""), (.user.type // ""), ((.body // "") | @base64) ] | join("|")'; then

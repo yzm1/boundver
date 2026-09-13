@@ -1,10 +1,9 @@
-# Hashing contract (v3)
+# Hashing contract (v4)
 
 This document defines the deterministic hashing and source-snapshot contract
-for `boundary-lock/v3`. A v1 or v2 lock must be regenerated from repository
-content: neither older format binds all of the inputs required by v3. A v3
-lock carrying `boundver-semantic-config/v1` must also be regenerated because
-its digest meaning differs from v2 and cannot be relabelled safely.
+for `boundary-lock/v4`. A v1, v2, or v3 lock must be regenerated from repository
+content: none binds the complete `boundver-semantic-config/v3` declaration set
+and its digests cannot be relabelled safely.
 
 ## Core rules
 
@@ -194,7 +193,9 @@ integer conversion setting and capped at 500 characters.
   `{component_name}@compat:{compat_identity}`. It is a single-value derived
   digest and does not use entry framing.
 - `slice`: SHA-256 over canonical JSON of
-  `{component_name: selected_digest}`, with the digest selected by slice mode.
+  `{"mode": slice_mode, "component_digests": {component_name: selected_digest}}`.
+  Binding the mode prevents two unavailable facets with identical null member
+  maps from sharing an aggregate identity.
 
 Symlinks use mode `120000` and their link-target text as content; they are not
 dereferenced. Git LFS pointers and other filtered content use Git blobs for
@@ -203,17 +204,17 @@ design. Line-ending canonicalization is the only built-in content conversion.
 
 ## Semantic configuration digest
 
-Every v3 lock stores:
+Every v4 lock stores:
 
 ```json
 {
-  "config_contract": "boundver-semantic-config/v2",
+  "config_contract": "boundver-semantic-config/v3",
   "config_digest": "<sha256>"
 }
 ```
 
 `config_digest` is SHA-256 of the UTF-8 string
-`boundver-semantic-config/v2\n` followed by canonical JSON of the semantic
+`boundver-semantic-config/v3\n` followed by canonical JSON of the semantic
 configuration. Canonical JSON sorts object keys, uses compact `,`/`:`
 separators, preserves Unicode, and has no insignificant whitespace.
 
@@ -222,19 +223,32 @@ defaults (including compatibility mode and default verify facets), every
 component path, boundary provider/globs/options, behavior paths, version source,
 vendored paths, compatibility inputs, validated internal `consumers`, opaque
 `external_consumers`, per-component `verify_facets`, and every explicit or
-`closure_of` slice declaration. Set-like lists are sorted and documented
+`closure_of` slice declaration. It also covers every generated-artifact
+derivation's input/output selectors, evidence path, and generator identity.
+Set-like lists are sorted and documented
 default values are materialized. Presentation-only `$schema` values, component
 `ecosystem`, component `note`, boundary `note`, and object insertion order do
-not affect it.
+not affect it. Slice `description` is likewise presentation metadata, and the
+equivalent `major` and `semver_major` compatibility-mode spellings normalize to
+one identity. The read-only top-level `coverage` policy also does not affect it:
+coverage can report or gate declaration omissions, but cannot change a lock
+identity or verification result.
 Verification compares this digest before
 component fingerprints, so a contract-affecting config mutation cannot remain
 invisible merely because it happens to select the same current bytes.
 
 ## Derived-artifact boundary
 
-The hashing contract binds a declared output artifact, not a relationship
-between that output and generator inputs. v3 defines no `derived_from` command,
-does not execute repository-configured generators, and does not include ambient
-toolchain identity. A deterministic generator freshness check must run before
-boundver when a selected artifact is derived. First-class declarative derivation
-would require a future contract revision.
+A configured derivation stores a `boundver-derivation/v1` receipt outside the
+lock. Its input and output digests use the v3 framed tree format, explicit
+repository-relative path labels, Git mode and object type, normalized text line
+endings, and distinct `derivation-inputs` and `derivation-outputs` domains.
+Selectors, the evidence path, and the logical generator identity are part of
+the semantic config digest; receipt contents are not.
+
+Validation, generation, and verification recompute both file-set digests from
+their selected source and compare the complete receipt before computing
+component fingerprints. A missing, malformed, ambiguous, or stale receipt is a
+usage/safety failure. Repository configuration never executes a generator. The
+identity string and receipt detect unrecorded movement but do not attest who ran
+the generator, its ambient toolchain, or its correctness.

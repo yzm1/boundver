@@ -87,7 +87,11 @@ def _jobs(gate, *, conclusion: str = "success") -> dict:
                 "run_id": RUN_ID,
                 "run_attempt": RUN_ATTEMPT,
                 "status": "completed",
-                "conclusion": conclusion,
+                "conclusion": (
+                    "skipped"
+                    if name in gate.PULL_REQUEST_SKIPPED_JOBS
+                    else conclusion
+                ),
             }
             for name in gate.EXPECTED_JOBS
         ],
@@ -303,10 +307,28 @@ class RequiredCiEvaluationTests(unittest.TestCase):
         ):
             with self.subTest(status=status, conclusion=conclusion):
                 jobs = _jobs(self.gate)
-                jobs["jobs"][0]["status"] = status
-                jobs["jobs"][0]["conclusion"] = conclusion
+                job = next(
+                    item
+                    for item in jobs["jobs"]
+                    if item["name"] not in self.gate.PULL_REQUEST_SKIPPED_JOBS
+                )
+                job["status"] = status
+                job["conclusion"] = conclusion
                 with self.assertRaisesRegex(
-                    self.gate.RequiredCiGateError, "did not succeed"
+                    self.gate.RequiredCiGateError, "required conclusions"
+                ):
+                    self.gate.evaluate(
+                        _event(self.gate), _fetcher(self.gate, jobs=jobs)
+                    )
+
+    def test_exhaustive_and_mutation_jobs_must_be_skipped_on_pull_requests(self) -> None:
+        for name in self.gate.PULL_REQUEST_SKIPPED_JOBS:
+            with self.subTest(name=name):
+                jobs = _jobs(self.gate)
+                job = next(item for item in jobs["jobs"] if item["name"] == name)
+                job["conclusion"] = "success"
+                with self.assertRaisesRegex(
+                    self.gate.RequiredCiGateError, "required conclusions"
                 ):
                     self.gate.evaluate(
                         _event(self.gate), _fetcher(self.gate, jobs=jobs)

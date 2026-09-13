@@ -1,8 +1,8 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.13.0/spec/boundary.lock.schema.json",
-  "schema": "boundary-lock/v3",
-  "config_contract": "boundver-semantic-config/v2",
-  "config_digest": "26806a1145914695842590af9a58a2aecb81cb93599322e76fc0d498efe0c0e9",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v4",
+  "config_contract": "boundver-semantic-config/v3",
+  "config_digest": "4f0fc150c8ec12de0a884814d72ea9d8b8cc6f18989f418c8d07eb84fd24b012",
   "project": "example-implicit-leaf",
   "components": {
     "worker": {
@@ -56,7 +56,7 @@
       "components": [
         "worker"
       ],
-      "fingerprint": "eade3593e4b1df034d931bf4907ccc90bc54ea2b23e0a2e29768d469e9d0b534",
+      "fingerprint": "35f4ea2be6dc4c05756d45c9d6d10813d61dfafc615ee5e4ccae1378caacafcd",
       "component_digests": {
         "worker": "377dabb4cc7452a95e8d5b38e308fd72b8f31277daa335291fc08fb4c6219913"
       }
@@ -67,7 +67,7 @@
       "components": [
         "leafsvc"
       ],
-      "fingerprint": "d9cad94bedc382c0bc633b07d9b0d8f4834f8800652fb864b62177628f50e0f3",
+      "fingerprint": "8c9e0540ce685774f4108cc15c2e55441c7e565f1bfccd2c45df66808316ed8e",
       "component_digests": {
         "leafsvc": "6094a54eed83a72aef6063908801de802094cfadf17a32fe9f22c78c5a408d7c"
       }

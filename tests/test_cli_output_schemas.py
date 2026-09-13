@@ -76,6 +76,7 @@ def _verify_result(**overrides) -> dict:
             "config": "HEAD@" + "a" * 40 + ":boundary.config.json",
             "lock": "HEAD@" + "a" * 40 + ":boundary.lock.json",
         },
+        "notices": [],
         "consumer_impact": [],
     }
     result.update(overrides)
@@ -204,6 +205,14 @@ class TestCLIOutputSchemas(unittest.TestCase):
             diagnostic_error["changed_files_error"] = None
             with self.assertRaises(jsonschema.ValidationError):
                 _assert_valid(schema, diagnostic_error)
+
+            unknown = self._run_cli(
+                root, "why", "no-such-component", "--format", "json"
+            )
+            self.assertEqual(unknown.returncode, 2)
+            error_payload = json.loads(unknown.stdout)
+            _assert_valid(schema, error_payload)
+            self.assertEqual(error_payload["known_components"], ["svc"])
         finally:
             import shutil; shutil.rmtree(root, ignore_errors=True)
 

@@ -42,6 +42,8 @@ HASH_DOMAIN_EXACT = "exact-tree"
 HASH_DOMAIN_CONTENT_ONLY = "content-only-tree"
 HASH_DOMAIN_BOUNDARY = "boundary"
 HASH_DOMAIN_BEHAVIOR = "behavior-envelope"
+HASH_DOMAIN_DERIVATION_INPUTS = "derivation-inputs"
+HASH_DOMAIN_DERIVATION_OUTPUTS = "derivation-outputs"
 
 _SEMANTIC_MODE = "semantic"
 _SEMANTIC_OBJECT_TYPE = "value"
@@ -354,14 +356,25 @@ def _read_path_content(
         raise ValueError("File byte limit must be non-negative")
     effective_limit = min(max_bytes, MAX_HASH_FILE_BYTES)
     rel = full_path.relative_to(repo_root).as_posix()
-    if source == "index":
-        content = _git_cat_blob(repo_root, f":{rel}", max_bytes=effective_limit)
-        return _normalize_hash_content(content) if normalize else content
-    if source == "head":
-        content = _git_cat_blob(
-            repo_root, f"HEAD:{rel}", max_bytes=effective_limit
+    if source in {"index", "head"}:
+        entry = tracked_entry
+        if entry is None:
+            entry = _capture_git_source_snapshot(repo_root, source).entries.get(rel)
+        if entry is None:
+            raise ValueError(f"Path is absent from captured {source} tree: {rel}")
+        if entry.object_type != "blob":
+            raise ValueError(
+                f"Expected Git blob at {rel}, got {entry.object_type} "
+                f"mode {entry.mode}"
+            )
+        raw = _git_cat_blob(repo_root, entry.oid, max_bytes=effective_limit)
+        content = _normalize_hash_content(raw) if normalize else raw
+        return _ModeAwareBytes(
+            content,
+            entry.mode,
+            entry.object_type,
+            source_size=len(raw),
         )
-        return _normalize_hash_content(content) if normalize else content
 
     ancestors = _capture_working_tree_ancestors(repo_root, full_path, rel)
     try:
@@ -451,7 +464,11 @@ def _files_from_source(
         files = [
             rel
             for rel in _snapshot_tracked_files(snapshot, path)
-            if (repo_root / rel).exists() or (repo_root / rel).is_symlink()
+            if (
+                (repo_root / rel).exists()
+                or (repo_root / rel).is_symlink()
+                or rel in snapshot.skip_worktree_paths
+            )
         ]
         return files, snapshot
     try:
@@ -466,7 +483,11 @@ def _files_from_source(
         files = [
             rel
             for rel in _snapshot_tracked_files(tracking_snapshot, path)
-            if (repo_root / rel).exists() or (repo_root / rel).is_symlink()
+            if (
+                (repo_root / rel).exists()
+                or (repo_root / rel).is_symlink()
+                or rel in tracking_snapshot.skip_worktree_paths
+            )
         ]
         return files, tracking_snapshot
     return sorted(_list_files_for_source(repo_root, path, source)), None
@@ -487,8 +508,10 @@ def _tree_entry_descriptors(
         else:
             try:
                 local_rel = Path(repo_rel).relative_to(base).as_posix()
-            except ValueError:
-                local_rel = repo_rel
+            except ValueError as exc:
+                raise ValueError(
+                    f"Hash selection path {repo_rel!r} is outside base {base!r}"
+                ) from exc
         label_bytes = f"file:{local_rel}".encode(
             "utf-8", errors="surrogateescape"
         )
@@ -619,14 +642,39 @@ def _stream_tree_digest(
         tracked_entry = (
             captured.entries.get(repo_rel) if captured is not None else None
         )
-        content = _read_path_content(
-            repo_root,
-            repo_root / repo_rel,
-            source,
-            max_bytes=MAX_HASH_TOTAL_BYTES - total_content_bytes,
-            tracked_entry=tracked_entry,
-            core_filemode=(captured.filemode if captured is not None else True),
+        full_path = repo_root / repo_rel
+        sparse_absent = (
+            captured is not None
+            and repo_rel in captured.skip_worktree_paths
+            and not full_path.exists()
+            and not full_path.is_symlink()
         )
+        if sparse_absent:
+            if tracked_entry is None:  # pragma: no cover - snapshot invariant
+                raise ValueError(
+                    f"Sparse path is absent from captured index: {repo_rel}"
+                )
+            remaining = MAX_HASH_TOTAL_BYTES - total_content_bytes
+            raw_content = (
+                read_blob_fn(tracked_entry.oid, remaining)
+                if read_blob_fn is not None
+                else _git_cat_blob(repo_root, tracked_entry.oid, max_bytes=remaining)
+            )
+            content = _ModeAwareBytes(
+                _normalize_hash_content(raw_content),
+                tracked_entry.mode,
+                tracked_entry.object_type,
+                source_size=len(raw_content),
+            )
+        else:
+            content = _read_path_content(
+                repo_root,
+                full_path,
+                source,
+                max_bytes=MAX_HASH_TOTAL_BYTES - total_content_bytes,
+                tracked_entry=tracked_entry,
+                core_filemode=(captured.filemode if captured is not None else True),
+            )
         _enforce_content_size(content, repo_rel)
         total_content_bytes = _enforce_total_content_size(
             total_content_bytes, len(content)
@@ -663,6 +711,36 @@ def source_tree_digest(
         source,
         captured,
         domain=HASH_DOMAIN_EXACT,
+        read_blob_fn=read_blob_fn,
+    )
+
+
+def source_paths_digest(
+    repo_root: Path,
+    paths: List[str],
+    *,
+    source: str,
+    domain: str,
+    snapshot: Optional[GitSourceSnapshot] = None,
+    read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
+) -> str:
+    """Hash an explicit, non-empty set of repository-relative source paths."""
+    if source not in SOURCE_MODE_SET:
+        raise ValueError(f"Unknown source mode: {source!r}")
+    if not paths:
+        raise ValueError("Cannot hash an empty source path set")
+    if len(paths) != len(set(paths)):
+        raise ValueError("Cannot hash duplicate source paths")
+    captured = snapshot
+    if source in {"head", "index"} and captured is None:
+        captured = _capture_git_source_snapshot(repo_root, source)
+    descriptors = _tree_entry_descriptors(paths)
+    return _stream_tree_digest(
+        repo_root,
+        descriptors,
+        source,
+        captured,
+        domain=domain,
         read_blob_fn=read_blob_fn,
     )
 

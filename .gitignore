@@ -62,3 +62,4 @@ tempCodeRunnerFile.py
 # Installer and diagnostic output
 *.log
 pip-delete-this-directory.txt
+.previous-release-staging/

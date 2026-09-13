@@ -16,7 +16,6 @@ from ._git import (
 from ._hashing import _read_bounded_path_bytes
 from ._utils import (
     BoundedDiagnosticList,
-    DIAGNOSTIC_TRUNCATION_SENTINEL,
     FACET_SET,
     SOURCE_MODE_SET,
     _available_component_facets,
@@ -50,22 +49,38 @@ from ._config_contract import (
     BEHAVIOR_FIELDS,
     BOUNDARY_FIELDS,
     COMPONENT_FIELDS,
+    COVERAGE_EXCLUSION_FACETS,
+    COVERAGE_EXCLUSION_FIELDS,
+    COVERAGE_FIELDS,
     DEFAULT_FIELDS,
+    DERIVATION_EVIDENCE_SUFFIX,
+    DERIVATION_FIELDS,
     git_tag_prefix_error,
     MAX_CONSUMER_GRAPH_ITEMS,
     MAX_CONSUMER_IDENTIFIER_CHARS,
+    MAX_COVERAGE_EXCLUSIONS,
+    MAX_COVERAGE_PATHS_PER_EXCLUSION,
+    MAX_COVERAGE_REASON_CHARS,
+    MAX_COVERAGE_SOURCE_INDICATORS,
+    MAX_DERIVATIONS,
+    MAX_DERIVATION_GENERATOR_CHARS,
+    MAX_DERIVATION_SELECTORS,
     PROVIDER_FIELDS,
     ROOT_FIELDS,
     SLICE_FIELDS,
     VERSION_FILE_FIELDS,
+    VERSION_COMPONENT_FIELDS,
+    VERSION_CONSTANT_FIELDS,
     VERSION_SOURCE_FIELDS,
     VERSION_TAG_FIELDS,
+    MAX_VERSION_CONSTANT_CHARS,
     component_identifier_problem,
 )
 from ._config_io import (
     find_config_file as _find_config_file_impl,
     json_value_issues as _json_value_issues_impl,
     load_config_file as _load_config_file_impl,
+    load_config_file_with_bytes as _load_config_file_with_bytes_impl,
     parse_config_bytes as _parse_config_bytes_impl,
     parse_config_text as _parse_config_text_impl,
     snapshot_relative_path as _snapshot_relative_path_impl,
@@ -74,8 +89,49 @@ from ._discovery import (
     _detect_provider as _detect_provider_impl,
     discover_components as _discover_components_impl,
 )
+from .versions import parse_semver
 
 MAX_CONFIG_BYTES = 10 * 1024 * 1024
+
+
+def _version_source_cycle_issues(components: Dict[str, dict]) -> List[str]:
+    """Report each cycle in the functional component-version graph once."""
+    eligible = {
+        name: component
+        for name, component in components.items()
+        if isinstance(name, str) and isinstance(component, dict)
+    }
+    state: Dict[str, str] = {}
+    issues = BoundedDiagnosticList()
+    for start in sorted(eligible):
+        if state.get(start) == "done":
+            continue
+        path: List[str] = []
+        positions: Dict[str, int] = {}
+        current = start
+        while current in eligible and state.get(current) != "done":
+            if current in positions:
+                cycle = path[positions[current] :] + [current]
+                preview = " -> ".join(cycle[:9])
+                if len(cycle) > 9:
+                    preview += f" -> ... (+{len(cycle) - 9} nodes)"
+                issues.append(
+                    "Component version_source inheritance cycle: "
+                    f"{_bounded_diagnostic_text(preview)}"
+                )
+                break
+            positions[current] = len(path)
+            path.append(current)
+            source = eligible[current].get("version_source")
+            target = source.get("component") if isinstance(source, dict) else None
+            if not isinstance(target, str) or target == current:
+                break
+            current = target
+        for name in path:
+            state[name] = "done"
+        if issues.truncated:
+            break
+    return list(issues)
 MAX_COMPONENT_EXPANSION_FILES = 50_000
 MAX_DISCOVERY_MANIFESTS = 50_000
 MAX_DISCOVERED_COMPONENTS = 1_000
@@ -126,6 +182,11 @@ def load_config_file(
         repo_root=repo_root,
         snapshot=snapshot,
     )
+
+
+def load_config_file_with_bytes(path: Path) -> tuple[dict, bytes]:
+    """Load a mutable config together with the exact bytes it was parsed from."""
+    return _load_config_file_with_bytes_impl(path, max_bytes=MAX_CONFIG_BYTES)
 
 
 def dump_config(value: dict) -> str:
@@ -261,7 +322,7 @@ def _validate_component_path_entries(
                 f"repository root: {normalized_display}"
             )
             continue
-        if check_exists and not full.exists():
+        if check_exists and not (full.is_file() or full.is_dir()):
             errors.append(
                 f"Component '{component_name_display}' {field_name} path not "
                 f"found: {component_path_display}/{normalized_display}"
@@ -273,7 +334,7 @@ def _expand_component_paths(
     repo_root: Path,
     component_path: Optional[str],
     paths: List[str],
-    source: Optional[str] = None,
+    source: Optional[str] = "working-tree",
     snapshot: Optional[GitSourceSnapshot] = None,
     _glob_operation: Optional[_PathGlobOperation] = None,
 ) -> Set[str]:
@@ -369,6 +430,34 @@ def _expand_component_paths(
                     matched.add(file_rel)
 
     return matched
+
+
+def _validate_expanded_path_containment(
+    errors: List[str],
+    repo_root: Path,
+    component_name: str,
+    component_path: str,
+    field_name: str,
+    matched_paths: Set[str],
+) -> None:
+    """Reject source-selected paths whose live ancestry leaves the component."""
+    component_root = repo_root / component_path
+    name_display = _bounded_diagnostic_text(component_name)
+    for relative in sorted(matched_paths):
+        if isinstance(errors, BoundedDiagnosticList) and errors.truncated:
+            break
+        full_path = component_root / relative
+        relative_display = _bounded_diagnostic_text(relative)
+        if not _is_within(component_root, full_path):
+            errors.append(
+                f"Component '{name_display}' {field_name} path escapes "
+                f"component root: {relative_display}"
+            )
+        elif not _is_within(repo_root, full_path):
+            errors.append(
+                f"Component '{name_display}' {field_name} path escapes "
+                f"repository root: {relative_display}"
+            )
 
 
 def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
@@ -485,7 +574,7 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
             f"{_bounded_diagnostic_text(detail)}"
         ]
     if errors.truncated:
-        return sorted(errors[:-1]) + [DIAGNOSTIC_TRUNCATION_SENTINEL]
+        return sorted(errors[:-1]) + [errors[-1]]
     return sorted(errors)
 
 
@@ -575,6 +664,235 @@ def validate_config(
         errors.append("Field 'project' must not have surrounding whitespace")
     if "$schema" in config and not isinstance(config["$schema"], str):
         errors.append("Field '$schema' must be a string")
+
+    coverage = config.get("coverage", {})
+    if not isinstance(coverage, dict):
+        errors.append("Field 'coverage' must be an object")
+        coverage = {}
+    else:
+        _reject_unknown_fields(errors, coverage, COVERAGE_FIELDS, "coverage")
+    source_indicators = coverage.get("source_indicators", [])
+    if not isinstance(source_indicators, list) or not all(
+        isinstance(item, str) for item in source_indicators
+    ):
+        errors.append("coverage.source_indicators must be an array of strings")
+    elif len(source_indicators) > MAX_COVERAGE_SOURCE_INDICATORS:
+        errors.append(
+            "coverage.source_indicators exceeds the "
+            f"{MAX_COVERAGE_SOURCE_INDICATORS}-selector limit"
+        )
+    else:
+        if len(source_indicators) != len(set(source_indicators)):
+            errors.append("coverage.source_indicators contains duplicates")
+        for index, indicator in enumerate(source_indicators):
+            try:
+                _normalize_declared_path(indicator)
+            except ValueError as exc:
+                errors.append(
+                    f"coverage.source_indicators[{index}] is not a safe "
+                    "repository-relative selector: "
+                    f"{_bounded_diagnostic_text(str(exc))}"
+                )
+
+    coverage_exclusions = coverage.get("exclusions", [])
+    if not isinstance(coverage_exclusions, list):
+        errors.append("coverage.exclusions must be an array")
+    elif len(coverage_exclusions) > MAX_COVERAGE_EXCLUSIONS:
+        errors.append(
+            "coverage.exclusions exceeds the "
+            f"{MAX_COVERAGE_EXCLUSIONS}-entry limit"
+        )
+    else:
+        for index, exclusion in enumerate(coverage_exclusions):
+            if not isinstance(exclusion, dict):
+                errors.append(f"coverage.exclusions[{index}] must be an object")
+                continue
+            _reject_unknown_fields(
+                errors,
+                exclusion,
+                COVERAGE_EXCLUSION_FIELDS,
+                f"coverage.exclusions[{index}]",
+            )
+            reason = exclusion.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append(
+                    f"coverage.exclusions[{index}].reason must be a non-empty string"
+                )
+            elif reason != reason.strip():
+                errors.append(
+                    f"coverage.exclusions[{index}].reason must not have "
+                    "surrounding whitespace"
+                )
+            elif len(reason) > MAX_COVERAGE_REASON_CHARS:
+                errors.append(
+                    f"coverage.exclusions[{index}].reason exceeds the "
+                    f"{MAX_COVERAGE_REASON_CHARS}-character limit"
+                )
+            exclusion_paths = exclusion.get("paths")
+            if not isinstance(exclusion_paths, list) or not exclusion_paths or not all(
+                isinstance(item, str) for item in exclusion_paths
+            ):
+                errors.append(
+                    f"coverage.exclusions[{index}].paths must be a non-empty "
+                    "array of strings"
+                )
+            elif len(exclusion_paths) > MAX_COVERAGE_PATHS_PER_EXCLUSION:
+                errors.append(
+                    f"coverage.exclusions[{index}].paths exceeds the "
+                    f"{MAX_COVERAGE_PATHS_PER_EXCLUSION}-selector limit"
+                )
+            else:
+                if len(exclusion_paths) != len(set(exclusion_paths)):
+                    errors.append(
+                        f"coverage.exclusions[{index}].paths contains duplicates"
+                    )
+                for path_index, exclusion_path in enumerate(exclusion_paths):
+                    try:
+                        _normalize_declared_path(exclusion_path)
+                    except ValueError as exc:
+                        errors.append(
+                            f"coverage.exclusions[{index}].paths[{path_index}] "
+                            "is not a safe repository-relative selector: "
+                            f"{_bounded_diagnostic_text(str(exc))}"
+                        )
+            exclusion_facets = exclusion.get("facets")
+            if not isinstance(exclusion_facets, list) or not exclusion_facets or not all(
+                isinstance(item, str) for item in exclusion_facets
+            ):
+                errors.append(
+                    f"coverage.exclusions[{index}].facets must be a non-empty "
+                    "array of strings"
+                )
+            else:
+                if len(exclusion_facets) != len(set(exclusion_facets)):
+                    errors.append(
+                        f"coverage.exclusions[{index}].facets contains duplicates"
+                    )
+                unknown_coverage_facets = sorted(
+                    set(exclusion_facets) - COVERAGE_EXCLUSION_FACETS
+                )
+                if unknown_coverage_facets:
+                    errors.append(
+                        f"coverage.exclusions[{index}].facets contains unknown "
+                        "coverage facets: "
+                        + _bounded_diagnostic_list_preview(
+                            unknown_coverage_facets
+                        )
+                    )
+
+    derivations = config.get("derivations", {})
+    if not isinstance(derivations, dict):
+        errors.append("Field 'derivations' must be an object")
+        derivations = {}
+    elif len(derivations) > MAX_DERIVATIONS:
+        errors.append(
+            f"Field 'derivations' exceeds the {MAX_DERIVATIONS}-entry limit"
+        )
+    seen_evidence_paths: Dict[str, str] = {}
+    for raw_name, derivation in derivations.items():
+        if errors.truncated:
+            break
+        name_problem = component_identifier_problem(
+            raw_name,
+            max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+        )
+        if name_problem is not None:
+            errors.append(
+                "Derivation name "
+                f"{_bounded_diagnostic_repr(raw_name)} is not addressable: "
+                f"{name_problem}"
+            )
+            continue
+        name = _bounded_diagnostic_text(raw_name)
+        if not isinstance(derivation, dict):
+            errors.append(f"Derivation '{name}' must be an object")
+            continue
+        _reject_unknown_fields(
+            errors,
+            derivation,
+            DERIVATION_FIELDS,
+            f"derivation '{name}'",
+        )
+        for field in DERIVATION_FIELDS:
+            if field not in derivation:
+                errors.append(
+                    f"Derivation '{name}' missing required field: {field}"
+                )
+        for field in ("inputs", "outputs"):
+            selectors = derivation.get(field)
+            if (
+                not isinstance(selectors, list)
+                or not selectors
+                or not all(isinstance(selector, str) for selector in selectors)
+            ):
+                errors.append(
+                    f"Derivation '{name}' {field} must be a non-empty array of strings"
+                )
+                continue
+            if len(selectors) > MAX_DERIVATION_SELECTORS:
+                errors.append(
+                    f"Derivation '{name}' {field} exceeds the "
+                    f"{MAX_DERIVATION_SELECTORS}-selector limit"
+                )
+                continue
+            if len(selectors) != len(set(selectors)):
+                errors.append(f"Derivation '{name}' {field} contains duplicates")
+            for selector_index, selector in enumerate(selectors):
+                try:
+                    _normalize_declared_path(selector)
+                except ValueError as exc:
+                    errors.append(
+                        f"Derivation '{name}' {field}[{selector_index}] is not a "
+                        "safe repository-relative selector: "
+                        f"{_bounded_diagnostic_text(str(exc))}"
+                    )
+        generator = derivation.get("generator")
+        if not isinstance(generator, str) or not generator.strip():
+            errors.append(
+                f"Derivation '{name}' generator must be a non-empty string"
+            )
+        elif generator != generator.strip():
+            errors.append(
+                f"Derivation '{name}' generator must not have surrounding whitespace"
+            )
+        elif len(generator) > MAX_DERIVATION_GENERATOR_CHARS:
+            errors.append(
+                f"Derivation '{name}' generator exceeds the "
+                f"{MAX_DERIVATION_GENERATOR_CHARS}-character limit"
+            )
+        evidence = derivation.get("evidence")
+        if not isinstance(evidence, str):
+            errors.append(
+                f"Derivation '{name}' evidence must be a repository-relative path"
+            )
+        else:
+            try:
+                normalized_evidence = _normalize_declared_path(evidence)
+            except ValueError as exc:
+                errors.append(
+                    f"Derivation '{name}' evidence is not a safe "
+                    "repository-relative path: "
+                    f"{_bounded_diagnostic_text(str(exc))}"
+                )
+            else:
+                if _is_glob(normalized_evidence):
+                    errors.append(
+                        f"Derivation '{name}' evidence must be a literal file path"
+                    )
+                elif not normalized_evidence.endswith(DERIVATION_EVIDENCE_SUFFIX):
+                    errors.append(
+                        f"Derivation '{name}' evidence must end with "
+                        f"{DERIVATION_EVIDENCE_SUFFIX}"
+                    )
+                previous = seen_evidence_paths.get(normalized_evidence)
+                if previous is not None:
+                    errors.append(
+                        f"Derivations '{_bounded_diagnostic_text(previous)}' and "
+                        f"'{name}' use the same evidence path: "
+                        f"{_bounded_diagnostic_text(normalized_evidence)}"
+                    )
+                else:
+                    seen_evidence_paths[normalized_evidence] = raw_name
 
     supported_modes = FACET_SET
     defaults = config.get("defaults", {})
@@ -1195,6 +1513,7 @@ def validate_config(
                     safe_vs_file = (
                         normalized_vs_file is not None
                         and not _is_glob(normalized_vs_file)
+                        and ":" not in normalized_vs_file
                     )
                     if not safe_vs_file:
                         errors.append(
@@ -1299,6 +1618,61 @@ def validate_config(
                         errors.append(
                             f"Component '{name}' version_source.field must not have surrounding whitespace"
                         )
+            elif "component" in version_source:
+                _reject_unknown_fields(
+                    errors,
+                    version_source,
+                    VERSION_COMPONENT_FIELDS,
+                    f"component '{name}' version_source",
+                )
+                target = version_source.get("component")
+                target_problem = component_identifier_problem(
+                    target,
+                    max_chars=MAX_CONSUMER_IDENTIFIER_CHARS,
+                )
+                if target_problem is not None:
+                    errors.append(
+                        f"Component '{name}' version_source.component is not "
+                        f"addressable: {target_problem}"
+                    )
+                elif target == name:
+                    errors.append(
+                        f"Component '{name}' version_source.component must not "
+                        "reference itself"
+                    )
+                elif target not in components:
+                    errors.append(
+                        f"Component '{name}' version_source.component references "
+                        f"unknown component: {_bounded_diagnostic_repr(target)}"
+                    )
+            elif "constant" in version_source:
+                _reject_unknown_fields(
+                    errors,
+                    version_source,
+                    VERSION_CONSTANT_FIELDS,
+                    f"component '{name}' version_source",
+                )
+                constant = version_source.get("constant")
+                if not isinstance(constant, str) or not constant:
+                    errors.append(
+                        f"Component '{name}' version_source.constant must be a "
+                        "non-empty SemVer string"
+                    )
+                elif constant != constant.strip():
+                    errors.append(
+                        f"Component '{name}' version_source.constant must not "
+                        "have surrounding whitespace"
+                    )
+                elif len(constant) > MAX_VERSION_CONSTANT_CHARS:
+                    errors.append(
+                        f"Component '{name}' version_source.constant exceeds the "
+                        f"{MAX_VERSION_CONSTANT_CHARS}-character limit"
+                    )
+                elif parse_semver(constant)[0] is None:
+                    errors.append(
+                        f"Component '{name}' version_source.constant is not valid "
+                        f"SemVer: {_bounded_diagnostic_repr(constant)}"
+                    )
             else:
                 _reject_unknown_fields(
                     errors,
@@ -1307,8 +1681,12 @@ def validate_config(
                     f"component '{name}' version_source",
                 )
                 errors.append(
-                    f"Component '{name}' version_source must have either 'file' or 'git_tag_prefix'"
+                    f"Component '{name}' version_source must have exactly one of "
+                    "'file', 'git_tag_prefix', 'component', or 'constant'"
                 )
+
+    if not errors.truncated:
+        errors.extend(_version_source_cycle_issues(components))
 
     if errors.truncated:
         return list(errors)
@@ -1335,13 +1713,11 @@ def validate_config(
         component_path = comp.get("path")
         if (
             not isinstance(boundary, dict)
-            or not isinstance(behavior, dict)
             or not isinstance(component_path, str)
         ):
             continue
         boundary_paths = boundary.get("paths", [])
-        behavior_paths = behavior.get("paths", [])
-        if not _is_str_list(boundary_paths) or not _is_str_list(behavior_paths):
+        if not _is_str_list(boundary_paths):
             continue
         glob_operation = _PathGlobOperation("Component path expansion")
         try:
@@ -1353,6 +1729,26 @@ def validate_config(
                 snapshot=snapshot,
                 _glob_operation=glob_operation,
             )
+        except GuardrailError as exc:
+            errors.append(
+                f"Component '{name}' path expansion could not be validated: "
+                f"{_bounded_diagnostic_text(str(exc))}"
+            )
+            continue
+        _validate_expanded_path_containment(
+            errors,
+            repo_root,
+            name,
+            component_path,
+            "boundary",
+            boundary_files,
+        )
+        if not isinstance(behavior, dict):
+            continue
+        behavior_paths = behavior.get("paths", [])
+        if not _is_str_list(behavior_paths):
+            continue
+        try:
             behavior_files = _expand_component_paths(
                 repo_root,
                 component_path,
@@ -1367,6 +1763,16 @@ def validate_config(
                 f"{_bounded_diagnostic_text(str(exc))}"
             )
             continue
+        _validate_expanded_path_containment(
+            errors,
+            repo_root,
+            name,
+            component_path,
+            "behavior",
+            behavior_files,
+        )
+        if errors.truncated:
+            break
         uncovered = sorted(boundary_files - behavior_files)
         if uncovered:
             preview = ", ".join(
@@ -1542,6 +1948,16 @@ def validate_config(
                 )
             continue
         provider_paths = boundary.get("paths", [])
+        if (
+            provider_name == "leaf"
+            and _is_str_list(provider_paths)
+            and provider_paths
+        ):
+            errors.append(
+                f"Component '{name}': Leaf boundary provider cannot declare "
+                "paths; remove boundary.paths or select a publishing provider"
+            )
+            continue
         if (
             provider_name in known_providers
             and provider_name not in {"implicit", "leaf"}

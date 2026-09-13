@@ -1,17 +1,17 @@
 """Config parsing and source-bound file loading."""
 
 import os
+import re
 import subprocess
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from ._git import GitSourceSnapshot, _git_cat_blob
-from ._structured_data import strict_json_loads
+from ._structured_data import StrictJSONError, strict_json_loads
 from ._utils import (
     MAX_JSON_NUMBER_CHARACTERS,
     ConfigError,
     GuardrailError,
-    _bounded_diagnostic_repr,
     _bounded_exception_text,
     _bounded_json_value_issues,
     _bounded_yaml_compose_node,
@@ -26,6 +26,33 @@ CONFIG_CANDIDATES = (
     "boundary.config.yml",
     "boundary.config.toml",
 )
+
+_PARSE_ERROR_LOCATION = re.compile(
+    r"(?:\(|\b)(?:at )?line (?P<line>\d+),? column (?P<column>\d+)\)?$"
+)
+
+
+def _safe_parse_error_detail(exc: BaseException) -> str:
+    """Describe a parser failure without copying source-controlled text."""
+    if isinstance(exc, StrictJSONError):
+        return exc.safe_message
+    if isinstance(exc, GuardrailError):
+        # GuardrailError is emitted by boundver's fixed-text resource limits,
+        # not by a parser that may quote the offending source line.
+        return str(exc)
+
+    line = getattr(exc, "lineno", None)
+    column = getattr(exc, "colno", None)
+    if not isinstance(line, int) or not isinstance(column, int):
+        match = _PARSE_ERROR_LOCATION.search(str(exc))
+        if match is not None:
+            line = int(match.group("line"))
+            column = int(match.group("column"))
+
+    detail = exc.__class__.__name__
+    if isinstance(line, int) and isinstance(column, int):
+        detail += f" at line {line}, column {column}"
+    return detail
 
 
 def snapshot_relative_path(repo_root: Path, path: Path) -> str:
@@ -58,7 +85,7 @@ def parse_config_text(text: str, path: Path) -> dict:
             result = strict_json_loads(text)
         except (ValueError, RecursionError, OverflowError) as exc:
             raise ConfigError(
-                f"JSON parse error in {path}: {_bounded_exception_text(exc)}"
+                f"JSON parse error in {path}: {_safe_parse_error_detail(exc)}"
             ) from exc
     elif suffix in (".yaml", ".yml"):
         try:
@@ -84,14 +111,16 @@ def parse_config_text(text: str, path: Path) -> dict:
                 for key_node, value_node in node.value:
                     key = loader.construct_object(key_node, deep=deep)
                     if type(key) is not str:
+                        mark = key_node.start_mark
                         raise ConfigError(
-                            "YAML mapping keys must be strings, got "
-                            f"{_bounded_diagnostic_repr(key)}"
+                            "YAML mapping keys must be strings at "
+                            f"line {mark.line + 1}, column {mark.column + 1}"
                         )
                     if key in mapping:
+                        mark = key_node.start_mark
                         raise ConfigError(
-                            "duplicate YAML mapping key "
-                            f"{_bounded_diagnostic_repr(key)}"
+                            "duplicate YAML mapping key at "
+                            f"line {mark.line + 1}, column {mark.column + 1}"
                         )
                     mapping[key] = loader.construct_object(value_node, deep=deep)
                 return mapping
@@ -148,9 +177,13 @@ def parse_config_text(text: str, path: Path) -> dict:
                 f"YAML parse error in {path}: "
                 f"{exc.__class__.__name__}{location}"
             ) from exc
+        except ConfigError as exc:
+            # These messages come only from the fixed-text constructors above
+            # and the bounded YAML structure guards; none include source text.
+            raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
         except Exception as exc:
             raise ConfigError(
-                f"YAML parse error in {path}: {_bounded_exception_text(exc)}"
+                f"YAML parse error in {path}: {_safe_parse_error_detail(exc)}"
             ) from exc
     elif suffix == ".toml":
         oversized_numeric, oversized_structure = _toml_preparse_issues(text)
@@ -181,7 +214,7 @@ def parse_config_text(text: str, path: Path) -> dict:
             raise ConfigError(f"TOML config is nested too deeply in {path}") from exc
         except Exception as exc:
             raise ConfigError(
-                f"TOML parse error in {path}: {_bounded_exception_text(exc)}"
+                f"TOML parse error in {path}: {_safe_parse_error_detail(exc)}"
             ) from exc
     else:
         raise ConfigError(
@@ -246,14 +279,14 @@ def find_config_file(
     return candidate
 
 
-def load_config_file(
+def load_config_file_with_bytes(
     path: Path,
     *,
     max_bytes: int,
     repo_root: Optional[Path] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
-) -> dict:
-    """Load a config from disk or one captured immutable Git source."""
+) -> Tuple[dict, bytes]:
+    """Load a config and return the exact bounded bytes that were parsed."""
     if snapshot is not None:
         if repo_root is None:
             raise ConfigError("repo_root is required for source-backed config reads")
@@ -279,7 +312,7 @@ def load_config_file(
             raise ConfigError(
                 f"Cannot read config from captured {snapshot.source} source: {label}"
             ) from exc
-        return parse_config_bytes(data, path, max_bytes=max_bytes)
+        return parse_config_bytes(data, path, max_bytes=max_bytes), data
 
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
@@ -293,4 +326,21 @@ def load_config_file(
         raise ConfigError(
             f"Cannot read config file {path}: {_bounded_exception_text(exc)}"
         ) from exc
-    return parse_config_bytes(data, path, max_bytes=max_bytes)
+    return parse_config_bytes(data, path, max_bytes=max_bytes), data
+
+
+def load_config_file(
+    path: Path,
+    *,
+    max_bytes: int,
+    repo_root: Optional[Path] = None,
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> dict:
+    """Load a config from disk or one captured immutable Git source."""
+    config, _raw = load_config_file_with_bytes(
+        path,
+        max_bytes=max_bytes,
+        repo_root=repo_root,
+        snapshot=snapshot,
+    )
+    return config

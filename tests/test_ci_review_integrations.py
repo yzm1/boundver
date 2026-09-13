@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,11 +38,23 @@ def _bash() -> str:
 
 def _action_script() -> str:
     action = yaml.safe_load((ROOT / "action.yml").read_text(encoding="utf-8"))
-    return next(
+    script = next(
         step["run"]
         for step in action["runs"]["steps"]
         if step.get("id") == "verify"
     )
+    # These tests intentionally execute only the Action's verification step.
+    # The real Action installs its own checkout in the preceding step, while a
+    # developer machine may have an older boundver release installed. Launch
+    # the current checkout explicitly so ``-I`` preserves the production
+    # isolation contract without making the test depend on ambient packages.
+    bootstrap = (
+        "import runpy,sys;"
+        f"sys.path.insert(0,{(ROOT / 'src').as_posix()!r});"
+        "runpy.run_module('boundver',run_name='__main__')"
+    )
+    launcher = f"{shlex.quote(sys.executable)} -I -c {shlex.quote(bootstrap)}"
+    return script.replace("python -I -m boundver", launcher)
 
 
 def _gitlab_script() -> str:
@@ -81,6 +95,7 @@ def _review_environment(root: Path, base: str, target: str, *, transitive: bool)
         "BOUNDVER_TRANSITIVE": "true" if transitive else "false",
         "BOUNDVER_FAIL_FAST": "false",
         "BOUNDVER_UPDATE": "false",
+        "BOUNDVER_STRICT_CONFIG_SOURCE": "false",
         "BOUNDVER_UPLOAD_ARTIFACT": "false",
         "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         "CI_PROJECT_DIR": str(root),

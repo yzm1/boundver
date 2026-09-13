@@ -65,7 +65,7 @@ Direct consumers: analytics-contracts, platform-client
 Transitive consumers: admin-portal, analytics-contracts, checkout-web, insights-web, platform-client, scheduler
 External consumers: mobile-app, partner-audit
 Structural change: added /paths/~1orders~1{id}
-Provenance: base=1f793490f7f717c53c1c6d5796a3a49dee400d12 target=bf22c41bea7f484da80e0a3680660020e92f245d
+Provenance: base=941d4483d81881e082278e49d1d146910e008b61 target=195543d27c5e350a34c43f43d1261c2608419881
 Demo passed: current drift and reconciled historical review agree.
 ```
 
@@ -102,8 +102,9 @@ outstanding.
   Run a schema-specific checker such as oasdiff and relevant consumer tests.
 - Consumer edges are declared evidence. Boundver validates and traverses them;
   it does not infer every runtime dependency.
-- A generated OpenAPI file still needs an independent deterministic freshness
-  check before boundver reads it.
+- A derivation receipt detects unrecorded input or output movement, but an
+  independent deterministic generator check is still needed when the workflow
+  must attest reproducibility or generator correctness.
 - v0.15 structural explanations begin with `openapi-canonical`; raw and other
   providers remain explicit but structurally unsupported.
 - This synthetic fixture validates product behavior, not performance at the

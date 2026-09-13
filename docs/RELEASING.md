@@ -270,8 +270,8 @@ diff; it is never accepted implicitly by an install.
    ```markdown
    ### Upgrade contract
 
-   - Semantic config: `boundver-semantic-config/v2`
-   - Lock schema: `boundary-lock/v3`
+   - Semantic config: `boundver-semantic-config/v3`
+   - Lock schema: `boundary-lock/v4`
    - Fingerprint compatibility: `digest-neutral`
    - Lock regeneration: `not-required`
    ```
@@ -317,6 +317,12 @@ diff; it is never accepted implicitly by an install.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
 threads, changes-requested state, and pending human or team review requests.
+Its idempotent GitHub API reads make at most three attempts, each with a
+30-second timeout and bounded output. Only transport failures, HTTP 408/429,
+and HTTP 5xx responses are retried; authorization, not-found, malformed, and
+oversized responses fail immediately. Before a tag exists, rerunning the same
+release check for an unchanged candidate after a reported transport failure
+is safe: the audit is read-only and revalidates the candidate from scratch.
 Its range begins at the newest lower stable, published, immutable GitHub
 Release whose tag is merged into the candidate and whose tag and commit match a
 successful run of the repository's active `publish.yml`. That run must bind the

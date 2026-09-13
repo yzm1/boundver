@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import copy
 import io
 import json
 import sys
@@ -14,7 +15,13 @@ from unittest.mock import patch
 
 import boundver._config as config_module
 import boundver.core as core
-from boundver._lockfile import _generation_errors, generate_lockfile, verify_lockfile
+from boundver._lockfile import (
+    _generation_errors,
+    _lockfile_schema_issues,
+    _lockfile_structure_issues,
+    generate_lockfile,
+    verify_lockfile,
+)
 from boundver._utils import (
     BoundedDiagnosticList,
     DIAGNOSTIC_TRUNCATION_SENTINEL,
@@ -53,6 +60,49 @@ def _component(
     if consumers is not None:
         component["consumers"] = consumers
     return component
+
+
+def _preflight_pair(*, components: int, version_error: str) -> tuple[dict, dict]:
+    """Return a config and lockfile whose only preflight diagnostics are digest errors.
+
+    ``_verify_lock_preflight_issues`` returns as soon as the schema or the
+    structure pass reports anything, and on that path it forwards no digest
+    errors at all. So the lock entry cloned here is a real one produced by
+    ``generate_lockfile`` rather than a hand-written dictionary: it satisfies
+    every structural rule, and the config is built from the same component
+    names so that the project, component set and slice set all agree. Each
+    clone carries exactly one version error and a settled boundary, which
+    leaves ``_generation_errors`` as the sole producer of diagnostics.
+    """
+    seed_config = {
+        "project": "diagnostic-bounds",
+        "components": {"svc": _component(paths=[])},
+        "slices": {},
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "svc").mkdir()
+        (root / "svc" / "value.txt").write_text("locked\n", encoding="utf-8")
+        template = generate_lockfile(seed_config, root, source="working-tree")
+
+    entry = template["components"]["svc"]
+    names = [f"svc-{index:04d}" for index in range(components)]
+    lockfile = {key: value for key, value in template.items() if key != "components"}
+    lockfile["components"] = {}
+    for name in names:
+        clone = copy.deepcopy(entry)
+        clone["path"] = name
+        clone["version_errors"] = [version_error]
+        clone["boundary_status"] = "ok"
+        lockfile["components"][name] = clone
+    config = {
+        "project": seed_config["project"],
+        "components": {
+            name: _component(paths=[], path=name) for name in names
+        },
+        "slices": {},
+    }
+    return config, lockfile
 
 
 def _run_cli(root: Path, *arguments: str) -> tuple[int, str, str]:
@@ -101,15 +151,24 @@ class BoundedDiagnosticListTests(unittest.TestCase):
         self.assertEqual(first.count(DIAGNOSTIC_TRUNCATION_SENTINEL), 1)
         _assert_bounded(self, list(first))
 
-    def test_imported_truncation_sentinel_keeps_collector_failed(self) -> None:
+    def test_external_text_equal_to_the_sentinel_remains_ordinary(self) -> None:
         diagnostics = BoundedDiagnosticList(
             ["first failure", DIAGNOSTIC_TRUNCATION_SENTINEL, "omitted"]
         )
-        self.assertTrue(diagnostics.truncated)
+        self.assertFalse(diagnostics.truncated)
         self.assertEqual(
             diagnostics,
-            ["first failure", DIAGNOSTIC_TRUNCATION_SENTINEL],
+            ["first failure", DIAGNOSTIC_TRUNCATION_SENTINEL, "omitted"],
         )
+
+    def test_a_real_truncation_marker_propagates_between_collectors(self) -> None:
+        source = BoundedDiagnosticList(
+            [f"failure {index}" for index in range(MAX_DIAGNOSTIC_ITEMS + 1)]
+        )
+        diagnostics = BoundedDiagnosticList(source)
+
+        self.assertTrue(diagnostics.truncated)
+        self.assertEqual(diagnostics[-1], DIAGNOSTIC_TRUNCATION_SENTINEL)
 
 
 class ConfigDiagnosticBudgetTests(unittest.TestCase):
@@ -298,8 +357,8 @@ class GenerationAndVerificationDiagnosticAuditTests(unittest.TestCase):
 
     def test_lock_structure_and_machine_json_remain_bounded_and_failed(self) -> None:
         lockfile = {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v2",
+            "schema": "boundary-lock/v4",
+            "config_contract": "boundver-semantic-config/v3",
             "config_digest": "0" * 64,
             "project": "diagnostic-bounds",
             "components": {f"svc-{index:04d}": {} for index in range(1000)},
@@ -311,6 +370,134 @@ class GenerationAndVerificationDiagnosticAuditTests(unittest.TestCase):
 
         self.assertEqual(issues[-1], DIAGNOSTIC_TRUNCATION_SENTINEL)
         self.assertIn(DIAGNOSTIC_TRUNCATION_SENTINEL, payload)
+        self.assertEqual(core._drift_exit_code(issues), core.EXIT_USAGE)
+        _assert_bounded(self, issues)
+
+    def test_preflight_rebounds_an_already_truncated_generation_feed(self) -> None:
+        """The verify preflight re-bounds a digest feed that had already truncated.
+
+        OBL-OUTPUT-016 requires the DIAGNOSTICS TRUNCATED sentinel to appear in
+        verify's issues exactly when diagnostics were dropped, and requires that
+        condition to force exit code 2. ``_generation_errors`` already returns a
+        bounded list, so the last entry it hands the preflight is the bare
+        sentinel. The preflight then prefixes every message it forwards with
+        ``LOCKED DIGEST ERROR``, and only the second ``BoundedDiagnosticList``
+        wrap in ``_verify_lock_preflight_issues`` keeps that prefix off the
+        sentinel and keeps the count and byte budgets in force.
+
+        Nothing in the suite called ``_verify_lock_preflight_issues`` before this
+        test. The nearest neighbour above reaches ``_lockfile_structure_issues``
+        directly, so MUT-OUTPUT-472 could replace that wrap with a plain
+        ``list(...)`` and leave the whole repository green, while the sentinel a
+        reader sees became ``LOCKED DIGEST ERROR DIAGNOSTICS TRUNCATED: ...``
+        and the reported list outgrew both budgets.
+        """
+        config, lockfile = _preflight_pair(
+            components=1000,
+            version_error="x" * 16_384,
+        )
+
+        # PREMISE: the fixture clears both structural passes, so the early
+        # return inside the preflight is not taken and the digest feed is
+        # actually reached. Its sibling below asserts the same thing on its own.
+        self.assertEqual(_lockfile_schema_issues(lockfile), [])
+        self.assertEqual(
+            _lockfile_structure_issues(
+                lockfile,
+                running_version=core._get_version(),
+            ),
+            [],
+        )
+
+        issues = core._verify_lock_preflight_issues(config, lockfile)
+
+        self.assertTrue(
+            any(item.startswith("LOCKED DIGEST ERROR ") for item in issues),
+            issues[:3],
+        )
+        self.assertEqual(issues[-1], DIAGNOSTIC_TRUNCATION_SENTINEL)
+        self.assertNotIn(
+            f"LOCKED DIGEST ERROR {DIAGNOSTIC_TRUNCATION_SENTINEL}",
+            issues,
+        )
+        self.assertEqual(issues.count(DIAGNOSTIC_TRUNCATION_SENTINEL), 1)
+        self.assertLessEqual(len(issues), MAX_DIAGNOSTIC_ITEMS)
+        self.assertLessEqual(
+            sum(len(item.encode("utf-8")) for item in issues),
+            MAX_DIAGNOSTIC_BYTES,
+        )
+        self.assertEqual(core._drift_exit_code(issues), core.EXIT_USAGE)
+        _assert_bounded(self, issues)
+
+    def test_premise_the_preflight_fixture_clears_both_structural_passes(self) -> None:
+        """The premise: the fixture above is a lock the preflight reads all the way.
+
+        ``_verify_lock_preflight_issues`` returns the structural list untouched
+        the moment the schema or structure pass reports anything, and a
+        thousand malformed components would truncate that list on their own.
+        The sentinel asserted by the test above would then come from the first
+        wrap rather than the second, and MUT-OUTPUT-472 would be invisible by
+        construction. This test states the premise separately: the lockfile is
+        structurally clean, the config agrees with it on project, component set
+        and slice set, and every component really does carry the version error
+        that the digest feed is supposed to report.
+        """
+        config, lockfile = _preflight_pair(
+            components=1000,
+            version_error="x" * 16_384,
+        )
+
+        self.assertEqual(_lockfile_schema_issues(lockfile), [])
+        self.assertEqual(
+            _lockfile_structure_issues(
+                lockfile,
+                running_version=core._get_version(),
+            ),
+            [],
+        )
+        self.assertEqual(lockfile["project"], config["project"])
+        self.assertEqual(set(lockfile["components"]), set(config["components"]))
+        self.assertEqual(set(lockfile["slices"]), set(config["slices"]))
+        self.assertEqual(len(lockfile["components"]), 1000)
+        self.assertTrue(
+            all(
+                entry["version_errors"] == ["x" * 16_384]
+                for entry in lockfile["components"].values()
+            )
+        )
+        self.assertEqual(
+            _generation_errors(lockfile)[-1],
+            DIAGNOSTIC_TRUNCATION_SENTINEL,
+        )
+
+    def test_contrast_an_untruncated_digest_feed_is_forwarded_whole(self) -> None:
+        """The contrast: a feed that fits keeps every error and grows no sentinel.
+
+        OBL-OUTPUT-016 has two directions, and the assertion above only covers
+        one of them. A preflight that appended the sentinel to every result, or
+        that dropped diagnostics whenever it saw more than one, would satisfy
+        that assertion and still be wrong. The same fixture reduced to three
+        components with one short error each is well inside both budgets, so
+        the preflight has to return those three prefixed messages and nothing
+        else. The exit code stays 2 because a locked digest error is a safety
+        issue in its own right, not because anything was omitted.
+        """
+        config, lockfile = _preflight_pair(
+            components=3,
+            version_error="short failure",
+        )
+
+        issues = core._verify_lock_preflight_issues(config, lockfile)
+
+        self.assertEqual(
+            issues,
+            [
+                "LOCKED DIGEST ERROR svc-0000: short failure",
+                "LOCKED DIGEST ERROR svc-0001: short failure",
+                "LOCKED DIGEST ERROR svc-0002: short failure",
+            ],
+        )
+        self.assertNotIn(DIAGNOSTIC_TRUNCATION_SENTINEL, issues)
         self.assertEqual(core._drift_exit_code(issues), core.EXIT_USAGE)
         _assert_bounded(self, issues)
 

@@ -47,6 +47,10 @@ interactive credential prompts, lazy object fetching, and repository-local
 executable shadowing. Active Git filter drivers are enumerated through a
 bounded config-name query and neutralized in process-local configuration; an
 ambiguous or over-budget filter configuration fails closed.
+Git 2.32 or newer is required, and boundver verifies that the selected
+executable applies the process-local configuration block before repository
+inspection. Partial-clone configuration is detected and requires Git 2.45 or
+newer, where lazy object fetching can be disabled.
 Submodules are treated as opaque Gitlinks: a changed checked-out Gitlink is
 visible, but boundver does not inspect a submodule worktree or recurse into its
 local configuration. This prevents a nested repository from reintroducing a
