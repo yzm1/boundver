@@ -2542,7 +2542,7 @@ def _cmd_add(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
     _write_config_atomic(config_path, config, expected_content=config_bytes)
     print(f"Added component '{args.name}' at path '{add_path}'")
-    print(f"Run: boundver generate --components {args.name}")
+    print("Run: boundver generate --source working-tree")
 
 
 def _cmd_remove(args, repo_root: Path) -> None:

@@ -231,13 +231,13 @@ Root manifests need one unambiguous Git-selected package directory or
 conventional `src`, `lib`, or `app` directory. If none exists, discovery leaves
 the project for manual configuration instead of inventing a root component.
 
-Add a component manually or with `boundver add`, then update an existing v3
-lock with a focused command:
+Add a component manually or with `boundver add`, then rebuild the lock. A new
+component has no existing lock entry, so this first refresh must be full:
 
 ```bash
 boundver add billing-service services/billing --provider implicit
 boundver validate-config
-boundver generate --components billing-service --source working-tree
+boundver generate --source working-tree
 ```
 
 Component names cannot contain commas or leading/trailing whitespace because
@@ -251,10 +251,11 @@ boundver add billing-service services/billing --provider path-hash \
   --boundary-path contracts/current.json
 ```
 
-Component-scoped generation is safe only with an existing valid v4 lock. It
-recomputes the complete candidate state, refuses to preserve any stale
-unselected component, replaces the selected entry as one unit, reconciles
-component removals, and recomputes all slices. Run a full `boundver generate`
+Component-scoped generation is safe only for components already present in an
+existing valid v4 lock. It recomputes the complete candidate state, refuses to
+preserve any stale unselected component, replaces the selected entry as one
+unit, reconciles component removals, and recomputes all slices. Run a full
+`boundver generate`
 for the first baseline or after a broad semantic configuration change.
 
 ## Stage 7: tighten CI policy

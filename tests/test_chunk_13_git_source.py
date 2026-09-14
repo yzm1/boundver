@@ -655,7 +655,9 @@ class MutationGateStrictnessTests(unittest.TestCase):
         result = run_cli(scene.root, "add", "extra", "extra")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Added component 'extra' at path 'extra'", result.stdout)
-        self.assertIn("Run: boundver generate --components extra", result.stdout)
+        self.assertIn(
+            "Run: boundver generate --source working-tree", result.stdout
+        )
         after = (scene.root / "boundary.config.json").read_text(encoding="utf-8")
         self.assertNotEqual(after, before)
         self.assertIn("extra", json.loads(after)["components"])
@@ -675,7 +677,7 @@ class MutationGateStrictnessTests(unittest.TestCase):
         """The promise `add` prints is wrong one command later, and blames extra."""
         scene = self._defective_repository()
         self.assertEqual(run_cli(scene.root, "add", "extra", "extra").returncode, 0)
-        result = run_cli(scene.root, "generate", "--components", "extra")
+        result = run_cli(scene.root, "generate", "--source", "working-tree")
         self.assertEqual(result.returncode, 2)
         self.assertIn("ERROR: Config is invalid (1 issues):", result.stderr)
         self.assertIn("Slice 'wave' mode 'behavior'", result.stderr)

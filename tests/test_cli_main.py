@@ -646,6 +646,52 @@ class MainRemoveIntegrityTests(unittest.TestCase):
             self.assertIn("would leave an invalid config", err)
             self.assertEqual(config_path.read_bytes(), before)
 
+    def test_add_recommends_a_full_generation_that_accepts_the_new_component(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            (root / "existing").mkdir()
+            (root / "existing" / "main.py").write_text("value = 1\n")
+            config = {
+                "project": "p",
+                "components": {
+                    "existing": {
+                        "path": "existing",
+                        "boundary": {"provider": "implicit"},
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(
+                json.dumps(config, indent=2) + "\n"
+            )
+            commit_all(root, "initial component")
+            code, _out, err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+
+            (root / "new").mkdir()
+            (root / "new" / "main.py").write_text("value = 2\n")
+            subprocess.run(
+                ["git", "add", "--", "new/main.py"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            code, out, err = _run_main("add", "new", "new", repo_root=root)
+            self.assertEqual(code, core.EXIT_OK, err)
+            self.assertIn(
+                "Run: boundver generate --source working-tree", out
+            )
+
+            code, _out, err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+            lock = json.loads((root / "boundary.lock.json").read_text())
+            self.assertEqual(sorted(lock["components"]), ["existing", "new"])
+
     def test_add_reports_schema_invalid_components_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

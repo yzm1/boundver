@@ -339,7 +339,7 @@ class CustomProviderImportTests(unittest.TestCase):
             self.assertEqual(
                 result.stdout,
                 "Added component 'api' at path 'api'\n"
-                "Run: boundver generate --components api\n",
+                "Run: boundver generate --source working-tree\n",
             )
             self.assertEqual(sorted(document["components"]), ["api", "sdk", "svc"])
             self.assertEqual(
