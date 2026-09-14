@@ -255,6 +255,10 @@ class DataValuedScopeTests(unittest.TestCase):
                 _schema(type="object", example=payload),
             ),
             (
+                "schema examples",
+                _schema(type="object", examples=[payload]),
+            ),
+            (
                 "media type",
                 _document(paths={"/a": {"get": {"responses": {"200": {
                     "description": "ok",
@@ -287,6 +291,13 @@ class DataValuedScopeTests(unittest.TestCase):
         for label, document in cases:
             with self.subTest(label=label):
                 _canonical(document)
+
+    def test_reference_validation_matches_annotation_stripping(self):
+        payload = {"$ref": "literal-annotation-data"}
+        for key in ("description", "summary", "externalDocs", "example", "examples"):
+            with self.subTest(key=key):
+                canonical = json.loads(_canonical(_schema(**{key: payload})))
+                self.assertNotIn(key, canonical["components"]["schemas"]["S"])
 
     def test_value_is_not_opaque_outside_an_example_object(self):
         self.assertFalse(

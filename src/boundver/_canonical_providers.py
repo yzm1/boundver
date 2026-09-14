@@ -297,7 +297,11 @@ def _openapi_child_context(
                 key in _OPENAPI_DATA_VALUE_KEYS
                 and _is_openapi_schema_object(path)
             )
-            or key == "example"
+            # Reference validation must ignore the same annotation subtrees
+            # canonicalization removes. A named-map entry with an
+            # annotation-looking name is retained, so it is deliberately
+            # excluded here.
+            or (key in _OPENAPI_STRIP_KEYS and not named_map)
             or (key == "value" and _is_openapi_example_object(path))
             or (isinstance(key, str) and key.startswith("x-"))
         )
