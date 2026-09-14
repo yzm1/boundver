@@ -632,14 +632,23 @@ _RESERVED_WINDOWS_OUTPUT_STEMS = frozenset(
     }
 )
 
+_WINDOWS_INVALID_OUTPUT_CHARACTERS = frozenset('<>:"\\|?*')
+
+
+def _has_windows_invalid_output_character(value: str) -> bool:
+    return any(
+        ord(character) < 32
+        or character in _WINDOWS_INVALID_OUTPUT_CHARACTERS
+        for character in value
+    )
+
 
 def _has_unportable_output_segment(parts: Iterable[str]) -> bool:
     for part in parts:
         stem = part.split(".", 1)[0].upper()
         if (
             part in {"", ".", ".."}
-            or "\0" in part
-            or ":" in part
+            or _has_windows_invalid_output_character(part)
             or part.endswith((".", " "))
             or stem in _RESERVED_WINDOWS_OUTPUT_STEMS
         ):
@@ -650,6 +659,16 @@ def _has_unportable_output_segment(parts: Iterable[str]) -> bool:
 def _repository_relative_path(repo_root: Path, raw_path: str, *, label: str) -> Path:
     """Resolve a lexical repository-relative file path or fail closed."""
     root = Path(os.path.abspath(repo_root))
+    if os.path.isabs(raw_path) or os.path.splitdrive(raw_path)[0]:
+        raise ConfigError(f"{label} must be relative to the repository root")
+    # Check characters whose meaning differs across hosts before constructing
+    # a host-dependent Path. In particular, POSIX treats a backslash as a
+    # filename character while Windows treats it as a separator.
+    if _has_windows_invalid_output_character(raw_path):
+        raise ConfigError(
+            f"{label} must use portable filenames: "
+            f"{_bounded_diagnostic_repr(raw_path)}"
+        )
     supplied = Path(raw_path)
     if supplied.is_absolute() or supplied.anchor or supplied.drive:
         raise ConfigError(f"{label} must be relative to the repository root")

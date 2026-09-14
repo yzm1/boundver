@@ -84,9 +84,33 @@ class PreviousReleaseHelperTests(unittest.TestCase):
 
     def test_a_refusal_must_name_a_contract_axis(self):
         module = self._module("previous_release_locks")
-        self.assertTrue(module._names_an_axis("boundary-lock schema changed"))
-        self.assertTrue(module._names_an_axis("boundver-semantic-config/v1"))
-        self.assertFalse(module._names_an_axis("something went wrong"))
+        accepted = (
+            "  - LOCKFILE schema unsupported: boundary-lock/v3",
+            (
+                "LOCKFILE semantic configuration contract unsupported for "
+                "this read-only comparison"
+            ),
+            "LOCKFILE semantic configuration contract mismatch: v2 uses v1",
+            "LOCKFILE malformed: config_contract must be boundver-semantic-config/v3",
+            (
+                "  - METADATA MISMATCH api.boundary_provider_version: "
+                "lockfile='1' current='2'"
+            ),
+        )
+        for diagnostic in accepted:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertTrue(module._names_an_axis(diagnostic))
+
+        unrelated = (
+            "provider failed while reading contract.json",
+            "could not read boundary-lock-notes.txt",
+            "invalid docs/boundver-semantic-config/v3.md",
+            "missing provider_version.txt",
+            "something went wrong",
+        )
+        for diagnostic in unrelated:
+            with self.subTest(diagnostic=diagnostic):
+                self.assertFalse(module._names_an_axis(diagnostic))
 
     def test_previous_release_job_fetches_the_release_tags(self):
         workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"

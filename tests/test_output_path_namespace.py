@@ -169,6 +169,12 @@ RESERVED = ("NUL", "CON.txt", "com1", "LPT9.json", "aux", "prn")
 #: Segments that end in a character Win32 strips and NT keeps.
 TRAILING = ("lock.json.", "lock.json ")
 
+# Windows refuses these inside a filename. They must also be rejected on
+# POSIX so one output argument cannot denote different paths across hosts.
+WINDOWS_INVALID_CHARACTERS = (
+    "<", ">", '"', ":", "|", "?", "*", "\\", "\x01", "\x1f",
+)
+
 
 class OutputNameRuleTests(unittest.TestCase):
     """OBL-GLOBS-068: an unportable name is refused by rule, not by accident.
@@ -221,6 +227,18 @@ class OutputNameRuleTests(unittest.TestCase):
         result, _ancestor = self._generated("lock.json:stream")
         self.assertEqual(result.returncode, COULD_NOT_CHECK, result.stdout)
         self.assertIn("portable filename", result.stderr)
+
+    def test_windows_invalid_characters_are_refused_on_every_host(self):
+        for character in WINDOWS_INVALID_CHARACTERS:
+            with self.subTest(character=repr(character)):
+                result, ancestor = self._generated(
+                    f"deep/lock{character}.json"
+                )
+                self.assertEqual(result.returncode, COULD_NOT_CHECK, result.stdout)
+                self.assertIn("portable filenames", result.stderr)
+                if ord(character) < 32:
+                    self.assertNotIn(character, result.stderr)
+                self.assertFalse(ancestor)
 
     @on_windows
     def test_the_interior_refusal_is_early_and_names_portability(self):

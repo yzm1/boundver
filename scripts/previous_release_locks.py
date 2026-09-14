@@ -35,9 +35,15 @@ EXAMPLES = ROOT / "examples"
 #: the artifacts are moved out afterwards, rather than asking boundver to
 #: write somewhere it is right to refuse.
 STAGING = ROOT / ".previous-release-staging"
-#: The axes a lockfile pins. A refusal must name at least one of them, so a
-#: user is told what changed rather than only that something did.
-CONTRACT_AXES = ("boundary-lock", "semantic-config", "provider_version", "contract")
+#: Concrete verification diagnostics that identify a compatibility axis. A
+#: generic token such as ``contract`` is not enough: it can occur in an input
+#: filename or an unrelated provider error.
+LOCK_COMPATIBILITY_DIAGNOSTICS = (
+    "LOCKFILE schema unsupported:",
+    "LOCKFILE semantic configuration contract unsupported",
+    "LOCKFILE semantic configuration contract mismatch:",
+    "LOCKFILE malformed: config_contract ",
+)
 
 OK, FAILED, USAGE = 0, 1, 2
 
@@ -93,7 +99,18 @@ def write(boundver: str, out: Path) -> int:
 
 
 def _names_an_axis(text: str) -> bool:
-    return any(axis in text for axis in CONTRACT_AXES)
+    for line in text.splitlines():
+        diagnostic = line.strip()
+        if diagnostic.startswith("- "):
+            diagnostic = diagnostic[2:].lstrip()
+        if diagnostic.startswith(LOCK_COMPATIBILITY_DIAGNOSTICS):
+            return True
+        if (
+            diagnostic.startswith("METADATA MISMATCH ")
+            and ".boundary_provider_version:" in diagnostic
+        ):
+            return True
+    return False
 
 
 def check(locks: Path) -> int:
