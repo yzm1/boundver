@@ -287,12 +287,12 @@ class BaselineModeTests(unittest.TestCase):
             scene.git("add", "--all")
             scene.git("commit", "-m", "baseline")
             target = scene.root / "b.json"
-            os.chmod(target, 0o640)
+            os.chmod(target, 0o400)
             result = run_cli(
                 scene.root, "verify", "--source", "head", "--update-baseline", "b.json"
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o400)
         finally:
             scene.close()
 

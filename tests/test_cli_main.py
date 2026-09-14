@@ -2396,12 +2396,12 @@ class MainUtilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "boundary.lock.json"
             target.write_text("old\n", encoding="utf-8")
-            target.chmod(0o640)
+            target.chmod(0o400)
 
             core._write_text_atomic(target, "new\n")
 
             self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
-            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o400)
 
     def test_atomic_write_creates_plain_nested_parents(self):
         with tempfile.TemporaryDirectory() as td:

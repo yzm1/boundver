@@ -79,7 +79,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
                 _content_only_digest(root, "svc", source="head"),
             )
 
-            target.chmod(0o755)
+            target.chmod(0o700)
             _commit(root, "executable")
             executable = (
                 source_tree_digest(root, "svc", source="head"),
@@ -114,7 +114,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
 
             # Behavior selects a disjoint file, so its change here proves the
             # behavior envelope cryptographically includes boundary.
-            contract.chmod(0o755)
+            contract.chmod(0o700)
             _commit(root, "contract executable")
             contract_mode = generate_lockfile(_config(), root, source="head")
             self.assertNotEqual(
@@ -128,7 +128,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
 
             # Boundary is unchanged; this proves the raw behavior selection
             # itself binds mode as well.
-            behavior.chmod(0o755)
+            behavior.chmod(0o700)
             _commit(root, "behavior executable")
             behavior_mode = generate_lockfile(_config(), root, source="head")
             self.assertEqual(
@@ -498,7 +498,7 @@ class LockV3SafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
             root = Path(td)
             self._write_vendored_repo(root)
-            (root / "vendor" / "svc" / "contract.txt").chmod(0o755)
+            (root / "vendor" / "svc" / "contract.txt").chmod(0o700)
             _commit(root, "vendored mode drift")
             with self.assertRaisesRegex(ConfigError, "differs from source"):
                 generate_lockfile(

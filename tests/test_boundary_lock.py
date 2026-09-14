@@ -3410,7 +3410,7 @@ class MigrateLockTests(unittest.TestCase):
                 p = Path(td) / "boundary.lock.json"
                 p.write_bytes(original)
                 if os.name != "nt":
-                    p.chmod(0o640)
+                    p.chmod(0o400)
                 timestamp_ns = 1_700_000_000_123_456_700
                 os.utime(p, ns=(timestamp_ns, timestamp_ns))
                 before = p.stat()

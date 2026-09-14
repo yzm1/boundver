@@ -942,7 +942,7 @@ class ChangedPathSelectionTests(unittest.TestCase):
                     "cat\n"
                 ).encode("utf-8")
             )
-            filter_script.chmod(0o755)
+            filter_script.chmod(0o700)
 
             _init_repo(root)
             _git(

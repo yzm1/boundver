@@ -896,8 +896,8 @@ esac
 """,
                 encoding="utf-8",
             )
-            fake_git.chmod(0o755)
-            fake_gh.chmod(0o755)
+            fake_git.chmod(0o700)
+            fake_gh.chmod(0o700)
             hostile_imports = temporary_path / "hostile-imports"
             hostile_imports.mkdir()
             sitecustomize_marker = temporary_path / "sitecustomize-ran"
@@ -979,7 +979,7 @@ esac
                 bounded_source,
                 encoding="utf-8",
             )
-            bounded_audit.chmod(0o755)
+            bounded_audit.chmod(0o700)
             completion_marker = temporary_path / "oversize-producer-finished"
             environment = os.environ.copy()
             environment.update(

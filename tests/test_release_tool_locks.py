@@ -155,11 +155,11 @@ def test_lock_writer_refuses_symlinks_and_preserves_regular_file_mode(
     output.unlink()
     output.write_bytes(b"old")
     if os.name != "nt":
-        output.chmod(0o640)
+        output.chmod(0o400)
     locker._atomic_write(output, b"replacement")
     assert output.read_bytes() == b"replacement"
     if os.name != "nt":
-        assert stat.S_IMODE(output.stat().st_mode) == 0o640
+        assert stat.S_IMODE(output.stat().st_mode) == 0o400
 
 
 def test_action_native_wheels_cover_supported_python_and_os_matrix():

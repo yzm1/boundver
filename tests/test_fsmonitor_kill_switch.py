@@ -228,7 +228,7 @@ class RecordingPrograms:
                 record=(self.records / f"{name}.noext").as_posix()
             ).encode("utf-8")
         )
-        os.chmod(posix, 0o755)
+        os.chmod(posix, 0o700)
         for suffix in (".bat", ".cmd"):
             script = self.programs / f"{name}{suffix}"
             script.write_bytes(

@@ -231,7 +231,7 @@ class HostileHome:
     def _script(self, path: Path, body: str) -> None:
         """Write an executable /bin/sh script with real line feeds."""
         path.write_text("#!/bin/sh\n" + body, encoding="utf-8", newline="\n")
-        os.chmod(path, 0o755)
+        os.chmod(path, 0o700)
 
     def _build(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

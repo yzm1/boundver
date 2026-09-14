@@ -2142,7 +2142,7 @@ print(json.dumps(payload, separators=(",", ":")))
 """,
                 encoding="utf-8",
             )
-            fake_gh.chmod(0o755)
+            fake_gh.chmod(0o700)
             environment = dict(os.environ)
             environment.update(
                 {
@@ -3672,7 +3672,7 @@ fi
 exit 74
 """.encode("utf-8")
             )
-            fake_gh.chmod(0o755)
+            fake_gh.chmod(0o700)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(
                 ["git", "config", "user.email", "test@example.invalid"],
