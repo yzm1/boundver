@@ -217,6 +217,12 @@ All notable changes to this project are documented here. The format follows
   filenames the atomic writer cannot create portably.
 - Diagnosed stable working-tree symlinks before opening them in the shared
   bounded reader, while retaining identity checks for replacement races.
+- Supplied the exact repository as process-local `safe.directory` while reading
+  partial-clone and filter configuration, so the hardened Docker image can
+  inspect a read-only checkout owned by the host without restoring ambient Git
+  configuration. Kept the public Action transport smoke within the current lock
+  contract during a lock-schema migration; the historical demo still exercises
+  non-empty reconciled ranges.
 - Restored the dedicated `VENDORED DRIFT` verdict for readable vendored copies
   whose content differs from their source, with ordinary drift severity.
   Missing or unreadable vendored inputs remain fail-closed digest errors, and

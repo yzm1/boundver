@@ -729,6 +729,29 @@ def _git_config_query_environment() -> Dict[str, str]:
     return environment
 
 
+def _repository_config_query_environment(
+    resolved_repo_root: str,
+) -> Dict[str, str]:
+    """Return an inert block allowed to read one exact repository's config."""
+    environment = _git_config_query_environment()
+    values = (
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+        ("safe.directory", resolved_repo_root),
+    )
+    environment.update(
+        {
+            "GIT_CONFIG_COUNT": str(len(values)),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    for index, (key, value) in enumerate(values):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    return environment
+
+
 @lru_cache(maxsize=128)
 def _ambient_worktree_config_overrides(
     resolved_repo_root: str,
@@ -835,17 +858,8 @@ def _repository_filter_config_overrides(
     ):
         return ()
 
-    environment = _git_config_query_environment()
-    environment.update(
-        {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_KEY_0": "core.hooksPath",
-            "GIT_CONFIG_VALUE_0": os.devnull,
-            "GIT_CONFIG_KEY_1": "core.fsmonitor",
-            "GIT_CONFIG_VALUE_1": "false",
-            "GIT_CONFIG_NOSYSTEM": "1",
-        }
+    environment = _repository_config_query_environment(
+        str(repo_root.resolve(strict=False))
     )
     try:
         result = _git_run(
@@ -1046,17 +1060,8 @@ def _require_process_local_git_config(
 def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
     """Return bounded local config keys that mark a partial clone."""
     repo_root = Path(resolved_repo_root)
-    environment = _git_config_query_environment()
-    environment.update(
-        {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_KEY_0": "core.hooksPath",
-            "GIT_CONFIG_VALUE_0": os.devnull,
-            "GIT_CONFIG_KEY_1": "core.fsmonitor",
-            "GIT_CONFIG_VALUE_1": "false",
-            "GIT_CONFIG_NOSYSTEM": "1",
-        }
+    environment = _repository_config_query_environment(
+        str(repo_root.resolve(strict=False))
     )
     try:
         result = _git_run(

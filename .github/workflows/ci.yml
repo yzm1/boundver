@@ -294,13 +294,15 @@ jobs:
           assert json.loads(result.read_text(encoding="utf-8"))["ok"] is True
           PY
 
-      - name: Review an immutable range with the public interface
+      - name: Review an immutable current-schema pair with the public interface
         id: boundver-review
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: ./
         with:
           operation: review
-          base: HEAD^
+          # Keep the Action transport smoke inside one lock/config contract.
+          # The historical range demo below exercises non-empty transitions.
+          base: HEAD
           target: HEAD
           transitive: true
           python-version: ${{ matrix.python-version }}

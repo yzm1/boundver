@@ -566,9 +566,9 @@ class _LaunchAssertions:
         probe carries its own three-key block, the ambient
         promotion query reads system and global config on purpose, so it
         carries no block at all and passes the repository path as
-        ``-c safe.directory=``; each filter query carries a two-key block and
-        has no repository path to inject yet. Filter results are deliberately
-        uncached, so a verify may issue more than one such query.
+        ``-c safe.directory=``; each partial-clone and filter query carries a
+        three-key block including the exact repository path. Filter results are
+        deliberately uncached, so a verify may issue more than one such query.
         """
         self.assertGreater(len(launches), 0, "the run started no Git process")
         bootstrap = [launch for launch in launches if launch.is_bootstrap_query]
@@ -600,12 +600,20 @@ class _LaunchAssertions:
         self.assertIn(f"safe.directory={resolved}", promotion[0].argv)
         self.assertEqual(
             partial[0].injected,
-            {"core.hooksPath": os.devnull, "core.fsmonitor": "false"},
+            {
+                "core.hooksPath": os.devnull,
+                "core.fsmonitor": "false",
+                "safe.directory": resolved,
+            },
         )
         for launch in filters:
             self.assertEqual(
                 launch.injected,
-                {"core.hooksPath": os.devnull, "core.fsmonitor": "false"},
+                {
+                    "core.hooksPath": os.devnull,
+                    "core.fsmonitor": "false",
+                    "safe.directory": resolved,
+                },
             )
 
         hardened = [launch for launch in launches if not launch.is_bootstrap_query]

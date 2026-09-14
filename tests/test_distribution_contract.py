@@ -2559,6 +2559,13 @@ print(json.dumps(payload, separators=(",", ":")))
         jobs = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )["jobs"]
+        action_review = next(
+            step
+            for step in jobs["action"]["steps"]
+            if step.get("id") == "boundver-review"
+        )
+        self.assertEqual(action_review["with"]["base"], "HEAD")
+        self.assertEqual(action_review["with"]["target"], "HEAD")
         public = jobs["public-installations"]
         self.assertEqual(
             public["strategy"]["matrix"]["os"],
