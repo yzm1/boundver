@@ -57,14 +57,18 @@ PERFORMANCE_CONTRACT = {
     "head": {
         "first_wall_seconds": 5.0,
         "repeated_median_wall_seconds": 3.0,
-        "git_processes": 6,
+        # Six operational commands, each preceded by an uncached repository
+        # filter-config probe. The probe must not be cached across commands:
+        # repository config can change during a working-tree operation.
+        "git_processes": 12,
     },
     "small_staged_change": {
         "first_wall_seconds": 5.0,
         "repeated_median_wall_seconds": 3.0,
         # Index capture proves both its tree object and path membership stable,
-        # then the three readers open independent bounded blob sessions.
-        "git_processes": 10,
+        # then the three readers open independent bounded blob sessions. Each
+        # of those ten operational commands has the same fresh safety probe.
+        "git_processes": 20,
     },
 }
 
