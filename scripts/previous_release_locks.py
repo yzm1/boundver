@@ -23,6 +23,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -103,31 +104,41 @@ def check(locks: Path) -> int:
         return USAGE
 
     failures = []
-    for artifact in artifacts:
-        name = artifact.name[: -len(".lock.json")]
-        directory = EXAMPLES / name
-        config = directory / "boundary.config.json"
-        if not config.exists():
-            failures.append(f"{name}: {config} disappeared")
-            continue
-        result = _run(
-            [sys.executable, "-I", "-m", "boundver", "verify",
-             "--source", "working-tree", "--config", str(config),
-             "--lock", str(artifact)],
-            cwd=ROOT,
-        )
-
-        combined = (result.stdout or "") + (result.stderr or "")
-        if result.returncode == 0:
-            print(f"ok      {name}: verifies clean under this build")
-        elif _names_an_axis(combined):
-            print(f"ok      {name}: refused, naming the changed axis")
-        else:
-            failures.append(
-                f"{name}: exited {result.returncode} without naming a contract "
-                f"axis: {combined.strip()[:300]}"
+    # The downloaded artifacts normally live under RUNNER_TEMP. The current
+    # CLI intentionally refuses --lock paths outside the repository, so copy
+    # each historical artifact into a short-lived repository-local directory
+    # before asking this build to read it.
+    staging = Path(tempfile.mkdtemp(prefix=".previous-release-check-", dir=ROOT))
+    try:
+        for artifact in artifacts:
+            name = artifact.name[: -len(".lock.json")]
+            directory = EXAMPLES / name
+            config = directory / "boundary.config.json"
+            if not config.exists():
+                failures.append(f"{name}: {config} disappeared")
+                continue
+            staged = staging / artifact.name
+            shutil.copyfile(artifact, staged)
+            result = _run(
+                [sys.executable, "-I", "-m", "boundver", "verify",
+                 "--source", "working-tree", "--config", str(config),
+                 "--lock", staged.relative_to(ROOT).as_posix()],
+                cwd=ROOT,
             )
-            print(f"FAILED  {failures[-1]}")
+
+            combined = (result.stdout or "") + (result.stderr or "")
+            if result.returncode == 0:
+                print(f"ok      {name}: verifies clean under this build")
+            elif _names_an_axis(combined):
+                print(f"ok      {name}: refused, naming the changed axis")
+            else:
+                failures.append(
+                    f"{name}: exited {result.returncode} without naming a contract "
+                    f"axis: {combined.strip()[:300]}"
+                )
+                print(f"FAILED  {failures[-1]}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
     print()
     print(f"{len(artifacts)} lockfiles from the previous release, {len(failures)} failures")

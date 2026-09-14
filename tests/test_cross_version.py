@@ -14,8 +14,11 @@ from __future__ import annotations
 import io
 import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -96,6 +99,35 @@ class PreviousReleaseHelperTests(unittest.TestCase):
 
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
         self.assertIs(checkout["with"]["persist-credentials"], False)
+
+    def test_downloaded_locks_are_staged_inside_the_repository(self):
+        module = self._module("previous_release_locks")
+        with tempfile.TemporaryDirectory() as repository_dir:
+            root = Path(repository_dir)
+            examples = root / "examples"
+            (examples / "hello").mkdir(parents=True)
+            (examples / "hello" / "boundary.config.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
+            with tempfile.TemporaryDirectory() as download_dir:
+                downloaded = Path(download_dir) / "hello.lock.json"
+                downloaded.write_text("{}\n", encoding="utf-8")
+
+                def inspect_run(command, cwd):
+                    lock = Path(command[command.index("--lock") + 1])
+                    self.assertFalse(lock.is_absolute())
+                    self.assertTrue((cwd / lock).is_file())
+                    self.assertEqual((cwd / lock).read_bytes(), downloaded.read_bytes())
+                    return subprocess.CompletedProcess(command, 0, "", "")
+
+                with (
+                    mock.patch.object(module, "ROOT", root),
+                    mock.patch.object(module, "EXAMPLES", examples),
+                    mock.patch.object(module, "_run", side_effect=inspect_run),
+                ):
+                    self.assertEqual(module.check(Path(download_dir)), module.OK)
+
+            self.assertEqual(list(root.glob(".previous-release-check-*")), [])
 
 
 class BaselineSchemaPinTests(unittest.TestCase):
