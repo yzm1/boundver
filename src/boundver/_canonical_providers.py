@@ -220,9 +220,18 @@ def _is_openapi_header(path: tuple) -> bool:
 
 def _is_openapi_example_object(path: tuple) -> bool:
     """Return whether *path* identifies a retained OpenAPI Example Object."""
-    return bool(
-        len(path) == 3
-        and path[:2] == ("components", "examples")
+    if len(path) == 3 and path[:2] == ("components", "examples"):
+        return True
+    if len(path) < 2 or path[-2] != "examples":
+        return False
+    owner = path[:-2]
+    return any(
+        predicate(owner)
+        for predicate in (
+            _is_openapi_media_type,
+            _is_openapi_parameter,
+            _is_openapi_header,
+        )
     )
 
 

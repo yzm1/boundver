@@ -199,6 +199,51 @@ class DataValuedScopeTests(unittest.TestCase):
             )
         )
 
+    def test_inline_example_values_are_opaque_data(self):
+        payload = {
+            "$ref": "literal-user-data",
+            "description": "example data",
+            "summary": "also example data",
+        }
+        cases = (
+            (
+                "media type",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "content": {"application/json": {"examples": {
+                        "payload": {"value": payload}
+                    }}},
+                }}}}}),
+            ),
+            (
+                "parameter",
+                _document(paths={"/a": {"get": {
+                    "parameters": [{
+                        "name": "q",
+                        "in": "query",
+                        "examples": {"payload": {"value": payload}},
+                    }],
+                    "responses": {"200": {"description": "ok"}},
+                }}}),
+            ),
+            (
+                "header",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "headers": {"X-Result": {
+                        "schema": {"type": "string"},
+                        "examples": {"payload": {"value": payload}},
+                    }},
+                }}}}}),
+            ),
+        )
+
+        for label, document in cases:
+            with self.subTest(label=label):
+                # Literal `$ref` members are example payload data, not OpenAPI
+                # Reference Objects, so validation must not reject them.
+                _canonical(document)
+
     def test_value_is_not_opaque_outside_an_example_object(self):
         self.assertFalse(
             _distinguishes(
