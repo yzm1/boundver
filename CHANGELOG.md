@@ -149,8 +149,9 @@ All notable changes to this project are documented here. The format follows
   inapplicable `init` hint. `init` now warns when its editable scaffold cannot
   yet pass validation instead of promising that generation is ready.
 - Made `add` and `remove` compare the live config with the exact bytes they
-  parsed before atomically publishing an edit. A concurrent writer now causes
-  a diagnosed exit `2` instead of being silently overwritten.
+  parsed, then atomically claim that checked file before exclusive publication.
+  Concurrent replacements arriving on either side of the claim are preserved
+  and cause a diagnosed exit `2` instead of being silently overwritten.
 - Made clean sparse checkouts source-stable. An absent `skip-worktree` path is
   listed and read from its captured index blob in working-tree mode, matching
   Git's own unchanged verdict and the corresponding HEAD/index fingerprints.

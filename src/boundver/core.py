@@ -179,6 +179,7 @@ from ._baseline import (
     _open_plain_child_directory,
     _open_plain_directory,
     _same_directory_identity,
+    _same_file_identity,
     _validate_baseline_relative_path,
     apply_baseline,
     baseline_change_ids,
@@ -856,6 +857,21 @@ def _read_mutation_sibling_bytes(
     return data
 
 
+def _reserve_atomic_output_sibling(
+    directory: _MutationDirectory,
+    target_name: str,
+    suffix: str,
+) -> tuple[int, str]:
+    """Create one exclusive sidecar beside an already validated output."""
+    for _attempt in range(100):
+        candidate = f".{target_name}.{secrets.token_hex(8)}{suffix}"
+        try:
+            return directory.open_exclusive(candidate), candidate
+        except FileExistsError:
+            continue
+    raise OSError("cannot allocate a unique output sidecar")
+
+
 def _write_text_atomic(
     path: Path,
     text: str,
@@ -873,6 +889,8 @@ def _write_text_atomic(
     directory = _MutationDirectory(path.parent, parent_fd)
     temp_name: Optional[str] = None
     temp_fd: Optional[int] = None
+    claimed_name: Optional[str] = None
+    preserve_claim = False
     try:
         if not _same_directory_identity(ancestors[-1][1], os.fstat(parent_fd)):
             raise ConfigError(
@@ -897,16 +915,11 @@ def _write_text_atomic(
                 )
             if os.name != "nt":
                 existing_mode = stat.S_IMODE(existing_leaf.st_mode)
-        for _attempt in range(100):
-            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
-            try:
-                temp_fd = directory.open_exclusive(candidate)
-            except FileExistsError:
-                continue
-            temp_name = candidate
-            break
-        else:
-            raise OSError("cannot allocate a unique output sidecar")
+        temp_fd, temp_name = _reserve_atomic_output_sibling(
+            directory,
+            path.name,
+            ".tmp",
+        )
         try:
             if existing_mode is not None:
                 os.fchmod(temp_fd, existing_mode)
@@ -939,25 +952,152 @@ def _write_text_atomic(
                 raise ConfigError(
                     f"Output file changed before publication: {path}; refusing to write"
                 )
-        try:
-            current_leaf = directory.lstat(path.name)
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as exc:
-            raise ConfigError(
-                f"Output path changed before publication: {path}"
-            ) from exc
-        else:
-            if not stat.S_ISREG(current_leaf.st_mode) or _is_windows_reparse_point(
-                current_leaf
-            ):
-                raise ConfigError(
-                    "Output path changed to a symlink, junction, reparse point, "
-                    f"or non-file before publication: {path}"
+
+            # Move whatever now occupies the target to a private sibling, then
+            # validate those claimed bytes. Publication uses an exclusive hard
+            # link, so a writer arriving after the claim is preserved instead
+            # of being overwritten by the read-modify-write operation.
+            claim_fd, claimed_name = _reserve_atomic_output_sibling(
+                directory,
+                path.name,
+                ".claim",
+            )
+            reserved_claim_identity = os.fstat(claim_fd)
+            os.close(claim_fd)
+            preserve_claim = True
+            try:
+                directory.replace(path.name, claimed_name)
+            except BaseException as exc:
+                try:
+                    current_claim_identity = directory.lstat(claimed_name)
+                except OSError:
+                    claim_was_replaced = True
+                else:
+                    claim_was_replaced = not _same_file_identity(
+                        reserved_claim_identity,
+                        current_claim_identity,
+                    )
+                if claim_was_replaced:
+                    try:
+                        directory.link(claimed_name, path.name)
+                    except (FileExistsError, OSError):
+                        pass
+                    else:
+                        directory.unlink(claimed_name)
+                        claimed_name = None
+                        preserve_claim = False
+                        directory.fsync()
+                else:
+                    preserve_claim = False
+                if isinstance(exc, (OSError, ValueError)):
+                    raise ConfigError(
+                        f"Output file changed during publication: {path}; "
+                        "refusing to write"
+                    ) from exc
+                raise
+
+            try:
+                claimed_content = _read_mutation_sibling_bytes(
+                    directory,
+                    claimed_name,
+                    limit=len(expected_content),
                 )
-        directory.replace(temp_name, path.name)
-        temp_name = None
-        directory.fsync()
+                if claimed_content != expected_content:
+                    raise ConfigError(
+                        f"Output file changed during publication: {path}"
+                    )
+            except BaseException as exc:
+                restore_error: Optional[OSError] = None
+                target_occupied = False
+                try:
+                    directory.link(claimed_name, path.name)
+                except FileExistsError:
+                    target_occupied = True
+                except OSError as restore_exc:
+                    restore_error = restore_exc
+                else:
+                    directory.unlink(claimed_name)
+                    claimed_name = None
+                    preserve_claim = False
+                    directory.fsync()
+                if isinstance(exc, (ConfigError, OSError, ValueError)):
+                    if target_occupied:
+                        raise ConfigError(
+                            "Output file changed during publication; the current "
+                            "target was preserved and earlier competing bytes remain "
+                            f"at {claimed_name}: {path}"
+                        ) from exc
+                    if restore_error is not None:
+                        raise ConfigError(
+                            "Output file changed during publication and could not be "
+                            f"restored; recover competing bytes from {claimed_name}: "
+                            f"{path}"
+                        ) from restore_error
+                    raise ConfigError(
+                        "Output file changed during publication; competing bytes "
+                        f"were restored and no update was written: {path}"
+                    ) from exc
+                raise
+
+            try:
+                directory.link(temp_name, path.name)
+            except FileExistsError as exc:
+                directory.unlink(claimed_name)
+                claimed_name = None
+                preserve_claim = False
+                directory.fsync()
+                raise ConfigError(
+                    "Output file changed during publication; the competing target "
+                    f"was preserved: {path}"
+                ) from exc
+            except OSError as exc:
+                try:
+                    directory.link(claimed_name, path.name)
+                except FileExistsError:
+                    directory.unlink(claimed_name)
+                    claimed_name = None
+                    preserve_claim = False
+                except OSError as restore_exc:
+                    preserve_claim = True
+                    raise ConfigError(
+                        "Cannot publish or restore output; recover the reviewed "
+                        f"bytes from {claimed_name}: {path}"
+                    ) from restore_exc
+                else:
+                    directory.unlink(claimed_name)
+                    claimed_name = None
+                    preserve_claim = False
+                directory.fsync()
+                raise ConfigError(
+                    f"Cannot safely publish output: {path}"
+                ) from exc
+
+            directory.unlink(temp_name)
+            temp_name = None
+            directory.unlink(claimed_name)
+            claimed_name = None
+            preserve_claim = False
+            directory.fsync()
+        else:
+            try:
+                current_leaf = directory.lstat(path.name)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as exc:
+                raise ConfigError(
+                    f"Output path changed before publication: {path}"
+                ) from exc
+            else:
+                if not stat.S_ISREG(
+                    current_leaf.st_mode
+                ) or _is_windows_reparse_point(current_leaf):
+                    raise ConfigError(
+                        "Output path changed to a symlink, junction, reparse point, "
+                        f"or non-file before publication: {path}"
+                    )
+            directory.replace(temp_name, path.name)
+            temp_name = None
+            directory.fsync()
     finally:
         if temp_fd is not None:
             try:
@@ -967,6 +1107,11 @@ def _write_text_atomic(
         if temp_name is not None:
             try:
                 directory.unlink(temp_name)
+            except OSError:
+                pass
+        if claimed_name is not None and not preserve_claim:
+            try:
+                directory.unlink(claimed_name)
             except OSError:
                 pass
         for descriptor in reversed(held_fds):

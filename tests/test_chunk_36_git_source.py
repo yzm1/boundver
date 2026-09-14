@@ -26,18 +26,13 @@ before repository discovery starts. A valid `HEAD~1` premise reaches exactly
 one `rev-parse` argument and the resulting immutable object ID, not the moving
 name, reaches the diff.
 
-Four divergences remain as expected failures, each with the current behaviour
-pinned beside it so a partial fix cannot pass unnoticed. `add` and `remove` are
-read-modify-write over the whole document
-with no comparison of the leaf against what was read, so a competing write
-landing between the load and the publish is silently discarded while both runs
-exit 0. That one is demonstrated by interposing the competing write inside
-`_write_config_atomic` itself, and by a premise run that performs the same
-interposition but skips boundver's write, showing the competitor's edit does
-survive when nothing overwrites it. The other three are `init` promising that
-`validate-config` will pass for a scaffold it rejects, the post-edit refusal that
-names config fields rather than the flags that produced them, and the empty
-stdout a `--format json` consumer receives for a syntactically invalid ref.
+Four earlier divergences remain as regression contracts, with their premises
+pinned beside them so a partial fix cannot pass unnoticed. `add` and `remove`
+perform a compare-and-claim publication that preserves a competing whole-file
+edit. The premise run interposes the same edit but skips boundver's write,
+showing what must survive. The other three require `init` to emit a scaffold
+accepted by `validate-config`, post-edit refusals to name the flags that repair
+them, and `--format json` to emit a diagnostic document for an invalid ref.
 
 Covers OBL-PROVIDERS-063, OBL-PROVIDERS-064, OBL-PROVIDERS-065,
 OBL-PROVIDERS-066, OBL-GIT-SOURCE-131 and OBL-GIT-SOURCE-132.
@@ -673,6 +668,97 @@ class ConcurrentConfigEditTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, USAGE, result.stdout)
         self.assertEqual(observed["after"], ["rival", "svc"])
+
+    def test_a_replacement_after_the_comparison_is_claimed_and_restored(self):
+        """The final compare cannot be separated from an overwriting replace."""
+        for command, scene_factory in (
+            (("add", "sdk", "sdk", "--provider", "leaf"), _selector_scene),
+            (("remove", "sdk"), _custom_provider_scene),
+        ):
+            with self.subTest(command=command[0]), scene_factory() as scene:
+                path = scene.root / "boundary.config.json"
+                real_read = core._read_mutation_sibling_bytes
+                raced = False
+
+                def racing_read(directory, name, *, limit):
+                    nonlocal raced
+                    content = real_read(directory, name, limit=limit)
+                    if not raced and name == path.name:
+                        document = json.loads(content.decode("utf-8"))
+                        document["components"]["rival"] = {
+                            "path": "sdk",
+                            "version_source": None,
+                            "boundary": {"provider": "leaf", "paths": []},
+                        }
+                        path.write_text(
+                            json.dumps(document, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        raced = True
+                    return content
+
+                with mock.patch.object(
+                    core,
+                    "_read_mutation_sibling_bytes",
+                    racing_read,
+                ):
+                    result = run_cli_in_process(scene.root, *command)
+
+                after = json.loads(path.read_text(encoding="utf-8"))
+                self.assertTrue(raced)
+                self.assertEqual(result.returncode, USAGE, result.stderr)
+                self.assertIn("changed during publication", result.stderr)
+                self.assertIn("rival", after["components"])
+                self.assertEqual(
+                    list(scene.root.glob(f".{path.name}.*")),
+                    [],
+                )
+
+    def test_a_writer_arriving_after_the_claim_is_not_overwritten(self):
+        with _selector_scene() as scene:
+            path = scene.root / "boundary.config.json"
+            real_link = core._MutationDirectory.link
+            raced = False
+
+            def racing_link(directory, source, target):
+                nonlocal raced
+                if not raced and source.endswith(".tmp") and target == path.name:
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "project": "competitor",
+                                "components": {},
+                            },
+                            indent=2,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    raced = True
+                return real_link(directory, source, target)
+
+            with mock.patch.object(
+                core._MutationDirectory,
+                "link",
+                racing_link,
+            ):
+                result = run_cli_in_process(
+                    scene.root,
+                    "add",
+                    "sdk",
+                    "sdk",
+                    "--provider",
+                    "leaf",
+                )
+
+            self.assertTrue(raced)
+            self.assertEqual(result.returncode, USAGE, result.stderr)
+            self.assertIn("competing target was preserved", result.stderr)
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["project"],
+                "competitor",
+            )
+            self.assertEqual(list(scene.root.glob(f".{path.name}.*")), [])
 
 
 class BaseRefGuardTests(unittest.TestCase):
