@@ -407,6 +407,14 @@ WINDOWS_RESERVED_ARCHIVE_STEMS = {
     "prn",
     *(f"com{number}" for number in range(1, 10)),
     *(f"lpt{number}" for number in range(1, 10)),
+    *(
+        f"com{number}"
+        for number in "\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+    ),
+    *(
+        f"lpt{number}"
+        for number in "\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+    ),
 }
 
 

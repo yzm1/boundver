@@ -164,7 +164,16 @@ class WindowsNamespaceScopeTests(unittest.TestCase):
 
 #: Reserved device names, with and without an extension. The rule is meant to
 #: apply to the stem, so a suffix changes nothing.
-RESERVED = ("NUL", "CON.txt", "com1", "LPT9.json", "aux", "prn")
+RESERVED = (
+    "NUL",
+    "CON.txt",
+    "com1",
+    "LPT9.json",
+    "COM¹.txt",
+    "lpt³.json",
+    "aux",
+    "prn",
+)
 
 #: Segments that end in a character Win32 strips and NT keeps.
 TRAILING = ("lock.json.", "lock.json ")

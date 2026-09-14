@@ -1446,6 +1446,8 @@ _RESERVED_WINDOWS_OUTPUT_STEMS = frozenset(
         "NUL",
         *(f"COM{index}" for index in range(1, 10)),
         *(f"LPT{index}" for index in range(1, 10)),
+        *(f"COM{index}" for index in "¹²³"),
+        *(f"LPT{index}" for index in "¹²³"),
     }
 )
 
@@ -2018,6 +2020,10 @@ class _PathGlobOperation:
                 "reduce wildcard declarations or split the component"
             )
         self.steps += amount
+
+    def spend(self, amount: int = 1) -> None:
+        """Charge non-glob selector work to this operation's shared budget."""
+        self._spend(amount)
 
     def prepare(self, pattern: str) -> _CompiledPathGlob:
         compiled = self._compiled.get(pattern)

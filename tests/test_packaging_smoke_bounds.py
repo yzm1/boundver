@@ -392,6 +392,17 @@ def test_zip_member_portable_name_collisions_are_rejected(tmp_path):
     assert "non-portable member-name collision" in result.stderr
 
 
+def test_zip_member_superscript_windows_device_name_is_rejected(tmp_path):
+    wheel, sdist, pyz, license_path, scratch = _artifacts(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("boundver/COM¹.txt", b"device alias")
+
+    result = _run_archive(wheel, sdist, pyz, license_path, scratch)
+
+    assert result.returncode != 0
+    assert "unsafe or overlong member name" in result.stderr
+
+
 def test_zip_member_aggregate_is_preflighted_before_decompression(tmp_path):
     wheel, sdist, pyz, license_path, scratch = _artifacts(tmp_path)
     _patch_zip_uncompressed_sizes(wheel, 100 * 1024 * 1024)

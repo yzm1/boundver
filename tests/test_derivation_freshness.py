@@ -211,6 +211,68 @@ def test_derivation_hash_file_visits_have_one_operation_wide_limit(
     assert any("aggregate operation limit" in issue for issue in issues), issues
 
 
+def test_literal_derivation_selectors_are_indexed_and_operation_bounded() -> None:
+    files = [f"repo/group-{index:05d}/contract.json" for index in range(50_000)]
+    operation = derivations._PathGlobOperation(
+        "Generated-artifact freshness",
+        max_steps=3,
+    )
+    errors = derivations.BoundedDiagnosticList()
+
+    selected = derivations._select_paths(
+        files,
+        ["repo/group-49999/contract.json", "repo/missing"],
+        name="bounded-literals",
+        field="inputs",
+        operation=operation,
+        errors=errors,
+    )
+
+    assert selected == ["repo/group-49999/contract.json"]
+    assert operation.steps == 3
+    assert any("matched no tracked file" in error for error in errors), errors
+
+
+def test_overlapping_literal_derivation_prefixes_share_the_operation_budget() -> None:
+    files = [f"repo/nested/file-{index}.json" for index in range(5)]
+    operation = derivations._PathGlobOperation(
+        "Generated-artifact freshness",
+        max_steps=6,
+    )
+    errors = derivations.BoundedDiagnosticList()
+
+    selected = derivations._select_paths(
+        files,
+        ["repo", "repo/nested"],
+        name="bounded-prefixes",
+        field="inputs",
+        operation=operation,
+        errors=errors,
+    )
+
+    assert selected == files
+    assert any("aggregate glob compile/match steps" in error for error in errors), errors
+
+
+def test_literal_boundary_linkage_comparisons_share_the_selector_budget() -> None:
+    config = {
+        "components": {
+            "api": {
+                "path": "repo",
+                "boundary": {"paths": ["missing.json"]},
+            }
+        }
+    }
+    files = [f"repo/file-{index}.json" for index in range(5)]
+    operation = derivations._PathGlobOperation(
+        "Generated-artifact freshness",
+        max_steps=2,
+    )
+
+    with pytest.raises(GuardrailError, match="aggregate glob compile/match steps"):
+        derivations._configured_boundary_files(config, files, operation)
+
+
 def test_why_keeps_unrelated_derivation_owners_in_its_resolution_context(
     tmp_path: Path,
 ) -> None:
@@ -459,6 +521,8 @@ def test_static_derivation_contract_rejects_unsafe_or_ambiguous_fields(
         "receipts./api.boundver-derivation.json",
         "receipts /api.boundver-derivation.json",
         "CON/api.boundver-derivation.json",
+        "receipts/COM¹.boundver-derivation.json",
+        "receipts/LPT³.boundver-derivation.json",
     ),
 )
 def test_derivation_evidence_requires_portable_output_filenames(

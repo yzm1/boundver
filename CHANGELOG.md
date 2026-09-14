@@ -280,6 +280,12 @@ All notable changes to this project are documented here. The format follows
 - Stopped promoting global or system `core.filemode` into repository
   inspections. Repository-local mode policy remains authoritative, while a
   user home-directory setting can no longer change working-tree fingerprints.
+- Indexed literal generated-artifact selectors and charged their admitted
+  matches to the operation-wide selection budget, preventing large valid
+  derivation configurations from expanding into an unbounded file cross-product.
+- Rejected the superscript Windows device aliases `COM¹` through `COM³` and
+  `LPT¹` through `LPT³` in generated outputs, derivation receipts, and release
+  archive member names on every platform.
 
 ## [0.15.2] - 2026-09-07
 

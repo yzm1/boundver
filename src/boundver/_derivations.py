@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Set, Tuple
 
@@ -52,15 +53,39 @@ def _display_name(name: object) -> str:
     return _bounded_diagnostic_text(name)
 
 
-def _selector_matches(
+def _normalized_selector_matches(
     path: str,
-    selector: str,
+    normalized: str,
     operation: _PathGlobOperation,
 ) -> bool:
-    normalized = _normalize_declared_path(selector)
     if _is_glob(normalized):
         return operation.matches(path, normalized)
+    operation.spend()
     return path == normalized or path.startswith(normalized.rstrip("/") + "/")
+
+
+def _literal_selector_paths(
+    all_files: Sequence[str],
+    selector: str,
+    operation: _PathGlobOperation,
+) -> List[str]:
+    """Select one literal or directory prefix without rescanning the tree."""
+    exact_index = bisect_left(all_files, selector)
+    matches: List[str] = []
+    if exact_index < len(all_files) and all_files[exact_index] == selector:
+        matches.append(all_files[exact_index])
+
+    prefix = selector + "/"
+    descendant_start = bisect_left(all_files, prefix)
+    # '/' sorts immediately before '0', so selector + '0' is an exclusive
+    # upper bound for every path beginning with selector + '/'.
+    descendant_end = bisect_left(all_files, selector + "0", descendant_start)
+    matches.extend(all_files[descendant_start:descendant_end])
+
+    # Charge admission and every returned path. Repeated or overlapping
+    # literals therefore remain bounded even though their lookup is indexed.
+    operation.spend(1 + len(matches))
+    return matches
 
 
 def _select_paths(
@@ -85,11 +110,19 @@ def _select_paths(
     selected: Set[str] = set()
     for selector in sorted(selectors):
         try:
-            matches = [
-                path
-                for path in all_files
-                if _selector_matches(path, selector, operation)
-            ]
+            normalized = _normalize_declared_path(selector)
+            if _is_glob(normalized):
+                matches = [
+                    path
+                    for path in all_files
+                    if operation.matches(path, normalized)
+                ]
+            else:
+                matches = _literal_selector_paths(
+                    all_files,
+                    normalized,
+                    operation,
+                )
         except (GuardrailError, ValueError) as exc:
             errors.append(
                 f"Derivation '{_display_name(name)}' {field} selector could not "
@@ -128,6 +161,15 @@ def _configured_boundary_files(
             isinstance(selector, str) for selector in selectors
         ):
             continue
+        normalized_selectors: List[str] = []
+        for selector in selectors:
+            try:
+                normalized_selectors.append(_normalize_declared_path(selector))
+            except ValueError:
+                # Static config validation reports malformed declarations and
+                # selectors after the first malformed entry remain ignored,
+                # matching the previous per-path evaluation order.
+                break
         try:
             root = _normalize_declared_path(component_path).rstrip("/")
         except ValueError:
@@ -137,9 +179,9 @@ def _configured_boundary_files(
             if not path.startswith(prefix):
                 continue
             relative = path[len(prefix) :]
-            for selector in selectors:
+            for selector in normalized_selectors:
                 try:
-                    if _selector_matches(relative, selector, operation):
+                    if _normalized_selector_matches(relative, selector, operation):
                         selected.add(path)
                         break
                 except GuardrailError:

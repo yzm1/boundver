@@ -75,6 +75,8 @@ _WINDOWS_RESERVED_ARCHIVE_STEMS = {
     "prn",
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
+    *(f"com{index}" for index in "¹²³"),
+    *(f"lpt{index}" for index in "¹²³"),
 }
 
 
