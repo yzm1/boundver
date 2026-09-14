@@ -299,6 +299,45 @@ class DataValuedScopeTests(unittest.TestCase):
                 canonical = json.loads(_canonical(_schema(**{key: payload})))
                 self.assertNotIn(key, canonical["components"]["schemas"]["S"])
 
+    def test_link_object_request_values_are_opaque_data(self):
+        payload = {
+            "$ref": "literal-user-data",
+            "description": "request data",
+            "summary": "also request data",
+        }
+        links = (
+            (
+                "component link",
+                _document(components={"links": {"next": {
+                    "operationId": "nextPage",
+                    "parameters": {"cursor": payload},
+                    "requestBody": payload,
+                }}}),
+                ("components", "links", "next"),
+            ),
+            (
+                "response link",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "links": {"next": {
+                        "operationId": "nextPage",
+                        "parameters": {"cursor": payload},
+                        "requestBody": payload,
+                    }},
+                }}}}}),
+                ("paths", "/a", "get", "responses", "200", "links", "next"),
+            ),
+        )
+
+        for label, document, path in links:
+            with self.subTest(label=label):
+                canonical = json.loads(_canonical(document))
+                link = canonical
+                for segment in path:
+                    link = link[segment]
+                self.assertEqual(link["parameters"]["cursor"], payload)
+                self.assertEqual(link["requestBody"], payload)
+
     def test_value_is_not_opaque_outside_an_example_object(self):
         self.assertFalse(
             _distinguishes(

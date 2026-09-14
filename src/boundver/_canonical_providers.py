@@ -174,6 +174,17 @@ def _is_openapi_response(path: tuple) -> bool:
     )
 
 
+def _is_openapi_link(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI 3 Link Object."""
+    if len(path) == 3 and path[:2] == ("components", "links"):
+        return True
+    return bool(
+        len(path) >= 2
+        and path[-2] == "links"
+        and _is_openapi_response(path[:-2])
+    )
+
+
 def _is_openapi_request_body(path: tuple) -> bool:
     """Return whether *path* identifies an OpenAPI 3 Request Body Object."""
     if len(path) == 3 and path[:2] == ("components", "requestBodies"):
@@ -304,6 +315,10 @@ def _openapi_child_context(
             # annotation-looking name is retained, so it is deliberately
             # excluded here.
             or (key in _OPENAPI_STRIP_KEYS and not named_map)
+            or (
+                key in {"parameters", "requestBody"}
+                and _is_openapi_link(path)
+            )
             or (key == "value" and _is_openapi_example_object(path))
             or (isinstance(key, str) and key.startswith("x-"))
         )

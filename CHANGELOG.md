@@ -209,7 +209,8 @@ All notable changes to this project are documented here. The format follows
 - Preserved Swagger 2 reusable response and security-definition names even
   when they look like documentation fields. OpenAPI example payloads are now
   consistently opaque to reference validation wherever canonicalization drops
-  them as annotations.
+  them as annotations, and Link Object parameter/request-body payloads remain
+  contract-bearing data.
 - Bounded generated-artifact freshness hashing across the whole operation and
   reused identical selected-set digests. Derivation evidence paths now reject
   filenames the atomic writer cannot create portably.

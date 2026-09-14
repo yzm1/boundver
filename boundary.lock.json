@@ -14,7 +14,7 @@
       "consumers": [],
       "external_consumers": [],
       "fingerprints": {
-        "exact": "8b2a3e043f84e978377561c8b036a5e334e644bcd745818005ae9475f603dfad",
+        "exact": "e86dc70444ee4a38511958259383ca20cfc22000259eb41b768e2bcd7ab762b8",
         "behavior": null,
         "boundary": "c67b37ef2743be3dfbf886522fc8fde03ef712a3eecf37fa5dd81fa69a777aa9",
         "compat": null
@@ -78,9 +78,9 @@
         "boundver",
         "spec"
       ],
-      "fingerprint": "be73e06dbd4c9a559ea9562fae93e16e5cd742a7beb69160a62807d8549bad0f",
+      "fingerprint": "b2869e2a4634708bc8845d0461ac41632b6e24950079eb1dda355c26e38f2b64",
       "component_digests": {
-        "boundver": "8b2a3e043f84e978377561c8b036a5e334e644bcd745818005ae9475f603dfad",
+        "boundver": "e86dc70444ee4a38511958259383ca20cfc22000259eb41b768e2bcd7ab762b8",
         "spec": "c06f408a7c23a6b1d3b004aa179269a0021199934b6a81a8a798375a0e33806a"
       }
     }
