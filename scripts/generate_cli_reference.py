@@ -125,6 +125,17 @@ def _render_arguments(out: list[str], parser: argparse.ArgumentParser) -> None:
     out.append("")
 
 
+def _format_usage(parser: argparse.ArgumentParser) -> list[str]:
+    """Return usage lines whose wrapping is stable across Python releases."""
+    lines: list[str] = []
+    for line in parser.format_usage().strip().splitlines():
+        if line.strip() == "..." and lines:
+            lines[-1] += " ..."
+        else:
+            lines.append(line.rstrip())
+    return lines
+
+
 def _subcommands(
     parser: argparse.ArgumentParser,
 ) -> tuple[argparse._SubParsersAction, list[tuple[str, str, argparse.ArgumentParser]]]:
@@ -164,14 +175,14 @@ def render() -> str:
         for name, summary, _command_parser in commands:
             out.append(f"| [`boundver {name}`](#{name}) | {_markdown_cell(summary)} |")
         out.extend(["", "## Global syntax", "", "```text"])
-        out.extend(parser.format_usage().strip().splitlines())
+        out.extend(_format_usage(parser))
         out.extend(["```", ""])
         _render_text(out, parser.description)
         _render_arguments(out, parser)
 
         for name, _summary, command_parser in commands:
             out.extend([f'<a id="{name}"></a>', "", f"## `boundver {name}`", ""])
-            out.extend(["```text", *command_parser.format_usage().strip().splitlines(), "```", ""])
+            out.extend(["```text", *_format_usage(command_parser), "```", ""])
             _render_text(out, command_parser.description)
             _render_arguments(out, command_parser)
             _render_text(out, command_parser.epilog)

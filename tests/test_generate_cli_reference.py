@@ -28,3 +28,17 @@ def test_generated_cli_reference_has_no_trailing_whitespace() -> None:
     assert all(
         line == line.rstrip(" \t") for line in generator.render().splitlines()
     )
+
+
+def test_usage_normalization_folds_only_an_orphan_ellipsis() -> None:
+    class Parser:
+        prog = "boundver"
+
+        @staticmethod
+        def format_usage() -> str:
+            return "usage: boundver [-h]\n                {one,two}\n                ...\n"
+
+    assert generator._format_usage(Parser()) == [
+        "usage: boundver [-h]",
+        "                {one,two} ...",
+    ]
