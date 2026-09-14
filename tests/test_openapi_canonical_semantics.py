@@ -114,6 +114,21 @@ class DataValuedPositionTests(unittest.TestCase):
             )
         )
 
+    def test_content_schema_data_is_opaque_and_not_a_reference(self):
+        payload = {
+            "$ref": "literal-user-data",
+            "description": "contract data",
+            "summary": "also contract data",
+        }
+        canonical = json.loads(
+            _canonical(_schema(contentSchema={"default": payload}))
+        )
+
+        self.assertEqual(
+            canonical["components"]["schemas"]["S"]["contentSchema"]["default"],
+            payload,
+        )
+
 
 class DataValuedScopeTests(unittest.TestCase):
     """Exactly which names vanish, so a partial fix cannot pass unnoticed."""

@@ -210,7 +210,8 @@ All notable changes to this project are documented here. The format follows
   when they look like documentation fields. OpenAPI example payloads are now
   consistently opaque to reference validation wherever canonicalization drops
   them as annotations, and Link Object parameter/request-body payloads remain
-  contract-bearing data.
+  contract-bearing data. OpenAPI 3.1 `contentSchema` values are recognized as
+  nested Schema Objects, preserving their contract data under the same rules.
 - Bounded generated-artifact freshness hashing across the whole operation and
   reused identical selected-set digests. Derivation evidence paths now reject
   filenames the atomic writer cannot create portably.

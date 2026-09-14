@@ -64,6 +64,7 @@ _OPENAPI_SCHEMA_VALUE_KEYS = frozenset(
     {
         "additionalItems",
         "additionalProperties",
+        "contentSchema",
         "contains",
         "else",
         "if",
