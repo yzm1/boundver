@@ -218,6 +218,14 @@ def _is_openapi_header(path: tuple) -> bool:
     return _is_openapi_response(owner) or _is_openapi_encoding(owner)
 
 
+def _is_openapi_example_object(path: tuple) -> bool:
+    """Return whether *path* identifies a retained OpenAPI Example Object."""
+    return bool(
+        len(path) == 3
+        and path[:2] == ("components", "examples")
+    )
+
+
 def _is_openapi_schema_object(path: tuple) -> bool:
     """Return whether *path* is an actual OpenAPI/Swagger Schema Object.
 
@@ -280,6 +288,7 @@ def _openapi_child_context(
                 key in _OPENAPI_DATA_VALUE_KEYS
                 and _is_openapi_schema_object(path)
             )
+            or (key == "value" and _is_openapi_example_object(path))
             or (isinstance(key, str) and key.startswith("x-"))
         )
     )

@@ -173,6 +173,44 @@ class DataValuedScopeTests(unittest.TestCase):
         self.assertNotIn("description", schema)
         self.assertEqual(schema["default"], {"description": "contract data"})
 
+    def test_component_example_value_is_opaque_data(self):
+        payload = {
+            "$ref": "literal-user-data",
+            "description": "contract data",
+            "summary": "also contract data",
+        }
+        document = _document(
+            components={"examples": {"payload": {"value": payload}}}
+        )
+
+        canonical = json.loads(_canonical(document))
+
+        self.assertEqual(
+            canonical["components"]["examples"]["payload"]["value"],
+            payload,
+        )
+        self.assertTrue(
+            _distinguishes(
+                lambda value: _document(
+                    components={"examples": {"payload": {
+                        "value": {"description": value}
+                    }}}
+                )
+            )
+        )
+
+    def test_value_is_not_opaque_outside_an_example_object(self):
+        self.assertFalse(
+            _distinguishes(
+                lambda value: _document(
+                    components={"responses": {"R": {
+                        "description": "response docs",
+                        "value": {"description": value},
+                    }}}
+                )
+            )
+        )
+
     def test_schema_data_is_preserved_at_each_supported_grammar_position(self):
         payload = {"description": "contract data"}
         cases = (
