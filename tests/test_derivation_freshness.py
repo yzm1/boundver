@@ -109,6 +109,34 @@ def _ready_repository(root: Path) -> None:
     assert not (root / "GENERATOR-RAN").exists()
 
 
+def test_why_keeps_unrelated_derivation_owners_in_its_resolution_context(
+    tmp_path: Path,
+) -> None:
+    config = _config()
+    config["components"]["worker"] = {
+        "path": "worker",
+        "boundary": {"provider": "leaf", "paths": []},
+    }
+    init_git_repo(tmp_path, initial_branch="main")
+    _write_source(tmp_path, config)
+    (tmp_path / "worker").mkdir()
+    (tmp_path / "worker" / "main.py").write_text("pass\n", encoding="utf-8")
+    _commit(tmp_path, "add generated API and worker")
+
+    recorded = _run(tmp_path, "record-derivation", "public-api", "--source", "head")
+    assert recorded.returncode == 0, recorded.stderr
+    _commit(tmp_path, "record derivation")
+    generated = _run(tmp_path, "generate", "--source", "head", "--quiet")
+    assert generated.returncode == 0, generated.stderr
+    _commit(tmp_path, "lock boundaries")
+
+    explained = _run(tmp_path, "why", "worker", "--source", "head")
+
+    assert explained.returncode == 0, explained.stderr
+    assert "could not compute current fingerprints" not in explained.stderr
+    assert "Status: UP TO DATE" in explained.stdout
+
+
 def _change(root: Path, kind: str) -> None:
     if kind == "input":
         (root / INPUT).write_text(

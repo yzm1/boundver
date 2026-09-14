@@ -1378,18 +1378,18 @@ def analyze_component_drift(
             )
             return None
 
-    # Compute current fingerprints for just this component.
-    subset_config = dict(config)
-    subset_config["components"] = {component_name: comp_cfg}
-    subset_config["slices"] = {}
+    # Compute only this component's entry, but keep the complete config as the
+    # resolution context. Derivation output ownership and inherited versions
+    # can depend on components other than the one being explained.
     try:
         current_lock = generate_lockfile(
-            subset_config,
+            config,
             repo_root,
             source=source,
             strict=False,
             allow_custom_providers=allow_custom_providers,
             snapshot=snapshot,
+            components_filter={component_name},
         )
     except (MemoryError, RecursionError, KeyboardInterrupt):
         raise

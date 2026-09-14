@@ -441,14 +441,37 @@ def generate_lockfile(
     config: dict, repo_root: Path, source: Union[str, SourceMode] = "head", strict: bool = True,
     allow_custom_providers: bool = False,
     snapshot: Optional[GitSourceSnapshot] = None,
+    components_filter: Optional[Set[str]] = None,
 ) -> dict:
-    """Generate the full lockfile from config + repo state."""
+    """Generate a lockfile from config + repo state.
+
+    ``components_filter`` is an internal analysis optimization: derivations and
+    inherited versions still resolve against the complete validated config,
+    while only the requested component entries are materialized.
+    """
     source = _normalize_source(source)
     if not isinstance(config, dict):
         raise ConfigError("Config root must be an object")
     components_config = config.get("components")
     if not isinstance(components_config, dict) or not components_config:
         raise ConfigError("Config must define at least one component")
+    if components_filter is None:
+        components_to_compute = components_config
+    else:
+        selected_components = set(components_filter)
+        if not selected_components:
+            raise ConfigError("Component analysis must select at least one component")
+        unknown_components = sorted(selected_components - set(components_config))
+        if unknown_components:
+            raise ConfigError(
+                "Unknown component(s): "
+                + _diagnostic_list_preview(unknown_components)
+            )
+        components_to_compute = {
+            name: component
+            for name, component in components_config.items()
+            if name in selected_components
+        }
     tag_prefixes = []
     for component_name, component in components_config.items():
         if not isinstance(component, dict):
@@ -510,10 +533,11 @@ def generate_lockfile(
             components_config,
             repo_root,
             accessor,
+            required=set(components_to_compute),
         )
 
         # --- Components ---
-        for name, comp in components_config.items():
+        for name, comp in components_to_compute.items():
             component_entry = _compute_component_entry(
                 name,
                 comp,
@@ -540,10 +564,11 @@ def generate_lockfile(
         )
 
     # --- Slices ---
-    for slice_name, slice_def in slices_config.items():
-        lockfile["slices"][slice_name] = _recompute_slice_entry(
-            slice_name, slice_def, lockfile["components"], strict=strict
-        )
+    if components_filter is None:
+        for slice_name, slice_def in slices_config.items():
+            lockfile["slices"][slice_name] = _recompute_slice_entry(
+                slice_name, slice_def, lockfile["components"], strict=strict
+            )
 
     return _ensure_generated_lockfile_loadable(lockfile)
 

@@ -13,6 +13,7 @@ from boundver._lockfile import (
     semantic_config_digest,
     verify_lockfile,
 )
+from boundver._output import analyze_component_drift
 from boundver._utils import ConfigError
 from tests._repo_fixtures import init_git_repo
 
@@ -93,6 +94,27 @@ def test_constant_and_component_identities_generate_and_verify(tmp_path: Path) -
     assert lock["components"]["contract"]["semver"]["compat_family"] == "1"
     assert lock["components"]["fixed"]["semver"]["exact_version"] == "9.8.7"
     assert verify_lockfile(config, lock, tmp_path, source="head") == []
+
+
+def test_component_analysis_retains_inherited_version_dependencies(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _repository(tmp_path)
+    lock = generate_lockfile(config, tmp_path, source="head")
+
+    result = analyze_component_drift(
+        config,
+        lock,
+        tmp_path,
+        "contract",
+        source="head",
+    )
+
+    assert result is not None
+    assert result["version"] == "1.2.3"
+    assert result["changes"] == {}
+    assert capsys.readouterr().err == ""
 
 
 def test_inherited_compatibility_participates_in_slices_and_consumer_impact(
