@@ -1544,14 +1544,14 @@ class StreamSilenceTests(unittest.TestCase):
                 continue
             searched.append(path)
             if needle in path.read_text(encoding="utf-8", errors="replace"):
-                hits.append(str(path.relative_to(root)))
+                hits.append(path.relative_to(root).as_posix())
         # The premise: the search looked at the documentation it claims to
         # have searched, and can find a string that is there.
         self.assertGreater(len(searched), 20)
         self.assertTrue(any(path.name == "reference.md" for path in searched))
         reference = root / "docs" / "reference.md"
         self.assertIn("boundver.ConfigError", reference.read_text(encoding="utf-8"))
-        self.assertIn("docs\\reference.md", hits)
+        self.assertIn("docs/reference.md", hits)
 
     def test_no_second_uncontrolled_writer_appeared(self):
         """The obligation's last clause, enumerated from the package rather

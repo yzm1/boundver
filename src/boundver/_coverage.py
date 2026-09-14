@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import posixpath
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Set
+from typing import Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ._config import _expand_component_paths
 from ._git import GitSourceSnapshot, _list_files_for_source
@@ -28,12 +28,12 @@ def _json_pointer_token(value: str) -> str:
 
 def _matches_selector(
     path: str,
-    selector: str,
+    normalized: str,
     operation: _PathGlobOperation,
 ) -> bool:
-    normalized = _normalize_declared_path(selector)
     if _is_glob(normalized):
         return operation.matches(path, normalized)
+    operation.spend()
     prefix = normalized.rstrip("/")
     return path == prefix or path.startswith(prefix + "/")
 
@@ -43,10 +43,11 @@ def _selected_paths(
     selectors: Sequence[str],
     operation: _PathGlobOperation,
 ) -> Set[str]:
+    normalized = tuple(_normalize_declared_path(selector) for selector in selectors)
     return {
         path
         for path in paths
-        if any(_matches_selector(path, selector, operation) for selector in selectors)
+        if any(_matches_selector(path, selector, operation) for selector in normalized)
     }
 
 
@@ -63,33 +64,52 @@ def _repo_path(component_path: str, relative_path: str) -> str:
     return f"{component_path.rstrip('/')}/{relative_path}" if relative_path else component_path
 
 
-def _coverage_exclusion(
+_NormalizedCoverageExclusion = Tuple[int, object, Tuple[str, ...], object]
+
+
+def _normalized_coverage_exclusions(
     config: Mapping[str, object],
+) -> List[_NormalizedCoverageExclusion]:
+    """Validate selector shape once before matching omitted paths."""
+    normalized: List[_NormalizedCoverageExclusion] = []
+    coverage = config.get("coverage", {})
+    if not isinstance(coverage, dict):
+        return normalized
+    exclusions = coverage.get("exclusions", [])
+    if not isinstance(exclusions, list):
+        return normalized
+    for index, exclusion in enumerate(exclusions):
+        if not isinstance(exclusion, dict):
+            continue
+        selectors = exclusion.get("paths", [])
+        if not isinstance(selectors, list) or not all(
+            isinstance(selector, str) for selector in selectors
+        ):
+            continue
+        normalized.append(
+            (
+                index,
+                exclusion.get("facets", []),
+                tuple(_normalize_declared_path(selector) for selector in selectors),
+                exclusion.get("reason", ""),
+            )
+        )
+    return normalized
+
+
+def _coverage_exclusion(
+    exclusions: Sequence[_NormalizedCoverageExclusion],
     path: str,
     facet: str,
     operation: _PathGlobOperation,
 ) -> Optional[dict]:
-    coverage = config.get("coverage", {})
-    if not isinstance(coverage, dict):
-        return None
-    exclusions = coverage.get("exclusions", [])
-    if not isinstance(exclusions, list):
-        return None
-    for index, exclusion in enumerate(exclusions):
-        if not isinstance(exclusion, dict):
-            continue
-        facets = exclusion.get("facets", [])
-        selectors = exclusion.get("paths", [])
-        if (
-            facet not in facets
-            or not isinstance(selectors, list)
-            or not all(isinstance(selector, str) for selector in selectors)
-        ):
+    for index, facets, selectors, reason in exclusions:
+        if facet not in facets:
             continue
         if any(_matches_selector(path, selector, operation) for selector in selectors):
             return {
                 "path": path,
-                "reason": exclusion.get("reason", ""),
+                "reason": reason,
                 "declaration": f"/coverage/exclusions/{index}",
             }
     return None
@@ -127,6 +147,7 @@ def declaration_coverage(
     """Return deterministic coverage evidence without changing lock semantics."""
     all_files = _report_files(snapshot, repo_root, source)
     operation = _PathGlobOperation("Declaration coverage")
+    exclusions = _normalized_coverage_exclusions(config)
     components = config.get("components", {})
     component_reports: List[dict] = []
     complete_components: List[str] = []
@@ -191,7 +212,7 @@ def declaration_coverage(
             uncovered: List[str] = []
             excluded: List[dict] = []
             for path in omitted:
-                exclusion = _coverage_exclusion(config, path, facet, operation)
+                exclusion = _coverage_exclusion(exclusions, path, facet, operation)
                 if exclusion is None:
                     uncovered.append(path)
                     uncovered_count += 1
@@ -252,7 +273,7 @@ def declaration_coverage(
                 "excluded": [],
             },
         )
-        exclusion = _coverage_exclusion(config, path, "ownership", operation)
+        exclusion = _coverage_exclusion(exclusions, path, "ownership", operation)
         if exclusion is None:
             group["uncovered_files"].append(path)
             uncovered_count += 1

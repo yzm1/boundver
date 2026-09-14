@@ -11,8 +11,10 @@ import sys
 
 import pytest
 
+import boundver._coverage as coverage
 from boundver._config import validate_config
 from boundver._lockfile import generate_lockfile, semantic_config_digest
+from boundver._utils import GuardrailError, _PathGlobOperation
 from tests._repo_fixtures import init_git_repo
 
 
@@ -141,6 +143,70 @@ def _facet(report: dict, component: str, facet: str) -> dict:
         row for row in report["components"] if row["component"] == component
     )
     return next(row for row in component_row["facets"] if row["facet"] == facet)
+
+
+def test_literal_exclusion_comparisons_share_the_coverage_operation_budget() -> None:
+    config = {
+        "coverage": {
+            "exclusions": [
+                {
+                    "paths": [
+                        "services/api/missing-a.py",
+                        "services/api/missing-b.py",
+                        "services/api/missing-c.py",
+                    ],
+                    "facets": ["boundary"],
+                    "reason": "budget fixture",
+                }
+            ]
+        }
+    }
+    exclusions = coverage._normalized_coverage_exclusions(config)
+    operation = _PathGlobOperation("Declaration coverage", max_steps=2)
+
+    with pytest.raises(GuardrailError, match="aggregate glob compile/match steps"):
+        coverage._coverage_exclusion(
+            exclusions,
+            "services/api/internal.py",
+            "boundary",
+            operation,
+        )
+
+
+def test_coverage_exclusion_selectors_are_normalized_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        "coverage": {
+            "exclusions": [
+                {
+                    "paths": ["services/api/internal.py"],
+                    "facets": ["boundary"],
+                    "reason": "normalization fixture",
+                }
+            ]
+        }
+    }
+    calls: list[str] = []
+    normalize = coverage._normalize_declared_path
+
+    def counting_normalize(selector: str) -> str:
+        calls.append(selector)
+        return normalize(selector)
+
+    monkeypatch.setattr(coverage, "_normalize_declared_path", counting_normalize)
+    exclusions = coverage._normalized_coverage_exclusions(config)
+    operation = _PathGlobOperation("Declaration coverage")
+
+    for _ in range(3):
+        assert coverage._coverage_exclusion(
+            exclusions,
+            "services/api/internal.py",
+            "boundary",
+            operation,
+        ) is not None
+
+    assert calls == ["services/api/internal.py"]
 
 
 def test_coverage_groups_selector_and_ownership_omissions_with_exclusions(

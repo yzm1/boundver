@@ -286,6 +286,11 @@ All notable changes to this project are documented here. The format follows
 - Rejected the superscript Windows device aliases `COM¹` through `COM³` and
   `LPT¹` through `LPT³` in generated outputs, derivation receipts, and release
   archive member names on every platform.
+- Pre-normalized declaration-coverage exclusions and charged literal selector
+  comparisons to the report-wide work budget, preventing maximum-size valid
+  policies from expanding into an unbounded omission/exclusion cross-product.
+- Made the exhaustive embedding-documentation assertion compare normalized
+  repository paths, so it exercises the same reference on Windows and POSIX.
 
 ## [0.15.2] - 2026-09-07
 
