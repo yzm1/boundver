@@ -108,6 +108,45 @@ def _is_openapi_operation(path: tuple) -> bool:
     )
 
 
+def _openapi_child_context(
+    path: tuple,
+    key: Any,
+    *,
+    preserve_keys: bool,
+    preserve_data: bool,
+) -> tuple[bool, bool]:
+    """Return named-key and opaque-data state for one mapping child."""
+    named_map = _is_openapi_named_schema_map(path, key)
+    child_preserves_keys = not preserve_keys and not preserve_data and named_map
+    child_preserves_data = preserve_data or (
+        not preserve_keys
+        and (
+            key in _OPENAPI_DATA_VALUE_KEYS
+            or (isinstance(key, str) and key.startswith("x-"))
+        )
+    )
+    return child_preserves_keys, child_preserves_data
+
+
+def _openapi_path_context(path: tuple) -> tuple[bool, bool]:
+    """Reconstruct the grammar context used while stripping an OpenAPI path."""
+    grammar_path = ()
+    preserve_keys = False
+    preserve_data = False
+    for segment in path:
+        if isinstance(segment, int):
+            preserve_keys = _is_security_requirement_array(grammar_path)
+            continue
+        preserve_keys, preserve_data = _openapi_child_context(
+            grammar_path,
+            segment,
+            preserve_keys=preserve_keys,
+            preserve_data=preserve_data,
+        )
+        grammar_path += (segment,)
+    return preserve_keys, preserve_data
+
+
 def _strip_openapi(
     obj: Any,
     *,
@@ -144,15 +183,13 @@ def _strip_openapi(
             ):
                 continue
 
-            # A named-map entry's value is a schema object.  Its arbitrary key
-            # must not make that schema object itself behave like a named map.
-            child_preserves_keys = (
-                not preserve_keys and not preserve_data and named_map
-            )
-            child_preserves_data = (
-                preserve_data
-                or key in _OPENAPI_DATA_VALUE_KEYS
-                or (isinstance(key, str) and key.startswith("x-"))
+            # A named-map entry's value is a schema object. Its arbitrary key
+            # must not be reinterpreted as a data keyword or extension name.
+            child_preserves_keys, child_preserves_data = _openapi_child_context(
+                path,
+                key,
+                preserve_keys=preserve_keys,
+                preserve_data=preserve_data,
             )
             stripped[key] = _strip_openapi(
                 value,
@@ -408,27 +445,8 @@ def _openapi_document_error(document: Any) -> Optional[str]:
                 cursor = cursor.parent
             segments.reverse()
             semantic_path = tuple(segments)
-            in_data = any(
-                isinstance(segment, str)
-                and (
-                    segment in _OPENAPI_DATA_VALUE_KEYS
-                    or segment.startswith("x-")
-                )
-                for segment in semantic_path
-            )
-            is_named_map = bool(
-                semantic_path
-                and isinstance(semantic_path[-1], str)
-                and _is_openapi_named_schema_map(
-                    semantic_path[:-1], semantic_path[-1]
-                )
-            )
-            is_security_requirement = bool(
-                semantic_path
-                and isinstance(semantic_path[-1], int)
-                and _is_security_requirement_array(semantic_path[:-1])
-            )
-            if in_data or is_named_map or is_security_requirement:
+            preserve_keys, preserve_data = _openapi_path_context(semantic_path)
+            if preserve_data or preserve_keys:
                 continue
             reference = value["$ref"]
             reference_path = _render_bounded_json_path(

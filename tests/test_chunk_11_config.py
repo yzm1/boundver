@@ -553,6 +553,35 @@ class ReferencePolicyTests(unittest.TestCase):
             with self.subTest(schema=schema):
                 self.assertIsNone(_openapi_document_error(_openapi_with_schema(schema)))
 
+    def test_data_like_named_map_entries_do_not_hide_external_references(self):
+        reference = "other.yaml#/Thing"
+        for name in ("const", "default", "enum", "x-policy"):
+            documents = (
+                (
+                    {
+                        "openapi": "3.1.0",
+                        "paths": {},
+                        "components": {"schemas": {name: {"$ref": reference}}},
+                    },
+                    f"$.components.schemas.{name}.$ref",
+                ),
+                (
+                    _openapi_with_schema(
+                        {
+                            "type": "object",
+                            "properties": {name: {"$ref": reference}},
+                        }
+                    ),
+                    f"$.components.schemas.Thing.properties.{name}.$ref",
+                ),
+            )
+            for document, location in documents:
+                with self.subTest(name=name, location=location):
+                    self.assertEqual(
+                        _openapi_document_error(document),
+                        location + REFERENCE_ERROR_TAIL,
+                    )
+
     def test_naming_ref_somewhere_that_is_not_a_mapping_key_is_still_fine(self):
         """Premise: the rejection above is about the key, not the four bytes.
 

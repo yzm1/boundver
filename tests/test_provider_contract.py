@@ -114,6 +114,33 @@ class TestOpenApiNamedMaps(unittest.TestCase):
             {"description", "example", "x-private"},
         )
 
+    def test_data_like_property_names_do_not_preserve_schema_annotations(self):
+        document = {
+            "openapi": "3.1.0",
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Record": {
+                        "type": "object",
+                        "properties": {
+                            name: {
+                                "type": "string",
+                                "description": "documentation is ignored",
+                            }
+                            for name in ("const", "default", "enum", "x-policy")
+                        },
+                    }
+                }
+            },
+        }
+
+        resolved = OpenApiCanonicalProvider().resolve(_context(document))
+        canonical = json.loads(resolved.entries[0][1].decode("utf-8"))
+        properties = canonical["components"]["schemas"]["Record"]["properties"]
+        self.assertEqual(set(properties), {"const", "default", "enum", "x-policy"})
+        for schema in properties.values():
+            self.assertNotIn("description", schema)
+
     def test_annotation_looking_definition_names_are_contract(self):
         before = {
             "swagger": "2.0",

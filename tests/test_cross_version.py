@@ -17,6 +17,8 @@ import re
 import unittest
 from pathlib import Path
 
+import yaml
+
 from boundver._baseline import (
     BASELINE_SCHEMA,
     BASELINE_SCHEMA_URL,
@@ -82,6 +84,18 @@ class PreviousReleaseHelperTests(unittest.TestCase):
         self.assertTrue(module._names_an_axis("boundary-lock schema changed"))
         self.assertTrue(module._names_an_axis("boundver-semantic-config/v1"))
         self.assertFalse(module._names_an_axis("something went wrong"))
+
+    def test_previous_release_job_fetches_the_release_tags(self):
+        workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        checkout = next(
+            step
+            for step in workflow["jobs"]["previous-release"]["steps"]
+            if step.get("name") == "Checkout"
+        )
+
+        self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        self.assertIs(checkout["with"]["persist-credentials"], False)
 
 
 class BaselineSchemaPinTests(unittest.TestCase):
