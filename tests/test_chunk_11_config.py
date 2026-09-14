@@ -582,6 +582,32 @@ class ReferencePolicyTests(unittest.TestCase):
                         location + REFERENCE_ERROR_TAIL,
                     )
 
+    def test_default_response_does_not_hide_a_nested_external_reference(self):
+        document = {
+            "openapi": "3.1.0",
+            "paths": {
+                "/things": {
+                    "get": {
+                        "responses": {
+                            "default": {
+                                "description": "error",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "errors.yaml#/Error"}
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        self.assertEqual(
+            _openapi_document_error(document),
+            "$.paths./things.get.responses.default.content.application/json."
+            "schema.$ref" + REFERENCE_ERROR_TAIL,
+        )
+
     def test_naming_ref_somewhere_that_is_not_a_mapping_key_is_still_fine(self):
         """Premise: the rejection above is about the key, not the four bytes.
 

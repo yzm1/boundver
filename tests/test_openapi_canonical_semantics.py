@@ -142,6 +142,86 @@ class DataValuedScopeTests(unittest.TestCase):
         canonical = _canonical(_schema(enum=[{"description": "a"}]))
         self.assertIn(b'"enum":[{"description":"a"}]', canonical)
 
+    def test_default_is_opaque_only_inside_a_schema_object(self):
+        document = _document(
+            paths={
+                "/a": {
+                    "get": {
+                        "responses": {
+                            "default": {
+                                "description": "response docs",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "description": "schema docs",
+                                            "default": {
+                                                "description": "contract data"
+                                            },
+                                        }
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        canonical = json.loads(_canonical(document))
+        response = canonical["paths"]["/a"]["get"]["responses"]["default"]
+        self.assertNotIn("description", response)
+        schema = response["content"]["application/json"]["schema"]
+        self.assertNotIn("description", schema)
+        self.assertEqual(schema["default"], {"description": "contract data"})
+
+    def test_schema_data_is_preserved_at_each_supported_grammar_position(self):
+        payload = {"description": "contract data"}
+        cases = (
+            (
+                "nested component schema",
+                _schema(allOf=[{"properties": {"p": {"default": payload}}}]),
+                ("components", "schemas", "S", "allOf", 0, "properties", "p"),
+            ),
+            (
+                "response media type",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "content": {"application/json": {
+                        "schema": {"default": payload}
+                    }},
+                }}}}}),
+                ("paths", "/a", "get", "responses", "200", "content",
+                 "application/json", "schema"),
+            ),
+            (
+                "operation parameter",
+                _document(paths={"/a": {"get": {
+                    "parameters": [{
+                        "name": "q", "in": "query",
+                        "schema": {"default": payload},
+                    }],
+                    "responses": {"200": {"description": "ok"}},
+                }}}),
+                ("paths", "/a", "get", "parameters", 0, "schema"),
+            ),
+            (
+                "response header",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "headers": {"X-Mode": {
+                        "schema": {"default": payload}
+                    }},
+                }}}}}),
+                ("paths", "/a", "get", "responses", "200", "headers",
+                 "X-Mode", "schema"),
+            ),
+        )
+        for label, document, path in cases:
+            with self.subTest(position=label):
+                node = json.loads(_canonical(document))
+                for segment in path:
+                    node = node[segment]
+                self.assertEqual(node["default"], payload)
+
 
 class SecurityRequirementTests(unittest.TestCase):
     """OBL-PROVIDERS-004: preserve a position, not a spelling."""
