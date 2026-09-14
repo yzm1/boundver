@@ -3585,6 +3585,10 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             (root / "audit_release_reviews.sh").write_bytes(
                 script.encode("utf-8")
             )
+            shutil.copyfile(
+                REPO_ROOT / "scripts" / "github_api_read.py",
+                root / "github_api_read.py",
+            )
             bin_dir = root / "bin"
             bin_dir.mkdir()
             fake_gh = bin_dir / "gh"
@@ -4289,9 +4293,9 @@ exit 74
             encoding="utf-8"
         )
         self.assertNotIn("< <(\n    gh api", script)
-        self.assertIn("capture_bounded reviews_output", script)
-        self.assertIn("capture_bounded comments_output", script)
-        self.assertIn("capture_bounded unresolved_output", script)
+        self.assertIn("capture_github_api_bounded reviews_output", script)
+        self.assertIn("capture_github_api_bounded comments_output", script)
+        self.assertIn("capture_github_api_bounded unresolved_output", script)
         self.assertIn("gh api --paginate", script)
         self.assertIn("gh api graphql --paginate", script)
         self.assertNotRegex(script, r"\w+_output=\$\(gh api")

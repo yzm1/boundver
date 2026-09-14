@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -183,6 +185,28 @@ def test_output_limit_is_enforced_by_the_streaming_capture(tmp_path: Path) -> No
 
     assert result.output_exceeded is True
     assert target.stat().st_size <= 33
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group contract")
+def test_output_limit_terminates_descendants_holding_capture_pipes(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "capture"
+    child = "import time; time.sleep(60)"
+    parent = (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}]); "
+        "sys.stdout.buffer.write(b'x' * 100000); sys.stdout.flush(); "
+        "time.sleep(60)"
+    )
+    started = time.monotonic()
+
+    result = api_read.run_once(
+        (sys.executable, "-I", "-c", parent), target, 32, timeout=5
+    )
+
+    assert result.output_exceeded is True
+    assert time.monotonic() - started < 5
 
 
 def test_output_overflow_is_not_retried_or_left_on_disk(

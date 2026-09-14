@@ -842,6 +842,10 @@ class ReviewAuditMergeDestinationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
+            shutil.copyfile(
+                ROOT / "scripts" / "github_api_read.py",
+                temporary_path / "github_api_read.py",
+            )
             fake_bin = temporary_path / "bin"
             fake_bin.mkdir()
             fake_git = fake_bin / "git"

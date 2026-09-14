@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -53,6 +55,22 @@ class AttemptResult:
     timed_out: bool = False
     output_exceeded: bool = False
     stderr_exceeded: bool = False
+
+
+def _kill_attempt(process: subprocess.Popen[bytes]) -> None:
+    """Terminate an API attempt and descendants that still hold its pipes."""
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            return
+        except OSError:
+            pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
 
 
 def _validate_label(label: object) -> str:
@@ -144,7 +162,7 @@ def _bounded_stdout_reader(
                 written += keep
             if keep < len(chunk) or written > limit:
                 state["exceeded"] = True
-                process.kill()
+                _kill_attempt(process)
                 break
     except (OSError, ValueError) as exc:
         state["error"] = exc
@@ -167,7 +185,7 @@ def _bounded_stderr_reader(
                 captured.extend(chunk[:keep])
             if keep < len(chunk) or len(captured) > limit:
                 state["exceeded"] = True
-                process.kill()
+                _kill_attempt(process)
                 break
     except (OSError, ValueError) as exc:
         state["error"] = exc
@@ -189,6 +207,7 @@ def run_once(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             close_fds=True,
+            start_new_session=os.name == "posix",
         )
     except OSError as exc:
         raise GitHubApiReadError("could not start gh api") from exc
@@ -214,7 +233,7 @@ def run_once(
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            process.kill()
+            _kill_attempt(process)
             process.wait()
         stdout_thread.join()
         stderr_thread.join()
