@@ -24,6 +24,7 @@ from ._utils import (
     _bounded_diagnostic_text,
     _bounded_json_dumps,
     _bounded_sorted_paths,
+    _has_unportable_output_segment,
     _is_glob,
     _is_within,
     _iter_bounded_filesystem_paths,
@@ -878,6 +879,10 @@ def validate_config(
                 if _is_glob(normalized_evidence):
                     errors.append(
                         f"Derivation '{name}' evidence must be a literal file path"
+                    )
+                elif _has_unportable_output_segment(normalized_evidence.split("/")):
+                    errors.append(
+                        f"Derivation '{name}' evidence must use portable filenames"
                     )
                 elif not normalized_evidence.endswith(DERIVATION_EVIDENCE_SUFFIX):
                     errors.append(

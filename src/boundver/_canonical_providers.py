@@ -297,6 +297,7 @@ def _openapi_child_context(
                 key in _OPENAPI_DATA_VALUE_KEYS
                 and _is_openapi_schema_object(path)
             )
+            or key == "example"
             or (key == "value" and _is_openapi_example_object(path))
             or (isinstance(key, str) and key.startswith("x-"))
         )

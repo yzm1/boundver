@@ -1438,6 +1438,43 @@ def _normalize_declared_path(path: str) -> str:
     return normalized
 
 
+_RESERVED_WINDOWS_OUTPUT_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
+)
+
+_WINDOWS_INVALID_OUTPUT_CHARACTERS = frozenset('<>:"\\|?*')
+
+
+def _has_windows_invalid_output_character(value: str) -> bool:
+    """Return whether *value* contains a Windows-forbidden filename character."""
+    return any(
+        ord(character) < 32
+        or character in _WINDOWS_INVALID_OUTPUT_CHARACTERS
+        for character in value
+    )
+
+
+def _has_unportable_output_segment(parts: Iterable[str]) -> bool:
+    """Return whether any path segment cannot name a portable output file."""
+    for part in parts:
+        stem = part.split(".", 1)[0].upper()
+        if (
+            part in {"", ".", ".."}
+            or _has_windows_invalid_output_character(part)
+            or part.endswith((".", " "))
+            or stem in _RESERVED_WINDOWS_OUTPUT_STEMS
+        ):
+            return True
+    return False
+
+
 _GLOB_LITERAL = 0
 _GLOB_ANY = 1
 _GLOB_STAR = 2

@@ -244,6 +244,50 @@ class DataValuedScopeTests(unittest.TestCase):
                 # Reference Objects, so validation must not reject them.
                 _canonical(document)
 
+    def test_singular_example_values_are_opaque_data(self):
+        payload = {
+            "$ref": "literal-user-data",
+            "description": "example data",
+        }
+        cases = (
+            (
+                "schema",
+                _schema(type="object", example=payload),
+            ),
+            (
+                "media type",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "content": {"application/json": {"example": payload}},
+                }}}}}),
+            ),
+            (
+                "parameter",
+                _document(paths={"/a": {"get": {
+                    "parameters": [{
+                        "name": "q",
+                        "in": "query",
+                        "example": payload,
+                    }],
+                    "responses": {"200": {"description": "ok"}},
+                }}}),
+            ),
+            (
+                "header",
+                _document(paths={"/a": {"get": {"responses": {"200": {
+                    "description": "ok",
+                    "headers": {"X-Result": {
+                        "schema": {"type": "string"},
+                        "example": payload,
+                    }},
+                }}}}}),
+            ),
+        )
+
+        for label, document in cases:
+            with self.subTest(label=label):
+                _canonical(document)
+
     def test_value_is_not_opaque_outside_an_example_object(self):
         self.assertFalse(
             _distinguishes(

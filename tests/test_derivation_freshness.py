@@ -346,6 +346,31 @@ def test_static_derivation_contract_rejects_unsafe_or_ambiguous_fields(
     assert any(expected in error for error in errors), errors
 
 
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        "receipts/api:current.boundver-derivation.json",
+        "receipts/api<current.boundver-derivation.json",
+        "receipts/api>current.boundver-derivation.json",
+        'receipts/api"current.boundver-derivation.json',
+        "receipts/api|current.boundver-derivation.json",
+        "receipts./api.boundver-derivation.json",
+        "receipts /api.boundver-derivation.json",
+        "CON/api.boundver-derivation.json",
+    ),
+)
+def test_derivation_evidence_requires_portable_output_filenames(
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    config = _config()
+    config["derivations"]["public-api"]["evidence"] = evidence
+
+    errors = validate_config(config, tmp_path, validate_provider_runtime=False)
+
+    assert any("evidence must use portable filenames" in error for error in errors), errors
+
+
 def test_duplicate_evidence_paths_are_rejected_statically(tmp_path: Path) -> None:
     config = _config()
     config["derivations"]["duplicate"] = copy.deepcopy(

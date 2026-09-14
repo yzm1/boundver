@@ -35,7 +35,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Dict as Dict
-from typing import Iterable, List, Optional, Set
+from typing import List, Optional, Set
 
 # Sub-module imports — each group lives in a focused module.
 #
@@ -80,6 +80,8 @@ from ._utils import (
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
     _bounded_json_dumps,
+    _has_unportable_output_segment,
+    _has_windows_invalid_output_character,
     _is_windows_reparse_point,
     BoundverError as BoundverError,
     ConfigError,
@@ -619,41 +621,6 @@ def _ensure_json_mutation_path(path: Path, command: str) -> None:
             f"`boundver {command}` only writes JSON configs. "
             "Use boundary.config.json or edit your YAML/TOML config directly."
         )
-
-
-_RESERVED_WINDOWS_OUTPUT_STEMS = frozenset(
-    {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        *(f"COM{index}" for index in range(1, 10)),
-        *(f"LPT{index}" for index in range(1, 10)),
-    }
-)
-
-_WINDOWS_INVALID_OUTPUT_CHARACTERS = frozenset('<>:"\\|?*')
-
-
-def _has_windows_invalid_output_character(value: str) -> bool:
-    return any(
-        ord(character) < 32
-        or character in _WINDOWS_INVALID_OUTPUT_CHARACTERS
-        for character in value
-    )
-
-
-def _has_unportable_output_segment(parts: Iterable[str]) -> bool:
-    for part in parts:
-        stem = part.split(".", 1)[0].upper()
-        if (
-            part in {"", ".", ".."}
-            or _has_windows_invalid_output_character(part)
-            or part.endswith((".", " "))
-            or stem in _RESERVED_WINDOWS_OUTPUT_STEMS
-        ):
-            return True
-    return False
 
 
 def _repository_relative_path(repo_root: Path, raw_path: str, *, label: str) -> Path:
