@@ -130,10 +130,23 @@ class GitStateTests(unittest.TestCase):
     def test_an_executable_file_lands_as_mode_100755(self):
         with Scenario() as scene:
             _service(scene)
-            scene.file("svc/run.sh", "#!/bin/sh\n", mode=0o755)
+            scene.file("svc/run.sh", "#!/bin/sh\n", executable=True)
+            self.assertEqual(
+                (scene.root / "svc" / "run.sh").stat().st_mode & 0o777,
+                0o700,
+            )
             scene.commit()
             mode = scene.git("ls-files", "--stage", "svc/run.sh").split()[0]
             self.assertEqual(mode, "100755")
+
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX permission bits")
+    def test_a_regular_file_is_owner_only(self):
+        with Scenario() as scene:
+            scene.file("fixture.txt", "ordinary fixture data\n")
+            self.assertEqual(
+                (scene.root / "fixture.txt").stat().st_mode & 0o777,
+                0o600,
+            )
 
     def test_a_transform_git_normalizes_away_still_commits(self):
         """An empty commit is the observation, not a fixture failure."""

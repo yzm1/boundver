@@ -50,7 +50,7 @@ def _varied_tree(scene: Scenario) -> Scenario:
     scene.file("svc/api/.hidden.yaml", "openapi: 3.1.0\n")
     scene.file("svc/api/unicode-é中.yaml", "openapi: 3.1.0\n")
     scene.json_file("svc/cfg.json", {"retries": 3, "nested": {"a": [1, 2]}})
-    scene.file("svc/run.sh", "#!/bin/sh\necho hi\n", mode=0o755)
+    scene.file("svc/run.sh", "#!/bin/sh\necho hi\n", executable=True)
     (scene.root / "svc" / "api" / "binary.bin").write_bytes(
         b"header" + NUL + b"body" + NUL + bytes(range(32))
     )

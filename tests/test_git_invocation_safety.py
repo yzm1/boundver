@@ -26,7 +26,7 @@ from tests._scenarios import Scenario
 COULD_NOT_CHECK = 2
 
 #: A filename whose colon makes it a revision expression rather than a path.
-AMBIGUOUS = "0:secret"
+AMBIGUOUS = "0:payload"
 
 
 class _Repository:
@@ -36,7 +36,7 @@ class _Repository:
         scene = Scenario()
         scene.component("svc", path="svc", provider="leaf")
         scene.file("svc/main.py", "x\n")
-        scene.file("secret", "TOP SECRET\n")
+        scene.file("payload", "ordinary fixture data\n")
         scene.commit()
         self.scene = scene
 
@@ -141,32 +141,36 @@ class RevisionExpressionTests(unittest.TestCase):
     def test_an_ordinary_path_becomes_an_ordinary_reference(self):
         """The premise: this is how the reference is built."""
         with _Repository() as repo:
-            expected = repo.scene.git("rev-parse", "HEAD:secret")
-            self.assertEqual(self._reference_for(repo, "secret", "index"), expected)
-            self.assertEqual(self._reference_for(repo, "secret", "head"), expected)
+            expected = repo.scene.git("rev-parse", "HEAD:payload")
+            self.assertEqual(self._reference_for(repo, "payload", "index"), expected)
+            self.assertEqual(self._reference_for(repo, "payload", "head"), expected)
 
     def test_the_reference_grammar_reads_a_stage_prefix(self):
-        """The mechanism: ':0:secret' is stage zero of 'secret', not a path."""
+        """The mechanism: ':0:payload' is stage zero of 'payload', not a path."""
         with _Repository() as repo:
-            self.assertEqual(repo.cat_file(":0:secret"), b"TOP SECRET\n")
-            self.assertEqual(repo.cat_file(":secret"), b"TOP SECRET\n")
+            self.assertEqual(
+                repo.cat_file(":0:payload"), b"ordinary fixture data\n"
+            )
+            self.assertEqual(repo.cat_file(":payload"), b"ordinary fixture data\n")
 
     def test_a_colon_bearing_name_can_resolve_only_to_its_captured_object(self):
         """A path-like revision expression is never passed to cat-file."""
         with _Repository() as repo:
-            seen = self._reference_for(repo, "secret", "index")
+            seen = self._reference_for(repo, "payload", "index")
             self.assertRegex(seen, r"^[0-9a-f]{40,64}$")
             self.assertNotEqual(seen, f":{AMBIGUOUS}")
 
     def test_git_revision_grammar_remains_ambiguous_but_is_not_used_for_reads(self):
         """The underlying Git grammar still demonstrates why OIDs are used.
 
-        `:0:secret` is stage zero of `secret`, while `HEAD:0:secret` has no
+        `:0:payload` is stage zero of `payload`, while `HEAD:0:payload` has no
         such reading. Neither expression is used for content reads: boundver
         resolves the captured tree entry and passes its object ID instead.
         """
         with _Repository() as repo:
-            self.assertEqual(repo.cat_file(f":{AMBIGUOUS}"), b"TOP SECRET\n")
+            self.assertEqual(
+                repo.cat_file(f":{AMBIGUOUS}"), b"ordinary fixture data\n"
+            )
             self.assertEqual(repo.cat_file(f"HEAD:{AMBIGUOUS}"), b"")
             self.assertEqual(repo.cat_file(":svc/main.py"), b"x\n")
 

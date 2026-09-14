@@ -2,7 +2,7 @@
 
 `_repo_fixtures` gives a bare repository. These regressions need more than a
 bare repository: a declared component tree,
-a file carrying a chosen Git mode, a symlink, a submodule gitlink, CRLF content,
+an executable file, a symlink, a submodule gitlink, CRLF content,
 a staged-versus-working-tree divergence — and then a *transform*, because a
 metamorphic obligation is a statement about how a digest responds when the input
 changes a known way.
@@ -206,17 +206,19 @@ class Scenario:
         path: str,
         content: str = "placeholder\n",
         *,
-        mode: Optional[int] = None,
+        executable: bool = False,
         crlf: bool = False,
     ) -> "Scenario":
-        """Write a repository-relative text file, optionally with CRLF endings."""
+        """Write an owner-only text file, optionally executable or with CRLF."""
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         if crlf:
             content = content.replace("\r\n", "\n").replace("\n", "\r\n")
-        target.write_bytes(content.encode("utf-8"))
-        if mode is not None:
-            os.chmod(target, mode)
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content.encode("utf-8"))
+        if executable:
+            os.chmod(target, 0o700)
         return self
 
     def json_file(self, path: str, value: Any, *, indent: int = 2) -> "Scenario":
@@ -309,10 +311,6 @@ class Scenario:
     def to_lf(self, path: str) -> "Scenario":
         target = self.root / path
         target.write_bytes(target.read_bytes().replace(b"\r\n", b"\n"))
-        return self
-
-    def chmod(self, path: str, mode: int) -> "Scenario":
-        os.chmod(self.root / path, mode)
         return self
 
     def rename(self, old: str, new: str) -> "Scenario":
