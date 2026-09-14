@@ -9,6 +9,9 @@ from ._git import GitSourceSnapshot
 from ._hashing import (
     HASH_DOMAIN_DERIVATION_INPUTS,
     HASH_DOMAIN_DERIVATION_OUTPUTS,
+    MAX_HASH_FILES,
+    MAX_HASH_TOTAL_BYTES,
+    _HashWorkBudget,
     source_paths_digest,
 )
 from ._structured_data import strict_json_loads
@@ -27,6 +30,8 @@ from ._utils import (
 DERIVATION_EVIDENCE_SCHEMA = "boundver-derivation/v1"
 MAX_DERIVATION_EVIDENCE_BYTES = 64 * 1024
 MAX_DERIVATION_EVIDENCE_FILES = 50_000
+MAX_DERIVATION_HASH_FILE_VISITS = MAX_HASH_FILES * 2
+MAX_DERIVATION_HASH_TOTAL_BYTES = MAX_HASH_TOTAL_BYTES * 2
 
 
 class DerivationSource(Protocol):
@@ -175,6 +180,30 @@ def _expected_rows(
     rows: Dict[str, Tuple[str, dict]] = {}
     output_owners: Dict[str, str] = {}
     evidence_owners: Dict[str, str] = {}
+    digest_cache: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+    hash_budget = _HashWorkBudget(
+        max_files=MAX_DERIVATION_HASH_FILE_VISITS,
+        max_bytes=MAX_DERIVATION_HASH_TOTAL_BYTES,
+        label="Generated-artifact freshness",
+    )
+
+    def digest(paths: List[str], domain: str) -> str:
+        key = (domain, tuple(paths))
+        cached = digest_cache.get(key)
+        if cached is not None:
+            return cached
+        value = source_paths_digest(
+            source_view.repo_root,
+            paths,
+            source=source_view.source,
+            domain=domain,
+            snapshot=source_view.snapshot,
+            read_blob_fn=source_view.read_blob_limited,
+            work_budget=hash_budget,
+        )
+        digest_cache[key] = value
+        return value
+
     names = [name for name in derivations if isinstance(name, str)]
     if len(names) != len(derivations):
         errors.append("Derivation names must be strings")
@@ -275,22 +304,8 @@ def _expected_rows(
         for output in outputs:
             output_owners[output] = name
         try:
-            input_digest = source_paths_digest(
-                source_view.repo_root,
-                inputs,
-                source=source_view.source,
-                domain=HASH_DOMAIN_DERIVATION_INPUTS,
-                snapshot=source_view.snapshot,
-                read_blob_fn=source_view.read_blob_limited,
-            )
-            output_digest = source_paths_digest(
-                source_view.repo_root,
-                outputs,
-                source=source_view.source,
-                domain=HASH_DOMAIN_DERIVATION_OUTPUTS,
-                snapshot=source_view.snapshot,
-                read_blob_fn=source_view.read_blob_limited,
-            )
+            input_digest = digest(inputs, HASH_DOMAIN_DERIVATION_INPUTS)
+            output_digest = digest(outputs, HASH_DOMAIN_DERIVATION_OUTPUTS)
         except (GuardrailError, OSError, ValueError) as exc:
             errors.append(
                 f"Derivation '{_display_name(name)}' source hashing failed: "

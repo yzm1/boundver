@@ -429,6 +429,25 @@ class NamedMapTests(unittest.TestCase):
             )
         )
 
+    def test_swagger_reusable_map_names_are_not_annotations(self):
+        for map_name in ("responses", "securityDefinitions"):
+            for entry_name in ("description", "summary", "example", "examples"):
+                with self.subTest(map=map_name, entry=entry_name):
+                    document = {
+                        "swagger": "2.0",
+                        "info": {"title": "t", "version": "1"},
+                        "paths": {},
+                        map_name: {entry_name: {"x-contract": "a"}},
+                    }
+                    canonical = json.loads(_canonical(document))
+                    self.assertEqual(
+                        canonical[map_name][entry_name],
+                        {"x-contract": "a"},
+                    )
+                    changed = json.loads(json.dumps(document))
+                    changed[map_name][entry_name]["x-contract"] = "b"
+                    self.assertNotEqual(_canonical(document), _canonical(changed))
+
 
 class CanonicalRoundTripTests(unittest.TestCase):
     """OBL-PROVIDERS-005: canonical bytes are already canonical."""

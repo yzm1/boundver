@@ -594,7 +594,8 @@ from other tracked files:
 Every input and output selector must match at least one tracked file in the
 selected source. Inputs and outputs cannot overlap. Each output must also be
 selected by a component boundary and cannot belong to two derivations. The
-evidence path is a unique literal ending in `.boundver-derivation.json`.
+evidence path is a unique, portable literal ending in
+`.boundver-derivation.json`.
 
 Run the trusted generator yourself, then record what it produced:
 
@@ -616,6 +617,12 @@ new derivation, its files, receipt, and lock to land together without a partial
 lock. Use `head`, `index`, or `working-tree` consistently; the receipt is checked
 against that same selected source during validation, generation, and
 verification.
+
+Freshness hashing has one operation-wide ceiling equivalent to one maximally
+sized input digest plus one maximally sized output digest: 100,000 selected-file
+visits and 512 MiB of hashed content. Identical selected sets in the same digest
+domain are hashed once. This prevents many overlapping derivations from
+multiplying bounded per-derivation work into an unbounded operation.
 
 The `generator` value is an identifier, not a command. Boundver never executes
 it or any other repository-configured derivation command. The receipt proves

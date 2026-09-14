@@ -43,6 +43,12 @@ def read_bounded_file(
         raise ValueError("File byte limit must be non-negative")
     label = str(path) if path_label is None else path_label
     try:
+        initial = path.lstat()
+        if not stat.S_ISREG(initial.st_mode):
+            detail = " (symlink)" if stat.S_ISLNK(initial.st_mode) else ""
+            raise ValueError(
+                f"Unsupported working-tree file type{detail} at {label}"
+            )
         with path.open("rb") as stream:
             opened = os.fstat(stream.fileno())
             if not stat.S_ISREG(opened.st_mode):

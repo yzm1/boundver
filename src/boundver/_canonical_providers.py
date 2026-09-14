@@ -90,6 +90,8 @@ def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
     """
     if key in {"properties", "definitions", "$defs"} | _OPENAPI_NAMED_MAP_KEYS:
         return True
+    if not path and key in {"responses", "securityDefinitions"}:
+        return True
     return path == ("components",) and key in _OPENAPI_COMPONENT_MAPS
 
 

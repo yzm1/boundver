@@ -94,6 +94,24 @@ class NonRegularFileTests(unittest.TestCase):
             mode = os.fstat(stream.fileno()).st_mode
         self.assertFalse(stat.S_ISREG(mode), oct(mode))
 
+    def test_a_stable_symlink_gets_a_specific_controlled_diagnostic(self) -> None:
+        """Exercise the POSIX path on every host without following a real link."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "value.bin"
+            path.write_bytes(b"abcd")
+            identity = path.lstat()
+            symlink_identity = SimpleNamespace(
+                st_mode=stat.S_IFLNK | 0o777,
+                st_size=identity.st_size,
+                st_mtime_ns=identity.st_mtime_ns,
+                st_dev=identity.st_dev,
+                st_ino=identity.st_ino,
+            )
+            with patch.object(Path, "lstat", return_value=symlink_identity):
+                with self.assertRaises(ValueError) as raised:
+                    read_bounded_file(path, 16)
+        self.assertIn("file type (symlink)", str(raised.exception))
+
     def test_a_fifo_mode_is_refused_on_hosts_that_cannot_make_one(self) -> None:
         """The modes the matrix cannot produce, reported by a real file."""
         with tempfile.TemporaryDirectory() as directory:

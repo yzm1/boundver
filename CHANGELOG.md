@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.16.0] - 2026-09-13
+## [0.16.0] - 2026-09-14
 
 ### Upgrade contract
 
@@ -206,6 +206,15 @@ All notable changes to this project are documented here. The format follows
   `$ref` values are diagnosed as malformed, while user-defined properties,
   security-scheme names, extension payloads, and schema data may use the
   literal key `$ref` without being mistaken for a Reference Object.
+- Preserved Swagger 2 reusable response and security-definition names even
+  when they look like documentation fields. OpenAPI example payloads are now
+  consistently opaque to reference validation wherever canonicalization drops
+  them as annotations.
+- Bounded generated-artifact freshness hashing across the whole operation and
+  reused identical selected-set digests. Derivation evidence paths now reject
+  filenames the atomic writer cannot create portably.
+- Diagnosed stable working-tree symlinks before opening them in the shared
+  bounded reader, while retaining identity checks for replacement races.
 - Restored the dedicated `VENDORED DRIFT` verdict for readable vendored copies
   whose content differs from their source, with ordinary drift severity.
   Missing or unreadable vendored inputs remain fail-closed digest errors, and

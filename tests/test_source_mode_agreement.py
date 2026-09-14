@@ -202,6 +202,7 @@ class ConfigSymlinkTests(unittest.TestCase):
             scene.file("svc/main.py", "x\n")
             (scene.root / "real").mkdir()
             (scene.root / "linked").symlink_to(scene.root / "real")
+            scene.write_config()
             (scene.root / "real" / "boundary.config.json").write_bytes(
                 (scene.root / "boundary.config.json").read_bytes()
             )

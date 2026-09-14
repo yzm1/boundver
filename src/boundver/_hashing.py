@@ -49,6 +49,50 @@ _SEMANTIC_MODE = "semantic"
 _SEMANTIC_OBJECT_TYPE = "value"
 
 
+class _HashWorkBudget:
+    """Operation-wide ceiling shared by otherwise independent tree hashes."""
+
+    def __init__(self, *, max_files: int, max_bytes: int, label: str) -> None:
+        if (
+            isinstance(max_files, bool)
+            or not isinstance(max_files, int)
+            or max_files < 0
+        ):
+            raise ValueError("Hash work file limit must be a non-negative integer")
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 0
+        ):
+            raise ValueError("Hash work byte limit must be a non-negative integer")
+        self.max_files = max_files
+        self.max_bytes = max_bytes
+        self.label = label
+        self.files = 0
+        self.bytes = 0
+
+    def spend_files(self, count: int) -> None:
+        updated = self.files + count
+        if updated > self.max_files:
+            raise GuardrailError(
+                f"{self.label} hash guardrail exceeded: source entries exceed the "
+                f"{self.max_files}-entry aggregate operation limit"
+            )
+        self.files = updated
+
+    def remaining_bytes(self) -> int:
+        return self.max_bytes - self.bytes
+
+    def spend_bytes(self, count: int) -> None:
+        updated = self.bytes + count
+        if updated > self.max_bytes:
+            raise GuardrailError(
+                f"{self.label} hash guardrail exceeded: content exceeds the "
+                f"{self.max_bytes}-byte aggregate operation limit"
+            )
+        self.bytes = updated
+
+
 class _ModeAwareBytes(bytes):
     """Bytes carrying source mode/type through raw provider resolution.
 
@@ -539,10 +583,21 @@ def _stream_tree_digest(
     *,
     domain: str,
     read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
+    work_budget: Optional[_HashWorkBudget] = None,
 ) -> str:
     """Hash a sorted tree while retaining at most duplicated blob content."""
     digest = _new_framed_digest(domain, len(descriptors))
     total_content_bytes = 0
+
+    def remaining_bytes() -> int:
+        remaining = MAX_HASH_TOTAL_BYTES - total_content_bytes
+        if work_budget is not None:
+            remaining = min(remaining, work_budget.remaining_bytes())
+        return remaining
+
+    def spend_bytes(content: bytes) -> None:
+        if work_budget is not None:
+            work_budget.spend_bytes(len(content))
 
     if source in {"head", "index"}:
         if captured is None:
@@ -566,12 +621,13 @@ def _stream_tree_digest(
                 else:
                     raw_content = read_blob_fn(
                         entry.oid,
-                        MAX_HASH_TOTAL_BYTES - total_content_bytes,
+                        remaining_bytes(),
                     )
                     content = _normalize_hash_content(raw_content)
                     if oid_counts[entry.oid] > 1:
                         duplicate_cache[entry.oid] = content
                 _enforce_content_size(content, repo_rel)
+                spend_bytes(content)
                 total_content_bytes = _enforce_total_content_size(
                     total_content_bytes, len(content)
                 )
@@ -588,9 +644,7 @@ def _stream_tree_digest(
             repo_root,
             [entry.oid for entry in git_entries],
             max_total_bytes=MAX_HASH_TOTAL_BYTES,
-            remaining_bytes=(
-                lambda: MAX_HASH_TOTAL_BYTES - total_content_bytes
-            ),
+            remaining_bytes=remaining_bytes,
         )
         duplicate_cache: dict[str, bytes] = {}
         seen_oids = set()
@@ -616,6 +670,7 @@ def _stream_tree_digest(
                     if oid_counts[entry.oid] > 1:
                         duplicate_cache[entry.oid] = content
                 _enforce_content_size(content, repo_rel)
+                spend_bytes(content)
                 total_content_bytes = _enforce_total_content_size(
                     total_content_bytes, len(content)
                 )
@@ -654,7 +709,7 @@ def _stream_tree_digest(
                 raise ValueError(
                     f"Sparse path is absent from captured index: {repo_rel}"
                 )
-            remaining = MAX_HASH_TOTAL_BYTES - total_content_bytes
+            remaining = remaining_bytes()
             raw_content = (
                 read_blob_fn(tracked_entry.oid, remaining)
                 if read_blob_fn is not None
@@ -671,11 +726,12 @@ def _stream_tree_digest(
                 repo_root,
                 full_path,
                 source,
-                max_bytes=MAX_HASH_TOTAL_BYTES - total_content_bytes,
+                max_bytes=remaining_bytes(),
                 tracked_entry=tracked_entry,
                 core_filemode=(captured.filemode if captured is not None else True),
             )
         _enforce_content_size(content, repo_rel)
+        spend_bytes(content)
         total_content_bytes = _enforce_total_content_size(
             total_content_bytes, len(content)
         )
@@ -723,6 +779,7 @@ def source_paths_digest(
     domain: str,
     snapshot: Optional[GitSourceSnapshot] = None,
     read_blob_fn: Optional[Callable[[str, int], bytes]] = None,
+    work_budget: Optional[_HashWorkBudget] = None,
 ) -> str:
     """Hash an explicit, non-empty set of repository-relative source paths."""
     if source not in SOURCE_MODE_SET:
@@ -735,6 +792,8 @@ def source_paths_digest(
     if source in {"head", "index"} and captured is None:
         captured = _capture_git_source_snapshot(repo_root, source)
     descriptors = _tree_entry_descriptors(paths)
+    if work_budget is not None:
+        work_budget.spend_files(len(descriptors))
     return _stream_tree_digest(
         repo_root,
         descriptors,
@@ -742,6 +801,7 @@ def source_paths_digest(
         captured,
         domain=domain,
         read_blob_fn=read_blob_fn,
+        work_budget=work_budget,
     )
 
 

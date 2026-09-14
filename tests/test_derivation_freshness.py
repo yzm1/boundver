@@ -6,11 +6,19 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from boundver._config import validate_config
+import boundver._derivations as derivations
+from boundver._hashing import (
+    HASH_DOMAIN_DERIVATION_INPUTS,
+    _HashWorkBudget,
+    source_paths_digest,
+)
 from boundver._lockfile import semantic_config_digest
+from boundver._utils import GuardrailError
 from tests._repo_fixtures import init_git_repo
 
 
@@ -107,6 +115,100 @@ def _ready_repository(root: Path) -> None:
     verified = _run(root, "verify", "--source", "head", "--quiet")
     assert verified.returncode == 0, verified.stderr
     assert not (root / "GENERATOR-RAN").exists()
+
+
+def test_derivation_hash_budget_is_shared_across_digest_calls(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_bytes(b"abcd")
+    (tmp_path / "b.txt").write_bytes(b"efgh")
+    budget = _HashWorkBudget(max_files=2, max_bytes=6, label="test derivation")
+
+    source_paths_digest(
+        tmp_path,
+        ["a.txt"],
+        source="working-tree",
+        domain=HASH_DOMAIN_DERIVATION_INPUTS,
+        work_budget=budget,
+    )
+
+    # Either the shared budget itself or the bounded reader using its remaining
+    # allowance may be the first guard to reject the second file.
+    with pytest.raises(GuardrailError, match="Hash guardrail exceeded"):
+        source_paths_digest(
+            tmp_path,
+            ["b.txt"],
+            source="working-tree",
+            domain=HASH_DOMAIN_DERIVATION_INPUTS,
+            work_budget=budget,
+        )
+
+
+def _overlapping_derivation_fixture(tmp_path: Path) -> tuple[dict, SimpleNamespace]:
+    files = (
+        "repo/input.txt",
+        "repo/output-a.txt",
+        "repo/output-b.txt",
+    )
+    for path in files:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(path, encoding="utf-8")
+    config = {
+        "derivations": {
+            "a": {
+                "inputs": ["repo/input.txt"],
+                "outputs": ["repo/output-a.txt"],
+                "evidence": "repo/a.boundver-derivation.json",
+                "generator": "fixture/v1",
+            },
+            "b": {
+                "inputs": ["repo/input.txt"],
+                "outputs": ["repo/output-b.txt"],
+                "evidence": "repo/b.boundver-derivation.json",
+                "generator": "fixture/v1",
+            },
+        },
+        "components": {
+            "api": {
+                "path": "repo",
+                "boundary": {"provider": "leaf", "paths": ["output-*.txt"]},
+            }
+        },
+    }
+    source = SimpleNamespace(
+        repo_root=tmp_path,
+        source="working-tree",
+        snapshot=None,
+        list_files=lambda _prefix: list(files),
+        read_file_limited=lambda path, limit: (tmp_path / path).read_bytes()[:limit],
+        read_blob_limited=lambda _oid, _limit: b"",
+    )
+    return config, source
+
+
+def test_identical_derivation_selections_reuse_their_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, source = _overlapping_derivation_fixture(tmp_path)
+    monkeypatch.setattr(derivations, "MAX_DERIVATION_HASH_FILE_VISITS", 3)
+
+    rows, _files, issues = derivations._expected_rows(config, source)
+
+    assert issues == []
+    assert set(rows) == {"a", "b"}
+
+
+def test_derivation_hash_file_visits_have_one_operation_wide_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, source = _overlapping_derivation_fixture(tmp_path)
+    monkeypatch.setattr(derivations, "MAX_DERIVATION_HASH_FILE_VISITS", 2)
+
+    rows, _files, issues = derivations._expected_rows(config, source)
+
+    assert set(rows) == {"a"}
+    assert any("aggregate operation limit" in issue for issue in issues), issues
 
 
 def test_why_keeps_unrelated_derivation_owners_in_its_resolution_context(
