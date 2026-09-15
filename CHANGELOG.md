@@ -166,9 +166,11 @@ All notable changes to this project are documented here. The format follows
   reach the same numeric rejection instead of being accepted as text.
 - Rejected a selected lock output when any generated-artifact derivation input
   selector covers it, including resolved, case-folded, and canonically
-  equivalent Unicode aliases. Recording the default receipt and generation to
-  a custom `--out` path now fail before writing instead of producing a lock
-  that is stale immediately because it hashed its own previous bytes.
+  equivalent Unicode aliases. Portable aliases are compared only after the
+  original selectors choose concrete source paths, preserving glob character
+  class semantics. Recording the default receipt and generation to a custom
+  `--out` path now fail before writing instead of producing a lock that is
+  stale immediately because it hashed its own previous bytes.
 - Made glob matching fail closed on impossible lone Unicode surrogates while
   retaining support for surrogate-escaped non-UTF-8 filenames supplied by Git.
 - Resolved explicit diagnostic base refs to immutable commit IDs before

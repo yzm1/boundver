@@ -136,6 +136,8 @@ def generate(
             dest,
             config,
             config_path=resolved_config_path,
+            source=source,
+            snapshot=snapshot,
         )
     lockfile = generate_lockfile(
         config, repo_root, source=source, strict=True,
@@ -209,6 +211,8 @@ def verify(
         resolved_lock_path,
         config,
         config_path=resolved_config_path,
+        source=source,
+        snapshot=snapshot,
     )
     lf = _load_lockfile(
         resolved_lock_path, repo_root=repo_root, snapshot=snapshot

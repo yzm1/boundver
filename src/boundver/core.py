@@ -518,6 +518,8 @@ def _ensure_lock_outside_components(
     config: dict,
     *,
     config_path: Path,
+    source: str,
+    snapshot: Optional[GitSourceSnapshot],
 ) -> None:
     """Reject lock paths that can overwrite or fingerprint themselves.
 
@@ -555,12 +557,18 @@ def _ensure_lock_outside_components(
                 lock_relatives.append(relative)
         if not lock_relatives:
             raise ValueError("lock output resolves outside the repository")
-        input_owners = derivation_inputs_selecting_path(
-            config,
-            lock_relatives[0],
-            aliases=lock_relatives[1:],
-        )
-    except (GuardrailError, ValueError) as exc:
+        input_owners = []
+        derivations = config.get("derivations")
+        if isinstance(derivations, dict) and derivations:
+            with _SourceAccessor(repo_root, source, snapshot=snapshot) as accessor:
+                source_paths = accessor.list_files(".")
+            input_owners = derivation_inputs_selecting_path(
+                config,
+                lock_relatives[0],
+                source_paths=source_paths,
+                aliases=lock_relatives[1:],
+            )
+    except (GuardrailError, OSError, ValueError) as exc:
         raise ConfigError(
             "Cannot determine whether the selected lock output is a derivation "
             f"input: {_bounded_exception_text(exc)}"
@@ -1635,6 +1643,8 @@ def _cmd_generate(args, repo_root: Path) -> None:
             out_path,
             config,
             config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
         )
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
@@ -1945,6 +1955,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
             lock_path,
             config,
             config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
         )
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
@@ -3165,6 +3177,8 @@ def _cmd_record_derivation(args, repo_root: Path) -> None:
             repo_root / "boundary.lock.json",
             config,
             config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
         )
         with _SourceAccessor(repo_root, args.source, snapshot=snapshot) as accessor:
             evidence_path, evidence = build_derivation_evidence(

@@ -772,6 +772,36 @@ def test_generation_rejects_a_unicode_alias_of_a_derivation_input(
     assert (tmp_path / selected_lock).read_text(encoding="utf-8") == "{}\n"
 
 
+def test_generation_preserves_glob_classes_when_checking_portable_aliases(
+    tmp_path: Path,
+) -> None:
+    """Portable normalization must not rewrite syntax inside a glob class."""
+    init_git_repo(tmp_path, initial_branch="main")
+    selected_lock = "state/e.lock.json"
+    config = _config()
+    config["derivations"]["public-api"]["inputs"].append(
+        "state/[e\u0301].lock.json"
+    )
+    _write_source(tmp_path, config)
+    (tmp_path / "state").mkdir()
+    (tmp_path / selected_lock).write_text("{}\n", encoding="utf-8")
+    _commit(tmp_path, "glob-selected portable lock alias")
+
+    result = _run(
+        tmp_path,
+        "generate",
+        "--source",
+        "head",
+        "--out",
+        "state/E.lock.json",
+    )
+
+    assert result.returncode == 2
+    assert "selected as an input" in result.stderr
+    assert "public-api" in result.stderr
+    assert (tmp_path / selected_lock).read_text(encoding="utf-8") == "{}\n"
+
+
 def test_changed_generator_identity_requires_fresh_evidence(tmp_path: Path) -> None:
     _ready_repository(tmp_path)
     config = json.loads(

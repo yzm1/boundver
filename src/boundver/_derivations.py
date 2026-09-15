@@ -142,14 +142,16 @@ def derivation_inputs_selecting_path(
     config: Mapping[str, object],
     path: str,
     *,
+    source_paths: Sequence[str],
     aliases: Sequence[str] = (),
 ) -> List[str]:
     """Return derivations whose input selectors cover a path or its aliases.
 
     Callers use this before writing an output that must not become an input to
-    its own generation. The check is selector-based and compares a portable
-    case-folded spelling too, so it catches absent outputs and aliases on
-    case-insensitive filesystems without making safety host-dependent.
+    its own generation. Exact selectors are checked against the prospective
+    path. Portable aliases are found by comparing concrete source paths after
+    case-folding and Unicode normalization; selectors themselves retain their
+    original glob semantics.
     """
     normalized_paths = sorted(
         {
@@ -157,12 +159,25 @@ def derivation_inputs_selecting_path(
             for candidate in (path, *aliases)
         }
     )
-    portable_paths = sorted(
-        {
-            unicodedata.normalize("NFC", candidate.casefold())
-            for candidate in normalized_paths
-        }
-    )
+    portable_keys = {
+        unicodedata.normalize("NFC", candidate.casefold())
+        for candidate in normalized_paths
+    }
+    source_alias_set: Set[str] = set()
+    for candidate in source_paths:
+        try:
+            normalized_source = _normalize_declared_path(candidate)
+        except ValueError:
+            # A portable lock output cannot alias a source name that cannot be
+            # represented as a declared Unicode path (for example a POSIX
+            # surrogate-escaped filename).
+            continue
+        if (
+            unicodedata.normalize("NFC", normalized_source.casefold())
+            in portable_keys
+        ):
+            source_alias_set.add(normalized_source)
+    source_aliases = sorted(source_alias_set)
     derivations = config.get("derivations", {})
     if not isinstance(derivations, dict):
         return []
@@ -193,10 +208,10 @@ def derivation_inputs_selecting_path(
             ) or any(
                 _normalized_selector_matches(
                     candidate,
-                    unicodedata.normalize("NFC", normalized_selector.casefold()),
+                    normalized_selector,
                     operation,
                 )
-                for candidate in portable_paths
+                for candidate in source_aliases
             ):
                 owners.append(name)
                 break
