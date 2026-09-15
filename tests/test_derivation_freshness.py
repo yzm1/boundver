@@ -273,6 +273,25 @@ def test_literal_boundary_linkage_comparisons_share_the_selector_budget() -> Non
         derivations._configured_boundary_files(config, files, operation)
 
 
+def test_prospective_alias_materialization_is_operation_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_operation = derivations._PathGlobOperation
+    monkeypatch.setattr(
+        derivations,
+        "_PathGlobOperation",
+        lambda context: real_operation(context, max_steps=8),
+    )
+    config = {"derivations": {"generated": {"inputs": ["STATE"]}}}
+
+    with pytest.raises(GuardrailError, match="aggregate glob compile/match steps"):
+        derivations.derivation_inputs_selecting_path(
+            config,
+            "state/" + "x" * 64,
+            source_paths=["STATE/input.json"],
+        )
+
+
 def test_why_keeps_unrelated_derivation_owners_in_its_resolution_context(
     tmp_path: Path,
 ) -> None:

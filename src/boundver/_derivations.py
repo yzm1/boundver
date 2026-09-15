@@ -160,37 +160,11 @@ def derivation_inputs_selecting_path(
         }
     )
     operation = _PathGlobOperation("Derivation input self-reference")
-
-    def portable_segment(segment: str) -> str:
-        return unicodedata.normalize("NFC", segment.casefold())
-
-    prospective_paths = set(normalized_paths)
-    for source_candidate in source_paths:
-        try:
-            normalized_source = _normalize_declared_path(source_candidate)
-        except ValueError:
-            # A portable lock output cannot alias a source name that cannot be
-            # represented as a declared Unicode path (for example a POSIX
-            # surrogate-escaped filename).
-            continue
-        source_parts = normalized_source.split("/")
-        for candidate in normalized_paths:
-            candidate_parts = candidate.split("/")
-            common = 0
-            for source_part, candidate_part in zip(source_parts, candidate_parts):
-                operation.spend()
-                if portable_segment(source_part) != portable_segment(candidate_part):
-                    break
-                common += 1
-            if common:
-                prospective_paths.add(
-                    "/".join(source_parts[:common] + candidate_parts[common:])
-                )
-    prospective_paths = sorted(prospective_paths)
     derivations = config.get("derivations", {})
     if not isinstance(derivations, dict):
         return []
-    owners: List[str] = []
+
+    selector_rows: Dict[str, List[str]] = {}
     for name in sorted(name for name in derivations if isinstance(name, str)):
         definition = derivations[name]
         if not isinstance(definition, dict):
@@ -200,23 +174,63 @@ def derivation_inputs_selecting_path(
             isinstance(selector, str) for selector in selectors
         ):
             continue
+        normalized_selectors: List[str] = []
         for selector in sorted(selectors):
             try:
-                normalized_selector = _normalize_declared_path(selector)
+                normalized_selectors.append(_normalize_declared_path(selector))
             except ValueError:
                 # Static validation and _select_paths report malformed selectors.
                 continue
+        if normalized_selectors:
+            selector_rows[name] = normalized_selectors
+
+    owners: Set[str] = set()
+
+    def record_matches(candidate: str) -> None:
+        for name, selectors in selector_rows.items():
+            if name in owners:
+                continue
             if any(
-                _normalized_selector_matches(
-                    candidate,
-                    normalized_selector,
-                    operation,
-                )
-                for candidate in prospective_paths
+                _normalized_selector_matches(candidate, selector, operation)
+                for selector in selectors
             ):
-                owners.append(name)
-                break
-    return owners
+                owners.add(name)
+
+    for candidate in normalized_paths:
+        record_matches(candidate)
+    if len(owners) == len(selector_rows):
+        return sorted(owners)
+
+    def portable_segment(segment: str) -> str:
+        return unicodedata.normalize("NFC", segment.casefold())
+
+    candidate_rows = [candidate.split("/") for candidate in normalized_paths]
+    for source_candidate in source_paths:
+        try:
+            normalized_source = _normalize_declared_path(source_candidate)
+        except ValueError:
+            # A portable lock output cannot alias a source name that cannot be
+            # represented as a declared Unicode path (for example a POSIX
+            # surrogate-escaped filename).
+            continue
+        source_parts = normalized_source.split("/")
+        for candidate_parts in candidate_rows:
+            common = 0
+            for source_part, candidate_part in zip(source_parts, candidate_parts):
+                operation.spend(max(1, len(source_part) + len(candidate_part)))
+                if portable_segment(source_part) != portable_segment(candidate_part):
+                    break
+                common += 1
+            if common:
+                prospective_parts = source_parts[:common] + candidate_parts[common:]
+                prospective_length = sum(map(len, prospective_parts)) + len(
+                    prospective_parts
+                ) - 1
+                operation.spend(max(1, prospective_length))
+                record_matches("/".join(prospective_parts))
+                if len(owners) == len(selector_rows):
+                    return sorted(owners)
+    return sorted(owners)
 
 
 def _configured_boundary_files(
