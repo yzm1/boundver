@@ -481,7 +481,18 @@ class FailClosedGitBlobTests(unittest.TestCase):
             target = Path(td) / "growing.bin"
             target.write_bytes(b"12345")
             real_fstat = os.fstat
+            real_lstat = Path.lstat
             calls = 0
+
+            def underreport_initial_size(candidate: Path):
+                result = real_lstat(candidate)
+                return types.SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_size=4,
+                    st_mtime_ns=result.st_mtime_ns,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino,
+                )
 
             def underreport_first_size(fd):
                 nonlocal calls
@@ -497,7 +508,13 @@ class FailClosedGitBlobTests(unittest.TestCase):
                     st_ino=result.st_ino,
                 )
 
-            with patch("boundver._hashing.os.fstat", side_effect=underreport_first_size):
+            with (
+                patch.object(Path, "lstat", new=underreport_initial_size),
+                patch(
+                    "boundver._hashing.os.fstat",
+                    side_effect=underreport_first_size,
+                ),
+            ):
                 with self.assertRaisesRegex(GuardrailError, "file too large"):
                     _read_bounded_path_bytes(target, "growing.bin", max_bytes=4)
 
