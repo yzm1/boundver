@@ -352,7 +352,9 @@ class RootPathBoundaryIdentityTests(unittest.TestCase):
             list_files=lambda prefix: sorted(
                 path
                 for path in files
-                if path == prefix or path.startswith(prefix + "/")
+                if prefix in {"", "."}
+                or path == prefix
+                or path.startswith(prefix + "/")
             ),
         )
 
