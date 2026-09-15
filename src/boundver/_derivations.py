@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Set, Tuple
 
@@ -156,7 +157,12 @@ def derivation_inputs_selecting_path(
             for candidate in (path, *aliases)
         }
     )
-    folded_paths = sorted({candidate.casefold() for candidate in normalized_paths})
+    portable_paths = sorted(
+        {
+            unicodedata.normalize("NFC", candidate.casefold())
+            for candidate in normalized_paths
+        }
+    )
     derivations = config.get("derivations", {})
     if not isinstance(derivations, dict):
         return []
@@ -187,10 +193,10 @@ def derivation_inputs_selecting_path(
             ) or any(
                 _normalized_selector_matches(
                     candidate,
-                    normalized_selector.casefold(),
+                    unicodedata.normalize("NFC", normalized_selector.casefold()),
                     operation,
                 )
-                for candidate in folded_paths
+                for candidate in portable_paths
             ):
                 owners.append(name)
                 break
