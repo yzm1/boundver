@@ -223,7 +223,8 @@ graph states where new evidence is required.
 [Boundver](https://github.com/yzm1/boundver) is one implementation of this
 contract-lockfile model. It records exact, behavior, boundary, and compatibility
 fingerprints for declared components, compares explicit Git source modes, and
-reports direct or transitive consumers when selected identities drift.
+reports direct or transitive consumers when boundary or compatibility
+identities drift.
 
 It intentionally does not decide whether a changed OpenAPI document is backward
 compatible, discover the dependency graph, or run consumer tests. It is the
