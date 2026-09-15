@@ -271,27 +271,21 @@ class SourceAccessorBoundTests(unittest.TestCase):
         live = directory.lstat()
         permissions = live.st_mode & 0o777
         replacement = 0o700 if permissions != 0o700 else 0o755
-        captured = os.stat_result(
-            (
-                (live.st_mode & ~0o777) | replacement,
-                live.st_ino,
-                live.st_dev,
-                live.st_nlink,
-                live.st_uid,
-                live.st_gid,
-                live.st_size,
-                int(live.st_atime),
-                int(live.st_mtime),
-                int(live.st_ctime),
-            )
+        captured = types.SimpleNamespace(
+            st_mode=(live.st_mode & ~0o777) | replacement,
+            st_ino=live.st_ino,
+            st_dev=live.st_dev,
+            st_ctime_ns=live.st_ctime_ns,
+            st_mtime_ns=live.st_mtime_ns,
+            st_file_attributes=getattr(live, "st_file_attributes", 0),
         )
         return live, captured
 
     def test_ancestor_permission_change_during_read_fails_closed(self):
         """The ancestor re-check refuses a directory whose mode moved.
 
-        Obligation OBL-GIT-SOURCE-078 makes the ancestor identity the triple
-        ``(st_dev, st_ino, st_mode)``, but until this test no case ever moved an
+        Obligation OBL-GIT-SOURCE-078 binds the ancestor's stable identity,
+        mode, and timestamps, but until this test no case ever moved an
         ancestor's mode between capture and verification.  Mutant
         MUT-GIT-SOURCE-308 deletes the ``before.st_mode != after.st_mode``
         disjunct from ``_verify_working_tree_ancestors`` and the whole suite
@@ -333,8 +327,18 @@ class SourceAccessorBoundTests(unittest.TestCase):
 
             self.assertNotEqual(captured.st_mode, live.st_mode)
             self.assertEqual(
-                (captured.st_dev, captured.st_ino),
-                (live.st_dev, live.st_ino),
+                (
+                    captured.st_dev,
+                    captured.st_ino,
+                    captured.st_ctime_ns,
+                    captured.st_mtime_ns,
+                ),
+                (
+                    live.st_dev,
+                    live.st_ino,
+                    live.st_ctime_ns,
+                    live.st_mtime_ns,
+                ),
             )
             self.assertTrue(stat.S_ISDIR(live.st_mode))
             self.assertTrue(stat.S_ISDIR(captured.st_mode))
@@ -377,7 +381,7 @@ class SourceAccessorBoundTests(unittest.TestCase):
         ``os.stat_result`` carries ``st_file_attributes`` on Windows alone, so
         a test built on a real junction could never run on the Linux and macOS
         legs of CI, and ``_verify_working_tree_ancestors`` reads nothing from a
-        sample beyond the four fields copied here.
+        sample beyond the identity and timestamp fields copied here.
         """
         captured = directory.lstat()
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -389,6 +393,7 @@ class SourceAccessorBoundTests(unittest.TestCase):
             st_ino=captured.st_ino,
             st_mode=captured.st_mode,
             st_size=captured.st_size,
+            st_ctime_ns=captured.st_ctime_ns,
             st_mtime_ns=captured.st_mtime_ns,
             st_file_attributes=attributes,
         )

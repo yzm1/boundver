@@ -139,7 +139,7 @@ class SourceModeParityTests(unittest.TestCase):
             _varied_tree(scene).commit()
             scene.git("config", "core.filemode", "false")
             scene.git("update-index", "--chmod=+x", "svc/run.sh")
-            scene.git("commit", "-m", "mark executable")
+            scene.commit_index("mark executable")
             self.assertEqual(scene.git("ls-files", "--stage", "svc/run.sh").split()[0],
                              "100755")
             assert_source_modes_agree(self, scene, "executable bit set through the index")
@@ -156,7 +156,7 @@ class SourceModeParityTests(unittest.TestCase):
             _varied_tree(scene).commit()
             scene.git("config", "core.filemode", "true")
             scene.git("update-index", "--chmod=+x", "svc/run.sh")
-            scene.git("commit", "-m", "mark executable")
+            scene.commit_index("mark executable")
             status = scene.git("status", "--porcelain")
             digests = {mode: scene.digest("svc", "exact", source=mode)
                        for mode in SOURCE_MODES}

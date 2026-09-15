@@ -283,8 +283,8 @@ class TrackedFileEnumerationFailureTests(unittest.TestCase):
 #: cannot: it rewrites the surrogate to U+FFFD when the name arrives as a
 #: command-line argument, which is why the fixture below builds trees with
 #: ``mktree -z`` and materializes the file with ``pathlib``.
-ODD_BYTES = b"da\xed\xb3\xbf.bin"
-ODD_NAME = os.fsdecode(ODD_BYTES)
+ODD_NAME = "da\udcff.bin"
+ODD_BYTES = os.fsencode(ODD_NAME)
 ODD_PATH = f"svc/{ODD_NAME}"
 
 

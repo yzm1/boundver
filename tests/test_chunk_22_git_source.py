@@ -1501,6 +1501,7 @@ class SourceModeTreeParityTests(unittest.TestCase):
             scene.file("svc/tool.sh", "#!/bin/sh\necho hi\n")
             scene.file("svc/plain.txt", "x\n")
             scene.commit("base")
+            os.chmod(scene.root / "svc/tool.sh", 0o700)
             scene.git("update-index", "--chmod=+x", "svc/tool.sh")
             scene.commit_index("executable")
             self.assertEqual(scene.git("status", "--porcelain"), "")

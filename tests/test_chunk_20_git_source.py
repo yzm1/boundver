@@ -453,6 +453,10 @@ class SemanticAndFileEntryFramingTests(unittest.TestCase):
             scene.commit()
             if recorded_mode == "100755":
                 for key in keys:
+                    os.chmod(
+                        scene.root / f"c/{_provider_slug(key)}/{PROVIDER_SELECTOR}",
+                        0o700,
+                    )
                     scene.git(
                         "update-index",
                         "--chmod=+x",

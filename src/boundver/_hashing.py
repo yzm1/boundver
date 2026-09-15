@@ -381,6 +381,8 @@ def _verify_working_tree_ancestors(
             or _is_windows_reparse_point(after)
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
             or before.st_mode != after.st_mode
+            or before.st_ctime_ns != after.st_ctime_ns
+            or before.st_mtime_ns != after.st_mtime_ns
         ):
             raise ValueError(f"File changed while hashing: {path_label}")
 

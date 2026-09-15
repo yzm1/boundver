@@ -38,6 +38,15 @@ AGREEING_PERMISSIONS = (0o644, 0o600, 0o400, 0o744, 0o755, 0o700, 0o111)
 #: Git and boundver both classify these as ordinary files.
 GROUP_OR_OTHER_EXECUTE_ONLY = (0o654, 0o645, 0o611, 0o050, 0o005, 0o010, 0o001)
 
+# A live ``git add`` must be able to read the fixture before Git can record its
+# mode.  The classifier tests above still cover owner-unreadable modes; they
+# cannot serve as live Git oracles for an unprivileged CI user.
+LIVE_GIT_PERMISSIONS = tuple(
+    permissions
+    for permissions in AGREEING_PERMISSIONS + GROUP_OR_OTHER_EXECUTE_ONLY
+    if permissions & stat.S_IRUSR
+)
+
 
 def _regular_file_stat(permissions: int) -> os.stat_result:
     """A stat result for a regular file, so no filesystem is required.
@@ -87,16 +96,33 @@ class WorkingTreeModeTests(unittest.TestCase):
                 self.assertEqual(oracle.git_mode_for_permissions(permissions), "100644")
                 self.assertEqual(_classify(permissions), "100644")
 
+    def test_live_git_subset_is_readable_and_covers_both_modes(self):
+        self.assertTrue(
+            all(permissions & stat.S_IRUSR for permissions in LIVE_GIT_PERMISSIONS)
+        )
+        self.assertEqual(
+            {
+                oracle.git_mode_for_permissions(permissions)
+                for permissions in LIVE_GIT_PERMISSIONS
+            },
+            {"100644", "100755"},
+        )
+        self.assertTrue(
+            set(LIVE_GIT_PERMISSIONS) & set(GROUP_OR_OTHER_EXECUTE_ONLY)
+        )
+
     @unittest.skipIf(os.name == "nt", "Windows records no execute bit")
     def test_live_git_agrees_with_the_stated_rule(self):
         """The oracle quotes Git's rule; this checks the quote against Git."""
         with Scenario() as scene:
             scene.component("svc", path="svc", provider="leaf")
-            for permissions in AGREEING_PERMISSIONS + GROUP_OR_OTHER_EXECUTE_ONLY:
-                scene.file(f"svc/p{permissions:o}.sh", "#!/bin/sh\n", mode=permissions)
+            for permissions in LIVE_GIT_PERMISSIONS:
+                path = scene.root / f"svc/p{permissions:o}.sh"
+                scene.file(f"svc/p{permissions:o}.sh", "#!/bin/sh\n")
+                os.chmod(path, permissions)
             scene.commit()
             recorded = oracle.index_modes(scene.root)
-            for permissions in AGREEING_PERMISSIONS + GROUP_OR_OTHER_EXECUTE_ONLY:
+            for permissions in LIVE_GIT_PERMISSIONS:
                 with self.subTest(permissions=oct(permissions)):
                     self.assertEqual(
                         recorded[f"svc/p{permissions:o}.sh"],

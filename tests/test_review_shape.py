@@ -164,32 +164,41 @@ class BaselinePathEquivalenceTests(unittest.TestCase):
             scene.commit()
             run_cli(scene.root, "generate", "--source", "head")
             scene.commit("lock")
-            return run_cli(
+            folds_case = (scene.root / "SVC").is_dir()
+            result = run_cli(
                 scene.root, "verify", "--source", "head",
                 "--write-baseline", target,
             )
+            return result, folds_case
         finally:
             scene.close()
 
     def test_a_path_outside_any_component_is_accepted(self):
         """The premise: the guards are not refusing everything."""
-        self.assertEqual(self._write_baseline("debt.json").returncode, 0)
+        result, _folds_case = self._write_baseline("debt.json")
+        self.assertEqual(result.returncode, 0)
 
-    def test_a_path_inside_a_component_root_is_refused_in_either_case(self):
+    def test_component_aliases_follow_the_filesystem_case_identity(self):
         for spelling in ("svc/debt.json", "SVC/debt.json", "Svc/debt.json"):
             with self.subTest(spelling=spelling):
-                result = self._write_baseline(spelling)
-                self.assertEqual(result.returncode, COULD_NOT_CHECK, result.stdout)
-                self.assertIn("baseline", result.stderr)
+                result, folds_case = self._write_baseline(spelling)
+                aliases_component = spelling == "svc/debt.json" or folds_case
+                expected = COULD_NOT_CHECK if aliases_component else 0
+                self.assertEqual(result.returncode, expected, result.stdout)
+                if aliases_component:
+                    self.assertIn("baseline", result.stderr)
 
-    def test_overwriting_the_lock_is_refused_in_either_case(self):
+    def test_lock_aliases_follow_the_filesystem_case_identity(self):
         for spelling in (
             "boundary.lock.json", "BOUNDARY.LOCK.JSON", "Boundary.Lock.Json",
         ):
             with self.subTest(spelling=spelling):
-                result = self._write_baseline(spelling)
-                self.assertEqual(result.returncode, COULD_NOT_CHECK, result.stdout)
-                self.assertIn("must not overwrite", result.stderr)
+                result, folds_case = self._write_baseline(spelling)
+                aliases_lock = spelling == "boundary.lock.json" or folds_case
+                expected = COULD_NOT_CHECK if aliases_lock else 0
+                self.assertEqual(result.returncode, expected, result.stdout)
+                if aliases_lock:
+                    self.assertIn("must not overwrite", result.stderr)
 
 
 if __name__ == "__main__":
