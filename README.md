@@ -41,9 +41,12 @@ boundver init
 boundver validate-config
 boundver generate --source working-tree
 boundver verify --source working-tree --facets exact
+boundver coverage --source working-tree
 ```
 
 Review and commit `boundary.config.json` and `boundary.lock.json` together.
+`coverage` separately reports tracked files that boundary/behavior selectors
+or component roots do not reach; add `--strict` when CI should gate on them.
 Plain `boundver init` creates a placeholder component rooted at `src/`. For a
 different layout, use `boundver init --discover` and review its proposal, or
 edit the generated component path before validation. Add a real boundary,
@@ -102,7 +105,7 @@ designed to make.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -142,6 +145,8 @@ designed to make.
 This records one API boundary, one direct internal consumer, one external
 consumer, and a named slice. Paths are repository-relative for components and
 component-relative inside boundary, behavior, and version declarations.
+Compatibility versions may also inherit another configured component or use an
+explicit SemVer constant when no tracked manifest or tag owns the identity.
 
 The [configuration reference](https://yzm1.github.io/boundver/reference/)
 documents providers, selectors, source modes, facets, and graph limits. The
@@ -172,8 +177,9 @@ boundver review origin/main..HEAD --merge-base --transitive
 `review` is read-only and compares two immutable Git trees. `verify` remains
 the integrity gate for the current candidate. Repositories that update locks
 only periodically can review their reconciled checkpoints, but cannot use an
-unreconciled pull-request tip as a review endpoint. Generated boundary artifacts
-need their own deterministic freshness check before verification; see
+unreconciled pull-request tip as a review endpoint. For generated boundaries,
+declare a `derivations` receipt so verification fails when either its inputs or
+outputs move without fresh evidence; see
 [troubleshooting](https://yzm1.github.io/boundver/troubleshooting/).
 
 ## GitHub Actions
@@ -184,7 +190,7 @@ Pin the Action to the same release used to write the lock:
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
-- uses: yzm1/boundver@v0.15.2
+- uses: yzm1/boundver@v0.16.0
   with:
     operation: verify
     source: head
@@ -200,13 +206,15 @@ GitLab, pre-commit, range review, outputs, and shallow-history failures.
 - PyPI: `python -m pip install "boundver[schema,yaml]"`
 - GitHub Action: [Marketplace](https://github.com/marketplace/actions/boundver)
 - GitLab CI/CD: [Catalog project](https://gitlab.com/boundver-project/boundver)
-- Container: `docker run --rm ghcr.io/yzm1/boundver:0.15.2 --version`
+- Container: `docker run --rm ghcr.io/yzm1/boundver:0.16.0 --version`
 - Homebrew: `brew install yzm1/boundver/boundver`
-- Standalone archive: download `boundver-0.15.2.pyz` from
+- Standalone archive: download `boundver-0.16.0.pyz` from
   [GitHub Releases](https://github.com/yzm1/boundver/releases)
 
-The project supports Python 3.10 or newer and requires Git. Release channels
-and least-privilege container use are documented in the
+The project supports Python 3.10 or newer and Git 2.32 or newer. Boundver checks
+the selected Git version and its process-local security configuration before
+inspecting a repository. Partial clones additionally require Git 2.45 or newer.
+Release channels and least-privilege container use are documented in the
 [distribution guide](https://yzm1.github.io/boundver/distribution/).
 
 ## Trust and privacy
@@ -231,7 +239,7 @@ maintainers should use
 the checked-in [release process](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md).
 
 The [changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md) records
-user-visible changes. The v0.15 line is focused on historical range review,
+user-visible changes. The v0.16 line is focused on declaration coverage,
 security hardening, and making the public documentation easier to use.
 Semantic-provider implementation remains separately gated work for a later
 release.

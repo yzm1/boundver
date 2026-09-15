@@ -190,7 +190,6 @@ class GitRunBoundTests(unittest.TestCase):
                     "system\0core.autocrlf\ntrue\0"
                     "global\0core.eol\ncrlf\0"
                     "local\0core.autocrlf\ninvalid\0"
-                    "local\0core.filemode\nfalse\0"
                 ),
                 "",
             )

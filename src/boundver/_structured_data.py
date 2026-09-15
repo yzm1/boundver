@@ -15,6 +15,10 @@ from ._utils import (
 class StrictJSONError(ValueError):
     """JSON contains a lossy or cross-version-unsafe value."""
 
+    def __init__(self, message: str, *, safe_message: str | None = None) -> None:
+        super().__init__(message)
+        self.safe_message = safe_message if safe_message is not None else message
+
 
 def _reject_excessive_json_tokens(text: str) -> None:
     """Reject a provably over-wide JSON tree before ``json.loads`` allocates it.
@@ -70,7 +74,8 @@ def _unique_json_object(pairs: List[tuple]) -> dict:
     for key, value in pairs:
         if key in result:
             raise StrictJSONError(
-                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}"
+                "duplicate JSON object key " f"{_bounded_diagnostic_repr(key)}",
+                safe_message="duplicate JSON object key",
             )
         result[key] = value
     return result
@@ -83,6 +88,20 @@ def _reject_nonfinite_json_constant(value: str) -> Any:
     )
 
 
+def _strict_json_int(value: str) -> int:
+    try:
+        return _bounded_json_int(value)
+    except (TypeError, ValueError) as exc:
+        raise StrictJSONError(str(exc)) from exc
+
+
+def _strict_json_float(value: str) -> float:
+    try:
+        return _bounded_json_float(value)
+    except (TypeError, ValueError) as exc:
+        raise StrictJSONError(str(exc)) from exc
+
+
 def strict_json_loads(text: str) -> Any:
     """Load JSON without duplicate keys, non-finite values, or huge numbers."""
     _reject_excessive_json_tokens(text)
@@ -90,6 +109,6 @@ def strict_json_loads(text: str) -> Any:
         text,
         object_pairs_hook=_unique_json_object,
         parse_constant=_reject_nonfinite_json_constant,
-        parse_float=_bounded_json_float,
-        parse_int=_bounded_json_int,
+        parse_float=_strict_json_float,
+        parse_int=_strict_json_int,
     )

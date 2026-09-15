@@ -279,6 +279,8 @@ def test_sdist_rejects_duplicate_non_metadata_members(tmp_path):
     (
         "example/data.txt:stream",
         "example/CON.txt",
+        "example/COM¹.txt",
+        "example/LPT³.json",
         "example/trailing.",
         "example/control\x1f.txt",
     ),

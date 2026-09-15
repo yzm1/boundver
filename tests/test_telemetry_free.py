@@ -213,6 +213,11 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
         ["diff", "HEAD", "--"],
         ["diff", "--no-index", "one", "two"],
         ["cat-file", "--filters", "HEAD:file"],
+        # --textconv sat in the refusal set and in the conformance deny-list
+        # while no test asserted it, so removing it from the source changed
+        # nothing anywhere. Found by seeding a violation against the checkers
+        # that name it; both passed. Its two siblings were already here.
+        ["cat-file", "--textconv", "HEAD:file"],
         ["cat-file", "--batch-command"],
         ["ls-files", "--recurse-submodules"],
         ["log", "HEAD"],

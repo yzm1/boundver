@@ -109,7 +109,11 @@ def affected_consumer_groups(
                 internal_consumers = [
                     consumer
                     for consumer in raw_consumers
-                    if isinstance(consumer, str) and consumer in components
+                    if (
+                        isinstance(consumer, str)
+                        and consumer in components
+                        and consumer != component_name
+                    )
                 ]
 
     external_consumers = set()

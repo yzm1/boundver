@@ -842,6 +842,10 @@ class ReviewAuditMergeDestinationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             temporary_path = Path(temporary)
+            shutil.copyfile(
+                ROOT / "scripts" / "github_api_read.py",
+                temporary_path / "github_api_read.py",
+            )
             fake_bin = temporary_path / "bin"
             fake_bin.mkdir()
             fake_git = fake_bin / "git"
@@ -892,8 +896,8 @@ esac
 """,
                 encoding="utf-8",
             )
-            fake_git.chmod(0o755)
-            fake_gh.chmod(0o755)
+            fake_git.chmod(0o700)
+            fake_gh.chmod(0o700)
             hostile_imports = temporary_path / "hostile-imports"
             hostile_imports.mkdir()
             sitecustomize_marker = temporary_path / "sitecustomize-ran"
@@ -975,7 +979,7 @@ esac
                 bounded_source,
                 encoding="utf-8",
             )
-            bounded_audit.chmod(0o755)
+            bounded_audit.chmod(0o700)
             completion_marker = temporary_path / "oversize-producer-finished"
             environment = os.environ.copy()
             environment.update(

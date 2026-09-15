@@ -148,7 +148,14 @@ class EmptySliceGenerationAndVerificationTests(unittest.TestCase):
         for mode in ("exact", "behavior", "boundary", "compat"):
             with self.subTest(mode=mode):
                 expected = sha256_hex(
-                    canonical_json({"svc": component_fingerprints[mode]})
+                    canonical_json(
+                        {
+                            "mode": mode,
+                            "component_digests": {
+                                "svc": component_fingerprints[mode]
+                            },
+                        }
+                    )
                 )
                 self.assertEqual(
                     lockfile["slices"][f"explicit-{mode}"]["fingerprint"],

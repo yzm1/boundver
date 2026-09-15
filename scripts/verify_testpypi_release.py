@@ -60,6 +60,8 @@ _WINDOWS_RESERVED_ARCHIVE_STEMS = {
     "prn",
     *(f"com{index}" for index in range(1, 10)),
     *(f"lpt{index}" for index in range(1, 10)),
+    *(f"com{index}" for index in "¹²³"),
+    *(f"lpt{index}" for index in "¹²³"),
 }
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 PROJECT_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")

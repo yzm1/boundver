@@ -114,6 +114,35 @@ def _run_cli(root: Path, *args: str):
     return 0, stdout.getvalue(), stderr.getvalue()
 
 
+def _unborn_repo_with_staged_index(root: Path) -> dict:
+    """Stage one component file in a repository that has not been committed yet.
+
+    This builds the third tracked state a working-tree validation can meet.
+    ``git ls-files`` reports ``svc/main.py``, so index membership is
+    authoritative, while HEAD is still unborn.  ``svc/version.json`` is
+    written to disk and deliberately left out of the index, so the tracked
+    file check has an untracked manifest to reject.
+    """
+    _git(root, "init")
+    (root / "svc").mkdir()
+    (root / "svc" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "svc" / "version.json").write_text(
+        '{"version":"1.0.0"}\n', encoding="utf-8"
+    )
+    _git(root, "add", "svc/main.py")
+    return {
+        "project": "p",
+        "components": {
+            "svc": {
+                "path": "svc",
+                "version_source": {"file": "version.json", "field": "version"},
+                "boundary": {"provider": "implicit"},
+            }
+        },
+        "slices": {},
+    }
+
+
 class SourceViewIntegrityTests(unittest.TestCase):
     def test_explain_head_on_root_commit_lists_added_component_files(self):
         with tempfile.TemporaryDirectory() as td:
@@ -890,6 +919,77 @@ class ParserIntegrityTests(unittest.TestCase):
                 any("version_source.file" in issue for issue in issues), issues
             )
 
+    def test_unborn_staged_index_rejects_untracked_version_source(self):
+        """An unborn repository with a staged entry still enforces tracking.
+
+        The gate that decides whether Git tracking state is authoritative is
+        satisfied by either a non-empty index or an existing HEAD.  Until now
+        the suite only drove the two states in which both terms agree: a
+        committed repository, where both are true, and an unborn repository
+        with an empty index, where both are false.  MUT-GIT-SOURCE-481
+        rewrites that ``or`` into an ``and`` and the whole suite stayed green,
+        because the state that separates the two spellings had no test.  Here
+        the index holds ``svc/main.py`` while HEAD is unborn, so the
+        disjunction is the only thing keeping the tracked file check alive,
+        and the untracked ``svc/version.json`` must still be rejected.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _unborn_repo_with_staged_index(root)
+
+            issues = validate_config(config, root, source="working-tree")
+
+            self.assertEqual(
+                issues,
+                [
+                    "Component 'svc' version_source.file must be tracked in "
+                    "Git: 'version.json'"
+                ],
+            )
+
+    def test_unborn_staged_index_fixture_is_unborn_with_a_populated_index(self):
+        """PREMISE for MUT-GIT-SOURCE-481: the fixture really is that third state.
+
+        The rejection above only says something about the disjunction if the
+        repository underneath it genuinely has a staged entry and genuinely
+        has no commit.  Were the fixture to commit quietly, HEAD would exist,
+        the mutated ``and`` would be satisfied too, and the rejection would
+        prove nothing.  This test reads the same index snapshot the validator
+        reads and shows that ``tracked_paths`` is populated while ``head_oid``
+        is None.  It also shows that the manifest named in the rejection is
+        present on disk and merely absent from the index, so the message is
+        about tracking rather than about a file that is missing.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _unborn_repo_with_staged_index(root)
+
+            snapshot = _capture_git_source_snapshot(root, "index")
+
+            self.assertEqual(snapshot.tracked_paths, frozenset({"svc/main.py"}))
+            self.assertIsNone(snapshot.head_oid)
+            self.assertTrue((root / "svc" / "version.json").is_file())
+            self.assertNotIn("svc/version.json", snapshot.tracked_paths)
+
+    def test_unborn_staged_index_accepts_a_staged_version_source(self):
+        """CONTRAST for MUT-GIT-SOURCE-481: staging the manifest clears the issue.
+
+        A tracked file check that refused every ``version_source`` inside an
+        unborn repository would satisfy the rejection above without reading
+        the index at all.  This test stages ``svc/version.json`` in the same
+        unborn repository and shows that validation then reports nothing.  The
+        check answers a question about index membership, and it does not
+        object to the unborn state itself.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = _unborn_repo_with_staged_index(root)
+            _git(root, "add", "svc/version.json")
+
+            issues = validate_config(config, root, source="working-tree")
+
+            self.assertEqual(issues, [])
+
     def test_lock_schema_and_runtime_reject_malformed_nested_digests(self):
         schema = json.loads(
             (Path(__file__).parents[1] / "spec" / "boundary.lock.schema.json").read_text(
@@ -914,8 +1014,8 @@ class ParserIntegrityTests(unittest.TestCase):
         self.assertIn("^[0-9a-f]{64}$", json.dumps(digest_schema))
 
         lock = {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v2",
+            "schema": "boundary-lock/v4",
+            "config_contract": "boundver-semantic-config/v3",
             "config_digest": "0" * 64,
             "project": "p",
             "components": {
@@ -969,8 +1069,8 @@ class ParserIntegrityTests(unittest.TestCase):
 
     def test_lock_runtime_rejects_fields_forbidden_by_schema(self):
         base = {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v2",
+            "schema": "boundary-lock/v4",
+            "config_contract": "boundver-semantic-config/v3",
             "config_digest": "0" * 64,
             "project": "p",
             "components": {

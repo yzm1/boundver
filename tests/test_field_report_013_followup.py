@@ -427,17 +427,17 @@ def test_validate_config_preflights_only_providers_that_need_yaml(
 def test_contract_mismatch_names_upgrade_direction() -> None:
     newer = _lockfile_structure_issues(
         {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v3",
+            "schema": "boundary-lock/v4",
+            "config_contract": "boundver-semantic-config/v4",
         },
-        running_version="0.13.0",
+        running_version="0.16.0",
     )
     older = _lockfile_structure_issues(
         {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v1",
+            "schema": "boundary-lock/v4",
+            "config_contract": "boundver-semantic-config/v2",
         },
-        running_version="0.13.0",
+        running_version="0.16.0",
     )
 
     assert len(newer) == 1
@@ -449,10 +449,10 @@ def test_contract_mismatch_names_upgrade_direction() -> None:
 
     oversized_future = _lockfile_structure_issues(
         {
-            "schema": "boundary-lock/v3",
+            "schema": "boundary-lock/v4",
             "config_contract": "boundver-semantic-config/v" + ("9" * 10_000),
         },
-        running_version="0.13.0",
+        running_version="0.16.0",
     )
     assert len(oversized_future) == 1
     assert "newer semantic contract" in oversized_future[0]

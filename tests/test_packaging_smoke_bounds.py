@@ -114,6 +114,8 @@ def _artifacts(directory: Path) -> tuple[Path, Path, Path, Path, Path]:
             (f"{prefix}/docs/getting-started.md", b""),
             (f"{prefix}/spec/HASHING.md", b""),
             (f"{prefix}/spec/cli-output.plan.schema.json", b"{}"),
+            (f"{prefix}/spec/cli-output.coverage.schema.json", b"{}"),
+            (f"{prefix}/spec/derivation.schema.json", b"{}"),
             (f"{prefix}/spec/cli-output.review.schema.json", b"{}"),
             (f"{prefix}/spec/cli-output.slice.schema.json", b"{}"),
             (f"{prefix}/spec/cli-output.why.schema.json", b"{}"),
@@ -388,6 +390,17 @@ def test_zip_member_portable_name_collisions_are_rejected(tmp_path):
 
     assert result.returncode != 0
     assert "non-portable member-name collision" in result.stderr
+
+
+def test_zip_member_superscript_windows_device_name_is_rejected(tmp_path):
+    wheel, sdist, pyz, license_path, scratch = _artifacts(tmp_path)
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("boundver/COM¹.txt", b"device alias")
+
+    result = _run_archive(wheel, sdist, pyz, license_path, scratch)
+
+    assert result.returncode != 0
+    assert "unsafe or overlong member name" in result.stderr
 
 
 def test_zip_member_aggregate_is_preflighted_before_decompression(tmp_path):

@@ -10,7 +10,9 @@ from ._git import (
     _capture_git_source_snapshot,
     _git_cat_blob,
     _git_name_status,
+    _git_repository_is_shallow,
     _git_run,
+    _resolve_git_commit,
     _to_posix,
     _validated_git_object_id,
     _working_tree_name_status,
@@ -28,6 +30,7 @@ from ._utils import (
     _is_glob,
     _normalize_declared_path,
     _PathGlobOperation,
+    _safe_display_text,
     _short,
     boundary_provider_name,
 )
@@ -99,11 +102,12 @@ def _component_lock_history_base(
                 target,
                 "component lock history exceeded the byte limit",
             )
+        read_cap = min(MAX_LOCKFILE_BYTES, remaining)
         try:
             data = _git_cat_blob(
                 repo_root,
                 f"{commit}:{normalized_lock}",
-                max_bytes=min(MAX_LOCKFILE_BYTES, remaining),
+                max_bytes=read_cap,
             )
             consumed_bytes += len(data)
             historical = parse_lockfile_bytes(
@@ -116,6 +120,13 @@ def _component_lock_history_base(
                 if isinstance(historical_components, dict)
                 else None
             )
+        except GuardrailError:
+            reason = (
+                "component lock history exceeded the byte limit"
+                if read_cap == remaining and remaining < MAX_LOCKFILE_BYTES
+                else "component lock history could not be read safely"
+            )
+            return _root_commit_fallback(repo_root, target, reason)
         except (OSError, ValueError, subprocess.CalledProcessError):
             if matched_base is not None:
                 return _root_commit_fallback(
@@ -142,6 +153,19 @@ def _component_lock_history_base(
             repo_root,
             target,
             "component lock history exceeded the commit limit",
+        )
+    if _git_repository_is_shallow(repo_root):
+        return _root_commit_fallback(
+            repo_root,
+            target,
+            "repository history is shallow; fetch complete history for precise "
+            "attribution",
+        )
+    if matched_base == target:
+        return _root_commit_fallback(
+            repo_root,
+            target,
+            "matching lock entry was first recorded at the diff target",
         )
     return (
         matched_base,
@@ -233,31 +257,7 @@ def _encoding_safe_text(text: str, stream: Any) -> str:
 
 def _display_text(value: object) -> str:
     """Return readable, single-line text safe for terminals and CI logs."""
-    rendered: List[str] = []
-    for character in str(value):
-        codepoint = ord(character)
-        if character == "\n":
-            rendered.append("\\n")
-        elif character == "\r":
-            rendered.append("\\r")
-        elif character == "\t":
-            rendered.append("\\t")
-        elif character == "\b":
-            rendered.append("\\b")
-        elif character == "\f":
-            rendered.append("\\f")
-        elif codepoint < 0x20 or 0x7F <= codepoint <= 0x9F:
-            rendered.append(f"\\x{codepoint:02x}")
-        elif codepoint in {0x2028, 0x2029}:
-            rendered.append(f"\\u{codepoint:04x}")
-        else:
-            rendered.append(character)
-    text = "".join(rendered)
-    if text.startswith("::"):
-        # A value written at the start of a GitHub Actions log line must not be
-        # interpreted as a workflow command.
-        return "\\x3a" + text[1:]
-    return text
+    return _safe_display_text(value)
 
 
 class _StyledText:
@@ -310,6 +310,10 @@ def safe_print(
 
     stream = sys.stdout if file is None else file
     text = sep.join(_render_human_value(value, stream) for value in values) + end
+    stripped = text.lstrip()
+    if stripped.startswith("::"):
+        command_start = len(text) - len(stripped)
+        text = text[:command_start] + "\\x3a" + text[command_start + 1 :]
     safe = _encoding_safe_text(text, stream)
     try:
         stream.write(safe)
@@ -383,7 +387,17 @@ def _display_path(path: object) -> str:
 
 def _display_value(value: object) -> str:
     """Render metadata without depending on CPython's integer digit setting."""
-    return _bounded_json_dumps(value, ensure_ascii=True, sort_keys=True)
+    rendered = _bounded_json_dumps(value, ensure_ascii=True, sort_keys=True)
+    return _bounded_diagnostic_text(rendered)
+
+
+def _display_digest_change(old: Optional[str], new: Optional[str]) -> Tuple[str, str]:
+    """Shorten a digest pair unless doing so would hide their difference."""
+    old_display = _short(old)
+    new_display = _short(new)
+    if old != new and old_display == new_display:
+        return old or "none", new or "none"
+    return old_display, new_display
 
 
 def print_diff(diff: dict) -> None:
@@ -421,7 +435,10 @@ def print_diff(diff: dict) -> None:
             print(_yellow(f"    ~ {c['name']}{ver_str}"))
             print(f"      {c['summary']}")
             for facet, vals in c["changed_facets"].items():
-                print(f"      {facet}: {_short(vals['old'])} -> {_short(vals['new'])}")
+                old_display, new_display = _display_digest_change(
+                    vals["old"], vals["new"]
+                )
+                print(f"      {facet}: {old_display} -> {new_display}")
             for field, vals in c.get("changed_metadata", {}).items():
                 print(
                     f"      {field}: {_display_value(vals['old'])} -> "
@@ -613,7 +630,7 @@ def analyze_explain_changes(
     boundary = comp.get("boundary", {})
     boundary_paths_raw = boundary.get("paths", []) if isinstance(boundary, dict) else []
 
-    auto_base = not base_ref
+    auto_base = base_ref is None
     if auto_base:
         locked_component = None
         if isinstance(lockfile, dict):
@@ -631,17 +648,35 @@ def analyze_explain_changes(
             locked_component=locked_component,
         )
     else:
-        effective_base = base_ref
+        try:
+            effective_base = _resolve_git_commit(
+                repo_root,
+                base_ref,
+                label="diagnostic base",
+            )
+        except ValueError as exc:
+            return {"error": _bounded_exception_text(exc)}
         base_origin = "explicit --base-ref"
     if effective_base is None:
         return {"error": "cannot determine a committed diagnostic base"}
     root_commit_target: Optional[str] = None
-    if source == "head" and base_origin == "root commit fallback":
+    current_commit_fallback = (
+        source == "head"
+        and base_origin.startswith("current commit fallback")
+        and effective_base
+        == (snapshot.head_oid if snapshot is not None else effective_base)
+    )
+    if source == "head" and base_origin.startswith("root commit fallback"):
         root_commit_target = snapshot.head_oid if snapshot is not None else "HEAD"
 
     # Choose diff target based on source. Never ask Git to compare worktree
     # contents: repository clean/process filters are executable commands.
-    if source == "working-tree":
+    changed: List[Tuple[str, str]] = []
+    changed_status = "ok"
+    if current_commit_fallback:
+        diff_args = []
+        changed_status = "not-run"
+    elif source == "working-tree":
         try:
             changed = _working_tree_name_status(
                 repo_root,
@@ -668,7 +703,9 @@ def analyze_explain_changes(
         ]
     else:
         diff_args = ["diff", "--name-status", "-z"]
-    if source == "working-tree":
+    if current_commit_fallback:
+        pass
+    elif source == "working-tree":
         pass
     elif root_commit_target is not None:
         pass
@@ -736,15 +773,17 @@ def analyze_explain_changes(
                     if glob_operation.matches(component_relative, bp):
                         boundary_changed.append((status, rel))
                         break
-                elif component_relative == bp or component_relative.startswith(
-                    f"{bp}/"
-                ):
-                    boundary_changed.append((status, rel))
-                    break
+                else:
+                    glob_operation.spend()
+                    if component_relative == bp or component_relative.startswith(
+                        f"{bp}/"
+                    ):
+                        boundary_changed.append((status, rel))
+                        break
     except GuardrailError as exc:
         return {
             "error": (
-                "boundary glob analysis failed closed: "
+                "boundary path analysis failed closed: "
                 f"{_bounded_exception_text(exc)}"
             )
         }
@@ -758,6 +797,7 @@ def analyze_explain_changes(
         "base_origin": base_origin,
         "source": source,
         "changed": changed,
+        "changed_status": changed_status,
         "boundary_provider": boundary_provider_name(boundary),
         "boundary_paths": normalized_boundary_paths,
         "boundary_changed": boundary_changed,
@@ -801,10 +841,26 @@ def explain_component_changes(
 
     print(f"Component: {component_name}")
     print(f"Path: {component_path}")
+    if result.get("base_ref") is not None:
+        print(
+            "Requested base: "
+            f"{_safe_display_text(result['base_ref'])} -> {effective_base}"
+        )
     print(f"Base ref: {effective_base} ({base_origin})")
     print(f"Source: {source}")
     gated_facets = _effective_component_facets(config, component_name)
     print(f"Gated facets: {', '.join(sorted(gated_facets)) or 'none'}")
+
+    if not changed and result.get("changed_status") == "not-run":
+        print()
+        print(
+            "Changed-file diagnostics were not run because the only available "
+            "fallback base is the current commit."
+        )
+        print(
+            "  Fetch complete history or pass --base-ref with an older commit."
+        )
+        return 0
 
     if not changed:
         print()
@@ -893,9 +949,11 @@ def _log(msg: str, quiet: bool = False) -> None:
 
 
 def _parse_components_arg(raw: Optional[str]) -> List[str]:
-    if not raw:
+    if raw is None:
         return []
     names = [n.strip() for n in raw.split(",") if n.strip()]
+    if not names:
+        raise ValueError("--components must name at least one component")
     return sorted(set(names))
 
 
@@ -952,6 +1010,25 @@ def why_component(
 
     Returns 0 if no drift, 1 if drift found, 2 on usage/config error.
     """
+    known_components = sorted(config.get("components", {}))
+    if component_name not in config.get("components", {}):
+        message = f"unknown component '{component_name}'"
+        print(f"ERROR: {message}", file=sys.stderr)
+        if known_components:
+            print(
+                f"Known components: {', '.join(known_components)}",
+                file=sys.stderr,
+            )
+        if output_format == "json":
+            _print_json(
+                {
+                    "component": component_name,
+                    "error": message,
+                    "known_components": known_components,
+                }
+            )
+        return 2
+
     result = analyze_component_drift(
         config, lockfile, repo_root, component_name,
         source=source, allow_custom_providers=allow_custom_providers,
@@ -960,6 +1037,14 @@ def why_component(
         lock_path=lock_path,
     )
     if result is None:
+        if output_format == "json":
+            _print_json(
+                {
+                    "component": component_name,
+                    "error": "component drift analysis failed; see stderr",
+                    "known_components": known_components,
+                }
+            )
         return 2  # error already printed by analyze_component_drift
 
     comp_cfg = config["components"][component_name]
@@ -1013,6 +1098,9 @@ def why_component(
                     "ok" if result["changed_files"] else "not-run",
                 ),
                 "changed_files_error": result.get("changed_files_error"),
+                "diagnostic_base_requested": result.get(
+                    "diagnostic_base_requested"
+                ),
                 "diagnostic_base": result.get("diagnostic_base"),
                 "diagnostic_base_origin": result.get("diagnostic_base_origin"),
                 "boundary_paths": comp_cfg.get("boundary", {}).get("paths", []),
@@ -1067,9 +1155,14 @@ def why_component(
         cv = result["current_fps"].get(facet)
         if facet in changes:
             classification = "gating" if facet in gated_facets else "non-gating"
-            rendered = _red(_short(cv)) if facet in gated_facets else _yellow(_short(cv))
+            locked_display, current_display = _display_digest_change(lv, cv)
+            rendered = (
+                _red(current_display)
+                if facet in gated_facets
+                else _yellow(current_display)
+            )
             print(
-                f"  {facet:<10}  {_short(lv)}  ->  ",
+                f"  {facet:<10}  {locked_display}  ->  ",
                 rendered,
                 f"  (changed, {classification})",
                 sep="",
@@ -1149,6 +1242,12 @@ def why_component(
         print(f"Provider detail: {result['provider_explanation']}")
 
     if result.get("diagnostic_base"):
+        if result.get("diagnostic_base_requested") is not None:
+            print(
+                "Requested diagnostic base: "
+                f"{_safe_display_text(result['diagnostic_base_requested'])} -> "
+                f"{result['diagnostic_base']}"
+            )
         print(
             f"Diagnostic base: {result['diagnostic_base']} "
             f"({result.get('diagnostic_base_origin') or 'resolved'})"
@@ -1217,6 +1316,18 @@ def analyze_component_drift(
         )
         return None
 
+    resolved_diagnostic_base: Optional[str] = None
+    if diagnostic_base_ref is not None:
+        try:
+            resolved_diagnostic_base = _resolve_git_commit(
+                repo_root,
+                diagnostic_base_ref,
+                label="diagnostic base",
+            )
+        except ValueError as exc:
+            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+            return None
+
     from ._diff import _summarize_change
     from ._lockfile import (
         COMPONENT_METADATA_FIELDS,
@@ -1269,18 +1380,18 @@ def analyze_component_drift(
             )
             return None
 
-    # Compute current fingerprints for just this component.
-    subset_config = dict(config)
-    subset_config["components"] = {component_name: comp_cfg}
-    subset_config["slices"] = {}
+    # Compute only this component's entry, but keep the complete config as the
+    # resolution context. Derivation output ownership and inherited versions
+    # can depend on components other than the one being explained.
     try:
         current_lock = generate_lockfile(
-            subset_config,
+            config,
             repo_root,
             source=source,
             strict=False,
             allow_custom_providers=allow_custom_providers,
             snapshot=snapshot,
+            components_filter={component_name},
         )
     except (MemoryError, RecursionError, KeyboardInterrupt):
         raise
@@ -1329,7 +1440,11 @@ def analyze_component_drift(
     digest_errors = list(bounded_digest_errors)
 
     if changes:
-        summary = _summarize_change(changes)
+        summary = _summarize_change(
+            changes,
+            locked_comp.get("fingerprints", {}),
+            current_comp.get("fingerprints", {}),
+        )
     elif digest_errors:
         summary = "fingerprint computation failed"
     elif metadata_changes:
@@ -1377,10 +1492,10 @@ def analyze_component_drift(
     diagnostic_base_origin: Optional[str] = None
     if changes:
         if source == "working-tree":
-            diagnostic_base = diagnostic_base_ref or "HEAD"
+            diagnostic_base = resolved_diagnostic_base or "HEAD"
             diagnostic_base_origin = (
                 "explicit --base-ref"
-                if diagnostic_base_ref
+                if resolved_diagnostic_base is not None
                 else "default for working-tree diagnostics"
             )
             try:
@@ -1395,10 +1510,10 @@ def analyze_component_drift(
                 changed_files_status = "error"
                 changed_files_error = _bounded_exception_text(exc)
         elif source == "index":
-            diagnostic_base = diagnostic_base_ref or "HEAD"
+            diagnostic_base = resolved_diagnostic_base or "HEAD"
             diagnostic_base_origin = (
                 "explicit --base-ref"
-                if diagnostic_base_ref
+                if resolved_diagnostic_base is not None
                 else "default for staged diagnostics"
             )
             if snapshot is not None and snapshot.head_oid is None:
@@ -1412,7 +1527,7 @@ def analyze_component_drift(
                 changed_files_status = "ok"
             else:
                 try:
-                    if diagnostic_base_ref:
+                    if resolved_diagnostic_base is not None:
                         target = snapshot.tree_oid if snapshot is not None else "--cached"
                         diff_args = (
                             ["diff", "--name-status", "-z", diagnostic_base, target]
@@ -1452,8 +1567,8 @@ def analyze_component_drift(
                     changed_files_error = _bounded_exception_text(exc)
         elif source == "head":
             try:
-                if diagnostic_base_ref:
-                    diagnostic_base = diagnostic_base_ref
+                if resolved_diagnostic_base is not None:
+                    diagnostic_base = resolved_diagnostic_base
                     diagnostic_base_origin = "explicit --base-ref"
                 else:
                     diagnostic_base, diagnostic_base_origin = (
@@ -1473,20 +1588,40 @@ def analyze_component_drift(
                     if snapshot is not None and snapshot.head_oid is not None
                     else "HEAD"
                 )
-                changed_files = _git_name_status(
-                    repo_root,
-                    [
-                        "--literal-pathspecs",
-                        "diff",
-                        "--name-status",
-                        "-z",
-                        diagnostic_base,
-                        target,
-                        "--",
-                        component_pathspec,
-                    ],
-                )
-                changed_files_status = "ok"
+                if diagnostic_base_origin.startswith("current commit fallback"):
+                    changed_files = []
+                    changed_files_status = "not-run"
+                else:
+                    diff_command = (
+                        [
+                            "diff-tree",
+                            "--root",
+                            "--no-commit-id",
+                            "--name-status",
+                            "-r",
+                            "-z",
+                            target,
+                        ]
+                        if diagnostic_base == target
+                        and diagnostic_base_origin.startswith("root commit fallback")
+                        else [
+                            "diff",
+                            "--name-status",
+                            "-z",
+                            diagnostic_base,
+                            target,
+                        ]
+                    )
+                    changed_files = _git_name_status(
+                        repo_root,
+                        [
+                            "--literal-pathspecs",
+                            *diff_command,
+                            "--",
+                            component_pathspec,
+                        ],
+                    )
+                    changed_files_status = "ok"
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"
@@ -1513,8 +1648,21 @@ def analyze_component_drift(
         "changed_files": changed_files,
         "changed_files_status": changed_files_status,
         "changed_files_error": changed_files_error,
-        "diagnostic_base": diagnostic_base,
-        "diagnostic_base_origin": diagnostic_base_origin,
+        "diagnostic_base_requested": (
+            _bounded_diagnostic_text(diagnostic_base_ref)
+            if diagnostic_base_ref is not None
+            else None
+        ),
+        "diagnostic_base": (
+            _bounded_diagnostic_text(diagnostic_base)
+            if diagnostic_base is not None
+            else None
+        ),
+        "diagnostic_base_origin": (
+            _bounded_diagnostic_text(diagnostic_base_origin)
+            if diagnostic_base_origin is not None
+            else None
+        ),
         "version": version,
         "locked_fps": locked_fps,
         "current_fps": current_fps,

@@ -49,6 +49,8 @@ def _load_validated_config_inputs(
 
     try:
         repo_root = git_root()
+    except GuardrailError as exc:
+        raise ConfigError(f"Cannot load config: {exc}") from exc
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         raise ConfigError(
             "Cannot load config: the current directory is not inside a readable "
@@ -90,13 +92,15 @@ def load_config(
 
     ``source`` selects working-tree bytes by default or one immutable ``head``
     or ``index`` snapshot. ``ConfigError`` is raised for repository, source,
-    missing-file, parse, and validation failures. A valid config does not need
-    a ``$schema`` field because the packaged schema remains authoritative.
+    missing-file, parse, and full-generation validation failures. A valid
+    config does not need a ``$schema`` field because the packaged schema
+    remains authoritative.
     """
     _, _, _, config = _load_validated_config_inputs(
         config_path,
         source,
         allow_custom_providers=False,
+        require_slice_facets=True,
     )
     return config
 
@@ -107,7 +111,7 @@ def generate(
     source: str = "head",
     allow_custom_providers: bool = False,
 ) -> dict:
-    """Generate a lockfile and return it as a dict.
+    """Generate a lockfile from committed ``head`` by default and return it.
 
     Also writes to *out_path* (relative to repo root). Pass ``out_path=None``
     to skip writing.
@@ -115,6 +119,7 @@ def generate(
     from ._lockfile import generate_lockfile
     from .core import (
         _ensure_lock_outside_components,
+        _repository_relative_path,
         _write_lockfile_atomic,
     )
 
@@ -125,12 +130,14 @@ def generate(
         require_slice_facets=True,
     )
     if out_path is not None:
-        dest = repo_root / out_path
+        dest = _repository_relative_path(repo_root, out_path, label="Output path")
         _ensure_lock_outside_components(
             repo_root,
             dest,
             config,
             config_path=resolved_config_path,
+            source=source,
+            snapshot=snapshot,
         )
     lockfile = generate_lockfile(
         config, repo_root, source=source, strict=True,
@@ -153,16 +160,24 @@ def verify(
     fail_fast: bool = False,
     transitive_consumers: bool = False,
 ) -> List[str]:
-    """Verify lockfile matches current repo state.
+    """Verify committed ``head`` against the lockfile by default.
 
     Returns gated mismatch strings. Empty means the selected gate is current.
     When *facets* is omitted, ``defaults.verify_facets`` is honored just like
-    the CLI. Pass a list as *observations* to collect drift outside that gate.
+    the CLI. Pass a list as *observations* to collect drift outside that gate;
+    its prior contents are replaced even when verification exits early.
+    Unknown or malformed component/facet selections raise ``ConfigError``;
+    missing or malformed lockfiles raise ``LockfileError``.
     """
+    if observations is not None:
+        if not isinstance(observations, list):
+            raise TypeError("observations must be a list or None")
+        observations[:] = []
     from ._lockfile import verify_lockfile
     from .core import (
         _ensure_lock_outside_components,
         _load_lockfile,
+        _repository_relative_path,
         _verify_lock_preflight_issues,
     )
 
@@ -171,12 +186,33 @@ def verify(
         source,
         allow_custom_providers=allow_custom_providers,
     )
-    resolved_lock_path = repo_root / lock_path
+    for label, selection, known in (
+        ("component", components, set(config["components"])),
+        ("facet", facets, {"exact", "behavior", "boundary", "compat"}),
+    ):
+        if selection is None:
+            continue
+        if not isinstance(selection, list) or not all(
+            isinstance(item, str) for item in selection
+        ):
+            raise ConfigError(
+                f"Verification {label}s must be supplied as a list of strings"
+            )
+        unknown = sorted(set(selection) - known)
+        if unknown:
+            raise ConfigError(
+                f"Unknown verification {label}(s): " + ", ".join(unknown)
+            )
+    resolved_lock_path = _repository_relative_path(
+        repo_root, lock_path, label="Lockfile path"
+    )
     _ensure_lock_outside_components(
         repo_root,
         resolved_lock_path,
         config,
         config_path=resolved_config_path,
+        source=source,
+        snapshot=snapshot,
     )
     lf = _load_lockfile(
         resolved_lock_path, repo_root=repo_root, snapshot=snapshot
@@ -197,7 +233,10 @@ def verify(
 
 
 def diff(old_path: str, new_path: str) -> dict:
-    """Diff two lockfiles and return structured result."""
+    """Diff two lockfiles and return structured result.
+
+    Missing or malformed lockfiles raise ``LockfileError``.
+    """
     from pathlib import Path
     from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
     from .core import _load_lockfile, _require_diffable_lockfile

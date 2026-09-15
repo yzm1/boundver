@@ -17,6 +17,7 @@ from ._utils import (
     GuardrailError,
     ProviderError,
     _bounded_diagnostic_text,
+    _bounded_exception_text,
 )
 from .providers import (
     ProviderContext,
@@ -375,6 +376,14 @@ def structural_boundary_changes(
                     target_input,
                     reason="provider-unavailable",
                     detail=_bounded_diagnostic_text(str(exc) or type(exc).__name__),
+                )
+            except BaseException as exc:
+                report = _unavailable_report(
+                    name,
+                    base_input,
+                    target_input,
+                    reason="provider-unavailable",
+                    detail=_bounded_exception_text(exc),
                 )
 
         if report is None:

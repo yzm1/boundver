@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import boundver.core as core
+from boundver._utils import _safe_display_text
 from tests._repo_fixtures import commit_all, init_git_repo
 
 
@@ -645,6 +646,52 @@ class MainRemoveIntegrityTests(unittest.TestCase):
             self.assertIn("would leave an invalid config", err)
             self.assertEqual(config_path.read_bytes(), before)
 
+    def test_add_recommends_a_full_generation_that_accepts_the_new_component(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo(root)
+            (root / "existing").mkdir()
+            (root / "existing" / "main.py").write_text("value = 1\n")
+            config = {
+                "project": "p",
+                "components": {
+                    "existing": {
+                        "path": "existing",
+                        "boundary": {"provider": "implicit"},
+                    }
+                },
+                "slices": {},
+            }
+            (root / "boundary.config.json").write_text(
+                json.dumps(config, indent=2) + "\n"
+            )
+            commit_all(root, "initial component")
+            code, _out, err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+
+            (root / "new").mkdir()
+            (root / "new" / "main.py").write_text("value = 2\n")
+            subprocess.run(
+                ["git", "add", "--", "new/main.py"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            code, out, err = _run_main("add", "new", "new", repo_root=root)
+            self.assertEqual(code, core.EXIT_OK, err)
+            self.assertIn(
+                "Run: boundver generate --source working-tree", out
+            )
+
+            code, _out, err = _run_main(
+                "generate", "--source", "working-tree", repo_root=root
+            )
+            self.assertEqual(code, core.EXIT_OK, err)
+            lock = json.loads((root / "boundary.lock.json").read_text())
+            self.assertEqual(sorted(lock["components"]), ["existing", "new"])
+
     def test_add_reports_schema_invalid_components_without_traceback(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -827,8 +874,8 @@ class MainMigrateLockRelativePathTests(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as td:
             lf = {
-                "schema": "boundary-lock/v3",
-                "config_contract": "boundver-semantic-config/v2",
+                "schema": "boundary-lock/v4",
+                "config_contract": "boundver-semantic-config/v3",
                 "project": "x",
                 "components": {},
                 "slices": {},
@@ -1215,8 +1262,10 @@ class MainVerifyTests(unittest.TestCase):
 
             self.assertEqual(code, core.EXIT_USAGE, out + err)
             self.assertIn(
-                "Changed component paths (2): other\\x0aERROR: forged, svc; "
-                "validating full lock integrity.",
+                _safe_display_text(
+                    "Changed component paths (2): other\\x0aERROR: forged, svc; "
+                    "validating full lock integrity."
+                ),
                 out,
             )
             self.assertNotIn("\nERROR: forged", out)
@@ -1345,6 +1394,15 @@ class MainVerifyTests(unittest.TestCase):
             )
 
     def test_verify_update_refreshes_observation_only_drift(self):
+        """An observation-only ``--update`` refreshes the lock and resolves nothing.
+
+        OBL-LOCKFILE-017 says this run reports ``resolved_issues: []``. The
+        drift it rewrote was never gated, so nothing was repaired, and the
+        field exists to keep that distinction visible. The test used to read
+        only the exit code, ``ok``, ``updated`` and the observations, so
+        MUT-LOCKFILE-308 could copy the observations into ``resolved_issues``
+        and stay green. The assertions below read both list fields.
+        """
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)
@@ -1368,7 +1426,13 @@ class MainVerifyTests(unittest.TestCase):
             payload = json.loads(out)
             self.assertTrue(payload["ok"])
             self.assertTrue(payload["updated"])
+            # PREMISE: this run really did observe non-gated drift. If the
+            # observation list were empty, the two assertions that follow
+            # would hold no matter which list the payload copied into
+            # ``resolved_issues``.
             self.assertTrue(payload["observations"])
+            self.assertEqual(payload["issues"], [])
+            self.assertEqual(payload["resolved_issues"], [])
 
             verify_code, _, verify_err = _run_main(
                 "verify",
@@ -1379,6 +1443,113 @@ class MainVerifyTests(unittest.TestCase):
                 repo_root=root,
             )
             self.assertEqual(verify_code, core.EXIT_OK, verify_err)
+
+    def test_verify_update_reports_repaired_gated_drift_as_resolved(self):
+        """A gated issue that ``--update`` repairs is listed under ``resolved_issues``.
+
+        This is the contrast case for MUT-LOCKFILE-308. Its sibling asserts
+        that an observation-only ``--update`` leaves ``resolved_issues``
+        empty, and that assertion would pass just as well if the field were
+        empty on every path, which would make it worthless. The same edit
+        verified under the default gated facet is a genuine issue, and the
+        ``--update`` that repairs it has to report it as resolved.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            (root / "svc" / "main.py").write_text("internal refactor\n")
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--update",
+                "--format",
+                "json",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            payload = json.loads(out)
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["updated"])
+            self.assertEqual(payload["issues"], [])
+            self.assertTrue(payload["resolved_issues"], payload)
+
+    def test_verify_update_text_mode_confirms_observation_only_refresh(self):
+        """Text mode names the lockfile it rewrote after an observation-only update.
+
+        OBL-LOCKFILE-017 requires the line ``Updated <path> after successful
+        generation.``, which is how somebody running without ``--format
+        json`` learns that the file on disk changed. The only existing test
+        of this branch asks for JSON and therefore never reaches the text
+        arm, so MUT-LOCKFILE-309 could replace the sentence with an
+        unrelated one and leave the suite green. This test asserts the
+        literal sentence together with the write it reports.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            lock_path = root / "boundary.lock.json"
+            before = lock_path.read_bytes()
+            (root / "svc" / "main.py").write_text("internal refactor\n")
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "boundary,compat",
+                "--update",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            # PREMISE: the update really rewrote the lockfile, so the
+            # sentence under test confirms a write that happened instead of
+            # narrating a no-op.
+            self.assertNotEqual(lock_path.read_bytes(), before)
+            self.assertIn(
+                _safe_display_text(
+                    f"Updated {lock_path} after successful generation."
+                ),
+                out,
+            )
+
+    def test_verify_without_update_does_not_claim_a_refresh(self):
+        """An observation-only verify without ``--update`` promises no rewrite.
+
+        This is the contrast case for MUT-LOCKFILE-309. Asserting the exact
+        confirmation sentence would still pass if the line were printed on
+        every observation-only verify, so this test runs the same drift
+        without ``--update`` and requires that the lockfile is untouched and
+        that nothing claims otherwise.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            init_git_repo(root)
+            self._setup(root)
+            _run_main("generate", "--source", "working-tree", repo_root=root)
+            lock_path = root / "boundary.lock.json"
+            before = lock_path.read_bytes()
+            (root / "svc" / "main.py").write_text("internal refactor\n")
+
+            code, out, err = _run_main(
+                "verify",
+                "--source",
+                "working-tree",
+                "--facets",
+                "boundary,compat",
+                repo_root=root,
+            )
+
+            self.assertEqual(code, core.EXIT_OK, err)
+            self.assertEqual(lock_path.read_bytes(), before)
+            self.assertNotIn("after successful generation", out)
 
     def test_verify_invalid_changed_from_exits_usage(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2225,8 +2396,11 @@ class MainUtilityTests(unittest.TestCase):
     """Tests for internal helpers exercised through main() flow."""
 
     def test_parse_components_arg_empty(self):
-        self.assertEqual(core._parse_components_arg(""), [])
         self.assertEqual(core._parse_components_arg(None), [])
+        for raw in ("", " ", ",", " , "):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "must name at least one"):
+                    core._parse_components_arg(raw)
 
     def test_parse_components_arg_comma_separated(self):
         result = core._parse_components_arg("b,a,c")
@@ -2268,12 +2442,12 @@ class MainUtilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "boundary.lock.json"
             target.write_text("old\n", encoding="utf-8")
-            target.chmod(0o640)
+            target.chmod(0o400)
 
             core._write_text_atomic(target, "new\n")
 
             self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
-            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o400)
 
     def test_atomic_write_creates_plain_nested_parents(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2530,12 +2704,12 @@ class MainMigrateLockTests(unittest.TestCase):
             self.assertEqual(out, "")
             self.assertEqual(p.read_text(), original)  # file unchanged
 
-    def test_migrate_lock_current_v3_cleanup_writes_in_place(self):
+    def test_migrate_lock_current_v4_cleanup_writes_in_place(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
             lf = {
-                "schema": "boundary-lock/v3",
-                "config_contract": "boundver-semantic-config/v2",
+                "schema": "boundary-lock/v4",
+                "config_contract": "boundver-semantic-config/v3",
                 "project": "x",
                 "components": {},
                 "slices": {},

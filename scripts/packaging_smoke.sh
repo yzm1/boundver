@@ -407,6 +407,14 @@ WINDOWS_RESERVED_ARCHIVE_STEMS = {
     "prn",
     *(f"com{number}" for number in range(1, 10)),
     *(f"lpt{number}" for number in range(1, 10)),
+    *(
+        f"com{number}"
+        for number in "\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+    ),
+    *(
+        f"lpt{number}"
+        for number in "\N{SUPERSCRIPT ONE}\N{SUPERSCRIPT TWO}\N{SUPERSCRIPT THREE}"
+    ),
 }
 
 
@@ -907,6 +915,8 @@ try:
         f"{prefix}/docs/getting-started.md",
         f"{prefix}/spec/HASHING.md",
         f"{prefix}/spec/cli-output.plan.schema.json",
+        f"{prefix}/spec/cli-output.coverage.schema.json",
+        f"{prefix}/spec/derivation.schema.json",
         f"{prefix}/spec/cli-output.review.schema.json",
         f"{prefix}/spec/cli-output.slice.schema.json",
         f"{prefix}/spec/cli-output.why.schema.json",
@@ -921,6 +931,14 @@ try:
         f"{prefix}/docs/hashing-contract.md",
         f"{prefix}/docs/specification.md",
         f"{prefix}/docs/support.md",
+        f"{prefix}/docs/design/obligation-survey-method.md",
+        f"{prefix}/docs/design/obligation-survey-reply.md",
+        f"{prefix}/docs/design/obligation-survey-reply-2.md",
+        f"{prefix}/docs/design/testing-obligations.md",
+        f"{prefix}/spec/mutants.json",
+        f"{prefix}/spec/release-mutations.json",
+        f"{prefix}/spec/testing-obligations.json",
+        f"{prefix}/spec/test-tiers.json",
         f"{prefix}/tests",
         f"{prefix}/scripts",
         f"{prefix}/.github",

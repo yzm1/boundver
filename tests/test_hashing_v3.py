@@ -13,6 +13,7 @@ from boundver._git import _resolve_head_oid, git_latest_tag
 from boundver._hashing import _content_only_digest, source_tree_digest
 from boundver._lockfile import (
     LOCKFILE_SCHEMA,
+    SEMANTIC_CONFIG_VERSION,
     MigrationError,
     _SourceAccessor,
     generate_lockfile,
@@ -78,7 +79,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
                 _content_only_digest(root, "svc", source="head"),
             )
 
-            target.chmod(0o755)
+            target.chmod(0o700)
             _commit(root, "executable")
             executable = (
                 source_tree_digest(root, "svc", source="head"),
@@ -113,7 +114,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
 
             # Behavior selects a disjoint file, so its change here proves the
             # behavior envelope cryptographically includes boundary.
-            contract.chmod(0o755)
+            contract.chmod(0o700)
             _commit(root, "contract executable")
             contract_mode = generate_lockfile(_config(), root, source="head")
             self.assertNotEqual(
@@ -127,7 +128,7 @@ class ModeAndTypeBindingTests(unittest.TestCase):
 
             # Boundary is unchanged; this proves the raw behavior selection
             # itself binds mode as well.
-            behavior.chmod(0o755)
+            behavior.chmod(0o700)
             _commit(root, "behavior executable")
             behavior_mode = generate_lockfile(_config(), root, source="head")
             self.assertEqual(
@@ -451,14 +452,14 @@ class LockV3SafetyTests(unittest.TestCase):
         (vendor / "behavior.txt").write_bytes(b"stable")
         _commit(root, "vendored")
 
-    def test_strict_generated_v3_lock_immediately_verifies(self):
+    def test_strict_generated_current_lock_immediately_verifies(self):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
             root = Path(td)
             self._write_vendored_repo(root)
             config = _config(vendored=True)
             lock = generate_lockfile(config, root, source="head", strict=True)
 
-            self.assertEqual(lock["schema"], "boundary-lock/v3")
+            self.assertEqual(lock["schema"], LOCKFILE_SCHEMA)
             self.assertEqual(lock["config_digest"], semantic_config_digest(config))
             self.assertEqual(
                 verify_lockfile(config, lock, root, source="head"), []
@@ -497,7 +498,7 @@ class LockV3SafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=_TEMP_ROOT) as td:
             root = Path(td)
             self._write_vendored_repo(root)
-            (root / "vendor" / "svc" / "contract.txt").chmod(0o755)
+            (root / "vendor" / "svc" / "contract.txt").chmod(0o700)
             _commit(root, "vendored mode drift")
             with self.assertRaisesRegex(ConfigError, "differs from source"):
                 generate_lockfile(
@@ -515,7 +516,7 @@ class LockV3SafetyTests(unittest.TestCase):
                 }
             )
 
-    def test_json_schema_requires_v3_config_metadata(self):
+    def test_json_schema_requires_current_config_metadata(self):
         try:
             import jsonschema
         except ImportError:
@@ -524,7 +525,7 @@ class LockV3SafetyTests(unittest.TestCase):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         minimal = {
             "schema": LOCKFILE_SCHEMA,
-            "config_contract": "boundver-semantic-config/v2",
+            "config_contract": SEMANTIC_CONFIG_VERSION,
             "config_digest": "0" * 64,
             "project": "demo",
             "components": {},

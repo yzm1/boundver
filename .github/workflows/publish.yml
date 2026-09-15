@@ -241,7 +241,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$RELEASE_TAG" == v0.16.0 ]]; then
+          if [[ "$RELEASE_TAG" == v0.17.0 ]]; then
             clean_python_cwd=$(mktemp -d)
             (cd "$clean_python_cwd" && python3 -I \
               "$GITHUB_WORKSPACE/scripts/audit_semantic_provider_proposal.py" \

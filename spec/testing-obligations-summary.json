@@ -1,0 +1,57 @@
+{
+  "record": "boundver-testing-obligations-summary/v1",
+  "release": "0.16.0",
+  "authority": "https://github.com/yzm1/boundver/issues/137",
+  "source": {
+    "survey_commit": "dd63d83ced752acd408c504de1c4ae9aa7434030",
+    "raw_evidence": "private",
+    "survey_obligations": 620,
+    "survey_asserted": 480,
+    "survey_examples_only": 133,
+    "survey_uncovered": 7,
+    "survey_unassessed": 0,
+    "survey_candidate_findings": 160,
+    "survey_expected_failures": 178,
+    "private_catalog_mutants": 750,
+    "private_catalog_stale_after_remediation": 91,
+    "release_catalog_mutants": 12
+  },
+  "dispositions": {
+    "remediated_in_code_or_regression_oracles": 171,
+    "contract_documented": 2,
+    "rejected_as_contradictory_or_stale": 5,
+    "deferred": 0,
+    "remaining_expected_failures": 0
+  },
+  "rejected": [
+    {
+      "obligation": "OBL-FACETS-005",
+      "reason": "JSON Schema cannot express sorted-array order or a SHA-256 identifier derived from sibling fields; the strict loader remains authoritative and is tested."
+    },
+    {
+      "obligation": "OBL-HASHING-085",
+      "reason": "Version and semver metadata are ancillary renderings of an acknowledged compat mismatch, not independently baselineable integrity failures."
+    },
+    {
+      "obligation": "OBL-CONFIG-013",
+      "reason": "Parser diagnostics redact source content, while semantic validation must identify the invalid field, provider, source mode, or path so users can repair it."
+    },
+    {
+      "obligation": "OBL-GIT-SOURCE-145",
+      "reason": "The required text described a race-time refusal, but an already-present reparse point is safely refused earlier with a more accurate diagnostic."
+    },
+    {
+      "obligation": "OBL-GIT-SOURCE-069",
+      "reason": "The optional JSON Schema engine intentionally adds diagnostics; installation does not change the accept-or-reject verdict or remove dependency-free errors."
+    }
+  ],
+  "maintained_surfaces": [
+    "spec/test-tiers.json",
+    "spec/release-mutations.json",
+    "scripts/test_tiers.py",
+    "scripts/mutation_check.py",
+    "tests/test_mutation_check.py",
+    "tests/test_testing_obligation_summary.py",
+    "docs/design/testing-obligation-dispositions.md"
+  ]
+}

@@ -120,7 +120,8 @@ being mislabeled as a public-contract change.
 
 -   **Need exact semantics**
 
-    Read the [reference](reference.md), [glossary](glossary.md), and
+    Read the [CLI reference](cli-reference.md),
+    [behavioral reference](reference.md), [glossary](glossary.md), and
     [normative specification](https://yzm1.github.io/boundver/specification/).
 
 </div>
@@ -136,6 +137,8 @@ baseline, acknowledged lock drift can still be present. It does not prove that
 every consumer is safe. Start with
 [What boundver does and does not do](WHY_BOUNDVER.md), or compare it with
 [build graphs and schema-specific tools](comparison.md).
+Common adoption questions are answered in the [FAQ](faq.md); planned work is
+tracked on the [roadmap](roadmap.md).
 
 ## Local by design
 

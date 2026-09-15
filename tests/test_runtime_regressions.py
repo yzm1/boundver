@@ -547,7 +547,7 @@ class GlobComplexityTests(unittest.TestCase):
 
 
 class DiscoveryStreamingTests(unittest.TestCase):
-    def test_index_backed_discovery_ignores_unstaged_manifest_deletion(self):
+    def test_index_backed_discovery_refuses_unstaged_manifest_deletion(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             _init_repo(root)
@@ -560,15 +560,11 @@ class DiscoveryStreamingTests(unittest.TestCase):
             _commit_all(root)
             (root / "pyproject.toml").unlink()
 
-            discovered = discover_components(root)
-
-            self.assertEqual(len(discovered), 1)
-            component = next(iter(discovered.values()))
-            self.assertEqual(component["path"], "pkg")
-            self.assertEqual(
-                component["boundary"],
-                {"provider": "python-exports", "paths": ["__init__.py"]},
-            )
+            with self.assertRaisesRegex(
+                ConfigError,
+                r"indexed manifest.*pyproject\.toml.*Restore or stage its deletion",
+            ):
+                discover_components(root)
 
     def test_git_listing_guardrail_fails_closed(self):
         with tempfile.TemporaryDirectory() as td:
@@ -946,7 +942,7 @@ class ChangedPathSelectionTests(unittest.TestCase):
                     "cat\n"
                 ).encode("utf-8")
             )
-            filter_script.chmod(0o755)
+            filter_script.chmod(0o700)
 
             _init_repo(root)
             _git(

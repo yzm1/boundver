@@ -12,6 +12,7 @@ from unittest.mock import patch
 import boundver.core as boundary_lock
 import boundver
 import boundver.versions as versions
+from boundver._lockfile import SEMANTIC_CONFIG_VERSION
 from tests._repo_fixtures import commit_all, init_git_repo
 
 
@@ -991,6 +992,47 @@ class BoundaryLockTests(unittest.TestCase):
             removed_issues = boundary_lock.verify_lockfile(cfg_removed, lock, root, source="working-tree")
             self.assertTrue(any("REMOVED component still in lockfile: a" in i for i in removed_issues), removed_issues)
 
+    def test_diff_lockfiles_reports_a_slice_field_present_in_only_one_lock(self):
+        """A slice metadata field that appears or disappears is a change.
+
+        The field set is the union of both sides minus the fingerprint, so
+        a field only one lock carries still gets compared against a missing
+        value. Intersecting instead would drop it, and because the slice
+        fingerprint need not move when only presentation metadata changes,
+        the slice would then be reported unchanged (MUT-HASHING-211).
+        """
+        for label, old_slice, new_slice in (
+            (
+                "field added",
+                {"fingerprint": "s1", "mode": "exact"},
+                {"fingerprint": "s1", "mode": "exact", "description": "new"},
+            ),
+            (
+                "field removed",
+                {"fingerprint": "s1", "mode": "exact", "description": "old"},
+                {"fingerprint": "s1", "mode": "exact"},
+            ),
+        ):
+            with self.subTest(case=label):
+                old = {"components": {}, "slices": {"api": old_slice}}
+                new = {"components": {}, "slices": {"api": new_slice}}
+                diff = boundary_lock.diff_lockfiles(old, new)
+                self.assertEqual(diff["slices"]["unchanged"], [])
+                changed = diff["slices"]["changed"]
+                self.assertEqual(len(changed), 1, changed)
+                self.assertEqual(
+                    sorted(changed[0]["changed_metadata"]), ["description"]
+                )
+
+    def test_diff_lockfiles_leaves_an_untouched_slice_alone(self):
+        """The contrast: the assertion above is not true of every slice."""
+        entry = {"fingerprint": "s1", "mode": "exact", "description": "same"}
+        old = {"components": {}, "slices": {"api": dict(entry)}}
+        new = {"components": {}, "slices": {"api": dict(entry)}}
+        diff = boundary_lock.diff_lockfiles(old, new)
+        self.assertEqual(diff["slices"]["unchanged"], ["api"])
+        self.assertEqual(diff["slices"]["changed"], [])
+
     def test_diff_lockfiles_uses_boundary_first_summary(self):
         old = {
             "components": {
@@ -1568,6 +1610,124 @@ class BoundaryLockTests(unittest.TestCase):
             errors = boundary_lock.validate_config(cfg, root)
             version_source_errors = [e for e in errors if "version_source" in e]
             self.assertEqual(version_source_errors, [], f"Unexpected version_source errors: {version_source_errors}")
+
+    SUPPORTED_VERSION_SOURCE_FILES = (
+        ("version.json", '{"version": "1.0.0"}\n'),
+        ("version.toml", 'version = "1.0.0"\n'),
+        ("version.yaml", 'version: "1.0.0"\n'),
+        ("version.yml", 'version: "1.0.0"\n'),
+    )
+
+    def _version_source_file_config(self, filename: str) -> dict:
+        """Return the one-component config that reads its version from *filename*."""
+        return {
+            "project": "p",
+            "components": {
+                "svc": {
+                    "path": "svc",
+                    "boundary": {"provider": "implicit"},
+                    "version_source": {"file": filename, "field": "version"},
+                }
+            },
+            "slices": {},
+        }
+
+    def _commit_version_source_fixture(self, root: Path, filename: str, body: str) -> None:
+        """Create a committed repository whose svc component carries *filename*."""
+        init_git_repo(root)
+        (root / "svc").mkdir()
+        (root / "svc" / filename).write_text(body)
+        commit_all(root)
+
+    def test_version_source_accepts_every_supported_extension(self):
+        """Each extension in the supported set is accepted, and .yml is one of them.
+
+        The supported-extension set used to be asserted only in the negative.
+        Every test that reached it handed validation an unsupported name such
+        as 'VERSION' or 'notes.txt' and checked that validation complained, and
+        no test anywhere declared a version_source.file ending in .json, .toml,
+        .yaml or .yml and then asserted that validation stayed quiet about it.
+        Three of the four accepted extensions could therefore be dropped from
+        the set with the whole suite still green, which is exactly what
+        MUT-GIT-SOURCE-482 does to '.yml'. This table walks the four accepted
+        extensions with a correctly spelled manifest for each one and requires
+        silence, so removing any of them fails here.
+        """
+        for filename, body in self.SUPPORTED_VERSION_SOURCE_FILES:
+            with self.subTest(version_source_file=filename):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    self._commit_version_source_fixture(root, filename, body)
+                    errors = boundary_lock.validate_config(
+                        self._version_source_file_config(filename),
+                        root,
+                        source="working-tree",
+                    )
+                file_errors = [e for e in errors if "version_source.file" in e]
+                self.assertEqual(
+                    file_errors,
+                    [],
+                    f"Unexpected version_source.file errors for {filename}: {errors}",
+                )
+
+    def test_version_source_extension_check_runs_for_the_table_fixture(self):
+        """PREMISE for MUT-GIT-SOURCE-482: the accepted table really reaches the check.
+
+        The table above reads silence as acceptance, and silence is only
+        evidence while the very same fixture shape does produce a
+        version_source.file error when the extension is the one thing that
+        changes. Here the identical component, committed the identical way,
+        carries its version in 'version.txt' and validation names the
+        unsupported extension. That rules out the vacuous reading in which the
+        component declaration is malformed, the version_source branch never
+        runs, and no message about the file could have appeared whatever the
+        supported set contained.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._commit_version_source_fixture(root, "version.txt", 'version: "1.0.0"\n')
+            errors = boundary_lock.validate_config(
+                self._version_source_file_config("version.txt"),
+                root,
+                source="working-tree",
+            )
+        self.assertTrue(
+            any("version_source.file has unsupported extension" in e for e in errors),
+            f"Expected an unsupported extension error, got: {errors}",
+        )
+        # PREMISE: the four accepted fixtures differ from this refused one only
+        # in their extension, so nothing else about the shape explains silence.
+        self.assertEqual(
+            [Path(name).suffix for name, _ in self.SUPPORTED_VERSION_SOURCE_FILES],
+            [".json", ".toml", ".yaml", ".yml"],
+        )
+
+    def test_version_source_unsupported_extension_message_names_accepted_set(self):
+        """The refusal spells out every extension the validator will accept.
+
+        The older unsupported-extension test stopped at the words 'unsupported
+        extension' and never read the tail of the diagnostic, so the list the
+        operator is pointed at went unasserted. Under MUT-GIT-SOURCE-482 that
+        tail quietly loses '.yml' and tells the operator to rename a manifest
+        the tool would in fact have read, so this pins the advertised set to
+        the set the validator actually honours.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._commit_version_source_fixture(root, "version.txt", 'version: "1.0.0"\n')
+            errors = boundary_lock.validate_config(
+                self._version_source_file_config("version.txt"),
+                root,
+                source="working-tree",
+            )
+        extension_errors = [e for e in errors if "unsupported extension" in e]
+        self.assertEqual(
+            len(extension_errors),
+            1,
+            f"Expected exactly one unsupported extension error, got: {errors}",
+        )
+        self.assertIn("'.txt'", extension_errors[0])
+        self.assertIn("supported: .json, .toml, .yaml, .yml", extension_errors[0])
 
     def test_validate_config_reports_missing_boundary_path_file(self):
         """validate_config emits an actionable error with component+file path when boundary file is absent."""
@@ -2854,7 +3014,9 @@ class BoundaryLockTests(unittest.TestCase):
 
     def test_lockfile_schema_issues_correct_schema_passes(self):
         """_lockfile_schema_issues returns empty for correct schema."""
-        issues = boundary_lock._lockfile_schema_issues({"schema": "boundary-lock/v3"})
+        issues = boundary_lock._lockfile_schema_issues(
+            {"schema": boundary_lock.LOCKFILE_SCHEMA}
+        )
         self.assertEqual(issues, [])
 
 
@@ -3048,6 +3210,14 @@ class MigrateLockTests(unittest.TestCase):
         base.update(extra)
         return base
 
+    def _minimal_v4(self, **extra):
+        base = self._minimal_v3()
+        base["schema"] = boundary_lock.LOCKFILE_SCHEMA
+        base["config_contract"] = SEMANTIC_CONFIG_VERSION
+        base["$schema"] = boundary_lock.LOCKFILE_SCHEMA_URL
+        base.update(extra)
+        return base
+
     # ------------------------------------------------------------------
     # Unit tests for migrate_lockfile()
     # ------------------------------------------------------------------
@@ -3062,18 +3232,17 @@ class MigrateLockTests(unittest.TestCase):
         self.assertIn("cannot be migrated", message)
         self.assertIn("boundver generate", message)
 
-    def test_current_v3_cleanup_strips_generated_at(self):
+    def test_current_v4_cleanup_strips_generated_at(self):
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v3(generated_at="2024-01-01T00:00:00Z")
+        lf = self._minimal_v4(generated_at="2024-01-01T00:00:00Z")
         result = migrate_lockfile(lf)
         self.assertNotIn("generated_at", result)
 
-    def test_v3_semantic_v1_requires_regeneration(self):
+    def test_v3_requires_regeneration(self):
         from boundver._lockfile import MigrationError, migrate_lockfile
 
         lockfile = self._minimal_v3()
-        lockfile["config_contract"] = "boundver-semantic-config/v1"
-        with self.assertRaisesRegex(MigrationError, "cannot be relabelled"):
+        with self.assertRaisesRegex(MigrationError, "cannot be migrated"):
             migrate_lockfile(lockfile)
 
     def test_migrate_does_not_mutate_input(self):
@@ -3083,19 +3252,32 @@ class MigrateLockTests(unittest.TestCase):
             migrate_lockfile(lf)
         self.assertIn("generated_at", lf)  # original untouched
 
-    def test_current_v3_cleanup_preserves_components(self):
+    def test_current_v4_cleanup_preserves_components(self):
         from boundver._lockfile import migrate_lockfile
-        result = migrate_lockfile(self._minimal_v3())
+        result = migrate_lockfile(self._minimal_v4())
         self.assertEqual(result["components"]["svc"]["fingerprints"]["exact"], "aaa")
 
-    def test_current_v3_cleanup_adds_missing_components_and_slices(self):
-        from boundver._lockfile import migrate_lockfile
+    def test_current_v4_cleanup_refuses_missing_components(self):
+        from boundver._lockfile import MigrationError, migrate_lockfile
         lf = {
-            "schema": "boundary-lock/v3",
-            "config_contract": "boundver-semantic-config/v2",
+            "schema": boundary_lock.LOCKFILE_SCHEMA,
+            "config_contract": SEMANTIC_CONFIG_VERSION,
             "project": "x",
         }
-        result = migrate_lockfile(lf)
+        with self.assertRaisesRegex(MigrationError, "components"):
+            migrate_lockfile(lf)
+
+    def test_current_v4_cleanup_adds_only_a_missing_slices_map(self):
+        from boundver._lockfile import migrate_lockfile
+
+        result = migrate_lockfile(
+            {
+                "schema": boundary_lock.LOCKFILE_SCHEMA,
+                "config_contract": SEMANTIC_CONFIG_VERSION,
+                "project": "x",
+                "components": {},
+            }
+        )
         self.assertEqual(result["components"], {})
         self.assertEqual(result["slices"], {})
 
@@ -3129,7 +3311,7 @@ class MigrateLockTests(unittest.TestCase):
     def test_migrate_idempotent(self):
         """Running migrate twice gives the same result as running it once."""
         from boundver._lockfile import migrate_lockfile
-        lf = self._minimal_v3(generated_at="ts")
+        lf = self._minimal_v4(generated_at="ts")
         once = migrate_lockfile(lf)
         twice = migrate_lockfile(once)
         self.assertEqual(once, twice)
@@ -3189,10 +3371,10 @@ class MigrateLockTests(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertEqual(p.read_text(), original)
 
-    def test_cli_current_v3_dry_run_does_not_write(self):
+    def test_cli_current_v4_dry_run_does_not_write(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            original = json.dumps(self._minimal_v3(generated_at="ts"))
+            original = json.dumps(self._minimal_v4(generated_at="ts"))
             p.write_text(original)
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -3213,7 +3395,7 @@ class MigrateLockTests(unittest.TestCase):
             self.assertIn("removed legacy generated_at metadata", stderr.getvalue())
 
     def test_cli_noop_preserves_compact_pretty_and_reordered_locks(self):
-        value = self._minimal_v3()
+        value = self._minimal_v4()
         reordered = dict(reversed(list(value.items())))
         variants = {
             "compact": json.dumps(value, separators=(",", ":")).encode("utf-8"),
@@ -3228,7 +3410,7 @@ class MigrateLockTests(unittest.TestCase):
                 p = Path(td) / "boundary.lock.json"
                 p.write_bytes(original)
                 if os.name != "nt":
-                    p.chmod(0o640)
+                    p.chmod(0o400)
                 timestamp_ns = 1_700_000_000_123_456_700
                 os.utime(p, ns=(timestamp_ns, timestamp_ns))
                 before = p.stat()
@@ -3256,7 +3438,7 @@ class MigrateLockTests(unittest.TestCase):
     def test_cli_noop_dry_run_reports_no_action_without_writing(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            original = json.dumps(self._minimal_v3(), separators=(",", ":"))
+            original = json.dumps(self._minimal_v4(), separators=(",", ":"))
             p.write_text(original)
             before = p.stat()
             stdout = io.StringIO()
@@ -3286,7 +3468,7 @@ class MigrateLockTests(unittest.TestCase):
     def test_cli_cleanup_writes_once_then_second_run_is_a_true_noop(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "boundary.lock.json"
-            p.write_text(json.dumps(self._minimal_v3(generated_at="legacy")))
+            p.write_text(json.dumps(self._minimal_v4(generated_at="legacy")))
             first_stdout = io.StringIO()
 
             with (

@@ -82,15 +82,13 @@ Current config validation still reports that spelling for correction before
 regeneration.
 
 The analyzer does not make an old hash contract migratable. A
-`boundary-lock/v1` or `boundary-lock/v2` lock, or a v3 lock with the previous
-semantic-config contract, still requires content-based regeneration. The v0.13
-`boundver diff` path is deliberately read-only and can compare canonical
-`boundary-lock/v3` locks using the known semantic-config/v1 and v2 contracts;
-its metadata report includes the contract transition. Verification and any
-generation/update path that reuses an existing lock remain v2-only and reject
-v1 input; full generation recomputes the repository and emits a new v2 lock.
-Different lock schemas and unknown semantic contracts produce one compatibility
-diagnostic instead of a misleading list of current-schema structural errors.
+`boundary-lock/v1`, `v2`, or `v3` lock still requires content-based
+regeneration. `boundver diff` compares only canonical `boundary-lock/v4` locks
+using `boundver-semantic-config/v3`; cross-schema comparisons produce one
+compatibility diagnostic rather than a misleading list of structural changes.
+Verification and every generation/update path that reuses an existing lock also
+require the current pair. Full generation recomputes the repository and emits a
+new v4 lock.
 
 ## Find roots missing from configuration
 

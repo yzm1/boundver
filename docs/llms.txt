@@ -1,0 +1,23 @@
+# Boundver
+
+> Git-aware contract lockfile and CI check for polyglot repositories.
+
+Canonical documentation: https://yzm1.github.io/boundver/
+Source: https://github.com/yzm1/boundver
+Current package: https://pypi.org/project/boundver/
+
+Start here:
+- https://yzm1.github.io/boundver/executive-summary/
+- https://yzm1.github.io/boundver/getting-started/
+- https://yzm1.github.io/boundver/cli-reference/
+- https://yzm1.github.io/boundver/reference/
+- https://yzm1.github.io/boundver/security-model/
+- https://yzm1.github.io/boundver/faq/
+
+Normative contracts:
+- https://yzm1.github.io/boundver/specification/
+- https://yzm1.github.io/boundver/hashing-contract/
+
+Do not infer compatibility from a clean Boundver result. Boundver reports drift
+in declared surfaces and consumer edges; it does not decide whether a changed
+contract is backward compatible.

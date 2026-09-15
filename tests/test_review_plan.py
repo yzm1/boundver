@@ -114,12 +114,72 @@ def test_plan_distinguishes_direct_and_transitive_impact(tmp_path: Path) -> None
 def test_plan_omits_source_annotation_without_a_precise_document(
     tmp_path: Path,
 ) -> None:
+    """The derived summary must report an incomplete structural review as False.
+
+    The suite already pinned the True half of ``summary.structural_complete``
+    for a clean range, but nothing read that flag when the structural review
+    came back incomplete. Mutant MUT-PROVIDERS-302 relaxed the derivation in
+    ``_review_plan.build_review_plan`` from ``structural.get("complete") is
+    True`` to ``structural.get("complete") is not None`` and every test stayed
+    green, even though a plan built over a provider with no structural diff
+    output then advertised a complete structural review to CI. Asserting the
+    False half here makes the two directions contradict any derivation that
+    reports completeness for everything.
+    """
     base, target = _make_range(tmp_path, provider="path-hash")
 
     plan = build_review_plan(analyze_review_range(tmp_path, base, target))
 
     assert plan["structural_changes"]["complete"] is False
+    assert plan["summary"]["structural_complete"] is False
     assert plan["source_locations"] == []
+
+
+def test_plan_premise_unsupported_provider_states_incompleteness_explicitly(
+    tmp_path: Path,
+) -> None:
+    """PREMISE for MUT-PROVIDERS-302: the incomplete flag is present, not absent.
+
+    The summary flag is derived with ``structural.get("complete")``, so an
+    assertion that the flag is False would also hold if the review simply
+    omitted the key and the lookup returned None. This test shows the range
+    used above genuinely carries ``complete`` as a boolean False, and that it
+    is False because the ``path-hash`` provider exposes no structural diff
+    output rather than because the review produced no reports at all.
+    """
+    base, target = _make_range(tmp_path, provider="path-hash")
+
+    plan = build_review_plan(analyze_review_range(tmp_path, base, target))
+    structural = plan["structural_changes"]
+
+    assert "complete" in structural
+    assert structural["complete"] is False
+    assert plan["summary"]["structural_reports"] == 1
+    reports = structural["reports"]
+    assert len(reports) == 1
+    assert reports[0]["complete"] is False
+    assert reports[0]["reason"] == "provider-unsupported"
+    assert reports[0]["inputs"]["target"]["provider"] == "path-hash"
+
+
+def test_plan_reports_a_complete_structural_review_for_a_precise_provider(
+    tmp_path: Path,
+) -> None:
+    """CONTRAST for MUT-PROVIDERS-302: a real structural diff still reads True.
+
+    The assertion above would also be satisfied by a derivation that reported
+    every structural review as incomplete, so this test keeps the ordinary case
+    pinned on a range that actually changes a boundary. The default
+    ``openapi-canonical`` provider produces a complete report for that range,
+    and the summary flag must say so.
+    """
+    base, target = _make_range(tmp_path)
+
+    plan = build_review_plan(analyze_review_range(tmp_path, base, target))
+
+    assert plan["structural_changes"]["complete"] is True
+    assert plan["summary"]["structural_complete"] is True
+    assert plan["summary"]["structural_reports"] == 1
 
 
 def test_cli_writes_plan_and_same_capture_markdown_summary(tmp_path: Path) -> None:

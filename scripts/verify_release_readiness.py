@@ -48,7 +48,7 @@ version_at_least = _release_changelog.version_at_least
 TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
-CANONICAL_LOCK_SCHEMA_REF = "v0.13.0"
+CANONICAL_LOCK_SCHEMA_REF = "v0.16.0"
 RAW_SCHEMA_RE = re.compile(
     r"https://raw\.githubusercontent\.com/yzm1/boundver/"
     r"(?P<ref>[^/\s\"'<>]+)/(?P<path>[^\s\"'<>]*schema\.json)"
@@ -75,7 +75,6 @@ RELEASE_DOCS = (
     "docs/distribution.md",
     "docs/WHY_BOUNDVER.md",
 )
-
 MAX_RELEASE_TREE_ENTRIES = 50_000
 MAX_RELEASE_FILE_COUNT = 20_000
 MAX_RELEASE_PATH_BYTES = 16 * 1024
@@ -895,6 +894,7 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
     ]
     required_new_schema_paths = [
         repo / "spec" / "cli-output.migrate-lock.schema.json",
+        repo / "spec" / "derivation.schema.json",
         repo / "spec" / "verify-baseline.schema.json",
     ]
     public_output_schema_paths = sorted(

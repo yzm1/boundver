@@ -47,6 +47,7 @@ MAX_DIST_ENTRIES = 64
 MAX_DIST_NAME_BYTES = 4 * 1024
 MAX_DIST_TOTAL_NAME_BYTES = 64 * 1024
 MAX_COMMAND_SECONDS = 3_600
+MAX_TEST_TIER_SECONDS = 7_200
 MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024
 
 
@@ -75,6 +76,7 @@ def _run(
     cwd: Path,
     env: Mapping[str, str],
     capture_output: bool = False,
+    timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -85,7 +87,7 @@ def _run(
             capture_output=capture_output,
             check=True,
             stdin=subprocess.DEVNULL,
-            timeout=MAX_COMMAND_SECONDS,
+            timeout=timeout_seconds,
         )
     except FileNotFoundError as error:
         raise CandidateVerificationError(
@@ -347,7 +349,38 @@ def verify_candidate(
         cwd=repo,
         env=tool_env,
     )
-    _run((python, "-I", "-m", "pytest", "-q"), cwd=repo, env=tool_env)
+    _run(
+        (
+            python,
+            "-I",
+            "-m",
+            "boundver",
+            "coverage",
+            "--source",
+            "head",
+            "--strict",
+            "--quiet",
+        ),
+        cwd=repo,
+        env=tool_env,
+    )
+    _run(
+        (python, "-I", "scripts/test_tiers.py", "check"),
+        cwd=repo,
+        env=tool_env,
+    )
+    _run(
+        (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-q"),
+        cwd=repo,
+        env=tool_env,
+        timeout_seconds=MAX_TEST_TIER_SECONDS,
+    )
+    _run(
+        (python, "-I", "scripts/mutation_check.py"),
+        cwd=repo,
+        env=tool_env,
+        timeout_seconds=MAX_TEST_TIER_SECONDS,
+    )
     _run(
         (python, "-I", "scripts/demo_consumer_impact.py"),
         cwd=repo,

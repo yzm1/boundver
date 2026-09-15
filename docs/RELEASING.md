@@ -193,13 +193,14 @@ The Dockerfile uses that same Action lock to download a hash-verified
 wheelhouse, builds boundver with dependencies and build isolation disabled, and
 performs the final install offline. The builder clamps archive timestamps with
 `SOURCE_DATE_EPOCH`, so identical source inputs produce identical wheel bytes.
-Its official Python base is pinned to a
-multi-architecture manifest digest, and its required Git client resolves from
-the immutable Debian snapshot recorded by that base image. Review base-digest
-and snapshot updates together; the build verifies that they still match and
-fails closed on an incomplete update. Digest pinning deliberately stops
-automatic security updates, so weekly Docker Dependabot checks surface base
-updates for review.
+Its official Python base is pinned to a multi-architecture manifest digest.
+The runtime upgrades inherited Debian packages and resolves its required Git
+client from a separately pinned immutable Debian snapshot; the build first
+verifies the snapshot provenance recorded by the base. Review the base digest,
+recorded provenance, security snapshot, and package pins together. Digest and
+snapshot pinning deliberately stop automatic security updates, so weekly
+Docker Dependabot checks and expiring scan exceptions surface refreshes for
+review.
 
 The runtime image is scanned at high and critical severity for both supported
 architectures. `.trivyignore.yaml` may contain only temporary, package-scoped
@@ -270,8 +271,8 @@ diff; it is never accepted implicitly by an install.
    ```markdown
    ### Upgrade contract
 
-   - Semantic config: `boundver-semantic-config/v2`
-   - Lock schema: `boundary-lock/v3`
+   - Semantic config: `boundver-semantic-config/v3`
+   - Lock schema: `boundary-lock/v4`
    - Fingerprint compatibility: `digest-neutral`
    - Lock regeneration: `not-required`
    ```
@@ -317,6 +318,12 @@ diff; it is never accepted implicitly by an install.
 
 The pre-tag review audit fails closed on API or pagination errors, unresolved
 threads, changes-requested state, and pending human or team review requests.
+Its idempotent GitHub API reads make at most three attempts, each with a
+30-second timeout and bounded output. Only transport failures, HTTP 408/429,
+and HTTP 5xx responses are retried; authorization, not-found, malformed, and
+oversized responses fail immediately. Before a tag exists, rerunning the same
+release check for an unchanged candidate after a reported transport failure
+is safe: the audit is read-only and revalidates the candidate from scratch.
 Its range begins at the newest lower stable, published, immutable GitHub
 Release whose tag is merged into the candidate and whose tag and commit match a
 successful run of the repository's active `publish.yml`. That run must bind the

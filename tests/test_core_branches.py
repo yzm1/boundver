@@ -232,8 +232,8 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
                     source="working-tree",
                 )
 
-    def test_non_v3_existing_lockfile_requires_full_generation(self):
-        """Partial updates must not mix v1 and v3 hashing contracts."""
+    def test_non_v4_existing_lockfile_requires_full_generation(self):
+        """Partial updates must not mix v1 and v4 hashing contracts."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root)
@@ -250,7 +250,7 @@ class GenerateLockfileForComponentsTests(unittest.TestCase):
                 )
             )
 
-            with self.assertRaisesRegex(ValueError, "boundary-lock/v3"):
+            with self.assertRaisesRegex(ValueError, "boundary-lock/v4"):
                 core.generate_lockfile_for_components(
                     cfg,
                     root,
@@ -1580,8 +1580,8 @@ class DetectProviderTests(unittest.TestCase):
 class HashingContentOnlyValueErrorTests(unittest.TestCase):
     """Content-only digest behavior when a file is outside the base path."""
 
-    def test_content_only_digest_file_outside_base_uses_repo_rel(self):
-        """A file outside the base uses its full repository-relative path."""
+    def test_content_only_digest_refuses_file_outside_base(self):
+        """A selected file outside the component cannot enter its digest."""
         from unittest.mock import patch
         from boundver._hashing import _content_only_digest
 
@@ -1590,10 +1590,8 @@ class HashingContentOnlyValueErrorTests(unittest.TestCase):
             root = Path(td)
             (root / "readme.txt").write_text("hello\n")
             with patch("boundver._hashing._list_files_for_source", return_value=["readme.txt"]):
-                digest = _content_only_digest(root, "svc", source="working-tree")
-            # Should produce a digest using the full path "readme.txt" as key.
-            self.assertIsNotNone(digest)
-            self.assertEqual(len(digest), 64)  # SHA-256 hex
+                with self.assertRaisesRegex(ValueError, "outside base"):
+                    _content_only_digest(root, "svc", source="working-tree")
 
     def test_content_only_head_snapshot_cannot_select_file_outside_base(self):
         """Captured Git-tree selection stays confined to the requested base."""

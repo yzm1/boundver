@@ -56,6 +56,30 @@ _OPENAPI_NAMED_MAP_KEYS = frozenset({
     "dependentRequired", "parameters", "headers", "encoding", "mapping",
     "callbacks", "links", "variables",
 })
+_OPENAPI_DATA_VALUE_KEYS = frozenset({"const", "default", "enum"})
+_OPENAPI_SCHEMA_MAP_KEYS = frozenset(
+    {"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"}
+)
+_OPENAPI_SCHEMA_VALUE_KEYS = frozenset(
+    {
+        "additionalItems",
+        "additionalProperties",
+        "contentSchema",
+        "contains",
+        "else",
+        "if",
+        "items",
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    }
+)
+_OPENAPI_SCHEMA_ARRAY_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+_OPENAPI_OPERATION_KEYS = frozenset(
+    {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+)
 
 
 def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
@@ -67,7 +91,260 @@ def _is_openapi_named_schema_map(path: tuple, key: Any) -> bool:
     """
     if key in {"properties", "definitions", "$defs"} | _OPENAPI_NAMED_MAP_KEYS:
         return True
+    if not path and key in {"responses", "securityDefinitions"}:
+        return True
     return path == ("components",) and key in _OPENAPI_COMPONENT_MAPS
+
+
+def _is_security_requirement_array(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI Security Requirement list."""
+    if path == ("security",):
+        return True
+    return bool(path and path[-1] == "security" and _is_openapi_operation(path[:-1]))
+
+
+def _is_openapi_operation(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI Operation Object."""
+    if not path or path[-1] not in _OPENAPI_OPERATION_KEYS:
+        return False
+    if len(path) == 3 and path[0] in {"paths", "webhooks"}:
+        return True
+    if (
+        len(path) == 4
+        and path[:2] == ("components", "pathItems")
+    ):
+        return True
+    if (
+        len(path) == 5
+        and path[:2] == ("components", "callbacks")
+    ):
+        return True
+    # A Callback Object hangs from an Operation Object and maps a callback
+    # name and expression to another Path Item Object.  Apply that grammar
+    # recursively so nested callbacks are recognized without treating any
+    # arbitrary object whose parent key is an HTTP verb as an operation.
+    return (
+        len(path) >= 7
+        and path[-4] == "callbacks"
+        and _is_openapi_operation(path[:-4])
+    )
+
+
+def _is_openapi_path_item(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI Path Item Object."""
+    if len(path) == 2 and path[0] in {"paths", "webhooks"}:
+        return True
+    if len(path) == 3 and path[:2] == ("components", "pathItems"):
+        return True
+    if len(path) == 4 and path[:2] == ("components", "callbacks"):
+        return True
+    return (
+        len(path) >= 6
+        and path[-3] == "callbacks"
+        and _is_openapi_operation(path[:-3])
+    )
+
+
+def _is_openapi_parameter(path: tuple) -> bool:
+    """Return whether *path* identifies a Parameter Object."""
+    if len(path) == 3 and path[:2] == ("components", "parameters"):
+        return True
+    if len(path) == 2 and path[0] == "parameters":  # Swagger 2 definitions
+        return True
+    return bool(
+        len(path) >= 2
+        and isinstance(path[-1], int)
+        and path[-2] == "parameters"
+        and (
+            _is_openapi_operation(path[:-2])
+            or _is_openapi_path_item(path[:-2])
+        )
+    )
+
+
+def _is_openapi_response(path: tuple) -> bool:
+    """Return whether *path* identifies a Response Object."""
+    if len(path) == 3 and path[:2] == ("components", "responses"):
+        return True
+    if len(path) == 2 and path[0] == "responses":  # Swagger 2 definitions
+        return True
+    return bool(
+        len(path) >= 2
+        and path[-2] == "responses"
+        and _is_openapi_operation(path[:-2])
+    )
+
+
+def _is_openapi_link(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI 3 Link Object."""
+    if len(path) == 3 and path[:2] == ("components", "links"):
+        return True
+    return bool(
+        len(path) >= 2
+        and path[-2] == "links"
+        and _is_openapi_response(path[:-2])
+    )
+
+
+def _is_openapi_request_body(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI 3 Request Body Object."""
+    if len(path) == 3 and path[:2] == ("components", "requestBodies"):
+        return True
+    return bool(
+        path
+        and path[-1] == "requestBody"
+        and _is_openapi_operation(path[:-1])
+    )
+
+
+def _is_openapi_media_type(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI 3 Media Type Object."""
+    if len(path) < 2 or path[-2] != "content":
+        return False
+    owner = path[:-2]
+    return any(
+        predicate(owner)
+        for predicate in (
+            _is_openapi_parameter,
+            _is_openapi_response,
+            _is_openapi_request_body,
+            _is_openapi_header,
+        )
+    )
+
+
+def _is_openapi_encoding(path: tuple) -> bool:
+    """Return whether *path* identifies an OpenAPI 3 Encoding Object."""
+    return bool(
+        len(path) >= 2
+        and path[-2] == "encoding"
+        and _is_openapi_media_type(path[:-2])
+    )
+
+
+def _is_openapi_header(path: tuple) -> bool:
+    """Return whether *path* identifies a Header Object."""
+    if len(path) == 3 and path[:2] == ("components", "headers"):
+        return True
+    if len(path) < 2 or path[-2] != "headers":
+        return False
+    owner = path[:-2]
+    return _is_openapi_response(owner) or _is_openapi_encoding(owner)
+
+
+def _is_openapi_example_object(path: tuple) -> bool:
+    """Return whether *path* identifies a retained OpenAPI Example Object."""
+    if len(path) == 3 and path[:2] == ("components", "examples"):
+        return True
+    if len(path) < 2 or path[-2] != "examples":
+        return False
+    owner = path[:-2]
+    return any(
+        predicate(owner)
+        for predicate in (
+            _is_openapi_media_type,
+            _is_openapi_parameter,
+            _is_openapi_header,
+        )
+    )
+
+
+def _is_openapi_schema_object(path: tuple) -> bool:
+    """Return whether *path* is an actual OpenAPI/Swagger Schema Object.
+
+    ``default``, ``enum``, and ``const`` contain opaque user data only when
+    their parent is a Schema Object. Recognizing that from grammar position
+    prevents a response named ``default`` (or another fixed-object field with
+    the same spelling) from turning a whole subtree opaque to reference checks.
+    """
+    if len(path) == 3 and path[:2] == ("components", "schemas"):
+        return True
+    if len(path) == 2 and path[0] == "definitions":  # Swagger 2 schemas
+        return True
+    if not path:
+        return False
+
+    segment = path[-1]
+    parent = path[:-1]
+    if segment == "schema":
+        return any(
+            predicate(parent)
+            for predicate in (
+                _is_openapi_parameter,
+                _is_openapi_response,
+                _is_openapi_media_type,
+                _is_openapi_header,
+            )
+        )
+    if isinstance(segment, int):
+        return bool(
+            parent
+            and parent[-1] in _OPENAPI_SCHEMA_ARRAY_KEYS
+            and _is_openapi_schema_object(parent[:-1])
+        )
+    if (
+        len(path) >= 2
+        and path[-2] in _OPENAPI_SCHEMA_MAP_KEYS
+        and _is_openapi_schema_object(path[:-2])
+    ):
+        return True
+    return bool(
+        segment in _OPENAPI_SCHEMA_VALUE_KEYS
+        and _is_openapi_schema_object(parent)
+    )
+
+
+def _openapi_child_context(
+    path: tuple,
+    key: Any,
+    *,
+    preserve_keys: bool,
+    preserve_data: bool,
+) -> tuple[bool, bool]:
+    """Return named-key and opaque-data state for one mapping child."""
+    named_map = _is_openapi_named_schema_map(path, key)
+    child_preserves_keys = not preserve_keys and not preserve_data and named_map
+    child_preserves_data = preserve_data or (
+        not preserve_keys
+        and (
+            (
+                key in _OPENAPI_DATA_VALUE_KEYS
+                and _is_openapi_schema_object(path)
+            )
+            # Reference validation must ignore the same annotation subtrees
+            # canonicalization removes. A named-map entry with an
+            # annotation-looking name is retained, so it is deliberately
+            # excluded here.
+            or (key in _OPENAPI_STRIP_KEYS and not named_map)
+            or (
+                key in {"parameters", "requestBody"}
+                and _is_openapi_link(path)
+            )
+            or (key == "value" and _is_openapi_example_object(path))
+            or (isinstance(key, str) and key.startswith("x-"))
+        )
+    )
+    return child_preserves_keys, child_preserves_data
+
+
+def _openapi_path_context(path: tuple) -> tuple[bool, bool]:
+    """Reconstruct the grammar context used while stripping an OpenAPI path."""
+    grammar_path = ()
+    preserve_keys = False
+    preserve_data = False
+    for segment in path:
+        if isinstance(segment, int):
+            preserve_keys = _is_security_requirement_array(grammar_path)
+            grammar_path += (segment,)
+            continue
+        preserve_keys, preserve_data = _openapi_child_context(
+            grammar_path,
+            segment,
+            preserve_keys=preserve_keys,
+            preserve_data=preserve_data,
+        )
+        grammar_path += (segment,)
+    return preserve_keys, preserve_data
 
 
 def _strip_openapi(
@@ -75,12 +352,14 @@ def _strip_openapi(
     *,
     path: tuple = (),
     preserve_keys: bool = False,
+    preserve_data: bool = False,
 ) -> Any:
     """Recursively remove non-contract fields from an OpenAPI object.
 
-    Drops:
-    - ``description``, ``summary``, ``externalDocs``, ``example``, ``examples``
-      at any nesting level (documentation-only fields).
+    Drops ``description``, ``summary``, ``externalDocs``, ``example``, and
+    ``examples`` where OpenAPI defines them as documentation-only fields.
+    Identically named keys in data values, extension payloads, and named maps
+    are retained.
 
     OpenAPI explicitly permits ``x-*`` specification extensions.  They can
     affect routing, code generation, authentication, and deployment behavior,
@@ -94,30 +373,41 @@ def _strip_openapi(
     if isinstance(obj, dict):
         stripped = {}
         for key, value in obj.items():
+            named_map = _is_openapi_named_schema_map(path, key)
             is_annotation = key in _OPENAPI_STRIP_KEYS
-            if is_annotation and not preserve_keys:
+            if (
+                is_annotation
+                and not preserve_keys
+                and not preserve_data
+                and not named_map
+            ):
                 continue
 
-            # A named-map entry's value is a schema object.  Its arbitrary key
-            # must not make that schema object itself behave like a named map.
-            child_preserves_keys = (
-                not preserve_keys and _is_openapi_named_schema_map(path, key)
+            # A named-map entry's arbitrary key must not be reinterpreted as a
+            # data keyword or extension name.
+            child_preserves_keys, child_preserves_data = _openapi_child_context(
+                path,
+                key,
+                preserve_keys=preserve_keys,
+                preserve_data=preserve_data,
             )
             stripped[key] = _strip_openapi(
                 value,
                 path=path + (key,),
                 preserve_keys=child_preserves_keys,
+                preserve_data=child_preserves_data,
             )
         return stripped
     if isinstance(obj, list):
         return [
             _strip_openapi(
                 item,
-                path=path,
+                path=path + (index,),
                 # Security Requirement Object keys are arbitrary scheme names.
-                preserve_keys=(path and path[-1] == "security"),
+                preserve_keys=_is_security_requirement_array(path),
+                preserve_data=preserve_data,
             )
-            for item in obj
+            for index, item in enumerate(obj)
         ]
     return obj
 
@@ -348,12 +638,27 @@ def _openapi_document_error(document: Any) -> Optional[str]:
         for value, value_path in _iter_bounded_json_values(document, path="$"):
             if type(value) is not dict or "$ref" not in value:
                 continue
-            reference = value["$ref"]
-            if type(reference) is str and reference.startswith("#"):
+            segments = []
+            cursor = value_path
+            while cursor.parent is not None:
+                segments.append(cursor.segment)
+                cursor = cursor.parent
+            segments.reverse()
+            semantic_path = tuple(segments)
+            preserve_keys, preserve_data = _openapi_path_context(semantic_path)
+            if preserve_data or preserve_keys:
                 continue
+            reference = value["$ref"]
             reference_path = _render_bounded_json_path(
                 _json_path_child(value_path, "$ref")
             )
+            if type(reference) is not str:
+                return (
+                    f"{reference_path} is malformed; expected a string "
+                    "same-document fragment reference beginning with '#'"
+                )
+            if reference.startswith("#"):
+                continue
             return (
                 f"{reference_path} uses an external or local-file reference; "
                 "openapi-canonical accepts only same-document fragment "

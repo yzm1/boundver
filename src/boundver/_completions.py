@@ -24,6 +24,8 @@ _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "add": "Add a component",
     "remove": "Remove a component",
     "status": "Show status and drift",
+    "coverage": "Report declaration coverage gaps",
+    "record-derivation": "Record generated-artifact freshness",
     "explain": "Explain changed files",
     "why": "Explain component drift",
     "discover": "Discover tracked manifests",
@@ -54,8 +56,8 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "verify": (
         "-h", "--help", "--config", "--lock", "--source", "--components",
         "--changed-from", "--fail-fast", "--facets", "--transitive",
-        "--update", "--baseline", "--write-baseline", "--update-baseline",
-        "--format", "--allow-custom-providers",
+        "--update", "--strict-config-source", "--baseline", "--write-baseline",
+        "--update-baseline", "--format", "--allow-custom-providers",
     ),
     "review": (
         "-h", "--help", "--base", "--target", "--merge-base", "--config",
@@ -81,6 +83,10 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "-h", "--help", "--config", "--lock", "--source", "--format",
         "--strict", "--allow-custom-providers",
     ),
+    "coverage": (
+        "-h", "--help", "--config", "--source", "--format", "--strict",
+    ),
+    "record-derivation": ("-h", "--help", "--config", "--source"),
     "explain": (
         "-h", "--help", "--config", "--lock", "--base-ref", "--source",
         "--allow-custom-providers",
@@ -123,6 +129,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--facets": "Comma-separated gate facets",
     "--transitive": "Include transitive downstream consumers",
     "--update": "Regenerate after reporting drift",
+    "--strict-config-source": "Refuse stale-config regeneration",
     "--baseline": "Apply reviewed verification debt",
     "--write-baseline": "Create a verification baseline",
     "--update-baseline": "Remove resolved baseline violations",
@@ -186,6 +193,7 @@ _COMMAND_POSITIONALS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "slice": (("slice", ""),),
     "add": (("name", ""), ("path", "_files")),
     "remove": (("name", ""),),
+    "record-derivation": (("derivation", ""),),
     "explain": (("component", ""),),
     "why": (("component", ""),),
 }

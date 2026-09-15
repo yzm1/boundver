@@ -147,7 +147,16 @@ class _FakeHTTPResponse:
 
 def _release_changelog(version: str, notes: str = "- Shipped safely.\n") -> str:
     upgrade_contract = ""
-    if tuple(int(part) for part in version.split(".")) >= (0, 14, 0):
+    version_tuple = tuple(int(part) for part in version.split("."))
+    if version_tuple >= (0, 16, 0):
+        upgrade_contract = (
+            "### Upgrade contract\n\n"
+            "- Semantic config: `boundver-semantic-config/v3`\n"
+            "- Lock schema: `boundary-lock/v4`\n"
+            "- Fingerprint compatibility: `digest-changing`\n"
+            "- Lock regeneration: `required`\n\n"
+        )
+    elif version_tuple >= (0, 14, 0):
         upgrade_contract = (
             "### Upgrade contract\n\n"
             "- Semantic config: `boundver-semantic-config/v2`\n"
@@ -454,6 +463,8 @@ class AutomationContractTests(unittest.TestCase):
         for schema_name in (
             "verify-baseline.schema.json",
             "cli-output.migrate-lock.schema.json",
+            "cli-output.coverage.schema.json",
+            "derivation.schema.json",
         ):
             with self.subTest(schema=schema_name):
                 schema_path = REPO_ROOT / "spec" / schema_name
@@ -462,7 +473,7 @@ class AutomationContractTests(unittest.TestCase):
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.15.2/spec/{schema_name}",
+                    f"v0.16.0/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):
@@ -802,7 +813,7 @@ class AutomationContractTests(unittest.TestCase):
                     "argv",
                     ["release-draft-api", "wait", "yzm1/boundver", CURRENT_TAG],
                 ),
-                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("shutil.which", return_value=os.__file__),
                 mock.patch("subprocess.Popen", side_effect=processes) as popen,
                 mock.patch("time.sleep") as sleep,
                 mock.patch.object(sys, "stdout", output),
@@ -863,7 +874,7 @@ class AutomationContractTests(unittest.TestCase):
                         str(output),
                     ],
                 ),
-                mock.patch("shutil.which", return_value=sys.executable),
+                mock.patch("shutil.which", return_value=os.__file__),
                 mock.patch("subprocess.Popen", return_value=FakeProcess()),
                 self.assertRaisesRegex(SystemExit, "detail disagrees"),
             ):
@@ -2131,7 +2142,7 @@ print(json.dumps(payload, separators=(",", ":")))
 """,
                 encoding="utf-8",
             )
-            fake_gh.chmod(0o755)
+            fake_gh.chmod(0o700)
             environment = dict(os.environ)
             environment.update(
                 {
@@ -2228,7 +2239,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1787529600"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1789344000"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2442,15 +2453,23 @@ print(json.dumps(payload, separators=(",", ":")))
             "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20260824T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20260914T000000Z", dockerfile)
+        self.assertIn(
+            "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
+            dockerfile,
+        )
+        self.assertIn(
+            "# http://snapshot.debian.org/archive/debian-security/20260824T000000Z",
+            dockerfile,
+        )
         snapshot_stamps = set(
             re.findall(
-                r"snapshot\.debian\.org/archive/(?:debian|debian-security)/"
+                r"https://snapshot\.debian\.org/archive/(?:debian|debian-security)/"
                 r"(\d{8}T\d{6}Z)",
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20260824T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20260914T000000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2459,6 +2478,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(int(epoch.group(1)), int(snapshot_time.timestamp()))
         self.assertGreaterEqual(dockerfile.count("grep -Fqx"), 2)
         self.assertIn('Acquire::Check-Valid-Until "false"', dockerfile)
+        self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("git=1:2.47.3-0+deb13u1", dockerfile)
         self.assertIn(
             "python -I -m pip uninstall --yes pip setuptools wheel",
@@ -2500,6 +2520,18 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(f"exclude docs/{site_only_doc}", manifest)
             self.assertIn(f'docs/{site_only_doc}"', smoke)
+        for internal_assurance_path in (
+            "docs/design/obligation-survey-method.md",
+            "docs/design/obligation-survey-reply.md",
+            "docs/design/obligation-survey-reply-2.md",
+            "docs/design/testing-obligations.md",
+            "spec/mutants.json",
+            "spec/release-mutations.json",
+            "spec/testing-obligations.json",
+            "spec/test-tiers.json",
+        ):
+            self.assertIn(f"exclude {internal_assurance_path}", manifest)
+            self.assertIn(f'{internal_assurance_path}"', smoke)
         contributing = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
         homepage = (REPO_ROOT / "docs" / "index.md").read_text(encoding="utf-8")
         self.assertIn(
@@ -2536,6 +2568,13 @@ print(json.dumps(payload, separators=(",", ":")))
         jobs = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )["jobs"]
+        action_review = next(
+            step
+            for step in jobs["action"]["steps"]
+            if step.get("id") == "boundver-review"
+        )
+        self.assertEqual(action_review["with"]["base"], "HEAD")
+        self.assertEqual(action_review["with"]["target"], "HEAD")
         public = jobs["public-installations"]
         self.assertEqual(
             public["strategy"]["matrix"]["os"],
@@ -2913,6 +2952,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "BOUNDVER_TRANSITIVE": "false",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "false",
             "BOUNDVER_UPLOAD_ARTIFACT": "false",
             "BOUNDVER_ARTIFACT_NAME": "boundver-review-plan",
         }
@@ -2946,6 +2986,25 @@ print(json.dumps(payload, separators=(",", ":")))
                     text=True,
                 )
                 self.assertEqual(result.stdout.splitlines(), expected + suffix)
+
+        strict_environment = {
+            **base_environment,
+            "BOUNDVER_BASELINE": "",
+            "BOUNDVER_UPDATE": "true",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "true",
+        }
+        strict_result = subprocess.run(
+            [bash, "-c", probe],
+            cwd=REPO_ROOT,
+            env=strict_environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            strict_result.stdout.splitlines(),
+            expected + ["--update", "--strict-config-source"],
+        )
 
     def test_action_review_operation_is_explicit_source_bound_and_artifact_ready(self):
         import yaml
@@ -3029,6 +3088,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "BOUNDVER_TRANSITIVE": "true",
             "BOUNDVER_FAIL_FAST": "false",
             "BOUNDVER_UPDATE": "false",
+            "BOUNDVER_STRICT_CONFIG_SOURCE": "false",
             "BOUNDVER_UPLOAD_ARTIFACT": "true",
             "BOUNDVER_ARTIFACT_NAME": "review-plan",
         }
@@ -3346,10 +3406,10 @@ class ReleaseChangelogTests(unittest.TestCase):
         self.assertEqual(
             notes,
             "### Upgrade contract\n\n"
-            "- Semantic config: `boundver-semantic-config/v2`\n"
-            "- Lock schema: `boundary-lock/v3`\n"
-            "- Fingerprint compatibility: `digest-neutral`\n"
-            "- Lock regeneration: `not-required`\n\n"
+            "- Semantic config: `boundver-semantic-config/v3`\n"
+            "- Lock schema: `boundary-lock/v4`\n"
+            "- Fingerprint compatibility: `digest-changing`\n"
+            "- Lock regeneration: `required`\n\n"
             "- Shipped safely.\n",
         )
 
@@ -3541,6 +3601,10 @@ class ReleaseReviewAuditTests(unittest.TestCase):
             (root / "audit_release_reviews.sh").write_bytes(
                 script.encode("utf-8")
             )
+            shutil.copyfile(
+                REPO_ROOT / "scripts" / "github_api_read.py",
+                root / "github_api_read.py",
+            )
             bin_dir = root / "bin"
             bin_dir.mkdir()
             fake_gh = bin_dir / "gh"
@@ -3624,7 +3688,7 @@ fi
 exit 74
 """.encode("utf-8")
             )
-            fake_gh.chmod(0o755)
+            fake_gh.chmod(0o700)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             subprocess.run(
                 ["git", "config", "user.email", "test@example.invalid"],
@@ -4245,9 +4309,9 @@ exit 74
             encoding="utf-8"
         )
         self.assertNotIn("< <(\n    gh api", script)
-        self.assertIn("capture_bounded reviews_output", script)
-        self.assertIn("capture_bounded comments_output", script)
-        self.assertIn("capture_bounded unresolved_output", script)
+        self.assertIn("capture_github_api_bounded reviews_output", script)
+        self.assertIn("capture_github_api_bounded comments_output", script)
+        self.assertIn("capture_github_api_bounded unresolved_output", script)
         self.assertIn("gh api --paginate", script)
         self.assertIn("gh api graphql --paginate", script)
         self.assertNotRegex(script, r"\w+_output=\$\(gh api")

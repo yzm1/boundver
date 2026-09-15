@@ -69,7 +69,9 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Compute lockfile and print status without writing output",
     )
     gen.add_argument(
-        "--components", default="", help="Comma-separated component names to regenerate"
+        "--components",
+        default=None,
+        help="Comma-separated component names to regenerate",
     )
     gen.add_argument(
         "--format", choices=["json", "text"], default="text", help="Output format"
@@ -119,7 +121,9 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Snapshot to compare (default: head): last commit, staged index, or tracked files on disk",
     )
     ver.add_argument(
-        "--components", default="", help="Comma-separated component names to verify"
+        "--components",
+        default=None,
+        help="Comma-separated component names to verify",
     )
     ver.add_argument(
         "--changed-from",
@@ -148,6 +152,14 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         "--update",
         action="store_true",
         help="After reporting drift, atomically regenerate the lockfile if computation succeeds",
+    )
+    ver.add_argument(
+        "--strict-config-source",
+        action="store_true",
+        help=(
+            "Refuse --update when the selected snapshot config differs from "
+            "the same working-tree path"
+        ),
     )
     baseline_group = ver.add_mutually_exclusive_group()
     baseline_group.add_argument(
@@ -394,6 +406,52 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
+    coverage = sub.add_parser(
+        "coverage",
+        help="Find tracked files missing from declarations",
+        epilog=(
+            "Examples:\n"
+            "  boundver coverage --source head\n"
+            "  boundver coverage --source index --format json --strict\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    coverage.add_argument("--config", default="boundary.config.json")
+    coverage.add_argument(
+        "--source",
+        choices=SOURCE_MODES,
+        default="head",
+        help="Snapshot to inspect (default: head)",
+    )
+    coverage.add_argument(
+        "--format", choices=["json", "text"], default="text", help="Output format"
+    )
+    coverage.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit 1 when any uncovered declaration path is reported",
+    )
+
+    record_derivation = sub.add_parser(
+        "record-derivation",
+        help="Record generated-artifact freshness after a trusted generator runs",
+        epilog=(
+            "This command hashes declared inputs and outputs; it never runs the "
+            "configured generator identity.\n\n"
+            "Example:\n"
+            "  boundver record-derivation public-api --source index\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    record_derivation.add_argument("name", help="Configured derivation name")
+    record_derivation.add_argument("--config", default="boundary.config.json")
+    record_derivation.add_argument(
+        "--source",
+        choices=SOURCE_MODES,
+        default="working-tree",
+        help="Snapshot whose inputs and outputs to record (default: working-tree)",
+    )
+
     # explain
     ex = sub.add_parser("explain", help="Explain changed files for a component")
     ex.add_argument("component", help="Component name from config")
@@ -407,7 +465,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         "--base-ref",
         default=None,
         help=(
-            "Git ref to diff against (default: commit that introduced the "
+            "Git ref to resolve to an immutable commit and diff against "
+            "(default: commit that introduced the "
             "component's current lock entry for source=head; HEAD otherwise)"
         ),
     )
@@ -444,7 +503,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         "--base-ref",
         default=None,
         help=(
-            "Git ref for changed-file diagnostics (default: commit that introduced "
+            "Git ref resolved to an immutable commit for changed-file diagnostics "
+            "(default: commit that introduced "
             "the component's current lock entry for source=head; HEAD otherwise)"
         ),
     )
@@ -499,9 +559,9 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Normalize a current lock or explain why regeneration is required",
         description=(
             "Normalize a supported current-schema boundary.lock.json in place. "
-            "Hash-contract v1/v2 locks and v3 locks carrying semantic-config/v1 "
-            "cannot be upgraded safely and are rejected with instructions to "
-            "regenerate from repository content. Use --dry-run to preview "
+            "Hash-contract v1, v2, and v3 locks cannot be upgraded safely and "
+            "are rejected with instructions to regenerate from repository "
+            "content. Use --dry-run to preview "
             "normalization as JSON, or report that the lock is already "
             "normalized, without writing it."
         ),

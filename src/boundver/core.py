@@ -48,6 +48,7 @@ from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
     _git_run as _git_run,
+    _validated_revision,
     _is_ignored as _is_ignored,
     _list_files_for_source as _list_files_for_source,
     _to_posix as _to_posix,
@@ -78,6 +79,9 @@ from ._utils import (
     _bounded_exception_text,
     _bounded_diagnostic_repr,
     _bounded_diagnostic_text,
+    _bounded_json_dumps,
+    _has_unportable_output_segment,
+    _has_windows_invalid_output_character,
     _is_windows_reparse_point,
     BoundverError as BoundverError,
     ConfigError,
@@ -97,13 +101,16 @@ from ._config import (
     dump_config,
     find_config_file,
     load_config_file,
+    load_config_file_with_bytes,
     validate_config,
 )
 from ._lockfile import (
-    DIFFABLE_SEMANTIC_CONFIG_VERSIONS,
+    DIFFABLE_SEMANTIC_CONFIG_VERSIONS as DIFFABLE_SEMANTIC_CONFIG_VERSIONS,
+    DIFFABLE_LOCK_CONTRACTS,
     LOCKFILE_SCHEMA as LOCKFILE_SCHEMA,
     LOCKFILE_SCHEMA_URL as LOCKFILE_SCHEMA_URL,
     MigrationError,
+    _SourceAccessor,
     _generation_errors,
     _lockfile_schema_issues,
     _lockfile_structure_issues,
@@ -113,10 +120,18 @@ from ._lockfile import (
     dump_lockfile,
     load_lockfile_file,
     migrate_lockfile,
+    semantic_config_digest,
     verify_lockfile,
 )
 from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
+from ._coverage import declaration_coverage
+from ._derivations import (
+    build_derivation_evidence,
+    derivation_inputs_selecting_path,
+    dump_derivation_evidence,
+    verify_derivations,
+)
 from ._output import (
     _bold as _bold,
     _display_path,
@@ -165,6 +180,7 @@ from ._baseline import (
     _open_plain_child_directory,
     _open_plain_directory,
     _same_directory_identity,
+    _same_file_identity,
     _validate_baseline_relative_path,
     apply_baseline,
     baseline_change_ids,
@@ -239,10 +255,15 @@ def _drift_exit_code(issues: List[str]) -> int:
         "Verification error",
         "Unknown verification facet",
         "Unknown verification component",
+        "Cannot capture",
+        "Config malformed",
+        "Lockfile schema mismatch",
         "CURRENT DIGEST ERROR",
         "LOCKED DIGEST ERROR",
+        "DERIVATION ERROR",
         "UNAVAILABLE FACET",
         "DIAGNOSTICS TRUNCATED",
+        "CONFIG SOURCE DIVERGENCE",
     )
     if any(issue.startswith(safety_prefixes) for issue in issues):
         return EXIT_USAGE
@@ -256,13 +277,21 @@ def _drift_exit_code(issues: List[str]) -> int:
     return EXIT_DRIFT
 
 
+def _verify_report_issues(issues: List[str], *, fail_fast: bool) -> List[str]:
+    """Limit the rendered report without changing the evaluated issue set."""
+    return list(issues[:1] if fail_fast else issues)
+
+
 def _load_lockfile(
     path: Path,
     *,
     repo_root: Optional[Path] = None,
     snapshot: Optional[GitSourceSnapshot] = None,
 ) -> dict:
-    return load_lockfile_file(path, repo_root=repo_root, snapshot=snapshot)
+    try:
+        return load_lockfile_file(path, repo_root=repo_root, snapshot=snapshot)
+    except FileNotFoundError as exc:
+        raise LockfileError(str(exc)) from exc
 
 
 def _capture_operation_snapshot(
@@ -321,14 +350,19 @@ def _require_valid_lockfile(
     lockfile: dict,
     *,
     allowed_config_contracts: Optional[Set[str]] = None,
+    expected_schema: str = LOCKFILE_SCHEMA,
 ) -> None:
-    schema_issues = _lockfile_schema_issues(lockfile)
+    schema_issues = _lockfile_schema_issues(
+        lockfile,
+        expected_schema=expected_schema,
+    )
     if schema_issues:
         raise LockfileError("Lockfile validation failed:\n" + "\n".join(schema_issues))
     issues = _lockfile_structure_issues(
         lockfile,
         allowed_config_contracts=allowed_config_contracts,
         running_version=_get_version(),
+        expected_schema=expected_schema,
     )
     if issues:
         raise LockfileError("Lockfile validation failed:\n" + "\n".join(issues))
@@ -336,9 +370,12 @@ def _require_valid_lockfile(
 
 def _require_diffable_lockfile(lockfile: dict) -> None:
     """Validate one lock for the explicitly read-only historical diff path."""
+    schema = lockfile.get("schema") if isinstance(lockfile, dict) else None
+    contracts = DIFFABLE_LOCK_CONTRACTS.get(schema, frozenset())
     _require_valid_lockfile(
         lockfile,
-        allowed_config_contracts=set(DIFFABLE_SEMANTIC_CONFIG_VERSIONS),
+        allowed_config_contracts=set(contracts),
+        expected_schema=schema if isinstance(schema, str) else LOCKFILE_SCHEMA,
     )
 
 
@@ -481,6 +518,8 @@ def _ensure_lock_outside_components(
     config: dict,
     *,
     config_path: Path,
+    source: str,
+    snapshot: Optional[GitSourceSnapshot],
 ) -> None:
     """Reject lock paths that can overwrite or fingerprint themselves.
 
@@ -500,6 +539,47 @@ def _ensure_lock_outside_components(
         raise ConfigError(
             f"Lockfile path {lock_paths[0]} aliases the selected config "
             f"{config_paths[0]}; choose a different output path"
+        )
+
+    try:
+        repo_paths = _normalized_filesystem_paths(
+            repo_root,
+            "repository root",
+            relative_to=repo_root,
+        )
+        lock_relatives = []
+        for candidate, root in zip(lock_paths, repo_paths):
+            try:
+                relative = candidate.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative not in lock_relatives:
+                lock_relatives.append(relative)
+        if not lock_relatives:
+            raise ValueError("lock output resolves outside the repository")
+        input_owners = []
+        derivations = config.get("derivations")
+        if isinstance(derivations, dict) and derivations:
+            with _SourceAccessor(repo_root, source, snapshot=snapshot) as accessor:
+                source_paths = accessor.list_files(".")
+            input_owners = derivation_inputs_selecting_path(
+                config,
+                lock_relatives[0],
+                source_paths=source_paths,
+                aliases=lock_relatives[1:],
+            )
+    except (GuardrailError, OSError, ValueError) as exc:
+        raise ConfigError(
+            "Cannot determine whether the selected lock output is a derivation "
+            f"input: {_bounded_exception_text(exc)}"
+        ) from exc
+    if input_owners:
+        raise ConfigError(
+            f"Lockfile path {lock_paths[0]} is selected as an input by "
+            "derivation(s) "
+            f"{_bounded_diagnostic_text(', '.join(input_owners))}; choose a "
+            "different lock output or exclude it from derivation inputs to avoid "
+            "a self-staling lock"
         )
 
     for name, component in config.get("components", {}).items():
@@ -588,6 +668,45 @@ def _ensure_json_mutation_path(path: Path, command: str) -> None:
         )
 
 
+def _repository_relative_path(repo_root: Path, raw_path: str, *, label: str) -> Path:
+    """Resolve a lexical repository-relative file path or fail closed."""
+    root = Path(os.path.abspath(repo_root))
+    try:
+        raw_path.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ConfigError(
+            f"{label} must use portable filenames: "
+            f"{_bounded_diagnostic_repr(raw_path)}"
+        ) from exc
+    if os.path.isabs(raw_path) or os.path.splitdrive(raw_path)[0]:
+        raise ConfigError(f"{label} must be relative to the repository root")
+    # Check characters whose meaning differs across hosts before constructing
+    # a host-dependent Path. In particular, POSIX treats a backslash as a
+    # filename character while Windows treats it as a separator.
+    if _has_windows_invalid_output_character(raw_path):
+        raise ConfigError(
+            f"{label} must use portable filenames: "
+            f"{_bounded_diagnostic_repr(raw_path)}"
+        )
+    supplied = Path(raw_path)
+    if supplied.is_absolute() or supplied.anchor or supplied.drive:
+        raise ConfigError(f"{label} must be relative to the repository root")
+    if not supplied.parts or supplied in {Path("."), Path("")}:
+        raise ConfigError(f"{label} must name a file within the repository")
+    if ".." in supplied.parts:
+        raise ConfigError(
+            f"{label} must not contain parent-directory traversal: {raw_path}"
+        )
+    if _has_unportable_output_segment(supplied.parts):
+        raise ConfigError(f"{label} must use portable filenames: {raw_path}")
+    candidate = Path(os.path.abspath(root / supplied))
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ConfigError(f"{label} must stay within the repository") from exc
+    return candidate
+
+
 def _canonicalize_trusted_output_prefix(path: Path, label: str) -> Path:
     """Canonicalize only fixed macOS filesystem aliases after inspecting them.
 
@@ -651,13 +770,12 @@ def _prepare_atomic_output(
         raise ConfigError(f"Output path must name a file: {path}")
     candidate = _canonicalize_trusted_output_prefix(candidate, str(path))
     leaf = candidate.parts[-1]
-    if leaf in {"", ".", ".."} or "\0" in leaf or ":" in leaf:
-        raise ConfigError(f"Output path must use a portable filename: {path}")
-    if ".." in candidate.parts[1:-1]:
+    if ".." in candidate.parts[1:]:
         raise ConfigError(
             f"Output path must not contain parent-directory traversal: {path}"
         )
-
+    if _has_unportable_output_segment(candidate.parts[1:]):
+        raise ConfigError(f"Output path must use portable filenames: {path}")
     current = Path(candidate.anchor)
     captured: list[tuple[Path, os.stat_result]] = []
     held_fds: list[int] = []
@@ -754,18 +872,91 @@ def _revalidate_atomic_output_ancestors(
             )
 
 
-def _write_text_atomic(path: Path, text: str) -> None:
+def _read_mutation_sibling_bytes(
+    directory: _MutationDirectory,
+    name: str,
+    *,
+    limit: int,
+) -> bytes:
+    """Read one identity-stable sibling through the held parent directory."""
+    descriptor = directory.open_read(name)
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if not stat.S_ISREG(opened.st_mode) or _is_windows_reparse_point(opened):
+                raise ConfigError("Output path is no longer a regular file")
+            data = stream.read(limit + 1)
+            if len(data) > limit:
+                raise ConfigError("Output content changed before publication")
+            finished = os.fstat(stream.fileno())
+        current = directory.lstat(name)
+    except FileNotFoundError as exc:
+        raise ConfigError("Output path disappeared before publication") from exc
+    if (
+        not stat.S_ISREG(current.st_mode)
+        or _is_windows_reparse_point(current)
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        or opened.st_size != finished.st_size
+        or opened.st_mtime_ns != finished.st_mtime_ns
+        or stat.S_IMODE(opened.st_mode) != stat.S_IMODE(finished.st_mode)
+        or current.st_size != finished.st_size
+        or current.st_mtime_ns != finished.st_mtime_ns
+        or stat.S_IMODE(current.st_mode) != stat.S_IMODE(finished.st_mode)
+        or finished.st_size != len(data)
+    ):
+        raise ConfigError("Output content changed before publication")
+    return data
+
+
+def _reserve_atomic_output_sibling(
+    directory: _MutationDirectory,
+    target_name: str,
+    suffix: str,
+) -> tuple[int, str]:
+    """Create one exclusive sidecar beside an already validated output."""
+    for _attempt in range(100):
+        candidate = f".{target_name}.{secrets.token_hex(8)}{suffix}"
+        try:
+            return directory.open_exclusive(candidate), candidate
+        except FileExistsError:
+            continue
+    raise OSError("cannot allocate a unique output sidecar")
+
+
+def _unused_atomic_output_sibling(
+    directory: _MutationDirectory,
+    target_name: str,
+    suffix: str,
+) -> str:
+    """Choose a currently absent high-entropy sibling for an atomic backup."""
+    for _attempt in range(100):
+        candidate = f".{target_name}.{secrets.token_hex(8)}{suffix}"
+        try:
+            directory.lstat(candidate)
+        except FileNotFoundError:
+            return candidate
+    raise OSError("cannot allocate a unique output sidecar")
+
+
+def _write_text_atomic(
+    path: Path,
+    text: str,
+    *,
+    expected_content: Optional[bytes] = None,
+) -> None:
     """Replace *path* only after the complete UTF-8 payload is durable.
 
-    The temporary file lives beside the target so ``os.replace`` is atomic on
-    the target filesystem.  This prevents an interrupted generation/update
-    from leaving a truncated lockfile behind.
+    The temporary file lives beside the target so publication is atomic on the
+    target filesystem. This prevents an interrupted generation/update from
+    leaving a truncated or absent lockfile behind.
     """
     path, ancestors, held_fds = _prepare_atomic_output(path)
     parent_fd = held_fds[-1]
     directory = _MutationDirectory(path.parent, parent_fd)
     temp_name: Optional[str] = None
     temp_fd: Optional[int] = None
+    claimed_name: Optional[str] = None
+    preserve_claim = False
     try:
         if not _same_directory_identity(ancestors[-1][1], os.fstat(parent_fd)):
             raise ConfigError(
@@ -790,16 +981,11 @@ def _write_text_atomic(path: Path, text: str) -> None:
                 )
             if os.name != "nt":
                 existing_mode = stat.S_IMODE(existing_leaf.st_mode)
-        for _attempt in range(100):
-            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
-            try:
-                temp_fd = directory.open_exclusive(candidate)
-            except FileExistsError:
-                continue
-            temp_name = candidate
-            break
-        else:
-            raise OSError("cannot allocate a unique output sidecar")
+        temp_fd, temp_name = _reserve_atomic_output_sibling(
+            directory,
+            path.name,
+            ".tmp",
+        )
         try:
             if existing_mode is not None:
                 os.fchmod(temp_fd, existing_mode)
@@ -817,25 +1003,226 @@ def _write_text_atomic(path: Path, text: str) -> None:
                     pass
                 temp_fd = None
         _revalidate_atomic_output_ancestors(ancestors)
-        try:
-            current_leaf = directory.lstat(path.name)
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as exc:
-            raise ConfigError(
-                f"Output path changed before publication: {path}"
-            ) from exc
-        else:
-            if not stat.S_ISREG(current_leaf.st_mode) or _is_windows_reparse_point(
-                current_leaf
-            ):
-                raise ConfigError(
-                    "Output path changed to a symlink, junction, reparse point, "
-                    f"or non-file before publication: {path}"
+        if expected_content is not None:
+            try:
+                current_content = _read_mutation_sibling_bytes(
+                    directory,
+                    path.name,
+                    limit=len(expected_content),
                 )
-        directory.replace(temp_name, path.name)
-        temp_name = None
-        directory.fsync()
+            except (ConfigError, OSError, ValueError) as exc:
+                raise ConfigError(
+                    f"Output file changed before publication: {path}; refusing to write"
+                ) from exc
+            if current_content != expected_content:
+                raise ConfigError(
+                    f"Output file changed before publication: {path}; refusing to write"
+                )
+
+            payload = text.encode("utf-8")
+
+            # Atomically exchange the durable replacement with the canonical
+            # pathname. The target therefore always names either complete old
+            # bytes or complete new bytes, while the exact displaced target is
+            # retained for the compare-and-publish check.
+            published_identity = directory.lstat(temp_name)
+            backup_name = _unused_atomic_output_sibling(
+                directory,
+                path.name,
+                ".claim",
+            )
+            possible_displaced_name = (
+                backup_name if os.name == "nt" else temp_name
+            )
+            preserve_claim = True
+            try:
+                claimed_name = directory.replace_preserving_target(
+                    temp_name,
+                    path.name,
+                    backup_name,
+                )
+            except BaseException as exc:
+                try:
+                    possible_identity = directory.lstat(possible_displaced_name)
+                except OSError:
+                    pass
+                else:
+                    if not _same_file_identity(
+                        published_identity,
+                        possible_identity,
+                    ):
+                        claimed_name = possible_displaced_name
+                        temp_name = None
+                if claimed_name is None:
+                    preserve_claim = False
+                if isinstance(exc, (OSError, ValueError)):
+                    raise ConfigError(
+                        f"Output file changed during publication: {path}; "
+                        "refusing to write"
+                    ) from exc
+                raise
+            temp_name = None
+
+            try:
+                claimed_content = _read_mutation_sibling_bytes(
+                    directory,
+                    claimed_name,
+                    limit=len(expected_content),
+                )
+                if claimed_content != expected_content:
+                    raise ConfigError(
+                        f"Output file changed during publication: {path}"
+                    )
+            except BaseException as exc:
+                # Swap the exact displaced bytes back into place. Whatever is
+                # at the canonical target at that instant remains recoverable
+                # at ``replaced_name`` for validation.
+                rollback_name = _unused_atomic_output_sibling(
+                    directory,
+                    path.name,
+                    ".rollback",
+                )
+                possible_replaced_name = (
+                    rollback_name if os.name == "nt" else claimed_name
+                )
+                try:
+                    replaced_name = directory.replace_preserving_target(
+                        claimed_name,
+                        path.name,
+                        rollback_name,
+                    )
+                except BaseException as restore_exc:
+                    try:
+                        directory.lstat(possible_replaced_name)
+                    except OSError:
+                        pass
+                    else:
+                        claimed_name = possible_replaced_name
+                    preserve_claim = True
+                    if isinstance(exc, (ConfigError, OSError, ValueError)):
+                        raise ConfigError(
+                            "Output file changed during publication and could not be "
+                            f"restored; recover competing bytes from {claimed_name}: "
+                            f"{path}"
+                        ) from restore_exc
+                    raise
+                claimed_name = replaced_name
+
+                try:
+                    replaced_identity = directory.lstat(claimed_name)
+                    replaced_content = _read_mutation_sibling_bytes(
+                        directory,
+                        claimed_name,
+                        limit=len(payload),
+                    )
+                except (ConfigError, OSError, ValueError):
+                    replaced_identity = None
+                    replaced_content = None
+                if (
+                    replaced_identity is not None
+                    and _same_file_identity(published_identity, replaced_identity)
+                    and replaced_content == payload
+                ):
+                    directory.unlink(claimed_name)
+                    claimed_name = None
+                    preserve_claim = False
+                    directory.fsync()
+                    if isinstance(exc, (ConfigError, OSError, ValueError)):
+                        raise ConfigError(
+                            "Output file changed during publication; competing bytes "
+                            f"were restored and no update was written: {path}"
+                        ) from exc
+                    raise
+
+                # A later writer changed or replaced our publication before
+                # rollback. Put those latest bytes back at the canonical name
+                # and retain the earlier competitor in a named sidecar.
+                recovery_name = _unused_atomic_output_sibling(
+                    directory,
+                    path.name,
+                    ".recovery",
+                )
+                possible_earlier_name = (
+                    recovery_name if os.name == "nt" else claimed_name
+                )
+                try:
+                    earlier_name = directory.replace_preserving_target(
+                        claimed_name,
+                        path.name,
+                        recovery_name,
+                    )
+                except BaseException as recovery_exc:
+                    try:
+                        directory.lstat(possible_earlier_name)
+                    except OSError:
+                        pass
+                    else:
+                        claimed_name = possible_earlier_name
+                    preserve_claim = True
+                    raise ConfigError(
+                        "Output recovery was interrupted; the canonical target and "
+                        f"preserved sidecars require inspection: {path}"
+                    ) from recovery_exc
+                claimed_name = earlier_name
+                preserve_claim = True
+                raise ConfigError(
+                    "Output file changed during recovery; the latest target was "
+                    "preserved and earlier competing bytes remain at "
+                    f"{claimed_name}: {path}"
+                ) from exc
+
+            try:
+                current_target = directory.lstat(path.name)
+                current_content = _read_mutation_sibling_bytes(
+                    directory,
+                    path.name,
+                    limit=len(payload),
+                )
+            except (ConfigError, OSError, ValueError) as exc:
+                preserve_claim = True
+                raise ConfigError(
+                    "Output target changed after publication; reviewed bytes remain "
+                    f"at {claimed_name}: {path}"
+                ) from exc
+            if (
+                not _same_file_identity(published_identity, current_target)
+                or current_content != payload
+            ):
+                # The displaced bytes were the expected document, so they are
+                # not unique competing data. Preserve the later target and
+                # remove only the redundant reviewed copy.
+                directory.unlink(claimed_name)
+                claimed_name = None
+                preserve_claim = False
+                directory.fsync()
+                raise ConfigError(
+                    "Output file changed after publication; the competing target "
+                    f"was preserved: {path}"
+                )
+            directory.unlink(claimed_name)
+            claimed_name = None
+            preserve_claim = False
+            directory.fsync()
+        else:
+            try:
+                current_leaf = directory.lstat(path.name)
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as exc:
+                raise ConfigError(
+                    f"Output path changed before publication: {path}"
+                ) from exc
+            else:
+                if not stat.S_ISREG(
+                    current_leaf.st_mode
+                ) or _is_windows_reparse_point(current_leaf):
+                    raise ConfigError(
+                        "Output path changed to a symlink, junction, reparse point, "
+                        f"or non-file before publication: {path}"
+                    )
+            directory.replace(temp_name, path.name)
+            temp_name = None
+            directory.fsync()
     finally:
         if temp_fd is not None:
             try:
@@ -845,6 +1232,11 @@ def _write_text_atomic(path: Path, text: str) -> None:
         if temp_name is not None:
             try:
                 directory.unlink(temp_name)
+            except OSError:
+                pass
+        if claimed_name is not None and not preserve_claim:
+            try:
+                directory.unlink(claimed_name)
             except OSError:
                 pass
         for descriptor in reversed(held_fds):
@@ -859,9 +1251,18 @@ def _write_lockfile_atomic(path: Path, value: dict) -> None:
     _write_text_atomic(path, dump_lockfile(value))
 
 
-def _write_config_atomic(path: Path, value: dict) -> None:
+def _write_config_atomic(
+    path: Path,
+    value: dict,
+    *,
+    expected_content: Optional[bytes] = None,
+) -> None:
     """Serialize a readable config completely before opening a temp file."""
-    _write_text_atomic(path, dump_config(value))
+    _write_text_atomic(
+        path,
+        dump_config(value),
+        expected_content=expected_content,
+    )
 
 
 def _resolve_baseline_path(repo_root: Path, raw_path: str) -> Path:
@@ -959,7 +1360,7 @@ def _run_cli_handler(command: str, handler, *handler_args) -> None:
     """Run a command with operational failures converted to usage errors."""
     try:
         handler(*handler_args)
-    except (OSError, subprocess.CalledProcessError, BoundverError) as exc:
+    except (OSError, subprocess.CalledProcessError, BoundverError, ValueError) as exc:
         detail = _bounded_exception_text(exc)
         print(f"ERROR: {command} failed: {detail}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -1121,8 +1522,6 @@ def _cmd_migrate_lock(args) -> None:
     normalized = []
     if "generated_at" in old_lock and "generated_at" not in migrated:
         normalized.append("removed legacy generated_at metadata")
-    if "components" not in old_lock and "components" in migrated:
-        normalized.append("added missing components map")
     if "slices" not in old_lock and "slices" in migrated:
         normalized.append("added missing slices map")
     if old_lock.get("schema") != migrated.get("schema"):
@@ -1185,6 +1584,15 @@ def _cmd_review(args, repo_root: Path) -> None:
     )
     if args.format == "plan":
         plan = build_review_plan(result)
+        # Preflight the exact representation `_print_json` will emit before
+        # creating any requested side artifact. A refused plan must leave
+        # neither partial stdout nor a summary file behind.
+        _bounded_json_dumps(
+            plan,
+            indent=2,
+            sort_keys=True,
+            max_bytes=max(0, MAX_PLAN_RESULT_BYTES - 1),
+        )
         if args.summary_file:
             summary_path = Path(args.summary_file)
             _ensure_review_summary_outside_inputs(repo_root, summary_path, result)
@@ -1208,6 +1616,11 @@ def _cmd_generate(args, repo_root: Path) -> None:
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    try:
+        out_path = _repository_relative_path(repo_root, args.out, label="Output path")
+    except ConfigError as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(
         config,
@@ -1227,9 +1640,11 @@ def _cmd_generate(args, repo_root: Path) -> None:
     try:
         _ensure_lock_outside_components(
             repo_root,
-            repo_root / args.out,
+            out_path,
             config,
             config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
         )
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
@@ -1268,14 +1683,18 @@ def _cmd_generate(args, repo_root: Path) -> None:
                 "  Use --source working-tree to include local changes.",
                 file=sys.stderr,
             )
-    components_filter = _parse_components_arg(args.components)
+    try:
+        components_filter = _parse_components_arg(args.components)
+    except ValueError as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     try:
         if components_filter:
             lockfile = generate_lockfile_for_components(
                 config,
                 repo_root,
                 selected_components=components_filter,
-                out_path=repo_root / args.out,
+                out_path=out_path,
                 source=args.source,
                 strict=(not args.allow_partial),
                 allow_custom_providers=allow_custom,
@@ -1299,7 +1718,6 @@ def _cmd_generate(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    out_path = repo_root / args.out
     if args.dry_run:
         _log(
             f"Dry run: lockfile not written ({out_path})",
@@ -1311,7 +1729,7 @@ def _cmd_generate(args, repo_root: Path) -> None:
     if args.verbose and not args.quiet and args.format != "json":
         print(f"Generation source={args.source} strict={not args.allow_partial}")
     if args.format == "json":
-        _print_json(lockfile)
+        sys.stdout.write(dump_lockfile(lockfile))
     elif not args.quiet:
         print_status(lockfile, source=args.source)
     # First-run hint: if source=head and all components have exact_errors,
@@ -1342,6 +1760,7 @@ def _print_verify_json(
     changed_components: List[str],
     inputs: dict,
     consumer_impact: List[dict],
+    notices: Optional[List[dict]] = None,
     baseline: Optional[dict] = None,
 ) -> None:
     """Print the stable structured result for every verify outcome."""
@@ -1356,6 +1775,7 @@ def _print_verify_json(
         "components_filter": components_filter,
         "changed_components": changed_components,
         "inputs": inputs,
+        "notices": list(notices or []),
         "consumer_impact": sorted(
             consumer_impact,
             key=lambda row: row.get("component", ""),
@@ -1364,6 +1784,89 @@ def _print_verify_json(
     if baseline is not None:
         payload["baseline"] = baseline
     _print_json(payload)
+
+
+def _working_tree_config_notices(
+    *,
+    config: dict,
+    config_path: Path,
+    lock_path: Path,
+    repo_root: Path,
+    source: str,
+    inputs: dict,
+) -> List[dict]:
+    """Report an update whose immutable config differs from the disk view."""
+    if source == "working-tree":
+        return []
+
+    working_inputs = _operation_input_provenance(
+        repo_root,
+        "working-tree",
+        None,
+        config_path=config_path,
+        lock_path=lock_path,
+    )
+    selected_digest = semantic_config_digest(config)
+    working_digest: Optional[str]
+    try:
+        working_config = load_config_file(config_path, repo_root=repo_root)
+        working_digest = semantic_config_digest(working_config)
+        if working_digest == selected_digest:
+            return []
+        status = "different"
+    except FileNotFoundError:
+        working_digest = None
+        status = "missing"
+    except (ConfigError, ValueError):
+        # This is a diagnostic comparison only. The selected immutable config
+        # remains the sole input to verification and lock generation.
+        working_digest = None
+        status = "invalid-or-unreadable"
+
+    selected_identity = inputs["config"]
+    working_identity = working_inputs["config"]
+    selected_label = _bounded_diagnostic_text(
+        selected_identity,
+        max_chars=1000,
+    )
+    working_label = _bounded_diagnostic_text(
+        working_identity,
+        max_chars=1000,
+    )
+    message = _bounded_diagnostic_text(
+        f"verify --update is using source={source} config {selected_label}, "
+        f"while {working_label} is {status}; regeneration will continue to "
+        "use the selected snapshot config",
+        max_chars=4096,
+    )
+    return [
+        {
+            "code": "working-tree-config-diverges",
+            "message": message,
+            "source": source,
+            "selected_config": {
+                "identity": selected_identity,
+                "digest": selected_digest,
+            },
+            "working_tree_config": {
+                "identity": working_identity,
+                "status": status,
+                "digest": working_digest,
+            },
+        }
+    ]
+
+
+def _print_update_failure(exc: ValueError) -> None:
+    """Print one bounded update error and any applicable recovery command."""
+    detail = _bounded_exception_text(exc)
+    print(f"ERROR: update failed: {detail}", file=sys.stderr)
+    if detail.startswith("Slice '") and " requires " in detail:
+        print(
+            "Run `boundver generate --allow-partial` only if null slice facet "
+            "inputs are intentional.",
+            file=sys.stderr,
+        )
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
@@ -1395,6 +1898,11 @@ def _cmd_verify(args, repo_root: Path) -> None:
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    try:
+        lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
+    except ConfigError as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
     config_errors = validate_config(
         config,
@@ -1404,11 +1912,15 @@ def _cmd_verify(args, repo_root: Path) -> None:
         snapshot=snapshot,
     )
     if config_errors:
+        reported_config_errors = _verify_report_issues(
+            config_errors,
+            fail_fast=args.fail_fast,
+        )
         if args.format == "json":
             _print_verify_json(
                 ok=False,
                 updated=False,
-                issues=config_errors,
+                issues=reported_config_errors,
                 resolved_issues=[],
                 observations=[],
                 facets=None,
@@ -1425,48 +1937,52 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     args.source,
                     snapshot,
                     config_path=config_path,
-                    lock_path=repo_root / args.lock,
+                    lock_path=lock_path,
                 ),
                 consumer_impact=[],
             )
         else:
             print(
-                f"ERROR: Config is invalid ({len(config_errors)} issues):",
+                f"ERROR: Config is invalid ({len(reported_config_errors)} issues):",
                 file=sys.stderr,
             )
-            for error in config_errors:
+            for error in reported_config_errors:
                 print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    lock_path = repo_root / args.lock
     try:
         _ensure_lock_outside_components(
             repo_root,
             lock_path,
             config,
             config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
         )
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, LockfileError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
-        if args.source == "head":
-            print(
-                f"Hint: `--source head` reads committed files. Commit `{args.lock}`, "
-                "or use `--source working-tree` before committing.",
-                file=sys.stderr,
-            )
-        elif args.source == "index":
-            print(
-                f"Hint: `--source index` reads staged files. Stage `{args.lock}`, "
-                "or use `--source working-tree` before staging.",
-                file=sys.stderr,
-            )
-        sys.exit(EXIT_USAGE)
-    except LockfileError as exc:
-        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        missing_lockfile = isinstance(exc, FileNotFoundError) or isinstance(
+            exc.__cause__, FileNotFoundError
+        )
+        if missing_lockfile:
+            if args.source == "head":
+                print(
+                    f"Hint: `--source head` reads committed files. Commit "
+                    f"`{args.lock}`, or use `--source working-tree` before "
+                    "committing.",
+                    file=sys.stderr,
+                )
+            elif args.source == "index":
+                print(
+                    f"Hint: `--source index` reads staged files. Stage "
+                    f"`{args.lock}`, or use `--source working-tree` before "
+                    "staging.",
+                    file=sys.stderr,
+                )
         sys.exit(EXIT_USAGE)
     inputs = _operation_input_provenance(
         repo_root,
@@ -1479,7 +1995,11 @@ def _cmd_verify(args, repo_root: Path) -> None:
         f"Source: {args.source} | "
         f"Inputs: config={inputs['config']} lock={inputs['lock']}"
     )
-    components_filter = _parse_components_arg(args.components)
+    try:
+        components_filter = _parse_components_arg(args.components)
+    except ValueError as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     requested_components_filter = list(components_filter)
     unknown = [
         name for name in components_filter if name not in config.get("components", {})
@@ -1491,7 +2011,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     gated_facets = _parse_facets_arg(args.facets, config)
-    explicit_gated_facets = gated_facets if args.facets.strip() else None
+    has_explicit_facets = any(part.strip() for part in args.facets.split(","))
+    explicit_gated_facets = gated_facets if has_explicit_facets else None
     facet_policy = _facet_policy_payload(config, explicit_gated_facets)
     unknown_facets = sorted(set(gated_facets) - FACET_SET)
     if unknown_facets:
@@ -1547,12 +2068,39 @@ def _cmd_verify(args, repo_root: Path) -> None:
         components_filter = []
     else:
         reported_components_filter = list(components_filter)
+    config_notices = (
+        _working_tree_config_notices(
+            config=config,
+            config_path=config_path,
+            lock_path=lock_path,
+            repo_root=repo_root,
+            source=args.source,
+            inputs=inputs,
+        )
+        if args.update
+        else []
+    )
+    strict_config_source_failure = bool(
+        config_notices and getattr(args, "strict_config_source", False)
+    )
+    if config_notices and args.format != "json":
+        for notice in config_notices:
+            print(_yellow(f"NOTICE: {notice['message']}"), file=sys.stderr)
+    if strict_config_source_failure:
+        bounded_preflight = BoundedDiagnosticList(preflight_issues)
+        bounded_preflight.append(
+            "CONFIG SOURCE DIVERGENCE: --strict-config-source refused "
+            "lock regeneration; reconcile the working-tree config with the "
+            f"selected {args.source} snapshot or use --source working-tree"
+        )
+        preflight_issues = list(bounded_preflight)
     scoped_preflight_update = (
         bool(preflight_issues)
         and args.update
         and not structural_issues
         and bool(requested_components_filter)
         and not args.changed_from
+        and not strict_config_source_failure
     )
     if scoped_preflight_update:
         bounded_preflight = BoundedDiagnosticList(preflight_issues)
@@ -1567,6 +2115,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
         and args.update
         and not structural_issues
         and not scoped_preflight_update
+        and not strict_config_source_failure
     ):
         try:
             # Preflight invariants cover the complete lock.  A scoped repair
@@ -1580,10 +2129,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 snapshot=snapshot,
             )
         except ValueError as exc:
-            print(
-                f"ERROR: update failed: {_bounded_exception_text(exc)}",
-                file=sys.stderr,
-            )
+            _print_update_failure(exc)
             sys.exit(EXIT_USAGE)
         _write_lockfile_atomic(lock_path, updated)
         if args.format == "json":
@@ -1591,7 +2137,10 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=True,
                 updated=True,
                 issues=[],
-                resolved_issues=preflight_issues,
+                resolved_issues=_verify_report_issues(
+                    preflight_issues,
+                    fail_fast=args.fail_fast,
+                ),
                 observations=[],
                 facets=explicit_gated_facets,
                 facet_policy=facet_policy,
@@ -1599,17 +2148,22 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 changed_components=changed_components,
                 inputs=inputs,
                 consumer_impact=[],
+                notices=config_notices,
             )
         elif not args.quiet:
             print(input_line)
             print(_green(f"Updated {lock_path} after successful preflight repair."))
         return
     if preflight_issues:
+        reported_preflight_issues = _verify_report_issues(
+            preflight_issues,
+            fail_fast=args.fail_fast,
+        )
         if args.format == "json":
             _print_verify_json(
                 ok=False,
                 updated=False,
-                issues=preflight_issues,
+                issues=reported_preflight_issues,
                 resolved_issues=[],
                 observations=[],
                 facets=explicit_gated_facets,
@@ -1618,12 +2172,13 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 changed_components=changed_components,
                 inputs=inputs,
                 consumer_impact=[],
+                notices=config_notices,
             )
         else:
             if not args.quiet:
                 print(input_line, file=sys.stderr)
             print("ERROR: lockfile preflight failed:", file=sys.stderr)
-            for issue in preflight_issues:
+            for issue in reported_preflight_issues:
                 print(f"  - {issue}", file=sys.stderr)
         sys.exit(_drift_exit_code(preflight_issues))
     observations: List[str] = []
@@ -1814,6 +2369,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     changed_components=changed_components,
                     inputs=inputs,
                     consumer_impact=consumer_impact,
+                    notices=config_notices,
                 )
             elif not args.quiet:
                 print()
@@ -1844,10 +2400,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         snapshot=snapshot,
                     )
             except ValueError as exc:
-                print(
-                    f"ERROR: update failed: {_bounded_exception_text(exc)}",
-                    file=sys.stderr,
-                )
+                _print_update_failure(exc)
                 sys.exit(EXIT_USAGE)
             _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
@@ -1863,6 +2416,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     changed_components=changed_components,
                     inputs=inputs,
                     consumer_impact=consumer_impact,
+                    notices=config_notices,
                 )
             if args.format != "json" and not args.quiet:
                 print(_green(f"Updated {lock_path} after successful generation."))
@@ -1880,9 +2434,16 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 changed_components=changed_components,
                 inputs=inputs,
                 consumer_impact=consumer_impact,
+                notices=config_notices,
                 baseline=baseline_info,
             )
-        sys.exit(_drift_exit_code(issues))
+        severity_issues = list(issues)
+        if baseline_info is not None:
+            # A ratchet may remove an acknowledged mismatch from the report,
+            # but new metadata attached to that drift must retain the owning
+            # facet's routing severity.
+            severity_issues.extend(baseline_info["baselined_issues"])
+        sys.exit(_drift_exit_code(severity_issues))
     else:
         if args.update and observations:
             try:
@@ -1909,10 +2470,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                         snapshot=snapshot,
                     )
             except ValueError as exc:
-                print(
-                    f"ERROR: update failed: {_bounded_exception_text(exc)}",
-                    file=sys.stderr,
-                )
+                _print_update_failure(exc)
                 sys.exit(EXIT_USAGE)
             _write_lockfile_atomic(lock_path, updated)
             if args.format == "json":
@@ -1928,6 +2486,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     changed_components=changed_components,
                     inputs=inputs,
                     consumer_impact=consumer_impact,
+                    notices=config_notices,
                 )
             elif not args.quiet:
                 print(_green(f"Updated {lock_path} after successful generation."))
@@ -1945,6 +2504,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 changed_components=changed_components,
                 inputs=inputs,
                 consumer_impact=consumer_impact,
+                notices=config_notices,
                 baseline=baseline_info,
             )
         if args.format != "json" and not args.quiet:
@@ -1993,7 +2553,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
 
 
 def _cmd_slice(args, repo_root: Path) -> None:
-    lock_path = repo_root / args.lock
+    lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     if not lock_path.exists():
         print(
             f"ERROR: Lockfile not found: {lock_path} \u2014 run 'boundver generate' first.",
@@ -2013,7 +2573,10 @@ def _cmd_slice(args, repo_root: Path) -> None:
     sl = lockfile.get("slices", {}).get(args.name)
     if sl is None:
         print(f"ERROR: Slice '{args.name}' not found.", file=sys.stderr)
-        print(f"Available: {', '.join(lockfile.get('slices', {}).keys())}")
+        print(
+            f"Available: {', '.join(lockfile.get('slices', {}).keys())}",
+            file=sys.stderr,
+        )
         sys.exit(EXIT_USAGE)
     if args.format == "json":
         _print_json(
@@ -2053,7 +2616,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
+        config = load_config_file(config_path, repo_root=repo_root)
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2064,6 +2627,15 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         allow_custom_providers=allow_custom,
         require_slice_facets=not args.allow_partial,
     )
+    if not errors and config.get("derivations"):
+        try:
+            with _SourceAccessor(repo_root, "working-tree") as accessor:
+                errors.extend(verify_derivations(config, accessor))
+        except (ConfigError, GuardrailError, OSError, ValueError) as exc:
+            errors.append(
+                "Generated-artifact freshness validation failed: "
+                f"{_bounded_exception_text(exc)}"
+            )
     if errors:
         print(_red(f"CONFIG INVALID ({len(errors)} issues):"))
         for err in errors:
@@ -2078,7 +2650,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
 
 
 def _cmd_init(args, repo_root: Path) -> None:
-    config_path = repo_root / args.out
+    config_path = _repository_relative_path(repo_root, args.out, label="Output path")
     try:
         _ensure_json_mutation_path(config_path, "init")
     except ConfigError as exc:
@@ -2102,7 +2674,7 @@ def _cmd_init(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/boundary.config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered
@@ -2115,18 +2687,35 @@ def _cmd_init(args, repo_root: Path) -> None:
             }
         },
     }
+    starter_errors = validate_config(starter, repo_root)
     _write_config_atomic(config_path, starter)
     print(f"Created {config_path} with {len(starter['components'])} component(s).")
-    print(
-        "Next: review the config, then run `boundver validate-config` and `boundver generate`."
-    )
+    if starter_errors:
+        print(
+            "WARNING: The scaffold needs edits before it will validate:",
+            file=sys.stderr,
+        )
+        for error in starter_errors:
+            print(f"  - {error}", file=sys.stderr)
+        print("Next: edit the config, then run `boundver validate-config`.")
+    else:
+        print(
+            "Next: review the config, then run `boundver validate-config` and "
+            "`boundver generate`."
+        )
 
 
 def _cmd_add(args, repo_root: Path) -> None:
     config_path = find_config_file(repo_root, args.config)
     if not config_path.exists():
         print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
-        print("Run: boundver init", file=sys.stderr)
+        if config_path.suffix.lower() == ".json":
+            try:
+                init_target = config_path.relative_to(repo_root).as_posix()
+            except ValueError:
+                init_target = None
+            if init_target is not None:
+                print(f"Run: boundver init --out {init_target}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
         _ensure_json_mutation_path(config_path, "add")
@@ -2134,7 +2723,10 @@ def _cmd_add(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
+        config, config_bytes = load_config_file_with_bytes(
+            config_path,
+            repo_root=repo_root,
+        )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2187,14 +2779,14 @@ def _cmd_add(args, repo_root: Path) -> None:
         for error in config_errors:
             print(f"  - {error}", file=sys.stderr)
         print(
-            "Correct the component path, provider, boundary paths, or policy "
-            "before retrying.",
+            "Correct the component path, --provider, --paths/--boundary-path, "
+            "or policy before retrying.",
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_config_atomic(config_path, config)
-    print(f"Added component '{args.name}' at path '{args.path}'")
-    print(f"Run: boundver generate --components {args.name}")
+    _write_config_atomic(config_path, config, expected_content=config_bytes)
+    print(f"Added component '{args.name}' at path '{add_path}'")
+    print("Run: boundver generate --source working-tree")
 
 
 def _cmd_remove(args, repo_root: Path) -> None:
@@ -2208,7 +2800,10 @@ def _cmd_remove(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
+        config, config_bytes = load_config_file_with_bytes(
+            config_path,
+            repo_root=repo_root,
+        )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2254,7 +2849,7 @@ def _cmd_remove(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    _write_config_atomic(config_path, config)
+    _write_config_atomic(config_path, config, expected_content=config_bytes)
     print(f"Removed component '{args.name}'")
     print("Run: boundver generate")
 
@@ -2281,7 +2876,7 @@ def _cmd_discover(args, repo_root: Path) -> None:
     if args.diff_config:
         try:
             config_path = find_config_file(repo_root, args.config)
-            config = load_config_file(config_path)
+            config = load_config_file(config_path, repo_root=repo_root)
             config_diff = compare_discovery_to_config(discovered, config)
         except (FileNotFoundError, ValueError, ConfigError) as exc:
             print(
@@ -2316,7 +2911,7 @@ def _cmd_discover(args, repo_root: Path) -> None:
 
 
 def _cmd_status(args, repo_root: Path) -> None:
-    lock_path = repo_root / args.lock
+    lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
         lockfile = _load_lockfile(lock_path, repo_root=repo_root, snapshot=snapshot)
@@ -2405,8 +3000,15 @@ def _cmd_status(args, repo_root: Path) -> None:
                         snapshot=snapshot,
                         observations=observations,
                     )
-                except ValueError as exc:
-                    issues = [f"Verification error: {_bounded_exception_text(exc)}"]
+                except (
+                    OSError,
+                    subprocess.CalledProcessError,
+                    BoundverError,
+                    ValueError,
+                ) as exc:
+                    issues = [
+                        "Verification error: " + _bounded_exception_text(exc)
+                    ]
                 status_payload["observations"] = observations
             status_payload["issues"].extend(issues)
             if issues:
@@ -2435,6 +3037,196 @@ def _cmd_status(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
 
 
+def _cmd_coverage(args, repo_root: Path) -> None:
+    try:
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    config_errors = validate_config(
+        config,
+        repo_root,
+        source=args.source,
+        snapshot=snapshot,
+        validate_provider_runtime=False,
+    )
+    if config_errors:
+        if args.format == "json":
+            _print_json(
+                {
+                    "schema": "boundver-declaration-coverage/v1",
+                    "complete": False,
+                    "ok": False,
+                    "issues": config_errors,
+                }
+            )
+        else:
+            print(
+                f"ERROR: Config is invalid ({len(config_errors)} issues):",
+                file=sys.stderr,
+            )
+            for error in config_errors:
+                print(f"  - {error}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    provenance = _operation_input_provenance(
+        repo_root,
+        args.source,
+        snapshot,
+        config_path=config_path,
+        lock_path=repo_root / "boundary.lock.json",
+    )
+    inputs = {
+        key: provenance[key]
+        for key in ("source", "tree", "commit", "config")
+    }
+    try:
+        report = declaration_coverage(
+            config,
+            repo_root,
+            source=args.source,
+            snapshot=snapshot,
+            inputs=inputs,
+        )
+    except (GuardrailError, OSError, ValueError) as exc:
+        print(
+            f"ERROR: declaration coverage failed: {_bounded_exception_text(exc)}",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
+
+    if args.format == "json":
+        _print_json(report)
+    elif not args.quiet:
+        print(f"Source: {args.source} | Config: {inputs['config']}")
+        for component in report["components"]:
+            print()
+            print(
+                f"{_display_path(component['component'])} "
+                f"({_display_path(component['path'])})"
+            )
+            for facet in component["facets"]:
+                print(
+                    f"  {facet['facet']}: {facet['selected_files']} selected; "
+                    f"declaration {facet['declaration']}"
+                )
+                for path in facet["uncovered_files"][:256]:
+                    print(f"    UNCOVERED {_display_path(path)}")
+                for exclusion in facet["excluded"][:256]:
+                    print(
+                        f"    EXCLUDED {_display_path(exclusion['path'])}: "
+                        f"{_bounded_diagnostic_text(exclusion['reason'])} "
+                        f"({exclusion['declaration']})"
+                    )
+                omitted = max(
+                    0,
+                    len(facet["uncovered_files"]) + len(facet["excluded"]) - 256,
+                )
+                if omitted:
+                    print(f"    ... {omitted} more path(s); use --format json")
+        for directory in report["unowned_source_directories"]:
+            print()
+            print(f"Unowned source directory: {_display_path(directory['directory'])}")
+            for path in directory["uncovered_files"][:256]:
+                print(f"    UNCOVERED {_display_path(path)}")
+            for exclusion in directory["excluded"][:256]:
+                print(
+                    f"    EXCLUDED {_display_path(exclusion['path'])}: "
+                    f"{_bounded_diagnostic_text(exclusion['reason'])} "
+                    f"({exclusion['declaration']})"
+                )
+        summary = report["summary"]
+        print()
+        print(
+            "Declaration coverage: "
+            f"{summary['uncovered_files']} uncovered, "
+            f"{summary['excluded_files']} reasoned exclusion(s), "
+            f"{len(report['complete_components'])} complete component(s)."
+        )
+    if args.strict and not report["ok"]:
+        sys.exit(EXIT_DRIFT)
+
+
+def _cmd_record_derivation(args, repo_root: Path) -> None:
+    try:
+        snapshot = _capture_operation_snapshot(repo_root, args.source)
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    config_errors = validate_config(
+        config,
+        repo_root,
+        source=args.source,
+        snapshot=snapshot,
+        validate_provider_runtime=False,
+    )
+    if config_errors:
+        print(
+            f"ERROR: Config is invalid ({len(config_errors)} issues):",
+            file=sys.stderr,
+        )
+        for error in config_errors:
+            print(f"  - {error}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    try:
+        _ensure_lock_outside_components(
+            repo_root,
+            repo_root / "boundary.lock.json",
+            config,
+            config_path=config_path,
+            source=args.source,
+            snapshot=snapshot,
+        )
+        with _SourceAccessor(repo_root, args.source, snapshot=snapshot) as accessor:
+            evidence_path, evidence = build_derivation_evidence(
+                config,
+                args.name,
+                accessor,
+            )
+        target = repo_root / evidence_path
+        target_identity = _normalized_filesystem_paths(
+            target,
+            "derivation evidence",
+            relative_to=repo_root,
+        )
+        root_identity = _normalized_filesystem_paths(
+            repo_root,
+            "repository root",
+            relative_to=repo_root,
+        )
+        if not _filesystem_path_is_within(target_identity, root_identity):
+            raise ConfigError("Derivation evidence path must stay in the repository")
+        config_identity = _normalized_filesystem_paths(
+            config_path,
+            "config",
+            relative_to=repo_root,
+        )
+        lock_identity = _normalized_filesystem_paths(
+            repo_root / "boundary.lock.json",
+            "lockfile",
+            relative_to=repo_root,
+        )
+        if _filesystem_paths_alias(target_identity, config_identity):
+            raise ConfigError("Derivation evidence must not overwrite the config")
+        if _filesystem_paths_alias(target_identity, lock_identity):
+            raise ConfigError("Derivation evidence must not overwrite the lockfile")
+        _write_text_atomic(target, dump_derivation_evidence(evidence))
+    except (ConfigError, GuardrailError, OSError, ValueError) as exc:
+        print(
+            f"ERROR: cannot record derivation: {_bounded_exception_text(exc)}",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_USAGE)
+    if not args.quiet:
+        print(
+            f"Recorded derivation '{_display_path(args.name)}' at "
+            f"{_display_path(evidence_path)} from {args.source}."
+        )
+
+
 def _cmd_explain(args, repo_root: Path) -> None:
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
@@ -2459,10 +3251,11 @@ def _cmd_explain(args, repo_root: Path) -> None:
         for error in config_errors:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     lockfile = None
     try:
         lockfile = _load_lockfile(
-            repo_root / args.lock,
+            lock_path,
             repo_root=repo_root,
             snapshot=snapshot,
         )
@@ -2485,7 +3278,7 @@ def _cmd_explain(args, repo_root: Path) -> None:
 
 
 def _cmd_why(args, repo_root: Path) -> None:
-    lock_path = repo_root / args.lock
+    lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
@@ -2574,6 +3367,21 @@ def main():
         parser.print_help()
         sys.exit(EXIT_USAGE)
 
+    # Refuse malformed diagnostic revisions before git_root() performs any
+    # repository probe. Resolution to an immutable commit happens later once
+    # the repository root is known.
+    if args.command in {"explain", "why"} and args.base_ref is not None:
+        try:
+            _validated_revision(args.base_ref, "diagnostic base")
+        except ValueError:
+            label = "base ref" if args.command == "explain" else "diagnostic base ref"
+            print(
+                f"ERROR: invalid {label}: "
+                f"{_bounded_diagnostic_repr(args.base_ref)}",
+                file=sys.stderr,
+            )
+            sys.exit(EXIT_USAGE)
+
     # Commands that don't need a git repo.
     if args.command == "completions":
         _run_cli_handler(args.command, _cmd_completions, args)
@@ -2587,6 +3395,9 @@ def main():
 
     try:
         repo_root = git_root()
+    except GuardrailError as exc:
+        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     except (subprocess.CalledProcessError, OSError, ValueError):
         print("ERROR: Not inside a git repository.", file=sys.stderr)
         print(file=sys.stderr)
@@ -2622,6 +3433,8 @@ def main():
         "remove": _cmd_remove,
         "discover": _cmd_discover,
         "status": _cmd_status,
+        "coverage": _cmd_coverage,
+        "record-derivation": _cmd_record_derivation,
         "explain": _cmd_explain,
         "why": _cmd_why,
     }

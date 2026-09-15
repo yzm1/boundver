@@ -47,6 +47,7 @@ nav:
       - Executive summary: executive-summary.md
       - One-minute demo: demo.md
       - Getting started: getting-started.md
+      - FAQ: faq.md
       - Gradual adoption: gradual-adoption.md
       - Examples: examples.md
   - Guides:
@@ -57,7 +58,8 @@ nav:
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md
   - Reference:
-      - CLI and configuration: reference.md
+      - CLI commands: cli-reference.md
+      - Behavior and configuration: reference.md
       - Glossary: glossary.md
       - Normative specification: specification.md
       - Hashing contract: hashing-contract.md
@@ -66,12 +68,14 @@ nav:
   - Project:
       - Why boundver?: WHY_BOUNDVER.md
       - Comparison and integrations: comparison.md
+      - Roadmap: roadmap.md
       - Privacy and telemetry: privacy.md
       - Security model: security-model.md
       - Support and compatibility: support.md
       - Documentation style: documentation-style.md
       - Release process: RELEASING.md
       - Design and assurance:
+          - Testing obligation dispositions: design/testing-obligation-dispositions.md
           - Semantic provider RFC: design/semantic-provider-rfc.md
           - Semantic provider threat model: design/semantic-provider-threat-model.md
 

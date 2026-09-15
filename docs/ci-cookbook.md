@@ -1,8 +1,7 @@
 # CI cookbook
 
 These recipes make the source snapshot, lock schema, and gate policy explicit.
-The recipes describe boundver 0.13's v3/semantic-config-v2 contract.
-Boundver 0.11 writes v3/v1 locks and 0.10.x writes v2 locks; both require
+They use boundver 0.16's v4/semantic-config-v3 contract. Older locks require
 regeneration and must not be mixed with these writers.
 
 ## GitHub Actions: recommended contract gate
@@ -21,7 +20,7 @@ jobs:
           fetch-depth: 0
 
       # Keep the writer and verifier on the repository's lock-contract version.
-      - uses: yzm1/boundver@v0.15.2
+      - uses: yzm1/boundver@v0.16.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -70,11 +69,11 @@ for the complete workflow and safety constraints.
 
 ## Pick a signal-to-noise policy
 
-| Policy | Facets | What fails |
-|---|---|---|
-| Consumer-facing | `boundary,compat` | Declared public artifact or compatibility-family drift; requires both facets on every selected component |
-| Behavior-sensitive | `behavior,boundary,compat` | Observable behavior, boundary, or compatibility drift; requires all three |
-| Portable tracked-source hygiene | `exact` | Tracked content, paths, and file identities; text CRLF/LF are equivalent; works for leaf and unversioned components |
+Three useful starting policies are `boundary,compat` for consumer-facing
+components, `behavior,boundary,compat` where runtime behavior is part of the
+contract, and `exact` for portable tracked-source hygiene. Check
+[facet availability](reference.md#what-each-facet-needs) before applying one
+policy to heterogeneous components.
 
 Policy can live in configuration:
 
@@ -135,7 +134,7 @@ analysis or create a compatibility identity for an unversioned component.
   with:
     fetch-depth: 0
 
-- uses: yzm1/boundver@v0.15.2
+- uses: yzm1/boundver@v0.16.0
   with:
     source: head
     changed-from: origin/${{ github.base_ref }}
@@ -187,7 +186,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: review
-        uses: yzm1/boundver@v0.15.2
+        uses: yzm1/boundver@v0.16.0
         with:
           operation: review
           base: ${{ github.event.pull_request.base.sha }}
@@ -241,7 +240,7 @@ script starts:
 
 ```yaml
 include:
-  - component: gitlab.com/boundver-project/boundver/boundver@0.15.2
+  - component: gitlab.com/boundver-project/boundver/boundver@0.16.0
     inputs:
       job-name: boundver-review
       operation: review
@@ -276,8 +275,8 @@ steps:
   - uses: actions/setup-python@v6
     with:
       python-version: "3.12"
-  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.15.2"
-  - run: python -c "import boundver; assert boundver.__version__ == '0.15.2', boundver.__version__"
+  - run: python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
+  - run: python -c "import boundver; assert boundver.__version__ == '0.16.0', boundver.__version__"
   - run: python -m boundver verify --source head
 ```
 
@@ -297,32 +296,30 @@ already binds its bundled implementation to the Action tag.
 
 ## Match source mode to the lifecycle
 
-| Lifecycle | Source |
-|---|---|
-| Pull request / post-commit CI | `head` |
-| Pre-commit | `index` |
-| Local review before staging | `working-tree` |
+Use `head` in pull-request and post-commit CI, `index` in pre-commit, and
+`working-tree` for local review before staging. The authoritative source table
+and snapshot rules are in [Source modes](reference.md#source-modes).
 
 Config and lock are bound to the snapshot for `head` and `index`, so a staged
-pipeline must stage the lock before it verifies. The full rules, including the
-staged-refresh command sequence, are in
-[reference](reference.md#source-modes).
+pipeline must stage the lock before it verifies.
 
-## Check generated artifacts before verifying them
+## Check and bind generated artifacts before verifying them
 
-Boundver hashes a generated contract but does not bind it to its generator, so
-a stale committed artifact verifies clean. Run the generator's deterministic
-check first:
+Declare generated boundary inputs and outputs under `derivations`, and commit
+the receipt written by `boundver record-derivation`. Verification then fails if
+either file set changes without fresh evidence. Keep the generator's own
+deterministic check as an independent trusted-CI control:
 
 ```yaml
 - name: Check generated OpenAPI is current
   run: python ci/generate_platform_openapi.py --check
-- name: Verify recorded boundaries
+- name: Verify derivation receipt and recorded boundaries
   run: boundver verify --source head
 ```
 
-See [reference](reference.md#generated-artifacts-are-not-bound-to-their-generator)
-for why there is no executable `derived_from` field.
+The config's `generator` field is only a stable identity string; repository
+configuration is never authorization to execute it. See
+[generated-artifact freshness](reference.md#generated-artifact-freshness).
 
 ## Report in CI; update during review
 
@@ -369,6 +366,13 @@ boundver verify \
 This command updates exact and behavior data for `payment-api` too; `--facets`
 does not preserve old non-gating fields.
 
+For automation that deliberately updates from `head` or `index`, add
+`--strict-config-source` (or `strict-config-source: "true"` on the GitHub
+Action). It refuses the write if the config at the same working-tree path does
+not match the selected snapshot. Without the strict flag, the machine result
+records the bounded diagnostic under `notices` and regeneration still uses only
+the selected source.
+
 ## Exit-code-aware automation
 
 Boundver's exit code carries the drift class, so a pipeline can route on it
@@ -397,8 +401,8 @@ boundary-verify:
   image: python:3.12-slim
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-    - python -m pip install --upgrade "boundver[schema,yaml]==0.15.2"
-    - python -c "import boundver; assert boundver.__version__ == '0.15.2', boundver.__version__"
+    - python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
+    - python -c "import boundver; assert boundver.__version__ == '0.16.0', boundver.__version__"
   script:
     - python -m boundver verify --source head
   rules:
@@ -417,7 +421,7 @@ not conflated:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/yzm1/boundver
-    rev: v0.15.2
+    rev: v0.16.0
     hooks:
       - id: boundver-verify       # pre-commit: source=index, portable exact gate
       - id: boundver-verify-push  # pre-push: source=head, portable exact gate
@@ -430,8 +434,8 @@ version assertion from [Pin a package instead of the
 Action](#pin-a-package-instead-of-the-action). Then invoke it through
 `python -m boundver` from that interpreter.
 
-Use an exact patch tag such as `v0.15.2` for reproducible hook execution. A
-two-component alias such as `v0.15` is intentionally mutable and advances to
+Use an exact patch tag such as `v0.16.0` for reproducible hook execution. A
+two-component alias such as `v0.16` is intentionally mutable and advances to
 the newest patch release in that line. Do not pin the hook to one patch while a
 separate CI assertion or system installation expects another; update those
 version identities together.

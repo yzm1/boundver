@@ -67,6 +67,42 @@ class LegacyCodePageOutputTests(unittest.TestCase):
             "\x1b[32mok\\x1b[2J\\n::warning::forged\x1b[0m\n",
         )
 
+    def test_a_styled_value_escapes_its_text_when_interpolated(self):
+        """The escaping half of __str__, with no safe_print in the path.
+
+        The test above drives the same input through safe_print on a TTY,
+        where the trusted wrapper is restored. Nothing drove the dunder that
+        decides what an ordinary f-string gets, so replacing its body with
+        str(self.value) left both files green (MUT-B9-03) while raw control
+        bytes from an untrusted name would reach any log line built by
+        interpolation.
+        """
+        self.assertEqual(
+            str(output._green("ok\x1b[2J\n::warning::forged")),
+            "ok\\x1b[2J\\n::warning::forged",
+        )
+
+    def test_a_styled_value_drops_its_styling_when_interpolated(self):
+        """The styling half, which is what makes the clause load-bearing.
+
+        An author who later writes f"{_red(name)}" must not emit a raw SGR
+        sequence into a string bound for a file, a JSON field or a log. The
+        wrapper belongs to safe_print on a TTY and nowhere else.
+        """
+        styled = output._green("ok")
+        self.assertEqual(f">{styled}<", ">ok<")
+        self.assertNotIn("\x1b[", f">{styled}<")
+
+    def test_the_same_value_still_carries_its_code_for_safe_print(self):
+        """The contrast: __str__ dropping styling is not styling being lost.
+
+        Without this, a wrapper that had stopped recording its colour at all
+        would satisfy both assertions above.
+        """
+        styled = output._green("ok")
+        self.assertEqual(styled.value, "ok")
+        self.assertIn("32", styled.code)
+
     def test_cli_entrypoint_configures_stdout_and_stderr_before_argparse(self):
         calls: list[tuple[str, dict[str, str]]] = []
 
@@ -150,7 +186,7 @@ class LegacyCodePageOutputTests(unittest.TestCase):
                 }
             )
         )
-        self.assertIn("new\\ud83d\\ude00", output)
+        self.assertIn("new\\\\ud83d\\\\ude00", output)
 
     @unittest.skipUnless(
         hasattr(sys, "set_int_max_str_digits"),
@@ -185,7 +221,9 @@ class LegacyCodePageOutputTests(unittest.TestCase):
             )
         finally:
             sys.set_int_max_str_digits(previous)
-        self.assertIn(digits, rendered)
+        self.assertIn(digits[:128], rendered)
+        self.assertIn("...", rendered)
+        self.assertNotIn(digits, rendered)
 
     def test_explain_handles_unicode_component_name_and_path(self):
         analysis = {

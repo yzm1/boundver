@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import math
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
@@ -14,7 +14,6 @@ from ._utils import (
     GuardrailError,
     MAX_JSON_NUMBER_CHARACTERS,
     MAX_TOML_INTEGER_DIGITS as MAX_TOML_INTEGER_DIGITS,
-    _bounded_int_to_decimal,
     _bounded_yaml_int,
     _bounded_yaml_compose_node,
     _normalize_declared_path,
@@ -92,21 +91,39 @@ def _load_yaml_with_bounded_integers(text: str) -> Any:
         "tag:yaml.org,2002:float",
         construct_float,
     )
+    # PyYAML's YAML 1.1 resolver treats ``0o17`` as a plain string even though
+    # it is an alternate-base numeric spelling in YAML 1.2. Route that
+    # unquoted spelling through the bounded integer constructor so every
+    # supported manifest format refuses it consistently. Quoted strings retain
+    # their exact text, as version identifiers should.
+    BoundedVersionLoader.add_implicit_resolver(
+        "tag:yaml.org,2002:int",
+        re.compile(r"^[+-]?0o[0-7]+$"),
+        list("-+0123456789"),
+    )
+    # PyYAML's YAML 1.1 resolver leaves JSON-style exponent forms such as
+    # ``1e5`` as strings. Resolve the unambiguous JSON float grammar as numeric
+    # so a bare spelling cannot be accepted as text in YAML while the same
+    # source value is rejected by JSON and TOML. Quoted values stay strings.
+    BoundedVersionLoader.add_implicit_resolver(
+        "tag:yaml.org,2002:float",
+        re.compile(
+            r"^[+-]?(?:(?:0|[1-9][0-9]*)\.[0-9]+(?:[eE][-+]?[0-9]+)?"
+            r"|(?:0|[1-9][0-9]*)[eE][-+]?[0-9]+)$"
+        ),
+        list("-+0123456789"),
+    )
     return yaml.load(text, Loader=BoundedVersionLoader)
 
 
 def _version_value_to_string(value: Any) -> Optional[str]:
-    """Render a parsed version field without Python's mutable integer limit."""
-    if type(value) is str:
-        return value
-    if type(value) is int:
-        return _bounded_int_to_decimal(value)
-    if type(value) is float:
-        return str(value) if math.isfinite(value) else None
-    # Booleans, nulls, containers, timestamps, and extension objects are not
-    # textual or numeric version identifiers. Never stringify a container:
-    # nested large integers would reintroduce Python's mutable digit limit.
-    return None
+    """Return a version only when its parsed source value was textual.
+
+    Numeric parsers discard source spelling (for example, ``1.10`` becomes
+    ``1.1``). Version identifiers are identity-bearing text, so stringifying a
+    parsed number could silently change the compatibility fingerprint.
+    """
+    return value if type(value) is str else None
 
 
 def _toml_version_value_to_string(value: Any) -> Optional[str]:
@@ -137,6 +154,13 @@ def extract_version(
         return None
     if type(version_source) is not dict or type(component_path) is not str:
         return None
+    if "constant" in version_source:
+        constant = version_source.get("constant")
+        return constant if type(constant) is str else None
+    if "component" in version_source:
+        # Component inheritance requires the complete config graph and is
+        # resolved by the lockfile layer from one captured source view.
+        return None
     if "git_tag_prefix" in version_source:
         prefix = version_source.get("git_tag_prefix")
         if git_tag_prefix_error(prefix) is not None:
@@ -157,11 +181,22 @@ def extract_version(
         file_rel = _normalize_declared_path(file_rel)
     except ValueError:
         return None
-    component_prefix = component_path.strip().strip("/")
+    # A colon in a filename is an NTFS alternate-data-stream selector. Refuse
+    # it on every host so the same declaration cannot read different bytes on
+    # Windows and POSIX.
+    if ":" in file_rel:
+        return None
+    if component_path in {"", "."}:
+        component_prefix = ""
+    else:
+        try:
+            component_prefix = _normalize_declared_path(component_path)
+        except ValueError:
+            return None
+        if ":" in component_prefix:
+            return None
     repo_rel = (
-        file_rel.lstrip("/")
-        if component_prefix in {"", "."}
-        else f"{component_prefix}/{file_rel.lstrip('/')}"
+        file_rel if not component_prefix else f"{component_prefix}/{file_rel}"
     )
     if read_file_fn is not None:
         try:
@@ -170,7 +205,7 @@ def extract_version(
             return None
         return _extract_field_from_bytes(raw, file_rel, field_path)
     # Fallback: read from disk
-    full_path = repo_root / component_path / file_rel
+    full_path = repo_root / component_prefix / file_rel
     # Verify resolved path stays within repository
     try:
         full_path.resolve().relative_to(repo_root.resolve())
@@ -189,7 +224,7 @@ def _extract_field_from_bytes(raw: bytes, file_rel: str, field_path: str) -> Opt
     if not isinstance(raw, bytes) or len(raw) > MAX_VERSION_FILE_BYTES:
         return None
     try:
-        text = bytes(raw).decode("utf-8")
+        text = bytes(raw).decode("utf-8-sig")
     except UnicodeDecodeError:
         return None
     if file_rel.endswith('.json'):
@@ -291,11 +326,7 @@ def _extract_yaml_field(path: Path, field_path: str) -> Optional[str]:
     raw = _read_version_file_bytes(path, str(path))
     if raw is None:
         return None
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    return _extract_yaml_from_text(text, field_path)
+    return _extract_field_from_bytes(raw, ".yaml", field_path)
 
 
 def _is_ascii_digit(character: str) -> bool:

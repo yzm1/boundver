@@ -30,6 +30,7 @@ from ._utils import (
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
     _bounded_sorted_paths,
+    _compile_path_glob,
     _is_windows_reparse_point,
     _iter_bounded_filesystem_paths,
     _match_path_glob,
@@ -62,10 +63,13 @@ MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
 MAX_GIT_FAILURE_DETAIL_CHARS = 4096
 MAX_GIT_COMMAND_SECONDS = 300
 MAX_GIT_CONFIG_QUERY_SECONDS = 10
+MINIMUM_GIT_VERSION = (2, 32, 0)
+MINIMUM_PARTIAL_CLONE_GIT_VERSION = (2, 45, 0)
 MAX_GIT_FILTER_DRIVERS = 64
 MAX_GIT_FILTER_CONFIG_KEYS = 4 * MAX_GIT_FILTER_DRIVERS
 MAX_GIT_FILTER_KEY_BYTES = 512
 MAX_GIT_FILTER_OVERRIDE_BYTES = 16 * 1024
+MAX_PARTIAL_CLONE_CONFIG_KEYS = 64
 _GIT_STREAM_CHUNK_BYTES = 64 * 1024
 MAX_FALLBACK_FILES = 50_000
 MAX_FALLBACK_TRAVERSAL_ENTRIES = 200_000
@@ -84,23 +88,30 @@ _GIT_AMBIENT_OVERRIDE_PREFIXES = ("GIT_",)
 # narrow allowlist into process-local config before suppressing those ambient
 # files. This preserves ordinary CRLF/symlink/case semantics without reopening
 # the code-execution and redirection surface of arbitrary Git configuration.
+# core.filemode is deliberately absent: unlike the settings below, an ambient
+# value can change a working-tree digest. Repository/worktree declarations of
+# core.filemode remain visible to Git and continue to define checkout semantics.
 _SAFE_AMBIENT_WORKTREE_CONFIG_VALUES = {
     "core.autocrlf": frozenset({"true", "false", "input"}),
     "core.eol": frozenset({"lf", "crlf", "native"}),
-    "core.filemode": frozenset({"true", "false"}),
     "core.ignorecase": frozenset({"true", "false"}),
     "core.precomposeunicode": frozenset({"true", "false"}),
     "core.safecrlf": frozenset({"true", "false", "warn"}),
     "core.symlinks": frozenset({"true", "false"}),
 }
 _SAFE_AMBIENT_WORKTREE_CONFIG_PATTERN = (
-    r"^(core\.autocrlf|core\.eol|core\.filemode|core\.ignorecase|"
+    r"^(core\.autocrlf|core\.eol|core\.ignorecase|"
     r"core\.precomposeunicode|core\.safecrlf|core\.symlinks)$"
 )
 _FILTER_COMMAND_CONFIG_PATTERN = (
     r"^filter\..*\.(clean|smudge|process|required)$"
 )
 _FILTER_COMMAND_SUFFIXES = ("clean", "smudge", "process", "required")
+_PROCESS_CONFIG_PROBE_KEY = "boundver.processConfigProbe"
+_PROCESS_CONFIG_PROBE_VALUE = "boundver-probe-v1"
+_PARTIAL_CLONE_CONFIG_PATTERN = (
+    r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$"
+)
 
 # Keep every Git subprocess local.  This allowlist is deliberately enforced
 # before process creation so a future caller cannot accidentally turn a local
@@ -121,6 +132,7 @@ _OFFLINE_GIT_SUBCOMMANDS = frozenset(
         "rev-parse",
         "show-ref",
         "symbolic-ref",
+        "version",
         "write-tree",
     }
 )
@@ -156,6 +168,8 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
     safe_args = list(args)
     subcommand = safe_args[command_index]
     subcommand_arguments = safe_args[command_index + 1 :]
+    if subcommand == "version" and subcommand_arguments:
+        raise ValueError("Refusing arguments to Git version probe")
     if subcommand == "cat-file" and any(
         argument in {"--filters", "--textconv"}
         or argument.startswith("--batch-command")
@@ -211,7 +225,10 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         safe_args[command_index + 1 : command_index + 1] = [
             "--no-ext-diff",
             "--no-textconv",
-            "--ignore-submodules=all",
+            # Tree/index comparisons can report Gitlink object-ID changes
+            # without entering a submodule worktree. ``dirty`` suppresses
+            # nested-worktree state while retaining those pointer changes.
+            "--ignore-submodules=dirty",
         ]
     return _git_command(
         repo_root,
@@ -470,7 +487,9 @@ def _git_error_stream_is_empty(value: object) -> bool:
 
 def _validated_git_object_id(value: str, operation: str) -> str:
     """Return one bounded Git object ID or fail before it reaches another argv."""
-    oid = value.strip()
+    # Text-mode Git writes one protocol line. Remove exactly that delimiter,
+    # never arbitrary surrounding whitespace supplied by another source.
+    oid = value[:-1] if value.endswith("\n") and "\n" not in value[:-1] else value
     if len(oid) not in {40, 64} or any(
         character not in "0123456789abcdefABCDEF" for character in oid
     ):
@@ -502,6 +521,8 @@ def _head_is_provably_unborn(repo_root: Path) -> bool:
     """Return true only when symbolic HEAD names a ref that does not exist."""
     try:
         symbolic = _git_run(repo_root, ["symbolic-ref", "--quiet", "HEAD"])
+    except GuardrailError:
+        raise
     except subprocess.CalledProcessError as exc:
         if (
             exc.returncode == 1
@@ -642,6 +663,38 @@ def _filesystem_git_root(start: Path) -> Path:
 def git_root() -> Path:
     """Find a worktree root without allowing local config to redirect it."""
     expected = _filesystem_git_root(Path.cwd())
+    # A plain .git marker is only a candidate. Confirm that Git recognizes it
+    # before security-capability and partial-clone probes, otherwise a corrupt
+    # marker produces a misleading message about the installed Git version.
+    probe_environment = _git_config_query_environment()
+    probe_values = (
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+        ("diff.ignoreSubmodules", "dirty"),
+        ("status.submoduleSummary", "false"),
+        ("submodule.recurse", "false"),
+        ("safe.directory", str(expected)),
+    )
+    probe_environment.update(
+        {
+            "GIT_CONFIG_COUNT": str(len(probe_values)),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    for index, (key, value) in enumerate(probe_values):
+        probe_environment[f"GIT_CONFIG_KEY_{index}"] = key
+        probe_environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    probe = _git_run(
+        expected,
+        ["rev-parse", "--is-inside-work-tree"],
+        environment=probe_environment,
+        deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+    )
+    if probe.stderr or probe.stdout.strip().lower() != "true":
+        raise ValueError(f"Git did not recognize {expected} as a worktree")
+    installed, display = _require_process_local_git_config(str(expected))
+    _require_safe_partial_clone_support(str(expected), installed, display)
     result = _git_run(expected, ["rev-parse", "--show-toplevel"])
     reported = Path(result.stdout.strip()).resolve(strict=True)
     if reported != expected:
@@ -673,6 +726,29 @@ def _git_config_query_environment() -> Dict[str, str]:
             "GIT_TRACE2_PERF": "0",
         }
     )
+    return environment
+
+
+def _repository_config_query_environment(
+    resolved_repo_root: str,
+) -> Dict[str, str]:
+    """Return an inert block allowed to read one exact repository's config."""
+    environment = _git_config_query_environment()
+    values = (
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+        ("safe.directory", resolved_repo_root),
+    )
+    environment.update(
+        {
+            "GIT_CONFIG_COUNT": str(len(values)),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    for index, (key, value) in enumerate(values):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
     return environment
 
 
@@ -717,15 +793,27 @@ def _ambient_worktree_config_overrides(
             environment=_git_config_query_environment(),
             deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
         )
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return ()
+    except GuardrailError:
+        raise
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1 and not exc.output and not exc.stderr:
+            return ()
+        raise GuardrailError(
+            "Cannot safely inspect ambient Git worktree configuration"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise GuardrailError(
+            "Cannot safely inspect ambient Git worktree configuration"
+        ) from exc
     if result.stderr.strip():
-        return ()
+        raise GuardrailError(
+            "Ambient Git worktree configuration produced an ambiguous diagnostic"
+        )
     fields = result.stdout.split("\0")
     if fields and fields[-1] == "":
         fields.pop()
     if len(fields) % 2:
-        return ()
+        raise GuardrailError("Ambient Git worktree configuration is malformed")
 
     effective: Dict[str, Tuple[str, str]] = {}
     for index in range(0, len(fields), 2):
@@ -733,7 +821,7 @@ def _ambient_worktree_config_overrides(
         key, separator, value = fields[index + 1].partition("\n")
         key = key.casefold()
         if not separator or key not in _SAFE_AMBIENT_WORKTREE_CONFIG_VALUES:
-            return ()
+            raise GuardrailError("Ambient Git worktree configuration is malformed")
         # Record even an invalid value so a later local declaration cannot be
         # masked by an earlier valid ambient value.
         effective[key] = (scope, value.casefold())
@@ -748,7 +836,6 @@ def _ambient_worktree_config_overrides(
     return tuple(sorted(overrides))
 
 
-@lru_cache(maxsize=128)
 def _repository_filter_config_overrides(
     resolved_repo_root: str,
 ) -> Tuple[Tuple[str, str], ...]:
@@ -771,17 +858,8 @@ def _repository_filter_config_overrides(
     ):
         return ()
 
-    environment = _git_config_query_environment()
-    environment.update(
-        {
-            "GIT_CONFIG_COUNT": "2",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_KEY_0": "core.hooksPath",
-            "GIT_CONFIG_VALUE_0": os.devnull,
-            "GIT_CONFIG_KEY_1": "core.fsmonitor",
-            "GIT_CONFIG_VALUE_1": "false",
-            "GIT_CONFIG_NOSYSTEM": "1",
-        }
+    environment = _repository_config_query_environment(
+        str(repo_root.resolve(strict=False))
     )
     try:
         result = _git_run(
@@ -880,6 +958,181 @@ def _repository_filter_config_overrides(
             )
         overrides.extend(driver_overrides)
     return tuple(overrides)
+
+
+def _clear_repository_filter_config_cache() -> None:
+    """Compatibility hook retained after removing unsafe result caching."""
+
+
+_repository_filter_config_overrides.cache_clear = (  # type: ignore[attr-defined]
+    _clear_repository_filter_config_cache
+)
+
+
+def _installed_git_version(resolved_repo_root: str) -> Tuple[Tuple[int, int, int], str]:
+    """Read and validate the selected Git executable's version."""
+    repo_root = Path(resolved_repo_root)
+    try:
+        result = _git_run(
+            repo_root,
+            ["version"],
+            environment=_git_config_query_environment(),
+            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        raise GuardrailError("Cannot determine the installed Git version") from exc
+    raw = result.stdout.strip()
+    prefix = "git version "
+    if (
+        result.stderr
+        or not raw.startswith(prefix)
+        or len(raw) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in raw)
+    ):
+        raise GuardrailError("Cannot determine the installed Git version")
+    display = raw[len(prefix) :].split(maxsplit=1)[0]
+    numeric = display.split(".")[:3]
+    if len(numeric) < 2 or any(not part.isdecimal() for part in numeric):
+        raise GuardrailError("Cannot determine the installed Git version")
+    parsed = tuple(int(part) for part in numeric)
+    return (parsed + (0,) * (3 - len(parsed))), display
+
+
+def _require_process_local_git_config(
+    resolved_repo_root: str,
+) -> Tuple[Tuple[int, int, int], str]:
+    """Prove Git applies the process-local block used for hardening.
+
+    ``GIT_CONFIG_COUNT`` was added in Git 2.31 and ``GIT_CONFIG_GLOBAL`` in
+    2.32. Older Git versions silently ignore one or both, which would discard
+    safe.directory, hook/filter neutralization, or global-config suppression.
+    Check the documented floor and then read a fixed probe back at command
+    scope, so a wrapper that strips the environment is refused too.
+    """
+    repo_root = Path(resolved_repo_root)
+    installed, display = _installed_git_version(resolved_repo_root)
+    required = ".".join(str(part) for part in MINIMUM_GIT_VERSION)
+    if installed < MINIMUM_GIT_VERSION:
+        raise GuardrailError(
+            f"Git {display} is below the required Git {required} security floor"
+        )
+    environment = _git_config_query_environment()
+    environment.update(
+        {
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "GIT_CONFIG_KEY_1": "core.fsmonitor",
+            "GIT_CONFIG_VALUE_1": "false",
+            "GIT_CONFIG_KEY_2": _PROCESS_CONFIG_PROBE_KEY,
+            "GIT_CONFIG_VALUE_2": _PROCESS_CONFIG_PROBE_VALUE,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    try:
+        result = _git_run(
+            repo_root,
+            [
+                "config",
+                "--show-scope",
+                "--null",
+                "--get",
+                _PROCESS_CONFIG_PROBE_KEY,
+            ],
+            environment=environment,
+            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        raise GuardrailError(
+            f"Git {display} did not apply process-local security configuration "
+            f"required by boundver (minimum Git {required})"
+        ) from exc
+    expected = f"command\0{_PROCESS_CONFIG_PROBE_VALUE}\0"
+    if result.stderr or result.stdout != expected:
+        raise GuardrailError(
+            f"Git {display} did not confirm process-local security configuration "
+            f"required by boundver (minimum Git {required})"
+        )
+    return installed, display
+
+
+def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
+    """Return bounded effective repository config keys marking a partial clone."""
+    repo_root = Path(resolved_repo_root)
+    environment = _repository_config_query_environment(
+        str(repo_root.resolve(strict=False))
+    )
+    try:
+        result = _git_run(
+            repo_root,
+            [
+                "config",
+                "--includes",
+                "--null",
+                "--get-regexp",
+                _PARTIAL_CLONE_CONFIG_PATTERN,
+            ],
+            environment=environment,
+            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 1 and not exc.output and not exc.stderr:
+            return ()
+        raise GuardrailError(
+            "Cannot safely inspect partial-clone configuration"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise GuardrailError(
+            "Cannot safely inspect partial-clone configuration"
+        ) from exc
+    if result.stderr:
+        raise GuardrailError(
+            "Partial-clone configuration produced an ambiguous diagnostic"
+        )
+    if not result.stdout:
+        return ()
+    if not result.stdout.endswith("\0"):
+        raise GuardrailError("Partial-clone configuration is malformed")
+    records = result.stdout[:-1].split("\0")
+    if len(records) > MAX_PARTIAL_CLONE_CONFIG_KEYS:
+        raise GuardrailError("Partial-clone configuration exceeds its key limit")
+    signals = []
+    for record in records:
+        key, separator, value = record.partition("\n")
+        folded = key.casefold()
+        if not separator or not value:
+            raise GuardrailError("Partial-clone configuration is malformed")
+        if folded == "extensions.partialclone":
+            signals.append(folded)
+        elif folded.startswith("remote.") and folded.endswith(
+            ".partialclonefilter"
+        ):
+            signals.append(folded)
+        elif folded.startswith("remote.") and folded.endswith(".promisor"):
+            if value.casefold() not in {"true", "false"}:
+                raise GuardrailError("Partial-clone configuration is malformed")
+            if value.casefold() == "true":
+                signals.append(folded)
+        else:
+            raise GuardrailError("Partial-clone configuration is malformed")
+    return tuple(sorted(set(signals)))
+
+
+def _require_safe_partial_clone_support(
+    resolved_repo_root: str,
+    installed: Tuple[int, int, int],
+    display: str,
+) -> None:
+    """Refuse partial clones on Git versions lacking no-lazy-fetch support."""
+    signals = _partial_clone_signals(resolved_repo_root)
+    if not signals or installed >= MINIMUM_PARTIAL_CLONE_GIT_VERSION:
+        return
+    required = ".".join(str(part) for part in MINIMUM_PARTIAL_CLONE_GIT_VERSION)
+    raise GuardrailError(
+        f"Git {display} cannot safely inspect a partial clone; Git {required} "
+        "or newer is required"
+    )
 
 
 def _git_subprocess_env(repo_root: Optional[Path] = None) -> Dict[str, str]:
@@ -1309,11 +1562,22 @@ def _parse_ls_tree_record(record: bytes) -> tuple[GitTreeEntry, int]:
             "Git path exceeds the "
             f"{MAX_GIT_PATH_BYTES}-byte limit"
         )
-    if len(mode) != 6 or not mode.isdigit():
-        raise ValueError(f"Malformed Git mode {mode!r} for {os.fsdecode(raw_path)!r}")
+    valid_mode_types = {
+        "100644": "blob",
+        "100755": "blob",
+        "120000": "blob",
+        "160000": "commit",
+    }
     if object_type not in {"blob", "commit"}:
         raise ValueError(
             f"Unsupported Git object type {object_type!r} for "
+            f"{os.fsdecode(raw_path)!r}"
+        )
+    if mode not in valid_mode_types:
+        raise ValueError(f"Malformed Git mode {mode!r} for {os.fsdecode(raw_path)!r}")
+    if object_type != valid_mode_types[mode]:
+        raise ValueError(
+            f"Unsupported Git mode/type pair {mode!r}/{object_type!r} for "
             f"{os.fsdecode(raw_path)!r}"
         )
     if len(oid) not in {40, 64} or any(
@@ -1726,9 +1990,10 @@ def _working_tree_mode(
             and not core_filemode
         ):
             return tracked_entry.mode, "blob"
-        executable = bool(
-            path_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        )
+        # Git's ``ce_mode_from_stat`` derives the executable blob mode from
+        # the owner's execute bit.  Group/other execute permission alone does
+        # not turn an index entry into mode 100755.
+        executable = bool(path_stat.st_mode & stat.S_IXUSR)
         return ("100755" if executable else "100644"), "blob"
     raise ValueError(f"Unsupported working-tree file type at {repo_rel}")
 
@@ -2277,12 +2542,45 @@ def _load_gitignore_patterns(repo_root: Path) -> Optional["_GitignoreRules"]:
         max_bytes=MAX_GITIGNORE_BYTES,
     )
     rules = _GitignoreRules()
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        rules.add(line)
+    for raw_line in raw.splitlines():
+        rules.add(raw_line.decode("utf-8", errors="surrogateescape"))
     return rules
+
+
+def _trim_gitignore_trailing_spaces(line: str) -> str:
+    """Drop unescaped trailing spaces while retaining escaped literal spaces."""
+    while line.endswith(" "):
+        backslashes = 0
+        index = len(line) - 2
+        while index >= 0 and line[index] == "\\":
+            backslashes += 1
+            index -= 1
+        if backslashes % 2:
+            break
+        line = line[:-1]
+    return line
+
+
+def _translate_gitignore_escapes(pattern: str) -> str:
+    """Translate Git's backslash escapes into the bounded glob grammar."""
+    translated: List[str] = []
+    index = 0
+    literal_metacharacters = {
+        "*": "[*]",
+        "?": "[?]",
+        "[": "[[]",
+        "]": "[]]",
+    }
+    while index < len(pattern):
+        character = pattern[index]
+        if character != "\\" or index + 1 >= len(pattern):
+            translated.append(character)
+            index += 1
+            continue
+        escaped = pattern[index + 1]
+        translated.append(literal_metacharacters.get(escaped, escaped))
+        index += 2
+    return "".join(translated)
 
 
 class _GitignoreRules:
@@ -2291,22 +2589,29 @@ class _GitignoreRules:
     def __init__(self) -> None:
         # Preserve root anchoring separately from the normalized pattern;
         # otherwise stripping ``/`` would turn ``/foo`` into an any-depth rule.
-        self._rules: List[tuple] = []  # (negate, pattern, anchored)
+        self._rules: List[tuple] = []  # (negate, pattern, anchored, directory_only)
         self._has_negation = False
         self._match_steps = 0
 
     def add(self, raw_line: str) -> None:
-        negate = raw_line.startswith("!")
+        raw_line = _trim_gitignore_trailing_spaces(raw_line)
+        if not raw_line or raw_line.startswith("#"):
+            return
+        escaped_prefix = raw_line.startswith(("\\!", "\\#"))
+        negate = raw_line.startswith("!") and not escaped_prefix
         pattern = raw_line[1:] if negate else raw_line
-        pattern = pattern.rstrip("/")
+        directory_only = pattern.endswith("/") and not pattern.endswith("\\/")
+        if directory_only:
+            pattern = pattern[:-1]
         anchored = pattern.startswith("/")
         if pattern:
             # A leading slash anchors a Git ignore rule at the repository root;
             # slash-containing rules are already root-relative here.
             pattern = pattern.lstrip("/")
+        pattern = _translate_gitignore_escapes(pattern)
         if pattern:
             try:
-                pattern_bytes = len(pattern.encode("utf-8"))
+                pattern_bytes = len(pattern.encode("utf-8", errors="surrogateescape"))
             except UnicodeEncodeError as exc:
                 raise GuardrailError(
                     "Gitignore guardrail exceeded: pattern contains invalid Unicode"
@@ -2317,15 +2622,34 @@ class _GitignoreRules:
                     f"{MAX_GITIGNORE_PATTERN_BYTES} UTF-8 bytes"
                 )
             try:
-                _validate_glob_pattern_complexity(pattern)
+                _validate_glob_pattern_complexity(
+                    pattern,
+                    _allow_surrogate_pattern=True,
+                )
             except ValueError as exc:
                 raise GuardrailError(f"Gitignore guardrail exceeded: {exc}") from exc
+            if (
+                "//" in pattern
+                or pattern.startswith("/")
+                or (
+                    "/" in pattern
+                    and _compile_path_glob(
+                        pattern,
+                        _allow_surrogate_pattern=True,
+                    )
+                    is None
+                )
+            ):
+                raise GuardrailError(
+                    "Gitignore guardrail exceeded: invalid path pattern "
+                    f"{_bounded_diagnostic_repr(pattern)}"
+                )
             if len(self._rules) >= MAX_GITIGNORE_RULES:
                 raise GuardrailError(
                     "Gitignore guardrail exceeded: more than "
                     f"{MAX_GITIGNORE_RULES} rules"
                 )
-            self._rules.append((negate, pattern, anchored))
+            self._rules.append((negate, pattern, anchored, directory_only))
             self._has_negation = self._has_negation or negate
 
     def _spend_match_steps(self, amount: int) -> None:
@@ -2336,16 +2660,47 @@ class _GitignoreRules:
             )
         self._match_steps += amount
 
-    def is_ignored(self, rel_path: str) -> bool:
+    def is_ignored(self, rel_path: str, *, is_dir: bool = False) -> bool:
         """Return True if rel_path should be excluded per gitignore rules."""
-        rel_path = rel_path.replace("\\", "/")
+        rel_path = _to_posix(rel_path)
         parts = rel_path.split("/")
-        ignored = False
-        for negate, pattern, anchored in self._rules:
-            self._spend_match_steps(1)
-            if self._matches(rel_path, parts, pattern, anchored=anchored):
-                ignored = not negate
-        return ignored
+        if not self._has_negation:
+            for negate, pattern, anchored, directory_only in self._rules:
+                self._spend_match_steps(1)
+                if self._matches(
+                    rel_path,
+                    parts,
+                    pattern,
+                    anchored=anchored,
+                    directory_only=directory_only,
+                    is_dir=is_dir,
+                    allow_ancestors=True,
+                ):
+                    return not negate
+            return False
+
+        statuses: List[bool] = []
+        for end in range(1, len(parts) + 1):
+            candidate_parts = parts[:end]
+            candidate = "/".join(candidate_parts)
+            candidate_is_dir = end < len(parts) or is_dir
+            ignored = False
+            for negate, pattern, anchored, directory_only in self._rules:
+                self._spend_match_steps(1)
+                if self._matches(
+                    candidate,
+                    candidate_parts,
+                    pattern,
+                    anchored=anchored,
+                    directory_only=directory_only,
+                    is_dir=candidate_is_dir,
+                    allow_ancestors=False,
+                ):
+                    ignored = not negate
+            statuses.append(ignored)
+        # Git cannot re-include a descendant while one of its parent
+        # directories remains excluded.
+        return any(statuses)
 
     def can_prune_directory(self, rel_path: str) -> bool:
         """Return whether an ignored directory is safe to skip entirely.
@@ -2357,7 +2712,7 @@ class _GitignoreRules:
         """
         if self._has_negation:
             return False
-        return self.is_ignored(rel_path)
+        return self.is_ignored(rel_path, is_dir=True)
 
     def _matches(
         self,
@@ -2366,17 +2721,28 @@ class _GitignoreRules:
         pattern: str,
         *,
         anchored: bool,
+        directory_only: bool,
+        is_dir: bool,
+        allow_ancestors: bool,
     ) -> bool:
         # Pattern without / matches any path component
         if "/" not in pattern:
-            candidate_parts = parts[:1] if anchored else parts
-            for part in candidate_parts:
+            if anchored:
+                if len(parts) != 1 and not allow_ancestors:
+                    return False
+                candidate_parts = parts[:1]
+            else:
+                candidate_parts = parts
+            for index, part in enumerate(candidate_parts):
                 self._spend_match_steps(1)
                 if _match_text_glob(
                     part,
                     pattern,
                     _step_consumer=self._spend_match_steps,
+                    _allow_surrogate_pattern=True,
                 ):
+                    if directory_only and index == len(parts) - 1 and not is_dir:
+                        continue
                     return True
             return False
         # Git gives a trailing ``/**`` stricter semantics than the generic
@@ -2387,11 +2753,20 @@ class _GitignoreRules:
         match_pattern = pattern + "/*" if pattern.endswith("/**") else pattern
         # A matched directory also ignores its descendants.  Prefix acceptance
         # avoids repeated path slicing and nested recursive-wildcard regexes.
-        return _match_path_glob(
-            rel_path,
+        match_path = rel_path
+        if allow_ancestors and directory_only and not is_dir:
+            if len(parts) == 1:
+                return False
+            match_path = "/".join(parts[:-1])
+        matched = _match_path_glob(
+            match_path,
             match_pattern,
             _step_consumer=self._spend_match_steps,
-            _allow_descendants=True,
+            _allow_descendants=allow_ancestors,
+            _allow_surrogate_pattern=True,
+        )
+        return matched and (
+            not directory_only or is_dir or allow_ancestors
         )
 
 
@@ -3185,8 +3560,10 @@ def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[s
                 ],
             )
         )
-    except subprocess.CalledProcessError:
-        return []
+    except subprocess.CalledProcessError as exc:
+        raise ValueError(
+            "Cannot determine uncommitted component changes: Git status query failed"
+        ) from exc
     dirty_files = sorted(
         {path for _status, path in staged}
         | {path for _status, path in unstaged}

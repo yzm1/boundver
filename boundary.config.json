@@ -1,11 +1,55 @@
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.15.2/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
   "project": "boundver",
   "defaults": {
     "compat_mode": "major",
     "verify_facets": [
       "exact",
       "boundary"
+    ]
+  },
+  "coverage": {
+    "source_indicators": [
+      "**/*.py"
+    ],
+    "exclusions": [
+      {
+        "paths": [
+          "src/boundver/**"
+        ],
+        "facets": [
+          "boundary"
+        ],
+        "reason": "Only the declared Python exports form boundver's public package boundary."
+      },
+      {
+        "paths": [
+          "spec/**"
+        ],
+        "facets": [
+          "boundary"
+        ],
+        "reason": "Only the canonical lock schema and specification documents form the published format boundary."
+      },
+      {
+        "paths": [
+          "scripts/**",
+          "tests/**"
+        ],
+        "facets": [
+          "ownership"
+        ],
+        "reason": "Repository automation and tests support the two product components but are not independently versioned components."
+      },
+      {
+        "paths": [
+          "examples/**"
+        ],
+        "facets": [
+          "ownership"
+        ],
+        "reason": "Each example is a self-contained fixture with its own boundary declaration where needed, not a product component of this repository."
+      }
     ]
   },
   "components": {
@@ -33,6 +77,7 @@
         "provider": "json-file",
         "paths": [
           "boundary.lock.schema.json",
+          "derivation.schema.json",
           "HASHING.md",
           "spec.md"
         ]

@@ -628,7 +628,7 @@ class ConfigValidationEdgeCases(unittest.TestCase):
             self.assertTrue(any("no 'field'" in e for e in errors))
 
     def test_version_source_neither_file_nor_tag(self):
-        """version_source with no file or git_tag_prefix produces error."""
+        """version_source with none of the four identity forms is rejected."""
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "svc").mkdir()
@@ -641,7 +641,12 @@ class ConfigValidationEdgeCases(unittest.TestCase):
                 }
             }
             errors = _config.validate_config(cfg, root)
-            self.assertTrue(any("'file' or 'git_tag_prefix'" in e for e in errors))
+            self.assertTrue(
+                any(
+                    "'file', 'git_tag_prefix', 'component', or 'constant'" in e
+                    for e in errors
+                )
+            )
 
     def test_slice_not_dict(self):
         """Slice definition that isn't a dict produces error."""

@@ -743,7 +743,7 @@ class GitHelpersTests(unittest.TestCase):
             self.assertIsNotNone(patterns)
             # *.log should be matched
             self.assertTrue(_matches_gitignore("foo/x.log", patterns))
-            # build/ should be matched (trailing / stripped)
+            # build/ should match descendants while retaining directory-only metadata
             self.assertTrue(_matches_gitignore("build/out.js", patterns))
             # Negation: negated.txt should NOT be ignored
             # (negation undoes a previous match — but there's no rule that matches it first)

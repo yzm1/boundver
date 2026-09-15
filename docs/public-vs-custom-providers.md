@@ -142,28 +142,31 @@ when it currently selects the same files. Regenerate and review the lock.
 
 ## Generated provider inputs
 
-A provider fingerprints the artifact it receives. It does not currently know
-that `openapi.yaml` was derived from a SAM template, resolvers, source types, or
-another file, and it cannot tell whether that output is stale. Give the
-generator a deterministic check mode and run it first:
+A provider fingerprints the artifact it receives. A top-level `derivations`
+declaration can additionally bind that output to its tracked source inputs and
+a stable generator identity. Run the trusted generator, record the receipt, and
+then verify:
 
 ```bash
-python ci/generate_platform_openapi.py --check
-boundver verify --source head
+python ci/generate_platform_openapi.py
+git add infrastructure/template.yaml infrastructure/openapi.generated.yaml
+boundver record-derivation public-api --source index
+git add infrastructure/openapi.boundver-derivation.json
+boundver generate --source index
+git add boundary.lock.json
+boundver verify --source index
 ```
 
 When accepting an index change, stage the derivation source, generated output,
-and config before `generate --source index`; then stage the resulting lock and
-run `verify --source index`. This keeps all four inputs on one captured staged
-snapshot.
+and config before `record-derivation --source index`; stage the receipt, run
+`generate --source index`, stage the resulting lock, and then run
+`verify --source index`. This keeps every input on one captured staged snapshot.
 
-There is intentionally no executable `derived_from.command` field. A checked-
-out config is not authorization to execute repository commands, and a sound
-design also has to bind tool identity and source materialization. See
-[reference](reference.md#generated-artifacts-are-not-bound-to-their-generator)
-for the freshness check to run instead.
+There is intentionally no executable command field. A checked-out config is
+not authorization to execute repository commands. See
+[generated-artifact freshness](reference.md#generated-artifact-freshness).
 
-## Provider versions and v3 locks
+## Provider versions and lock identities
 
 Each component lock entry records `boundary_provider` and
 `boundary_provider_version`. A built-in provider version changes when its
@@ -177,7 +180,7 @@ The v0.12 built-ins record these versions:
 - `implicit`: v3; `leaf`: v1.
 - `json-canonical`: v3; `openapi-canonical`: v4.
 
-The top-level v3 semantic configuration digest also binds provider names,
+The top-level v4 lock's semantic configuration digest also binds provider names,
 options, declarations, and custom-provider registration data. A policy change
 cannot remain invisible just because current output happens to be equal.
 

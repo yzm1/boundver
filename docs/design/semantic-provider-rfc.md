@@ -20,7 +20,7 @@ and not permission to implement them.
   different product reviewer approve the exact proposal commit.
 
 This proposal does not block v0.15, which contains no semantic-provider
-implementation. The first planned semantic-provider release is v0.16.0.
+implementation. The first planned semantic-provider release is v0.17.0.
 
 The rest of this document defines the detailed architecture and acceptance
 conditions. Most Boundver users do not need to read it; start with the
@@ -34,7 +34,9 @@ conditions. Most Boundver users do not need to read it; start with the
 | Status | Review Ready; implementation is blocked |
 | Owners | boundver maintainers |
 | Tracking | [#73](https://github.com/yzm1/boundver/issues/73), [#31](https://github.com/yzm1/boundver/issues/31), [#86](https://github.com/yzm1/boundver/issues/86) |
+| Legacy retirement tracking | [#118](https://github.com/yzm1/boundver/issues/118) |
 | Threat model | [Semantic provider threat model](semantic-provider-threat-model.md) |
+| Review by | 2027-03-31; see [Proposal lifecycle and expiry](#proposal-lifecycle-and-expiry) |
 | Machine-readable assurance record | [`spec/semantic-provider-proposal.json`](https://github.com/yzm1/boundver/blob/main/spec/semantic-provider-proposal.json) |
 
 !!! danger "This document does not authorize implementation"
@@ -44,6 +46,40 @@ conditions. Most Boundver users do not need to read it; start with the
     Acceptance requires the review and evidence gates in this proposal. The
     existing `custom.*` interface remains explicitly trusted, in-process
     Python; it is not the security model proposed here.
+
+## Conformance language
+
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**,
+**SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **MAY**, and **OPTIONAL** in this
+document are to be interpreted as described in
+[BCP 14](https://www.rfc-editor.org/info/bcp14)
+([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119),
+[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)) when, and only when, they
+appear in all capitals.
+
+This document is normative. The following sections state binding requirements
+on any implementation, release, or review that claims to satisfy this proposal:
+Conformance language, Security invariants, Repository declaration, Host policy,
+Boundver Provider Protocol v1, Virtual source interface, Sandbox contract,
+Determinism contract, Result completeness, Legacy retirement schedule,
+Governance continuity, Provider identity and lock migration, Assurance and test
+gates, and Proposal lifecycle and expiry.
+
+Executive summary, Architecture decision, Why a normal Python plugin system is
+rejected, Architecture, Rollout, Rejected alternatives, and Standards and design
+references are informative. Where an informative sentence appears to conflict
+with a normative one, the normative statement governs.
+
+Two further reading rules apply to the security invariants:
+
+- Each `SPC-nnn` invariant is a requirement, not a description. A statement
+  written in the declarative present — "Configuration is never authority",
+  "A provider cannot raise a ceiling" — states a property a conforming
+  implementation MUST guarantee, and is equivalent to the corresponding
+  **MUST** or **MUST NOT**.
+- An invariant that cannot be satisfied on a platform, runtime, or host is a
+  usage error under SPC-010. An implementation MUST NOT weaken an invariant to
+  keep running.
 
 ## Architecture decision
 
@@ -130,7 +166,7 @@ in `spec/semantic-provider-proposal.json`.
 
 ### Authority and activation
 
-- **SPC-001 - Configuration is never authority.** A selected Git source may
+- **SPC-001 - Configuration is never authority.** A selected Git source MAY
   request a logical provider and options. It cannot grant trust, choose an
   executable path, module, URL, registry, publisher, sandbox backend, or
   capability.
@@ -218,7 +254,7 @@ in `spec/semantic-provider-proposal.json`.
   package names, versions, URLs, and PATH resolution are never execution
   identity.
 - **SPC-022 - Installation is a separate trusted ceremony.** A dedicated
-  command may import a locally supplied artifact into an owner-controlled
+  command MAY import a locally supplied artifact into an owner-controlled
   content store after verification and confirmation. Verification never
   downloads it and never builds an sdist.
 - **SPC-023 - First-party provenance.** First-party artifacts require a
@@ -248,7 +284,7 @@ in `spec/semantic-provider-proposal.json`.
   bounded and overflow-checked before allocation. Unknown critical messages,
   duplicate fields, invalid encodings, trailing data, premature EOF, and
   out-of-order state transitions fail closed.
-- **SPC-029 - Cache identity is complete.** Only complete successful results may
+- **SPC-029 - Cache identity is complete.** Only complete successful results MAY
   be cached. Keys include the full identity tuple and input contents. Cache
   corruption or ambiguity causes recomputation, never acceptance.
 - **SPC-030 - Concurrency does not share trust.** Broker limits are global and
@@ -272,7 +308,7 @@ in `spec/semantic-provider-proposal.json`.
 - **SPC-034 - Release gates consume exact evidence.** Proposal acceptance and
   full-source bug/issue/security audits are machine-checked against the exact
   reviewed candidate tree before a semantic-provider release can be promoted.
-  The external release SHA and its GitHub commit tree must match that reviewed
+  The external release SHA and its GitHub commit tree MUST match that reviewed
   tree. An issue, paragraph, stale report, self-attestation, or green run for
   another tree is insufficient.
 - **SPC-035 - Distribution is legally reviewable.** Every first-party/curated
@@ -304,7 +340,7 @@ in `spec/semantic-provider-proposal.json`.
   evidence cannot satisfy a gate. Proposal review evidence is read from GitHub
   by the bounded authoritative auditor; the manifest path is fixed inside the
   reviewed tree, and a claim embedded in proposal JSON is never evidence of
-  its own approval. Review content used as security evidence must not have been
+  its own approval. Review content used as security evidence MUST NOT have been
   edited after the reviewed PR was merged. Git and GitHub CLI executables are
   resolved outside the checkout, and the evidence host is fixed to
   `github.com`. Checker code, manifest, schema, CI contract, RFC, and threat
@@ -314,7 +350,7 @@ in `spec/semantic-provider-proposal.json`.
   provenance remain visible with every result. First-party digest contracts
   require source review, reproducible builds, differential and metamorphic
   tests, adversarial logic-bomb fixtures, and conformance evidence. A
-  high-assurance mode may require matching canonical output from independently
+  high-assurance mode MAY require matching canonical output from independently
   implemented providers. Sandboxed, signed, listed, or conformant never means
   semantically correct.
 - **SPC-042 - Isolation precedes untrusted decoding.** The coordinator only
@@ -322,7 +358,7 @@ in `spec/semantic-provider-proposal.json`.
   Manifest, attestation, certificate, provenance, component, and AOT decoding;
   import inspection; validation; compilation; and instantiation occur in a
   verifier/broker process after OS containment and hard limits are active.
-  Runtime initialization may occur first only when it consumes no
+  Runtime initialization MAY occur first only when it consumes no
   provider-controlled bytes or metadata.
 - **SPC-043 - Semantic-provider release authority is external and exact-tree
   bound.** The
@@ -345,13 +381,13 @@ in `spec/semantic-provider-proposal.json`.
   numeric account ID and login, plus the owner's attestation that their
   beneficial ownership is independent. Repository collaborators cannot update
   the owner's gist with repository authority; mutation requires the owner's
-  separate user-level Gists authority. The designated humans must have exactly
+  separate user-level Gists authority. The designated humans MUST have exactly
   GitHub's public read-only repository permission; broader access fails the
   gate. Proposal review never requires repository or tag mutation authority.
   Every snapshot binds the complete file metadata and content, owner-authored
   latest revision, mutable gist timestamps, and the same content fetched by
-  immutable revision ID. Both users must be distinct and external to the
-  repository owner and PR author, and the roster must predate both
+  immutable revision ID. Both users MUST be distinct and external to the
+  repository owner and PR author, and the roster MUST predate both
   role-specific exact-head approvals. A roster edit invalidates all older
   approvals.
 - **SPC-045 - Repository mutation authority is owner-exclusive.** The
@@ -370,6 +406,91 @@ in `spec/semantic-provider-proposal.json`.
   workflows. The complete normalized authority and immutable gist revision are
   captured twice and included in every release mutation-handoff digest.
   External reviewers remain ordinary public readers, never collaborators.
+
+### Result completeness, retirement, and continuity
+
+- **SPC-046 - Incomplete extraction is declared, never silent.** A provider
+  result MUST be exactly one of `complete`, `bounded-incomplete`, or `failed`.
+  A `bounded-incomplete` result MUST carry an omission manifest naming every
+  construct the digest contract could not resolve, by construct kind and
+  component-relative logical label, in canonical order. Boundver MUST hash that
+  manifest into the boundary digest together with the canonical entries, so
+  adding, removing, or relocating an omission changes the digest. A provider
+  MUST NOT return `complete` while a selected input holds an unresolved
+  construct, and MUST NOT drop a construct without recording it. Verification
+  output MUST show the omission count and kinds, and host policy MUST be able
+  to reject `bounded-incomplete` for a component so an operator can demand total
+  coverage. Crash, timeout, cancellation, protocol error, denied capability, and
+  budget exhaustion remain `failed` under SPC-014 and MUST NOT be reported as
+  `bounded-incomplete`.
+- **SPC-047 - Legacy native execution has a published end date.** The
+  `custom.*` trusted-native class MUST carry a retirement schedule published in
+  this RFC and in user-facing documentation before the first release that ships
+  a sandboxed provider. That release MUST warn on every legacy execution. The
+  next minor release MUST require a per-invocation opt-in flag that
+  configuration, environment, and CI input alone cannot supply. Boundver 1.0
+  MUST NOT contain the legacy trusted-native loader. Removing a stage or moving
+  a date MUST pass SPC-033 review and MUST record the reason and the new date.
+- **SPC-048 - Governance survives the loss of one principal.** The proposal
+  MUST publish a continuity record covering owner-account unavailability rather
+  than compromise: deletion, suspension, credential loss, and incapacity. That
+  record MUST state a dormancy period, the disposition at its end, and where the
+  reviewer-roster root moves. Where continuation is intended, the roster root
+  MUST be recoverable without the original account. The ability to publish a
+  security fix MUST NOT depend on one unrecoverable credential.
+- **SPC-052 - A runtime fault is reported as a fault, never as drift.** Every
+  digest contract MUST ship conformance vectors: a fixed input corpus with
+  known-good canonical digests recorded in the contract. The broker MUST
+  evaluate the vectors for the selected artifact and runtime before it processes
+  repository input, and MUST fail closed with a distinct diagnostic when a
+  vector disagrees. Boundver MUST NOT report a vector mismatch as component
+  boundary drift and MUST NOT write a lock entry from a run whose vectors
+  failed. Vector results are per-run runtime evidence under SPC-036 and MUST NOT
+  enter the portable fingerprint.
+
+### Gate assurance and proposal lifecycle
+
+- **SPC-049 - Gate code meets the parser standard it imposes.** The
+  authoritative auditor and the structural checker parse untrusted remote
+  responses, so they MUST meet the adversarial standard this RFC requires of
+  BPP/1. A published corpus MUST cover malformed, truncated, duplicated,
+  oversized, reordered, and mutually contradictory GitHub API and gist
+  responses, and fuzzing MUST exercise it. Authority-granting functions —
+  roster parsing, review-state evaluation, permission comparison, tree equality,
+  and expiry arithmetic — MUST carry their own branch-coverage floor reported
+  separately. Combined coverage MUST NOT stand as evidence for those functions.
+- **SPC-050 - Approval requires reasoning a template cannot supply.** A counted
+  review MUST carry role-specific free text written by the reviewer and bound to
+  the reviewed tree digest, in addition to the fixed markers. This requirement
+  takes effect with review formats `semantic-provider-security-review/v2` and
+  `semantic-provider-product-review/v2`; the v1 formats stay in force until that
+  revision passes the SPC-033 and two-phase bootstrap process, because the
+  checker that parses a review body is gate code. The security
+  review MUST name which residual risks the reviewer accepts and why. The
+  product review MUST name the constructs the reviewer expects each shipped
+  digest contract to mark unresolved. The gate MUST check presence, length
+  bounds, encoding, and distinctness from the other reviewer's text, and MUST
+  NOT attempt to judge quality. Reasoning text that repeats the other role or a
+  previously counted commit MUST fail the gate.
+- **SPC-051 - Naming reviewers publicly is a disclosed risk.** The roster names
+  individuals in public because verifiability requires it, and that makes those
+  individuals targets. The threat model MUST record targeted compromise,
+  phishing, and coercion of a named member as an explicit residual risk. The
+  roster body MUST carry each member's attestation of hardware-backed two-factor
+  authentication under roster format `semantic-provider-review-roster/v3`, and
+  the documentation MUST state that GitHub does not expose an arbitrary user's
+  second-factor method, so this is attested and not verified. Format v2 stays in
+  force until v3 passes the two-phase bootstrap process. The roster SHOULD name a third eligible reviewer so losing one
+  identity does not stall the gate; any two distinct members MAY satisfy the
+  two-approval rule, and every member MUST meet each eligibility rule in
+  SPC-044.
+- **SPC-053 - The proposal expires rather than waiting forever.** This proposal
+  MUST carry a review-by date. If the acceptance gate has not passed by that
+  date, the status MUST move to `superseded` or `rejected`, this RFC MUST be
+  marked historical, and the SPC-047 retirement schedule MUST proceed on its own
+  timetable. Extending the date MUST be an explicit reviewed change recording
+  the reason and the new date. A `review-ready` record MUST NOT outlive its
+  review-by date unchanged.
 
 ## Architecture
 
@@ -709,10 +830,57 @@ subset. It cannot evaluate host-specific conditions or execute source to guess
 an answer. The runtime enables only the reviewed deterministic WebAssembly
 feature profile and canonicalizes any permitted floating-point edge case; the
 initial profile may forbid floating-point instructions entirely. The same
-artifact and inputs must return byte-identical canonical entries on every
-supported OS, architecture, Python host version, and repeated run. A
+artifact and inputs MUST return byte-identical canonical entries on every
+supported OS, architecture, Python host version, and repeated run.
+
+That requirement holds only while the runtime is correct, and a runtime defect
+is not a repository change. A digest contract therefore ships conformance
+vectors under SPC-052: a fixed input corpus with known-good canonical digests
+recorded in the contract itself. The broker evaluates them for the selected
+artifact and runtime before it reads repository input. A disagreement is a
+runtime fault with its own diagnostic and exit path, never component boundary
+drift, and it MUST NOT produce a lock entry. Without vectors, an ordinary
+canonicalization bug between runtime versions reaches the user as drift in a
+component nobody touched, which is the failure that costs a verification tool
+its credibility. A
 nondeterministic result is a provider defect and invalidates its conformance
 status.
+
+## Result completeness
+
+SPC-014 makes an unusable result fail closed. SPC-046 separates that from an
+extraction that succeeded over a declared subset while naming what it could not
+resolve. Without the separation, one unresolvable decorator or conditional type
+denies a component any boundary digest, and the operator's only remaining
+choices are a contract that excludes the API they care about or the legacy
+trusted-native path this RFC exists to replace. A security design MUST NOT make
+the quarantined mode the practical one.
+
+A provider therefore returns one of three terminal states:
+
+| State | Meaning | Digest |
+| --- | --- | --- |
+| `complete` | Every selected input resolved inside the digest contract. | Canonical entries. |
+| `bounded-incomplete` | Extraction finished; named constructs stayed unresolved. | Canonical entries plus the hashed omission manifest. |
+| `failed` | The run produced no trustworthy output. | None. |
+
+The omission manifest is normative output, not a diagnostic. Each entry MUST
+carry the construct kind from the digest contract's enumerated vocabulary, the
+component-relative logical label, and nothing else; source text, excerpts, and
+host paths MUST NOT appear, per SPC-039. Entries MUST be canonically ordered and
+deduplicated, and the manifest MUST be bounded by the same output ceilings as
+canonical entries under SPC-027.
+
+Because the manifest is inside the digest, a newly unresolvable construct is a
+boundary change and a resolved one is too. Silent omission produced a stable
+digest for an incomplete API, which the rejected-alternatives section correctly
+refuses; a hashed omission manifest produces an unstable digest for an honestly
+incomplete API, which is the behavior boundver already promises everywhere
+else.
+
+Host policy MUST be able to set the acceptable states per component. An
+operator who needs total coverage sets `complete`, and a
+`bounded-incomplete` result then fails the gate exactly as `failed` does.
 
 ## Python semantic provider
 
@@ -825,6 +993,47 @@ or native fallback occurs. Workflow changes are code changes and remain under
 normal repository review controls; Boundver cannot make a workflow that runs
 arbitrary commands safe.
 
+## Legacy retirement schedule
+
+SPC-032 quarantines `custom.*` by name, flag, warning, policy kind, provenance,
+and documentation. Quarantine is not removal, and a quarantined mode with no end
+date stays the cheapest way to reach arbitrary execution with the user's
+authority. SPC-047 therefore fixes the stages below. Dates move only through
+SPC-033 review.
+
+| Stage | Trigger | Required behavior |
+| --- | --- | --- |
+| L0 | Today | `custom.*` works as documented, with existing opt-in and warnings. |
+| L1 | First release shipping any sandboxed provider | Every legacy execution warns on stderr, names the retirement stage, and links this section. |
+| L2 | The following minor release | Legacy execution additionally requires a per-invocation CLI flag. Configuration, environment, and CI input alone MUST NOT satisfy it. |
+| L3 | Boundver 1.0 | The trusted-native loader is deleted. A configuration naming `custom.*` is a usage error with a migration diagnostic. |
+
+The retirement schedule is independent of semantic-provider acceptance. If this
+proposal is withdrawn under SPC-053, L1 through L3 proceed on their own
+timetable, because the argument for removing in-process arbitrary execution does
+not depend on a replacement existing. The stages are tracked separately in
+[#118](https://github.com/yzm1/boundver/issues/118).
+
+## Governance continuity
+
+The security model roots in one personal account. The threat model treats
+compromise of that account as an explicit trust root. SPC-048 covers the
+different case where the account becomes unavailable rather than hostile.
+
+| Condition | Disposition |
+| --- | --- |
+| No owner activity on `main`, releases, or the roster gist for 180 days | The project is dormant. The README and documentation home MUST say so. |
+| Dormant for a further 180 days | The project is archived. Documentation MUST state that users should fork, and MUST NOT imply that security fixes are forthcoming. |
+| Owner returns before archival | Dormancy ends with a signed release or roster revision. |
+
+This repository does not currently name a successor, so the honest disposition
+is archival rather than continuation. A future decision to continue instead MUST
+move the roster root somewhere recoverable without the original account — an
+offline-signed roster file carried in a protected tag, with a published
+successor key — and MUST record that change through SPC-033 review. Until then,
+readers MUST NOT assume that a security fix can be published if the owner
+account is lost.
+
 ## Curation and governance
 
 The public catalog, if created, uses these non-overlapping labels:
@@ -908,6 +1117,13 @@ The proposal can move from Draft to Accepted only when:
    Owner-exclusive-mutation-authority-attested: true
    Attested-by: 22440724:yzm1
    ```
+
+   The roster body below is format v2, which is the format in force. SPC-051
+   adds a hardware-backed two-factor attestation line in format v3, and SPC-050
+   adds a role-specific reasoning block in review format v2. Both are staged
+   changes: the checker that parses these bodies is gate code, so each revision
+   needs a blocked bootstrap PR followed by a separate reviewed acceptance PR.
+   Until then the bodies below are exact and complete.
 
    The security review body contains exactly these meaningful lines:
 
@@ -1065,7 +1281,7 @@ Each Python/TypeScript provider additionally requires:
 This proposal does not govern or block v0.15.0: that release contains no
 semantic-provider implementation and continues through Boundver's ordinary
 exact-candidate release controls. The first planned semantic-provider release
-is v0.16.0. Before that promotion, the entire then-current source, tests,
+is v0.17.0. Before that promotion, the entire then-current source, tests,
 scripts, workflows, Action, container, schemas, docs, packaging, and release
 automation must receive fresh bug, issue, and security scans. Every finding
 must be triaged, release blockers closed, and the exact candidate rerun through
@@ -1082,7 +1298,7 @@ latest decisive review from each designated reviewer must still be an approval.
 The security review body must contain exactly these non-empty lines, in order:
 
 ```text
-semantic-provider-v0.16-release-review/v1
+semantic-provider-v0.17-release-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Full-source-bug-scan: passed
@@ -1097,7 +1313,7 @@ Verdict: approved
 The product review body must contain exactly:
 
 ```text
-semantic-provider-v0.16-product-review/v1
+semantic-provider-v0.17-product-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Verdict: approved
@@ -1120,6 +1336,24 @@ identical-text post-audit edit, or review crossing its freshness deadline
 therefore aborts promotion. The final check reserves a five-minute safety
 margin and the tag push has a 60-second hard timeout, so the approval cannot
 cross its deadline during an unbounded network operation.
+
+## Proposal lifecycle and expiry
+
+A proposal that can sit at `review-ready` forever is a cancelled feature that
+nobody announced. SPC-053 gives this one an end.
+
+| Field | Value |
+| --- | --- |
+| Review by | 2027-03-31 |
+| If the acceptance gate has passed | Status moves to `accepted`; the implementation gate governs what happens next. |
+| If it has not | Status MUST move to `superseded` or `rejected`, this RFC is marked historical, and SPC-047 retirement continues on its own dates. |
+| Extending the date | An explicit reviewed change recording the reason and the new date. |
+
+Withdrawal is a legitimate outcome. The acceptance and implementation gates are
+proportionate to running third-party code inside a verification tool, and they
+are demanding for one maintainer. Deciding that the cost exceeds the value is a
+decision. Leaving the record at `review-ready` past its date is not, and
+SPC-053 forbids it.
 
 ## Rollout
 
@@ -1180,6 +1414,9 @@ dangerous than a failed check. Unsupported or ambiguous semantic constructs
 must fail closed or use a narrower, honestly named provider contract.
 
 ## Standards and design references
+
+- [BCP 14](https://www.rfc-editor.org/info/bcp14), [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119), and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174) for the conformance
+  keywords used throughout this document.
 
 - [Python entry-point and distribution discovery](https://docs.python.org/3/library/importlib.metadata.html)
 - [Python index-hosted attestations](https://packaging.python.org/en/latest/specifications/index-hosted-attestations/)

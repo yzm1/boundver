@@ -2345,7 +2345,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             cwd=repo,
             env=audit_env,
         )
-        if tag == "v0.16.0":
+        if tag == "v0.17.0":
             _run(
                 (
                     sys.executable,
@@ -2530,12 +2530,17 @@ def _surface_inventory(repo: Path) -> str:
             "spec/boundary.lock.schema.json",
             "spec/cli-output.review.schema.json",
             "spec/cli-output.plan.schema.json",
+            "spec/cli-output.coverage.schema.json",
+            "spec/derivation.schema.json",
             "boundary.lock.json",
         ),
         "CI and review state": (
             ".github/workflows/ci.yml",
             "scripts/audit_release_reviews.sh",
+            "scripts/github_api_read.py",
             "scripts/publish_release.ps1",
+            "scripts/test_tiers.py",
+            "spec/test-tiers.json",
         ),
         "reproducible wheel, sdist, and standalone archive": (
             "scripts/verify_release_candidate.py",

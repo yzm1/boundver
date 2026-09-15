@@ -36,8 +36,8 @@ def _changelog(unreleased: str = "") -> str:
 
 ### Upgrade contract
 
-- Semantic config: `boundver-semantic-config/v2`
-- Lock schema: `boundary-lock/v3`
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
 - Fingerprint compatibility: `digest-neutral`
 - Lock regeneration: `not-required`
 
@@ -63,7 +63,7 @@ def _write_minimal_project(repo: Path, changelog: str) -> None:
     )
     lock_schema_url = (
         "https://raw.githubusercontent.com/yzm1/boundver/"
-        "v0.13.0/spec/boundary.lock.schema.json"
+        "v0.16.0/spec/boundary.lock.schema.json"
     )
     (repo / "pyproject.toml").write_text(
         """[project]
@@ -132,9 +132,9 @@ docs/RELEASING.md
             {
                 "$id": lock_schema_url,
                 "properties": {
-                    "schema": {"const": "boundary-lock/v3"},
+                    "schema": {"const": "boundary-lock/v4"},
                     "config_contract": {
-                        "const": "boundver-semantic-config/v2"
+                        "const": "boundver-semantic-config/v3"
                     },
                 },
             }
@@ -144,6 +144,7 @@ docs/RELEASING.md
     )
     for schema_name in (
         "cli-output.migrate-lock.schema.json",
+        "derivation.schema.json",
         "verify-baseline.schema.json",
     ):
         schema_url = (
@@ -157,8 +158,8 @@ docs/RELEASING.md
         json.dumps(
             {
                 "$schema": lock_schema_url,
-                "schema": "boundary-lock/v3",
-                "config_contract": "boundver-semantic-config/v2",
+                "schema": "boundary-lock/v4",
+                "config_contract": "boundver-semantic-config/v3",
             }
         )
         + "\n",
@@ -178,8 +179,8 @@ def test_post_release_mode_retains_historical_note_extraction() -> None:
 
     assert release_changelog.extract_release_notes(changelog, TAG) == (
         "### Upgrade contract\n\n"
-        "- Semantic config: `boundver-semantic-config/v2`\n"
-        "- Lock schema: `boundary-lock/v3`\n"
+        "- Semantic config: `boundver-semantic-config/v3`\n"
+        "- Lock schema: `boundary-lock/v4`\n"
         "- Fingerprint compatibility: `digest-neutral`\n"
         "- Lock regeneration: `not-required`\n\n"
         "### Fixed\n\n- Exact release notes.\n"
@@ -204,8 +205,8 @@ def test_upgrade_contract_is_required_and_matches_public_lock_contracts(
 
     missing = _changelog().replace(
         "### Upgrade contract\n\n"
-        "- Semantic config: `boundver-semantic-config/v2`\n"
-        "- Lock schema: `boundary-lock/v3`\n"
+        "- Semantic config: `boundver-semantic-config/v3`\n"
+        "- Lock schema: `boundary-lock/v4`\n"
         "- Fingerprint compatibility: `digest-neutral`\n"
         "- Lock regeneration: `not-required`\n\n",
         "",
@@ -214,7 +215,7 @@ def test_upgrade_contract_is_required_and_matches_public_lock_contracts(
         release_changelog.extract_release_notes(missing, TAG)
 
     mismatched = _changelog().replace(
-        "- Semantic config: `boundver-semantic-config/v2`",
+        "- Semantic config: `boundver-semantic-config/v3`",
         "- Semantic config: `boundver-semantic-config/v9`",
     )
     (tmp_path / "CHANGELOG.md").write_text(mismatched, encoding="utf-8")
@@ -254,9 +255,9 @@ def test_readiness_rejects_stale_lock_contracts(tmp_path: Path) -> None:
             {
                 "$id": lock_schema_url,
                 "properties": {
-                    "schema": {"const": "boundary-lock/v3"},
+                    "schema": {"const": "boundary-lock/v4"},
                     "config_contract": {
-                        "const": "boundver-semantic-config/v2"
+                        "const": "boundver-semantic-config/v3"
                     },
                 },
             }
@@ -277,12 +278,12 @@ def test_readiness_rejects_stale_lock_contracts(tmp_path: Path) -> None:
     errors = release_readiness.readiness_errors(tmp_path, TAG)
 
     assert any(
-        "boundary.lock.json schema must be 'boundary-lock/v3'" in error
+        "boundary.lock.json schema must be 'boundary-lock/v4'" in error
         for error in errors
     ), errors
     assert any(
         "boundary.lock.json config_contract must be "
-        "'boundver-semantic-config/v2'" in error
+        "'boundver-semantic-config/v3'" in error
         for error in errors
     ), errors
 
@@ -307,4 +308,23 @@ def test_readiness_rejects_stale_new_public_schema_ids(tmp_path: Path) -> None:
     assert any(
         "verify-baseline.schema.json $id must be" in error
         for error in errors
+    ), errors
+
+
+def test_readiness_does_not_exempt_assurance_records_from_schema_pinning(
+    tmp_path: Path,
+) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    historical_url = (
+        "https://raw.githubusercontent.com/yzm1/boundver/"
+        "v0.13.0/spec/boundary.lock.schema.json"
+    )
+    spec = tmp_path / "spec"
+    (spec / "release-mutations.json").write_text(
+        json.dumps({"historical_evidence": historical_url}) + "\n",
+        encoding="utf-8",
+    )
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    assert any(
+        "release-mutations.json: schema URL uses" in error for error in errors
     ), errors

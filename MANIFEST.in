@@ -12,8 +12,16 @@ exclude docs/documentation-style.md
 exclude docs/hashing-contract.md
 exclude docs/specification.md
 exclude docs/support.md
+exclude docs/design/obligation-survey-method.md
+exclude docs/design/obligation-survey-reply.md
+exclude docs/design/obligation-survey-reply-2.md
+exclude docs/design/testing-obligations.md
 recursive-include examples *.json *.md *.py *.toml *.ts *.yaml
 recursive-include spec *.json *.md
+exclude spec/mutants.json
+exclude spec/release-mutations.json
+exclude spec/testing-obligations.json
+exclude spec/test-tiers.json
 
 # Setuptools may add conventional test files automatically. Keep the source
 # distribution deliberately user-facing rather than turning it into a partial

@@ -114,6 +114,33 @@ class TestOpenApiNamedMaps(unittest.TestCase):
             {"description", "example", "x-private"},
         )
 
+    def test_data_like_property_names_do_not_preserve_schema_annotations(self):
+        document = {
+            "openapi": "3.1.0",
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Record": {
+                        "type": "object",
+                        "properties": {
+                            name: {
+                                "type": "string",
+                                "description": "documentation is ignored",
+                            }
+                            for name in ("const", "default", "enum", "x-policy")
+                        },
+                    }
+                }
+            },
+        }
+
+        resolved = OpenApiCanonicalProvider().resolve(_context(document))
+        canonical = json.loads(resolved.entries[0][1].decode("utf-8"))
+        properties = canonical["components"]["schemas"]["Record"]["properties"]
+        self.assertEqual(set(properties), {"const", "default", "enum", "x-policy"})
+        for schema in properties.values():
+            self.assertNotIn("description", schema)
+
     def test_annotation_looking_definition_names_are_contract(self):
         before = {
             "swagger": "2.0",
@@ -416,6 +443,16 @@ class TestProviderHooks(unittest.TestCase):
         errors = validate_provider_config(BrokenProvider(), {}, "svc", ROOT)
         self.assertEqual(len(errors), 1)
         self.assertIn("boom", errors[0])
+
+    def test_validation_helper_converts_process_control_exception_to_error(self):
+        class ExitingProvider(self.HookProvider):
+            def validate_config(self, boundary_cfg, component_path, repo_root):
+                raise SystemExit(0)
+
+        errors = validate_provider_config(ExitingProvider(), {}, "svc", ROOT)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("config validation failed", errors[0])
+        self.assertIn("SystemExit", errors[0])
 
     def test_validation_helper_rejects_a_malformed_result(self):
         class BrokenProvider(self.HookProvider):

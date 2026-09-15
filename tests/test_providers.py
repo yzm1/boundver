@@ -339,8 +339,14 @@ class TestLeafProvider(unittest.TestCase):
         self.assertEqual(rb.status, "ok")
         self.assertEqual(rb.entries, [])
 
-    def test_validate_config_always_ok(self):
-        for boundary_cfg in ({}, {"paths": []}, {"paths": ["x"]}):
+    def test_declared_paths_are_an_error(self):
+        rb = LeafProvider().resolve(_make_ctx(boundary_cfg={"paths": ["x"]}))
+        self.assertEqual(rb.status, "error")
+        self.assertEqual(rb.entries, [])
+        self.assertIn("cannot declare paths", rb.errors[0])
+
+    def test_validate_config_accepts_only_empty_path_declarations(self):
+        for boundary_cfg in ({}, {"paths": []}):
             with self.subTest(boundary_cfg=boundary_cfg):
                 errs = LeafProvider().validate_config(
                     boundary_cfg,
@@ -348,6 +354,10 @@ class TestLeafProvider(unittest.TestCase):
                     ROOT,
                 )
                 self.assertEqual(errs, [])
+        self.assertIn(
+            "cannot declare paths",
+            LeafProvider().validate_config({"paths": ["x"]}, "svc", ROOT)[0],
+        )
 
     def test_name(self):
         self.assertEqual(LeafProvider().name, "leaf")
