@@ -3527,6 +3527,8 @@ class ReleaseReviewAuditTests(unittest.TestCase):
     def _codex_security_comment(self, commit: str) -> str:
         return "\n".join(
             (
+                "### 🛡️ Codex Security Review",
+                "",
                 "Security review completed. No security issues were found in "
                 "this pull request.",
                 "",
@@ -4168,6 +4170,29 @@ exit 74
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("conflicting or ambiguous", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_legacy_unheaded_security_review_remains_accepted(self):
+        head = "b" * 40
+        clean = self._comment_record(
+            self._codex_comment(head[:10]),
+            timestamp="2026-08-18T12:01:00Z",
+        )
+        current = self._codex_security_comment(head[:10])
+        legacy = current.removeprefix("### 🛡️ Codex Security Review\n\n")
+        security = self._comment_record(
+            legacy,
+            record_id="202",
+            timestamp="2026-08-18T12:02:00Z",
+        )
+
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head,
+            FAKE_REVIEWS="",
+            FAKE_COMMENTS=f"{clean}\n{security}",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_security_evidence_is_independent_and_fails_closed(self):
