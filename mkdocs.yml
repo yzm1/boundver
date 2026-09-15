@@ -67,6 +67,7 @@ nav:
       - Public and custom providers: public-vs-custom-providers.md
   - Project:
       - Why boundver?: WHY_BOUNDVER.md
+      - Architecture post: architecture-post.md
       - Comparison and integrations: comparison.md
       - Roadmap: roadmap.md
       - Privacy and telemetry: privacy.md
