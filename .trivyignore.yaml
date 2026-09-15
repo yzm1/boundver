@@ -32,6 +32,11 @@ vulnerabilities:
       - pkg:deb/debian/libacl1
     expired_at: 2026-09-29
     statement: The runtime is non-root with set-ID helpers stripped; no Debian libacl fix is available.
+  - id: CVE-2026-66046
+    purls:
+      - pkg:deb/debian/libexpat1
+    expired_at: 2026-09-29
+    statement: Boundver and its local Git plumbing do not parse attacker-controlled XML; Debian classifies this as a postponed minor issue and provides no trixie fix.
   - id: CVE-2026-76642
     purls:
       - pkg:deb/debian/bsdutils
