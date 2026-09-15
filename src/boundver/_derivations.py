@@ -159,29 +159,37 @@ def derivation_inputs_selecting_path(
             for candidate in (path, *aliases)
         }
     )
-    portable_keys = {
-        unicodedata.normalize("NFC", candidate.casefold())
-        for candidate in normalized_paths
-    }
-    source_alias_set: Set[str] = set()
-    for candidate in source_paths:
+    operation = _PathGlobOperation("Derivation input self-reference")
+
+    def portable_segment(segment: str) -> str:
+        return unicodedata.normalize("NFC", segment.casefold())
+
+    prospective_paths = set(normalized_paths)
+    for source_candidate in source_paths:
         try:
-            normalized_source = _normalize_declared_path(candidate)
+            normalized_source = _normalize_declared_path(source_candidate)
         except ValueError:
             # A portable lock output cannot alias a source name that cannot be
             # represented as a declared Unicode path (for example a POSIX
             # surrogate-escaped filename).
             continue
-        if (
-            unicodedata.normalize("NFC", normalized_source.casefold())
-            in portable_keys
-        ):
-            source_alias_set.add(normalized_source)
-    source_aliases = sorted(source_alias_set)
+        source_parts = normalized_source.split("/")
+        for candidate in normalized_paths:
+            candidate_parts = candidate.split("/")
+            common = 0
+            for source_part, candidate_part in zip(source_parts, candidate_parts):
+                operation.spend()
+                if portable_segment(source_part) != portable_segment(candidate_part):
+                    break
+                common += 1
+            if common:
+                prospective_paths.add(
+                    "/".join(source_parts[:common] + candidate_parts[common:])
+                )
+    prospective_paths = sorted(prospective_paths)
     derivations = config.get("derivations", {})
     if not isinstance(derivations, dict):
         return []
-    operation = _PathGlobOperation("Derivation input self-reference")
     owners: List[str] = []
     for name in sorted(name for name in derivations if isinstance(name, str)):
         definition = derivations[name]
@@ -204,14 +212,7 @@ def derivation_inputs_selecting_path(
                     normalized_selector,
                     operation,
                 )
-                for candidate in normalized_paths
-            ) or any(
-                _normalized_selector_matches(
-                    candidate,
-                    normalized_selector,
-                    operation,
-                )
-                for candidate in source_aliases
+                for candidate in prospective_paths
             ):
                 owners.append(name)
                 break

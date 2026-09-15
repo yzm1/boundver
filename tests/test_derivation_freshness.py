@@ -802,6 +802,35 @@ def test_generation_preserves_glob_classes_when_checking_portable_aliases(
     assert (tmp_path / selected_lock).read_text(encoding="utf-8") == "{}\n"
 
 
+@pytest.mark.parametrize("selector", ["STATE", "STATE/*.json"])
+def test_generation_rejects_a_new_lock_below_a_portable_directory_alias(
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    """A prospective lock inherits the spelling of known source ancestors."""
+    init_git_repo(tmp_path, initial_branch="main")
+    config = _config()
+    config["derivations"]["public-api"]["inputs"].append(selector)
+    _write_source(tmp_path, config)
+    (tmp_path / "STATE").mkdir()
+    (tmp_path / "STATE" / "input.json").write_text("{}\n", encoding="utf-8")
+    _commit(tmp_path, "portable derivation input directory")
+
+    result = _run(
+        tmp_path,
+        "generate",
+        "--source",
+        "head",
+        "--out",
+        "state/new.json",
+    )
+
+    assert result.returncode == 2
+    assert "selected as an input" in result.stderr
+    assert "public-api" in result.stderr
+    assert not (tmp_path / "state" / "new.json").exists()
+
+
 def test_changed_generator_identity_requires_fresh_evidence(tmp_path: Path) -> None:
     _ready_repository(tmp_path)
     config = json.loads(
