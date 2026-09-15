@@ -124,6 +124,8 @@ VERSION_SPELLINGS: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {
     "a plain decimal": ("1000", None, None),
     "a finite float": ("1.5", None, None),
     "a negative float": ("-2.5", None, None),
+    "a positive float": ("+2.5", None, None),
+    "a positive exponent": ("+1e5", None, None),
     # The premise row: the same harness records textual values.
     "a quoted string": ('"01"', "01", "01"),
 }

@@ -137,6 +137,35 @@ def _selectors_cover_declared_path(
     return False
 
 
+def derivation_inputs_selecting_path(
+    config: Mapping[str, object],
+    path: str,
+) -> List[str]:
+    """Return derivations whose input selectors cover one declared path.
+
+    Callers use this before writing an output that must not become an input to
+    its own generation. The check is selector-based, so it also catches a new
+    output path that is not present in the selected source yet.
+    """
+    normalized_path = _normalize_declared_path(path)
+    derivations = config.get("derivations", {})
+    if not isinstance(derivations, dict):
+        return []
+    operation = _PathGlobOperation("Derivation input self-reference")
+    owners: List[str] = []
+    for name in sorted(name for name in derivations if isinstance(name, str)):
+        definition = derivations[name]
+        if not isinstance(definition, dict):
+            continue
+        if _selectors_cover_declared_path(
+            definition.get("inputs"),
+            normalized_path,
+            operation,
+        ):
+            owners.append(name)
+    return owners
+
+
 def _configured_boundary_files(
     config: Mapping[str, object],
     all_files: Sequence[str],

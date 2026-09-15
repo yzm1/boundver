@@ -108,10 +108,10 @@ def _load_yaml_with_bounded_integers(text: str) -> Any:
     BoundedVersionLoader.add_implicit_resolver(
         "tag:yaml.org,2002:float",
         re.compile(
-            r"^-?(?:(?:0|[1-9][0-9]*)\.[0-9]+(?:[eE][-+]?[0-9]+)?"
+            r"^[+-]?(?:(?:0|[1-9][0-9]*)\.[0-9]+(?:[eE][-+]?[0-9]+)?"
             r"|(?:0|[1-9][0-9]*)[eE][-+]?[0-9]+)$"
         ),
-        list("-0123456789"),
+        list("-+0123456789"),
     )
     return yaml.load(text, Loader=BoundedVersionLoader)
 

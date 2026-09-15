@@ -162,6 +162,12 @@ All notable changes to this project are documented here. The format follows
   a downstream consumer, even when callers bypass configuration validation.
 - Required file-backed version values to be strings across JSON, TOML, YAML,
   and YML, preventing numeric spellings such as `1.10` from becoming `1.1`.
+  YAML leading-plus decimal and exponent forms such as `+2.5` and `+1e5` now
+  reach the same numeric rejection instead of being accepted as text.
+- Rejected a selected lock output when any generated-artifact derivation input
+  selector covers it. Recording the default receipt and generation to a custom
+  `--out` path now fail before writing instead of producing a lock that is
+  stale immediately because it hashed its own previous bytes.
 - Made glob matching fail closed on impossible lone Unicode surrogates while
   retaining support for surrogate-escaped non-UTF-8 filenames supplied by Git.
 - Resolved explicit diagnostic base refs to immutable commit IDs before

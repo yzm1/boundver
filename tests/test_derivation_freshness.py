@@ -662,6 +662,60 @@ def test_recording_rejects_selectors_that_cover_future_evidence(
     assert not (tmp_path / evidence).exists()
 
 
+def test_recording_rejects_the_default_lock_as_a_derivation_input(
+    tmp_path: Path,
+) -> None:
+    """A receipt must not make the next default generation stale itself."""
+    init_git_repo(tmp_path, initial_branch="main")
+    config = _config()
+    config["derivations"]["public-api"]["inputs"].append(
+        "boundary.lock.json"
+    )
+    _write_source(tmp_path, config)
+    (tmp_path / "boundary.lock.json").write_text("{}\n", encoding="utf-8")
+    _commit(tmp_path, "self-staling default lock")
+
+    result = _run(
+        tmp_path,
+        "record-derivation",
+        "public-api",
+        "--source",
+        "head",
+    )
+
+    assert result.returncode == 2
+    assert "selected as an input" in result.stderr
+    assert "public-api" in result.stderr
+    assert not (tmp_path / EVIDENCE).exists()
+
+
+def test_generation_rejects_a_custom_lock_selected_by_a_derivation_input_glob(
+    tmp_path: Path,
+) -> None:
+    init_git_repo(tmp_path, initial_branch="main")
+    custom_lock = "state/custom.lock.json"
+    config = _config()
+    config["derivations"]["public-api"]["inputs"].append("state/*.json")
+    _write_source(tmp_path, config)
+    (tmp_path / "state").mkdir()
+    (tmp_path / custom_lock).write_text("{}\n", encoding="utf-8")
+    _commit(tmp_path, "self-staling custom lock")
+
+    result = _run(
+        tmp_path,
+        "generate",
+        "--source",
+        "head",
+        "--out",
+        custom_lock,
+    )
+
+    assert result.returncode == 2
+    assert "selected as an input" in result.stderr
+    assert "public-api" in result.stderr
+    assert (tmp_path / custom_lock).read_text(encoding="utf-8") == "{}\n"
+
+
 def test_changed_generator_identity_requires_fresh_evidence(tmp_path: Path) -> None:
     _ready_repository(tmp_path)
     config = json.loads(

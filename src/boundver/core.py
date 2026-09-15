@@ -128,6 +128,7 @@ from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import declaration_coverage
 from ._derivations import (
     build_derivation_evidence,
+    derivation_inputs_selecting_path,
     dump_derivation_evidence,
     verify_derivations,
 )
@@ -536,6 +537,25 @@ def _ensure_lock_outside_components(
         raise ConfigError(
             f"Lockfile path {lock_paths[0]} aliases the selected config "
             f"{config_paths[0]}; choose a different output path"
+        )
+
+    try:
+        lock_relative = lock_paths[0].relative_to(
+            Path(os.path.abspath(repo_root))
+        ).as_posix()
+        input_owners = derivation_inputs_selecting_path(config, lock_relative)
+    except (GuardrailError, ValueError) as exc:
+        raise ConfigError(
+            "Cannot determine whether the selected lock output is a derivation "
+            f"input: {_bounded_exception_text(exc)}"
+        ) from exc
+    if input_owners:
+        raise ConfigError(
+            f"Lockfile path {lock_paths[0]} is selected as an input by "
+            "derivation(s) "
+            f"{_bounded_diagnostic_text(', '.join(input_owners))}; choose a "
+            "different lock output or exclude it from derivation inputs to avoid "
+            "a self-staling lock"
         )
 
     for name, component in config.get("components", {}).items():
@@ -3124,6 +3144,12 @@ def _cmd_record_derivation(args, repo_root: Path) -> None:
             print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
+        _ensure_lock_outside_components(
+            repo_root,
+            repo_root / "boundary.lock.json",
+            config,
+            config_path=config_path,
+        )
         with _SourceAccessor(repo_root, args.source, snapshot=snapshot) as accessor:
             evidence_path, evidence = build_derivation_evidence(
                 config,
