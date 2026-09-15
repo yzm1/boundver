@@ -4179,7 +4179,7 @@ exit 74
             timestamp="2026-08-18T12:01:00Z",
         )
         current = self._codex_security_comment(head[:10])
-        legacy = current.removeprefix("### 🛡️ Codex Security Review\n\n")
+        legacy = current.split("\n", 2)[2]
         security = self._comment_record(
             legacy,
             record_id="202",
@@ -4208,6 +4208,7 @@ exit 74
         )
         canonical = self._codex_security_comment(head[:10])
         malformed_bodies = (
+            canonical.splitlines()[0],
             canonical.replace(
                 "No security issues were found",
                 "No important security issues were found",

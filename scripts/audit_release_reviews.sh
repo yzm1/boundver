@@ -783,7 +783,8 @@ codex_body_is_security_review_candidate() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     line=${line%$'\r'}
     case "$line" in
-      "Security review completed."*|"[View security finding report]"*|\
+      "$codex_security_heading"|"Security review completed."*|\
+        "[View security finding report]"*|\
         "_Only the user who started this review can view the report in Codex._"|\
         *"About Codex security reviews in GitHub</summary>")
         return 0
