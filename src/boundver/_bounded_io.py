@@ -131,6 +131,14 @@ def read_bounded_file(
             opened = os.fstat(stream.fileno())
             if not stat.S_ISREG(opened.st_mode):
                 raise ValueError(f"Unsupported working-tree file type at {label}")
+            if (
+                (initial.st_dev, initial.st_ino)
+                != (opened.st_dev, opened.st_ino)
+                or initial.st_size != opened.st_size
+                or initial.st_mtime_ns != opened.st_mtime_ns
+                or stat.S_IMODE(initial.st_mode) != stat.S_IMODE(opened.st_mode)
+            ):
+                raise ValueError(f"File changed while {operation}: {label}")
             if opened.st_size > limit:
                 raise FileSizeLimitError(path, opened.st_size, limit)
 

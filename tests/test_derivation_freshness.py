@@ -609,6 +609,59 @@ def test_every_derivation_selector_must_match_the_selected_source(
     assert f"{field} selector matched no tracked file" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("field", "selector", "evidence"),
+    (
+        ("inputs", "source", "source/receipt.boundver-derivation.json"),
+        ("inputs", "source/**", "source/receipt.boundver-derivation.json"),
+        ("outputs", "generated", "generated/receipt.boundver-derivation.json"),
+        ("outputs", "generated/**", "generated/receipt.boundver-derivation.json"),
+    ),
+)
+def test_recording_rejects_selectors_that_cover_future_evidence(
+    tmp_path: Path,
+    field: str,
+    selector: str,
+    evidence: str,
+) -> None:
+    """A bootstrap must not create a receipt that poisons its next run."""
+    init_git_repo(tmp_path, initial_branch="main")
+    (tmp_path / "source").mkdir()
+    (tmp_path / "source" / "input.txt").write_text("input\n", encoding="utf-8")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "api.json").write_text("{}\n", encoding="utf-8")
+    config = {
+        "project": "self-reference-fixture",
+        "derivations": {
+            "api": {
+                "inputs": ["source/input.txt"],
+                "outputs": ["generated/api.json"],
+                "evidence": evidence,
+                "generator": "fixture/v1",
+            }
+        },
+        "components": {
+            "api": {
+                "path": "generated",
+                "boundary": {"provider": "json-file", "paths": ["api.json"]},
+            }
+        },
+        "slices": {},
+    }
+    config["derivations"]["api"][field] = [selector]
+    (tmp_path / "boundary.config.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _commit(tmp_path, "self-referential declaration")
+
+    result = _run(tmp_path, "record-derivation", "api", "--source", "head")
+
+    assert result.returncode == 2
+    assert "evidence cannot also be an input or output" in result.stderr
+    assert not (tmp_path / evidence).exists()
+
+
 def test_changed_generator_identity_requires_fresh_evidence(tmp_path: Path) -> None:
     _ready_repository(tmp_path)
     config = json.loads(

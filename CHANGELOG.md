@@ -303,6 +303,12 @@ All notable changes to this project are documented here. The format follows
   configuration, including repository-controlled includes, so Git versions
   before 2.45 cannot bypass the no-lazy-fetch safety gate through
   `extensions.worktreeConfig`.
+- Bound every local file open to the regular-file identity and metadata checked
+  immediately beforehand. An ancestor replacement can no longer redirect a
+  bounded read to another file and restore the pathname before final checks.
+- Rejected derivation evidence paths covered by their own input or output
+  selectors before recording. Literal prefixes and globs can no longer create
+  a receipt that makes the same declaration self-referential on its next run.
 
 ## [0.15.2] - 2026-09-07
 

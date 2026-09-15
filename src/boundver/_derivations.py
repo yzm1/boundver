@@ -116,6 +116,27 @@ def _select_paths(
     return sorted(selected)
 
 
+def _selectors_cover_declared_path(
+    selectors: object,
+    path: str,
+    operation: _PathGlobOperation,
+) -> bool:
+    """Whether selectors cover *path*, even when it does not exist yet."""
+    if not isinstance(selectors, list) or not all(
+        isinstance(selector, str) for selector in selectors
+    ):
+        return False
+    for selector in sorted(selectors):
+        try:
+            normalized = _normalize_declared_path(selector)
+        except ValueError:
+            # Static validation and _select_paths report malformed selectors.
+            continue
+        if _normalized_selector_matches(path, normalized, operation):
+            return True
+    return False
+
+
 def _configured_boundary_files(
     config: Mapping[str, object],
     all_files: Sequence[str],
@@ -258,6 +279,27 @@ def _expected_rows(
                 "non-empty string"
             )
             continue
+        try:
+            evidence_is_selected = any(
+                _selectors_cover_declared_path(
+                    definition.get(field),
+                    evidence,
+                    operation,
+                )
+                for field in ("inputs", "outputs")
+            )
+        except GuardrailError as exc:
+            errors.append(
+                f"Derivation '{_display_name(name)}' evidence selector could not "
+                f"be evaluated: {_bounded_diagnostic_text(str(exc))}"
+            )
+            continue
+        if evidence_is_selected:
+            errors.append(
+                f"Derivation '{_display_name(name)}' evidence cannot also be an "
+                "input or output"
+            )
+            continue
         inputs = _select_paths(
             all_files,
             definition.get("inputs"),
@@ -281,12 +323,6 @@ def _expected_rows(
             errors.append(
                 f"Derivation '{_display_name(name)}' inputs and outputs overlap at "
                 f"{_bounded_diagnostic_text(overlap[0])}"
-            )
-            continue
-        if evidence in set(inputs) | set(outputs):
-            errors.append(
-                f"Derivation '{_display_name(name)}' evidence cannot also be an "
-                "input or output"
             )
             continue
         uncovered_outputs = sorted(set(outputs) - boundary_files)

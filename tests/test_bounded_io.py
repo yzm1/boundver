@@ -43,7 +43,18 @@ class BoundedFileReadTests(unittest.TestCase):
             path = Path(directory) / "growing.bin"
             path.write_bytes(b"abcde")
             real_fstat = os.fstat
+            real_lstat = Path.lstat
             calls = 0
+
+            def underreport_initial_size(candidate: Path):
+                result = real_lstat(candidate)
+                return SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_size=1,
+                    st_mtime_ns=result.st_mtime_ns,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino,
+                )
 
             def underreport_first_size(fd):
                 nonlocal calls
@@ -59,7 +70,13 @@ class BoundedFileReadTests(unittest.TestCase):
                     st_ino=result.st_ino,
                 )
 
-            with patch("boundver._bounded_io.os.fstat", side_effect=underreport_first_size):
+            with (
+                patch.object(Path, "lstat", new=underreport_initial_size),
+                patch(
+                    "boundver._bounded_io.os.fstat",
+                    side_effect=underreport_first_size,
+                ),
+            ):
                 with self.assertRaises(FileSizeLimitError) as raised:
                     read_bounded_file(path, 4)
         self.assertEqual(raised.exception.size, 5)
@@ -131,6 +148,53 @@ class BoundedFileReadTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "File changed"):
                     read_bounded_file(path, 16, trusted_root=root)
             self.assertEqual(parent_checks, 2)
+
+    def test_opened_leaf_is_bound_to_the_identity_checked_before_open(self) -> None:
+        """A swapped ancestor cannot redirect the read and then be restored.
+
+        The patched calls model the narrow race directly: the pre-open leaf is
+        the declared file, the open and later pathname check see an external
+        file, and both ancestor checks see the original parent. Without the
+        initial-to-descriptor identity comparison this returns external bytes.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            parent = root / "parent"
+            parent.mkdir(parents=True)
+            path = parent / "value.bin"
+            path.write_bytes(b"inside")
+            outside = Path(directory) / "outside.bin"
+            outside.write_bytes(b"outside")
+            inside_identity = path.lstat()
+            outside_identity = outside.lstat()
+            self.assertNotEqual(
+                (inside_identity.st_dev, inside_identity.st_ino),
+                (outside_identity.st_dev, outside_identity.st_ino),
+            )
+            real_lstat = Path.lstat
+            real_open = Path.open
+            leaf_checks = 0
+
+            def swapped_lstat(candidate: Path):
+                nonlocal leaf_checks
+                if candidate != path:
+                    return real_lstat(candidate)
+                leaf_checks += 1
+                return inside_identity if leaf_checks == 1 else outside_identity
+
+            def redirected_open(candidate: Path, *args, **kwargs):
+                if candidate == path:
+                    return real_open(outside, *args, **kwargs)
+                return real_open(candidate, *args, **kwargs)
+
+            with (
+                patch.object(Path, "lstat", new=swapped_lstat),
+                patch.object(Path, "open", new=redirected_open),
+            ):
+                with self.assertRaisesRegex(ValueError, "File changed"):
+                    read_bounded_file(path, 16, trusted_root=root)
+
+            self.assertEqual(leaf_checks, 1)
 
 
 class NonRegularFileTests(unittest.TestCase):
