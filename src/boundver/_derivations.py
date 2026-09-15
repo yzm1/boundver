@@ -205,6 +205,7 @@ def derivation_inputs_selecting_path(
         return unicodedata.normalize("NFC", segment.casefold())
 
     candidate_rows = [candidate.split("/") for candidate in normalized_paths]
+    evaluated_aliases: Set[Tuple[int, Tuple[str, ...]]] = set()
     for source_candidate in source_paths:
         try:
             normalized_source = _normalize_declared_path(source_candidate)
@@ -214,7 +215,7 @@ def derivation_inputs_selecting_path(
             # surrogate-escaped filename).
             continue
         source_parts = normalized_source.split("/")
-        for candidate_parts in candidate_rows:
+        for candidate_index, candidate_parts in enumerate(candidate_rows):
             common = 0
             for source_part, candidate_part in zip(source_parts, candidate_parts):
                 operation.spend(max(1, len(source_part) + len(candidate_part)))
@@ -222,6 +223,10 @@ def derivation_inputs_selecting_path(
                     break
                 common += 1
             if common:
+                alias_key = (candidate_index, tuple(source_parts[:common]))
+                if alias_key in evaluated_aliases:
+                    continue
+                evaluated_aliases.add(alias_key)
                 prospective_parts = source_parts[:common] + candidate_parts[common:]
                 prospective_length = sum(map(len, prospective_parts)) + len(
                     prospective_parts

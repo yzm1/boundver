@@ -170,10 +170,11 @@ All notable changes to this project are documented here. The format follows
   source-path ancestors and then evaluated with the original selectors,
   preserving glob character-class semantics even when the lock does not exist
   yet. Prospective spellings are matched one at a time under an aggregate work
-  budget rather than being retained in memory. Recording the default receipt
-  and generation to a custom `--out` path now fail before writing instead of
-  producing a lock that is stale immediately because it hashed its own previous
-  bytes.
+  budget, and repeated files beneath the same aliased ancestor reuse one compact
+  ancestor key instead of rematching or retaining long output strings.
+  Recording the default receipt and generation to a custom `--out` path now
+  fail before writing instead of producing a lock that is stale immediately
+  because it hashed its own previous bytes.
 - Made glob matching fail closed on impossible lone Unicode surrogates while
   retaining support for surrogate-escaped non-UTF-8 filenames supplied by Git.
 - Resolved explicit diagnostic base refs to immutable commit IDs before

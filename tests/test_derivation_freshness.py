@@ -292,6 +292,41 @@ def test_prospective_alias_materialization_is_operation_bounded(
         )
 
 
+def test_duplicate_source_ancestors_do_not_rematch_a_prospective_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = {
+        "derivations": {
+            "generated": {"inputs": ["STATE/*.json"]},
+            "unrelated": {"inputs": ["elsewhere/*.txt"]},
+        }
+    }
+    source_paths = [f"STATE/file-{index}.json" for index in range(100)]
+    source_paths.append("elsewhere/keep.txt")
+    real_match = derivations._normalized_selector_matches
+    calls = 0
+
+    def counted_match(path, selector, operation):
+        nonlocal calls
+        calls += 1
+        return real_match(path, selector, operation)
+
+    monkeypatch.setattr(
+        derivations,
+        "_normalized_selector_matches",
+        counted_match,
+    )
+
+    owners = derivations.derivation_inputs_selecting_path(
+        config,
+        "state/new.json",
+        source_paths=source_paths,
+    )
+
+    assert owners == ["generated"]
+    assert calls == 4
+
+
 def test_why_keeps_unrelated_derivation_owners_in_its_resolution_context(
     tmp_path: Path,
 ) -> None:
