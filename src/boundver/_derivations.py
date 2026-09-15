@@ -140,14 +140,23 @@ def _selectors_cover_declared_path(
 def derivation_inputs_selecting_path(
     config: Mapping[str, object],
     path: str,
+    *,
+    aliases: Sequence[str] = (),
 ) -> List[str]:
-    """Return derivations whose input selectors cover one declared path.
+    """Return derivations whose input selectors cover a path or its aliases.
 
     Callers use this before writing an output that must not become an input to
-    its own generation. The check is selector-based, so it also catches a new
-    output path that is not present in the selected source yet.
+    its own generation. The check is selector-based and compares a portable
+    case-folded spelling too, so it catches absent outputs and aliases on
+    case-insensitive filesystems without making safety host-dependent.
     """
-    normalized_path = _normalize_declared_path(path)
+    normalized_paths = sorted(
+        {
+            _normalize_declared_path(candidate)
+            for candidate in (path, *aliases)
+        }
+    )
+    folded_paths = sorted({candidate.casefold() for candidate in normalized_paths})
     derivations = config.get("derivations", {})
     if not isinstance(derivations, dict):
         return []
@@ -157,12 +166,34 @@ def derivation_inputs_selecting_path(
         definition = derivations[name]
         if not isinstance(definition, dict):
             continue
-        if _selectors_cover_declared_path(
-            definition.get("inputs"),
-            normalized_path,
-            operation,
+        selectors = definition.get("inputs")
+        if not isinstance(selectors, list) or not all(
+            isinstance(selector, str) for selector in selectors
         ):
-            owners.append(name)
+            continue
+        for selector in sorted(selectors):
+            try:
+                normalized_selector = _normalize_declared_path(selector)
+            except ValueError:
+                # Static validation and _select_paths report malformed selectors.
+                continue
+            if any(
+                _normalized_selector_matches(
+                    candidate,
+                    normalized_selector,
+                    operation,
+                )
+                for candidate in normalized_paths
+            ) or any(
+                _normalized_selector_matches(
+                    candidate,
+                    normalized_selector.casefold(),
+                    operation,
+                )
+                for candidate in folded_paths
+            ):
+                owners.append(name)
+                break
     return owners
 
 

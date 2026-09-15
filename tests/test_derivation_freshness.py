@@ -716,6 +716,34 @@ def test_generation_rejects_a_custom_lock_selected_by_a_derivation_input_glob(
     assert (tmp_path / custom_lock).read_text(encoding="utf-8") == "{}\n"
 
 
+def test_generation_rejects_a_case_alias_of_a_derivation_input(
+    tmp_path: Path,
+) -> None:
+    """A release lock must be portable to case-insensitive filesystems."""
+    init_git_repo(tmp_path, initial_branch="main")
+    selected_lock = "STATE/CUSTOM.LOCK.JSON"
+    config = _config()
+    config["derivations"]["public-api"]["inputs"].append(selected_lock)
+    _write_source(tmp_path, config)
+    (tmp_path / "STATE").mkdir()
+    (tmp_path / selected_lock).write_text("{}\n", encoding="utf-8")
+    _commit(tmp_path, "case-aliased custom lock")
+
+    result = _run(
+        tmp_path,
+        "generate",
+        "--source",
+        "head",
+        "--out",
+        "state/custom.lock.json",
+    )
+
+    assert result.returncode == 2
+    assert "selected as an input" in result.stderr
+    assert "public-api" in result.stderr
+    assert (tmp_path / selected_lock).read_text(encoding="utf-8") == "{}\n"
+
+
 def test_changed_generator_identity_requires_fresh_evidence(tmp_path: Path) -> None:
     _ready_repository(tmp_path)
     config = json.loads(

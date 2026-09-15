@@ -540,10 +540,26 @@ def _ensure_lock_outside_components(
         )
 
     try:
-        lock_relative = lock_paths[0].relative_to(
-            Path(os.path.abspath(repo_root))
-        ).as_posix()
-        input_owners = derivation_inputs_selecting_path(config, lock_relative)
+        repo_paths = _normalized_filesystem_paths(
+            repo_root,
+            "repository root",
+            relative_to=repo_root,
+        )
+        lock_relatives = []
+        for candidate, root in zip(lock_paths, repo_paths):
+            try:
+                relative = candidate.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative not in lock_relatives:
+                lock_relatives.append(relative)
+        if not lock_relatives:
+            raise ValueError("lock output resolves outside the repository")
+        input_owners = derivation_inputs_selecting_path(
+            config,
+            lock_relatives[0],
+            aliases=lock_relatives[1:],
+        )
     except (GuardrailError, ValueError) as exc:
         raise ConfigError(
             "Cannot determine whether the selected lock output is a derivation "
