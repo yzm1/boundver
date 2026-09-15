@@ -28,8 +28,9 @@ name, reaches the diff.
 
 Four earlier divergences remain as regression contracts, with their premises
 pinned beside them so a partial fix cannot pass unnoticed. `add` and `remove`
-perform a compare-and-claim publication that preserves a competing whole-file
-edit. The premise run interposes the same edit but skips boundver's write,
+perform compare-and-publish updates that preserve a competing whole-file edit
+without ever removing the canonical path. The premise run interposes the same
+edit but skips boundver's write,
 showing what must survive. The other three require `init` to emit a scaffold
 accepted by `validate-config`, post-edit refusals to name the flags that repair
 them, and `--format json` to emit a diagnostic document for an invalid ref.
@@ -41,6 +42,7 @@ OBL-PROVIDERS-066, OBL-GIT-SOURCE-131 and OBL-GIT-SOURCE-132.
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import json
 import os
@@ -714,15 +716,15 @@ class ConcurrentConfigEditTests(unittest.TestCase):
                     [],
                 )
 
-    def test_a_writer_arriving_after_the_claim_is_not_overwritten(self):
+    def test_a_writer_arriving_at_publication_is_not_overwritten(self):
         with _selector_scene() as scene:
             path = scene.root / "boundary.config.json"
-            real_link = core._MutationDirectory.link
+            real_publish = core._MutationDirectory.replace_preserving_target
             raced = False
 
-            def racing_link(directory, source, target):
+            def racing_publish(directory, replacement, target, backup):
                 nonlocal raced
-                if not raced and source.endswith(".tmp") and target == path.name:
+                if not raced and target == path.name:
                     path.write_text(
                         json.dumps(
                             {
@@ -735,12 +737,12 @@ class ConcurrentConfigEditTests(unittest.TestCase):
                         encoding="utf-8",
                     )
                     raced = True
-                return real_link(directory, source, target)
+                return real_publish(directory, replacement, target, backup)
 
             with mock.patch.object(
                 core._MutationDirectory,
-                "link",
-                racing_link,
+                "replace_preserving_target",
+                racing_publish,
             ):
                 result = run_cli_in_process(
                     scene.root,
@@ -753,12 +755,98 @@ class ConcurrentConfigEditTests(unittest.TestCase):
 
             self.assertTrue(raced)
             self.assertEqual(result.returncode, USAGE, result.stderr)
-            self.assertIn("competing target was preserved", result.stderr)
+            self.assertIn("competing bytes were restored", result.stderr)
             self.assertEqual(
                 json.loads(path.read_text(encoding="utf-8"))["project"],
                 "competitor",
             )
             self.assertEqual(list(scene.root.glob(f".{path.name}.*")), [])
+
+    def test_an_interrupt_after_atomic_publication_never_removes_the_config(self):
+        """The target is old or new across the one native publication step."""
+        with _selector_scene() as scene:
+            path = scene.root / "boundary.config.json"
+            before = path.read_bytes()
+            original = json.loads(before)
+            updated = copy.deepcopy(original)
+            updated["components"]["sdk"] = {
+                "path": "sdk",
+                "version_source": None,
+                "boundary": {"provider": "leaf", "paths": []},
+            }
+            real_publish = core._MutationDirectory.replace_preserving_target
+            published = False
+
+            def interrupt_after_publish(directory, replacement, target, backup):
+                nonlocal published
+                real_publish(directory, replacement, target, backup)
+                published = True
+                raise KeyboardInterrupt("stop after atomic publication")
+
+            with mock.patch.object(
+                core._MutationDirectory,
+                "replace_preserving_target",
+                interrupt_after_publish,
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    core._write_config_atomic(
+                        path,
+                        updated,
+                        expected_content=before,
+                    )
+
+            self.assertTrue(published)
+            self.assertTrue(path.is_file())
+            self.assertIn(json.loads(path.read_bytes()), (original, updated))
+            sidecars = list(scene.root.glob(f".{path.name}.*"))
+            self.assertEqual(len(sidecars), 1)
+            self.assertEqual(sidecars[0].read_bytes(), before)
+
+    def test_an_interrupt_after_rollback_names_the_existing_sidecar(self):
+        with _selector_scene() as scene:
+            path = scene.root / "boundary.config.json"
+            before = path.read_bytes()
+            updated = json.loads(before)
+            updated["components"]["sdk"] = {
+                "path": "sdk",
+                "version_source": None,
+                "boundary": {"provider": "leaf", "paths": []},
+            }
+            expected_new = core.dump_config(updated).encode("utf-8")
+            competitor = copy.deepcopy(json.loads(before))
+            competitor["project"] = "competitor"
+            competitor_bytes = core.dump_config(competitor).encode("utf-8")
+            real_publish = core._MutationDirectory.replace_preserving_target
+            calls = 0
+
+            def interrupt_after_rollback(directory, replacement, target, backup):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    path.write_bytes(competitor_bytes)
+                displaced = real_publish(directory, replacement, target, backup)
+                if calls == 2:
+                    raise KeyboardInterrupt("stop after atomic rollback")
+                return displaced
+
+            with mock.patch.object(
+                core._MutationDirectory,
+                "replace_preserving_target",
+                interrupt_after_rollback,
+            ):
+                with self.assertRaises(core.ConfigError) as raised:
+                    core._write_config_atomic(
+                        path,
+                        updated,
+                        expected_content=before,
+                    )
+
+            self.assertEqual(calls, 2)
+            self.assertEqual(path.read_bytes(), competitor_bytes)
+            sidecars = list(scene.root.glob(f".{path.name}.*"))
+            self.assertEqual(len(sidecars), 1)
+            self.assertEqual(sidecars[0].read_bytes(), expected_new)
+            self.assertIn(sidecars[0].name, str(raised.exception))
 
 
 class BaseRefGuardTests(unittest.TestCase):

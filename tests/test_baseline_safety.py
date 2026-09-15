@@ -239,7 +239,16 @@ class BaselineAncestorSafetyTests(unittest.TestCase):
             finally:
                 self._restore_competing_parent(parent, outside, swapped)
 
-            self.assertTrue(swapped, "the publication-time parent swap must execute")
+            if os.name == "nt":
+                self.assertFalse(
+                    swapped,
+                    "held Windows directory handles must deny an ancestor rename",
+                )
+            else:
+                self.assertTrue(
+                    swapped,
+                    "the publication-time parent swap must execute",
+                )
             self.assertFalse((outside / target.name).exists())
             safe_target = (parked if swapped else parent) / target.name
             self.assertEqual(safe_target.read_text(), "reviewed debt\n")
@@ -263,18 +272,18 @@ class BaselineAncestorSafetyTests(unittest.TestCase):
             )
             expected = target.read_bytes()
             swapped = False
-            real_replace = _baseline._MutationDirectory.replace
+            real_publish = _baseline._MutationDirectory.replace_preserving_target
 
-            def swap_before_claim(directory, source, destination):
+            def swap_before_publish(directory, replacement, destination, backup):
                 nonlocal swapped
                 swapped = self._swap_parent(parent, parked, outside)
-                return real_replace(directory, source, destination)
+                return real_publish(directory, replacement, destination, backup)
 
             try:
                 with patch.object(
                     _baseline._MutationDirectory,
-                    "replace",
-                    new=swap_before_claim,
+                    "replace_preserving_target",
+                    new=swap_before_publish,
                 ):
                     _baseline.replace_baseline_if_unchanged(
                         target,
@@ -285,7 +294,16 @@ class BaselineAncestorSafetyTests(unittest.TestCase):
             finally:
                 self._restore_competing_parent(parent, outside, swapped)
 
-            self.assertTrue(swapped, "the claim-time parent swap must execute")
+            if os.name == "nt":
+                self.assertFalse(
+                    swapped,
+                    "held Windows directory handles must deny an ancestor rename",
+                )
+            else:
+                self.assertTrue(
+                    swapped,
+                    "the publication-time parent swap must execute",
+                )
             self.assertFalse((outside / target.name).exists())
             safe_target = (parked if swapped else parent) / target.name
             self.assertEqual(safe_target.read_text(), "reduced debt\n")

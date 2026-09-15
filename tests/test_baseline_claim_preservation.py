@@ -1,16 +1,10 @@
 """Where a team's baseline bytes are when an update cannot finish.
 
-Replacing a baseline is a sequence of individually atomic steps, and the file
-being replaced is a record a team decided to keep. So the contract is not only
-that the update either happens or does not: at every point where the sequence
-can be interrupted, the target has to hold one of the two exact byte strings,
-and in the three cases where the bytes can only be kept in a sidecar, the
-diagnostic has to name that sidecar exactly. A message that says bytes were
-preserved without saying where is not a recovery instruction.
-
-Those three cases all need two things to go wrong at once - a competing writer
-between the pre-check and the claim, and then a failing link - which is why
-they are reached here by injecting both rather than by racing for them.
+Baseline publication uses one native atomic replace-with-backup operation. The
+canonical path therefore always names a complete file, while the displaced
+bytes remain available until the compare-and-publish check succeeds. These
+tests inject competitors and failures at each native operation so every unique
+writer is either restored to the canonical path or named in a sidecar.
 
 Covers OBL-BASELINE-003.
 """
@@ -28,51 +22,49 @@ from tests._scenarios import Scenario
 
 REVIEWED = b'{"reviewed": 1}\n'
 NEW = b'{"new": 2}\n'
-
-#: What a competing writer puts at the target between the pre-check and the
-#: claim, and what a later one puts there while restoration is under way.
 RACED = b'{"raced": 3}\n'
 LATE = b'{"late": 4}\n'
 
 
 class _Attempt:
-    """One update, with chosen failures injected into the directory layer."""
+    """One update, with chosen failures injected into the native operation."""
 
     def __init__(
         self,
         scene: Scenario,
         *,
         race: bool = False,
-        claim_link_error: Optional[BaseException] = None,
-        publish_link_error: Optional[BaseException] = None,
-        late_writer: bool = False,
+        late_writer_on_call: Optional[int] = None,
+        fail_call: Optional[int] = None,
+        interrupt_after_call: Optional[int] = None,
         expected: bytes = REVIEWED,
     ) -> None:
         self.root = scene.root
         self.target = scene.root / "base.json"
         self.target.write_bytes(REVIEWED)
         self.error: Optional[BaselineError] = None
-        real_replace = _baseline._MutationDirectory.replace
-        real_link = _baseline._MutationDirectory.link
+        self.interrupted = False
+        self.calls = 0
+        real_publish = _baseline._MutationDirectory.replace_preserving_target
 
-        def replace(inner, source, dest):
-            real_replace(inner, source, dest)
-            if race:
-                (self.root / dest).write_bytes(RACED)
+        def publish(inner, replacement, target, backup):
+            self.calls += 1
+            if self.calls == 1 and race:
+                (self.root / target).write_bytes(RACED)
+            if self.calls == late_writer_on_call:
+                (self.root / target).write_bytes(LATE)
+            if self.calls == fail_call:
+                raise OSError(f"native operation {self.calls} failed")
+            displaced = real_publish(inner, replacement, target, backup)
+            if self.calls == interrupt_after_call:
+                raise KeyboardInterrupt(f"interrupted after operation {self.calls}")
+            return displaced
 
-        def link(inner, source, dest):
-            failure = (
-                claim_link_error if source.endswith(".claim")
-                else publish_link_error
-            )
-            if failure is not None:
-                if late_writer:
-                    (self.root / dest).write_bytes(LATE)
-                raise failure
-            return real_link(inner, source, dest)
-
-        with mock.patch.object(_baseline._MutationDirectory, "replace", replace), \
-                mock.patch.object(_baseline._MutationDirectory, "link", link):
+        with mock.patch.object(
+            _baseline._MutationDirectory,
+            "replace_preserving_target",
+            publish,
+        ):
             try:
                 replace_baseline_if_unchanged(
                     self.target,
@@ -82,6 +74,8 @@ class _Attempt:
                 )
             except BaselineError as exc:
                 self.error = exc
+            except KeyboardInterrupt:
+                self.interrupted = True
 
     @property
     def message(self) -> str:
@@ -89,16 +83,19 @@ class _Attempt:
         return str(self.error)
 
     @property
-    def claims(self) -> List[str]:
+    def sidecars(self) -> List[str]:
         return sorted(
-            entry.name for entry in self.root.iterdir() if ".claim" in entry.name
+            entry.name
+            for entry in self.root.iterdir()
+            if entry.name.startswith(".base.json.")
+            and not entry.name.endswith(".boundver-update.lock")
         )
 
     @property
     def sidecar(self) -> str:
-        claims = self.claims
-        assert len(claims) == 1, claims
-        return claims[0]
+        sidecars = self.sidecars
+        assert len(sidecars) == 1, sidecars
+        return sidecars[0]
 
     def sidecar_bytes(self) -> bytes:
         return (self.root / self.sidecar).read_bytes()
@@ -108,123 +105,91 @@ class _Attempt:
 
 
 class UninterruptedTests(unittest.TestCase):
-    """The premise: nothing is preserved when nothing goes wrong."""
-
     def test_a_clean_update_publishes_the_new_bytes(self):
         with Scenario() as scene:
             attempt = _Attempt(scene)
             self.assertIsNone(attempt.error)
             self.assertEqual(attempt.target_bytes(), NEW)
-            self.assertEqual(attempt.claims, [])
+            self.assertEqual(attempt.sidecars, [])
 
     def test_a_stale_expectation_is_refused_before_anything_moves(self):
         with Scenario() as scene:
             attempt = _Attempt(scene, expected=b"something else\n")
             self.assertIn("changed before update", attempt.message)
             self.assertEqual(attempt.target_bytes(), REVIEWED)
-            self.assertEqual(attempt.claims, [])
+            self.assertEqual(attempt.sidecars, [])
 
 
-class InterruptedTargetTests(unittest.TestCase):
-    """The first half: the target holds one of the two byte strings."""
-
-    def test_a_competing_target_leaves_the_competitor_in_place(self):
-        """The claim matched the reviewed bytes, so it is safe to discard."""
-        with Scenario() as scene:
-            attempt = _Attempt(
-                scene, publish_link_error=FileExistsError(), late_writer=True
-            )
-            self.assertIn("the competing target was preserved", attempt.message)
-            self.assertEqual(attempt.target_bytes(), LATE)
-            self.assertEqual(attempt.claims, [])
-
-    def test_a_failed_publication_restores_the_reviewed_bytes(self):
-        with Scenario() as scene:
-            attempt = _Attempt(scene, publish_link_error=OSError("no publish"))
-            self.assertIn("cannot safely publish", attempt.message)
-            self.assertEqual(attempt.target_bytes(), REVIEWED)
-            self.assertEqual(attempt.claims, [])
-
-    def test_a_raced_baseline_is_restored_rather_than_overwritten(self):
+class AtomicPublicationTests(unittest.TestCase):
+    def test_a_competing_target_is_restored_without_an_absent_path(self):
         with Scenario() as scene:
             attempt = _Attempt(scene, race=True)
-            self.assertIn("changed during update", attempt.message)
+            self.assertIn("competing bytes were restored", attempt.message)
             self.assertEqual(attempt.target_bytes(), RACED)
-            self.assertEqual(attempt.claims, [])
+            self.assertEqual(attempt.sidecars, [])
 
+    def test_a_failed_first_publication_leaves_reviewed_bytes_in_place(self):
+        with Scenario() as scene:
+            attempt = _Attempt(scene, fail_call=1)
+            self.assertIn("cannot safely update", attempt.message)
+            self.assertEqual(attempt.target_bytes(), REVIEWED)
+            self.assertEqual(attempt.sidecars, [])
 
-class PreservedSidecarTests(unittest.TestCase):
-    """The second half: the diagnostic names the file holding the bytes."""
+    def test_interrupt_after_publication_leaves_new_and_old_bytes_reachable(self):
+        with Scenario() as scene:
+            attempt = _Attempt(scene, interrupt_after_call=1)
+            self.assertTrue(attempt.interrupted)
+            self.assertEqual(attempt.target_bytes(), NEW)
+            self.assertEqual(attempt.sidecar_bytes(), REVIEWED)
 
-    def test_an_occupied_target_names_the_sidecar_holding_the_earlier_bytes(self):
+    def test_a_failed_rollback_names_the_competing_bytes(self):
+        with Scenario() as scene:
+            attempt = _Attempt(scene, race=True, fail_call=2)
+            self.assertIn("could not be restored", attempt.message)
+            self.assertIn(attempt.sidecar, attempt.message)
+            self.assertEqual(attempt.target_bytes(), NEW)
+            self.assertEqual(attempt.sidecar_bytes(), RACED)
+
+    def test_interrupt_after_rollback_names_the_actual_new_bytes_sidecar(self):
         with Scenario() as scene:
             attempt = _Attempt(
                 scene,
                 race=True,
-                claim_link_error=FileExistsError(),
-                late_writer=True,
-            )
-            self.assertIn("the current target was preserved", attempt.message)
-            self.assertIn(attempt.sidecar, attempt.message)
-            self.assertEqual(attempt.sidecar_bytes(), RACED)
-            self.assertEqual(attempt.target_bytes(), LATE)
-
-    def test_a_failed_restore_names_the_sidecar_to_recover_from(self):
-        with Scenario() as scene:
-            attempt = _Attempt(
-                scene, race=True, claim_link_error=OSError("no restore")
+                interrupt_after_call=2,
             )
             self.assertIn("could not be restored", attempt.message)
             self.assertIn(attempt.sidecar, attempt.message)
-            self.assertEqual(attempt.sidecar_bytes(), RACED)
-            self.assertIsNone(attempt.target_bytes())
+            self.assertEqual(attempt.target_bytes(), RACED)
+            self.assertEqual(attempt.sidecar_bytes(), NEW)
 
-    def test_a_failed_publish_and_restore_names_the_reviewed_bytes(self):
+    def test_a_late_in_place_writer_is_restored_and_earlier_bytes_are_named(self):
+        with Scenario() as scene:
+            attempt = _Attempt(scene, race=True, late_writer_on_call=2)
+            self.assertIn("latest target was preserved", attempt.message)
+            self.assertIn(attempt.sidecar, attempt.message)
+            self.assertEqual(attempt.target_bytes(), LATE)
+            self.assertEqual(attempt.sidecar_bytes(), RACED)
+
+    def test_interrupted_late_writer_recovery_keeps_both_competitors(self):
         with Scenario() as scene:
             attempt = _Attempt(
                 scene,
-                claim_link_error=OSError("no restore"),
-                publish_link_error=OSError("no publish"),
+                race=True,
+                late_writer_on_call=2,
+                fail_call=3,
             )
-            self.assertIn("cannot publish or restore", attempt.message)
-            self.assertIn(attempt.sidecar, attempt.message)
-            self.assertEqual(attempt.sidecar_bytes(), REVIEWED)
-            self.assertIsNone(attempt.target_bytes())
+            self.assertIn("recovery was interrupted", attempt.message)
+            self.assertEqual(attempt.target_bytes(), RACED)
+            self.assertEqual(attempt.sidecar_bytes(), LATE)
 
-    def test_the_named_sidecar_is_the_one_that_exists(self):
-        """Not a pattern, a placeholder, or a name that was cleaned up."""
-        cases = (
-            dict(race=True, claim_link_error=FileExistsError(), late_writer=True),
-            dict(race=True, claim_link_error=OSError("no restore")),
-            dict(
-                claim_link_error=OSError("no restore"),
-                publish_link_error=OSError("no publish"),
-            ),
-        )
-        for index, case in enumerate(cases):
-            with self.subTest(branch=index):
-                with Scenario() as scene:
-                    attempt = _Attempt(scene, **case)
-                    named = [
-                        word.rstrip(".,;")
-                        for word in attempt.message.split()
-                        if ".claim" in word
-                    ]
-                    self.assertEqual(named, [attempt.sidecar])
-                    self.assertTrue((attempt.root / named[0]).is_file())
-
-    def test_no_lock_or_temporary_file_is_left_behind(self):
-        """Only the claim survives, so the sidecar the message names is clear."""
+    def test_only_the_diagnostic_sidecar_survives_an_ambiguous_failure(self):
         with Scenario() as scene:
-            attempt = _Attempt(
-                scene, race=True, claim_link_error=OSError("no restore")
+            attempt = _Attempt(scene, race=True, fail_call=2)
+            self.assertEqual(attempt.sidecars, [attempt.sidecar])
+            self.assertIn(attempt.sidecar, attempt.message)
+            self.assertFalse(
+                (attempt.root / ".base.json.boundver-update.lock").exists()
             )
-            leftovers = sorted(
-                entry.name
-                for entry in attempt.root.iterdir()
-                if entry.name.startswith(".base.json.")
-            )
-            self.assertEqual(leftovers, [attempt.sidecar])
 
 
 if __name__ == "__main__":

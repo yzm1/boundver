@@ -14,6 +14,7 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -627,6 +628,9 @@ def _open_windows_relative(
         wintypes.DWORD,
     ]
     create_file.restype = ctypes.c_long
+    share_access = 0x00000001 | 0x00000002
+    if not directory:
+        share_access |= 0x00000004  # FILE_SHARE_DELETE
     status = create_file(
         ctypes.byref(handle),
         desired_access,
@@ -634,7 +638,7 @@ def _open_windows_relative(
         ctypes.byref(io_status),
         None,
         0x00000010 if directory else 0x00000080,
-        0x00000001 | 0x00000002 | 0x00000004,
+        share_access,
         2 if create else 1,  # FILE_CREATE or FILE_OPEN
         create_options,
         None,
@@ -783,6 +787,108 @@ def _windows_unlink_sibling(directory_fd: int, name: str) -> None:
             _raise_windows_ntstatus(status)
     finally:
         os.close(file_fd)
+
+
+def _windows_replace_file_with_backup(
+    directory_fd: int,
+    replacement: str,
+    target: str,
+    backup: str,
+) -> None:
+    """Atomically replace *target* relative to a held directory handle."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    final_path = kernel32.GetFinalPathNameByHandleW
+    final_path.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    final_path.restype = wintypes.DWORD
+    directory_handle = msvcrt.get_osfhandle(directory_fd)
+    required = final_path(directory_handle, None, 0, 0)
+    if not required:
+        raise ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_unicode_buffer(required + 1)
+    written = final_path(directory_handle, buffer, len(buffer), 0)
+    if not written or written >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    live_directory = buffer.value.rstrip("\\/")
+
+    replace_file = kernel32.ReplaceFileW
+    replace_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    replace_file.restype = wintypes.BOOL
+    if not replace_file(
+        f"{live_directory}\\{target}",
+        f"{live_directory}\\{replacement}",
+        f"{live_directory}\\{backup}",
+        0,
+        None,
+        None,
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _posix_exchange_siblings(directory_fd: int, left: str, right: str) -> None:
+    """Atomically exchange two sibling names without an absent-path window."""
+    import ctypes
+    import errno
+
+    library = ctypes.CDLL(None, use_errno=True)
+    left_bytes = os.fsencode(left)
+    right_bytes = os.fsencode(right)
+    if sys.platform == "darwin":
+        exchange = getattr(library, "renameatx_np", None)
+        if exchange is None:
+            raise OSError(errno.ENOTSUP, "atomic file exchange is unavailable")
+        exchange.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        exchange.restype = ctypes.c_int
+        result = exchange(
+            directory_fd,
+            left_bytes,
+            directory_fd,
+            right_bytes,
+            0x00000002,  # RENAME_SWAP
+        )
+    else:
+        exchange = getattr(library, "renameat2", None)
+        if exchange is None:
+            raise OSError(errno.ENOTSUP, "atomic file exchange is unavailable")
+        exchange.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        exchange.restype = ctypes.c_int
+        result = exchange(
+            directory_fd,
+            left_bytes,
+            directory_fd,
+            right_bytes,
+            0x00000002,  # RENAME_EXCHANGE
+        )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def _open_plain_directory(path: Path) -> int:
@@ -976,6 +1082,38 @@ class _MutationDirectory:
             dst_dir_fd=self.fd,
         )
 
+    def replace_preserving_target(
+        self,
+        replacement: str,
+        target: str,
+        backup: str,
+    ) -> str:
+        """Atomically publish *replacement* while preserving *target*.
+
+        The returned sibling contains the exact target displaced at the
+        publication instant. The canonical target name exists before and after
+        the single native operation, including when the process is killed.
+        """
+        self._validate_name(replacement)
+        self._validate_name(target)
+        self._validate_name(backup)
+        if os.name == "nt":
+            try:
+                self.lstat(backup)
+            except FileNotFoundError:
+                pass
+            else:
+                raise FileExistsError(backup)
+            _windows_replace_file_with_backup(
+                self.fd,
+                replacement,
+                target,
+                backup,
+            )
+            return backup
+        _posix_exchange_siblings(self.fd, replacement, target)
+        return replacement
+
     def unlink(self, name: str) -> None:
         self._validate_name(name)
         if os.name == "nt":
@@ -1051,6 +1189,21 @@ def _reserve_sibling(
             return directory.open_exclusive(name), name
         except FileExistsError:
             continue
+    raise OSError("cannot allocate a unique baseline sidecar")
+
+
+def _unused_sibling(
+    directory: _MutationDirectory,
+    target_name: str,
+    suffix: str,
+) -> str:
+    """Choose a currently absent high-entropy sibling for a native backup."""
+    for _attempt in range(100):
+        name = f".{target_name}.{secrets.token_hex(8)}{suffix}"
+        try:
+            directory.lstat(name)
+        except FileNotFoundError:
+            return name
     raise OSError("cannot allocate a unique baseline sidecar")
 
 
@@ -1255,7 +1408,7 @@ def _replace_baseline_in_directory(
         )
 
         # Recheck both the selected bytes and our exclusive-lock identity at
-        # the last possible point before the atomic claim.
+        # the last possible point before atomic publication.
         _require_expected_live_bytes(directory, target_name, label, expected)
         try:
             current_lock = directory.lstat(lock_name)
@@ -1270,86 +1423,146 @@ def _replace_baseline_in_directory(
                 f"verification baseline update lock changed: {label}; refusing to write"
             )
 
-        # Atomically claim whatever currently occupies the target, then
-        # validate the claimed bytes. Every operation stays relative to the
-        # validated directory object, so an ancestor pathname swap cannot
-        # redirect either the claim, restoration, or publication.
-        claim_fd, claimed_name = _reserve_sibling(
-            directory,
-            target_name,
-            ".claim",
-        )
-        reserved_claim_identity = os.fstat(claim_fd)
-        os.close(claim_fd)
+        # Publish and retain the exact displaced target in one native atomic
+        # operation. The canonical pathname is never absent, even if the
+        # process is killed before validation or cleanup resumes.
+        published_identity = directory.lstat(temp_name)
+        backup_name = _unused_sibling(directory, target_name, ".claim")
+        possible_displaced_name = backup_name if os.name == "nt" else temp_name
         preserve_claim = True
         try:
-            directory.replace(target_name, claimed_name)
+            claimed_name = directory.replace_preserving_target(
+                temp_name,
+                target_name,
+                backup_name,
+            )
         except BaseException:
-            # An injected interrupt may arrive after the atomic move completed
-            # and before Python observes its return. A changed claim identity
-            # then owns displaced user bytes and must be restored exclusively.
             try:
-                current_claim_identity = directory.lstat(claimed_name)
+                possible_identity = directory.lstat(possible_displaced_name)
             except OSError:
-                claim_was_replaced = True
+                pass
             else:
-                claim_was_replaced = not _same_file_identity(
-                    reserved_claim_identity,
-                    current_claim_identity,
-                )
-            if claim_was_replaced:
-                try:
-                    directory.link(claimed_name, target_name)
-                except (FileExistsError, OSError):
-                    pass
-                else:
-                    directory.unlink(claimed_name)
-                    claimed_name = None
-                    preserve_claim = False
-                    directory.fsync()
-            else:
+                if not _same_file_identity(published_identity, possible_identity):
+                    claimed_name = possible_displaced_name
+                    temp_name = None
+            if claimed_name is None:
                 preserve_claim = False
             raise
+        temp_name = None
+
         try:
             _require_expected_live_bytes(directory, claimed_name, label, expected)
         except BaseException as exc:
-            restore_error: Optional[OSError] = None
-            target_occupied = False
+            rollback_name = _unused_sibling(
+                directory,
+                target_name,
+                ".rollback",
+            )
+            possible_replaced_name = (
+                rollback_name if os.name == "nt" else claimed_name
+            )
             try:
-                directory.link(claimed_name, target_name)
-            except FileExistsError:
-                target_occupied = True
-            except OSError as restore_exc:
-                restore_error = restore_exc
-            else:
-                directory.unlink(claimed_name)
-                claimed_name = None
-                preserve_claim = False
-                directory.fsync()
-            if isinstance(exc, BaselineError):
-                if target_occupied:
-                    raise BaselineError(
-                        "verification baseline changed during update; the current "
-                        "target was preserved and earlier competing bytes remain at "
-                        f"{claimed_name}"
-                    ) from exc
-                if restore_error is not None:
+                replaced_name = directory.replace_preserving_target(
+                    claimed_name,
+                    target_name,
+                    rollback_name,
+                )
+            except BaseException as restore_exc:
+                try:
+                    directory.lstat(possible_replaced_name)
+                except OSError:
+                    pass
+                else:
+                    claimed_name = possible_replaced_name
+                preserve_claim = True
+                if isinstance(exc, BaselineError):
                     raise BaselineError(
                         "verification baseline changed during update and could not "
                         "be restored; recover the competing bytes from "
                         f"{claimed_name}"
-                    ) from restore_error
+                    ) from restore_exc
+                raise
+            claimed_name = replaced_name
+            try:
+                replaced_identity = directory.lstat(claimed_name)
+                replaced_content = _read_bounded_sibling_bytes(
+                    directory,
+                    claimed_name,
+                    label,
+                )
+            except (GuardrailError, OSError, ValueError):
+                replaced_identity = None
+                replaced_content = None
+            if (
+                replaced_identity is not None
+                and _same_file_identity(published_identity, replaced_identity)
+                and replaced_content == payload
+            ):
+                directory.unlink(claimed_name)
+                claimed_name = None
+                preserve_claim = False
+                directory.fsync()
+                if isinstance(exc, BaselineError):
+                    raise BaselineError(
+                        f"verification baseline changed during update: {label}; "
+                        "competing bytes were restored and no update was written"
+                    ) from exc
+                raise
+
+            # A later writer changed or replaced the just-published baseline.
+            # Restore those latest bytes to the canonical pathname and retain
+            # the earlier competitor for explicit recovery.
+            recovery_name = _unused_sibling(
+                directory,
+                target_name,
+                ".recovery",
+            )
+            possible_earlier_name = (
+                recovery_name if os.name == "nt" else claimed_name
+            )
+            try:
+                earlier_name = directory.replace_preserving_target(
+                    claimed_name,
+                    target_name,
+                    recovery_name,
+                )
+            except BaseException as recovery_exc:
+                try:
+                    directory.lstat(possible_earlier_name)
+                except OSError:
+                    pass
+                else:
+                    claimed_name = possible_earlier_name
+                preserve_claim = True
                 raise BaselineError(
-                    f"verification baseline changed during update: {label}; "
-                    "competing bytes were restored and no update was written"
-                ) from exc
-            raise
+                    "verification baseline recovery was interrupted; inspect the "
+                    f"canonical target and preserved sidecars for {label}"
+                ) from recovery_exc
+            claimed_name = earlier_name
+            preserve_claim = True
+            raise BaselineError(
+                "verification baseline changed during recovery; the latest target "
+                "was preserved and earlier competing bytes remain at "
+                f"{claimed_name}"
+            ) from exc
 
         try:
-            directory.link(temp_name, target_name)
-        except FileExistsError as exc:
-            # The claim matched the reviewed bytes, so it is safe to discard;
-            # the late writer at the target must remain untouched.
+            current_target = directory.lstat(target_name)
+            current_content = _read_bounded_sibling_bytes(
+                directory,
+                target_name,
+                label,
+            )
+        except (GuardrailError, OSError, ValueError) as exc:
+            preserve_claim = True
+            raise BaselineError(
+                "verification baseline target changed after publication; reviewed "
+                f"bytes remain at {claimed_name}"
+            ) from exc
+        if (
+            not _same_file_identity(published_identity, current_target)
+            or current_content != payload
+        ):
             directory.unlink(claimed_name)
             claimed_name = None
             preserve_claim = False
@@ -1357,33 +1570,7 @@ def _replace_baseline_in_directory(
             raise BaselineError(
                 f"verification baseline changed during update: {label}; "
                 "the competing target was preserved"
-            ) from exc
-        except OSError as exc:
-            # Publication failed while the target is absent. Restore reviewed
-            # bytes exclusively, retaining the claim only when recovery fails.
-            try:
-                directory.link(claimed_name, target_name)
-            except FileExistsError:
-                directory.unlink(claimed_name)
-                claimed_name = None
-                preserve_claim = False
-            except OSError as restore_exc:
-                preserve_claim = True
-                raise BaselineError(
-                    "cannot publish or restore verification baseline; recover "
-                    f"the reviewed bytes from {claimed_name}"
-                ) from restore_exc
-            else:
-                directory.unlink(claimed_name)
-                claimed_name = None
-                preserve_claim = False
-            directory.fsync()
-            raise BaselineError(
-                f"cannot safely publish verification baseline update {label}: {exc}"
-            ) from exc
-
-        directory.unlink(temp_name)
-        temp_name = None
+            )
         directory.unlink(claimed_name)
         claimed_name = None
         preserve_claim = False

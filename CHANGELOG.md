@@ -148,10 +148,11 @@ All notable changes to this project are documented here. The format follows
   relevant options, and missing non-JSON configs no longer receive an
   inapplicable `init` hint. `init` now warns when its editable scaffold cannot
   yet pass validation instead of promising that generation is ready.
-- Made `add` and `remove` compare the live config with the exact bytes they
-  parsed, then atomically claim that checked file before exclusive publication.
-  Concurrent replacements arriving on either side of the claim are preserved
-  and cause a diagnosed exit `2` instead of being silently overwritten.
+- Made compare-and-publish rewrites keep their canonical path continuously
+  present. `add`, `remove`, and verification-baseline updates now use native
+  atomic exchange or replace-with-backup operations, validate the exact
+  displaced bytes, restore competing edits (including in-place late writers),
+  and retain a named recovery sidecar when the outcome cannot be reconciled.
 - Made clean sparse checkouts source-stable. An absent `skip-worktree` path is
   listed and read from its captured index blob in working-tree mode, matching
   Git's own unchanged verdict and the corresponding HEAD/index fingerprints.

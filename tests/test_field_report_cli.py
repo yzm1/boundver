@@ -1928,19 +1928,20 @@ class VerifyBaselineTests(unittest.TestCase):
             (root / "a" / "main.py").write_text("VALUE = 'a'\n")
             commit_all(root, "record baseline and resolve debt")
 
-            competing = b"changed in the final publication gap\n"
-            real_replace = _baseline._MutationDirectory.replace
+            competing = b"changed at final publication\n"
+            real_publish = _baseline._MutationDirectory.replace_preserving_target
             replacements = 0
 
-            def inject_final_gap_race(directory, source, target):
+            def inject_final_gap_race(directory, replacement, target, backup):
                 nonlocal replacements
                 replacements += 1
-                baseline_path.write_bytes(competing)
-                return real_replace(directory, source, target)
+                if replacements == 1:
+                    baseline_path.write_bytes(competing)
+                return real_publish(directory, replacement, target, backup)
 
             with patch.object(
                 _baseline._MutationDirectory,
-                "replace",
+                "replace_preserving_target",
                 new=inject_final_gap_race,
             ):
                 code, out, err = _run_main(
@@ -1950,7 +1951,7 @@ class VerifyBaselineTests(unittest.TestCase):
                     repo_root=root,
                 )
 
-            self.assertEqual(replacements, 1)
+            self.assertEqual(replacements, 2)
             self.assertEqual(code, core.EXIT_USAGE)
             self.assertEqual(out, "")
             self.assertIn("changed during update", err)
@@ -1959,7 +1960,7 @@ class VerifyBaselineTests(unittest.TestCase):
             self.assertEqual(list(root.glob(".debt.json.*.tmp")), [])
             self.assertEqual(list(root.glob(".debt.json.*.claim")), [])
 
-    def test_baseline_claim_restores_empty_competing_bytes_on_interrupt(self):
+    def test_baseline_publication_preserves_empty_competing_bytes_on_interrupt(self):
         from boundver import _baseline
 
         with tempfile.TemporaryDirectory() as td:
@@ -1976,20 +1977,20 @@ class VerifyBaselineTests(unittest.TestCase):
             self.assertEqual(code, 0, err)
             (root / "a" / "main.py").write_text("VALUE = 'a'\n")
             commit_all(root, "record baseline and resolve debt")
-            real_replace = _baseline._MutationDirectory.replace
+            real_publish = _baseline._MutationDirectory.replace_preserving_target
             replacements = 0
 
-            def interrupt_after_claim(directory, source, target):
+            def interrupt_after_publish(directory, replacement, target, backup):
                 nonlocal replacements
                 replacements += 1
                 baseline_path.write_bytes(b"")
-                real_replace(directory, source, target)
+                real_publish(directory, replacement, target, backup)
                 raise KeyboardInterrupt
 
             with patch.object(
                 _baseline._MutationDirectory,
-                "replace",
-                new=interrupt_after_claim,
+                "replace_preserving_target",
+                new=interrupt_after_publish,
             ):
                 with self.assertRaises(KeyboardInterrupt):
                     _run_main(
@@ -2000,10 +2001,15 @@ class VerifyBaselineTests(unittest.TestCase):
                     )
 
             self.assertEqual(replacements, 1)
-            self.assertEqual(baseline_path.read_bytes(), b"")
+            self.assertTrue(baseline_path.is_file())
+            self.assertEqual(
+                json.loads(baseline_path.read_text(encoding="utf-8"))["violations"],
+                [],
+            )
             self.assertFalse((root / ".debt.json.boundver-update.lock").exists())
-            self.assertEqual(list(root.glob(".debt.json.*.tmp")), [])
-            self.assertEqual(list(root.glob(".debt.json.*.claim")), [])
+            sidecars = list(root.glob(".debt.json.*"))
+            self.assertEqual(len(sidecars), 1)
+            self.assertEqual(sidecars[0].read_bytes(), b"")
 
     def test_baseline_temp_is_removed_when_durability_sync_is_interrupted(self):
         from boundver import _baseline

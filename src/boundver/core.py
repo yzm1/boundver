@@ -879,6 +879,21 @@ def _reserve_atomic_output_sibling(
     raise OSError("cannot allocate a unique output sidecar")
 
 
+def _unused_atomic_output_sibling(
+    directory: _MutationDirectory,
+    target_name: str,
+    suffix: str,
+) -> str:
+    """Choose a currently absent high-entropy sibling for an atomic backup."""
+    for _attempt in range(100):
+        candidate = f".{target_name}.{secrets.token_hex(8)}{suffix}"
+        try:
+            directory.lstat(candidate)
+        except FileNotFoundError:
+            return candidate
+    raise OSError("cannot allocate a unique output sidecar")
+
+
 def _write_text_atomic(
     path: Path,
     text: str,
@@ -887,9 +902,9 @@ def _write_text_atomic(
 ) -> None:
     """Replace *path* only after the complete UTF-8 payload is durable.
 
-    The temporary file lives beside the target so ``os.replace`` is atomic on
-    the target filesystem.  This prevents an interrupted generation/update
-    from leaving a truncated lockfile behind.
+    The temporary file lives beside the target so publication is atomic on the
+    target filesystem. This prevents an interrupted generation/update from
+    leaving a truncated or absent lockfile behind.
     """
     path, ancestors, held_fds = _prepare_atomic_output(path)
     parent_fd = held_fds[-1]
@@ -960,41 +975,41 @@ def _write_text_atomic(
                     f"Output file changed before publication: {path}; refusing to write"
                 )
 
-            # Move whatever now occupies the target to a private sibling, then
-            # validate those claimed bytes. Publication uses an exclusive hard
-            # link, so a writer arriving after the claim is preserved instead
-            # of being overwritten by the read-modify-write operation.
-            claim_fd, claimed_name = _reserve_atomic_output_sibling(
+            payload = text.encode("utf-8")
+
+            # Atomically exchange the durable replacement with the canonical
+            # pathname. The target therefore always names either complete old
+            # bytes or complete new bytes, while the exact displaced target is
+            # retained for the compare-and-publish check.
+            published_identity = directory.lstat(temp_name)
+            backup_name = _unused_atomic_output_sibling(
                 directory,
                 path.name,
                 ".claim",
             )
-            reserved_claim_identity = os.fstat(claim_fd)
-            os.close(claim_fd)
+            possible_displaced_name = (
+                backup_name if os.name == "nt" else temp_name
+            )
             preserve_claim = True
             try:
-                directory.replace(path.name, claimed_name)
+                claimed_name = directory.replace_preserving_target(
+                    temp_name,
+                    path.name,
+                    backup_name,
+                )
             except BaseException as exc:
                 try:
-                    current_claim_identity = directory.lstat(claimed_name)
+                    possible_identity = directory.lstat(possible_displaced_name)
                 except OSError:
-                    claim_was_replaced = True
+                    pass
                 else:
-                    claim_was_replaced = not _same_file_identity(
-                        reserved_claim_identity,
-                        current_claim_identity,
-                    )
-                if claim_was_replaced:
-                    try:
-                        directory.link(claimed_name, path.name)
-                    except (FileExistsError, OSError):
-                        pass
-                    else:
-                        directory.unlink(claimed_name)
-                        claimed_name = None
-                        preserve_claim = False
-                        directory.fsync()
-                else:
+                    if not _same_file_identity(
+                        published_identity,
+                        possible_identity,
+                    ):
+                        claimed_name = possible_displaced_name
+                        temp_name = None
+                if claimed_name is None:
                     preserve_claim = False
                 if isinstance(exc, (OSError, ValueError)):
                     raise ConfigError(
@@ -1002,6 +1017,7 @@ def _write_text_atomic(
                         "refusing to write"
                     ) from exc
                 raise
+            temp_name = None
 
             try:
                 claimed_content = _read_mutation_sibling_bytes(
@@ -1014,73 +1030,131 @@ def _write_text_atomic(
                         f"Output file changed during publication: {path}"
                     )
             except BaseException as exc:
-                restore_error: Optional[OSError] = None
-                target_occupied = False
+                # Swap the exact displaced bytes back into place. Whatever is
+                # at the canonical target at that instant remains recoverable
+                # at ``replaced_name`` for validation.
+                rollback_name = _unused_atomic_output_sibling(
+                    directory,
+                    path.name,
+                    ".rollback",
+                )
+                possible_replaced_name = (
+                    rollback_name if os.name == "nt" else claimed_name
+                )
                 try:
-                    directory.link(claimed_name, path.name)
-                except FileExistsError:
-                    target_occupied = True
-                except OSError as restore_exc:
-                    restore_error = restore_exc
-                else:
-                    directory.unlink(claimed_name)
-                    claimed_name = None
-                    preserve_claim = False
-                    directory.fsync()
-                if isinstance(exc, (ConfigError, OSError, ValueError)):
-                    if target_occupied:
-                        raise ConfigError(
-                            "Output file changed during publication; the current "
-                            "target was preserved and earlier competing bytes remain "
-                            f"at {claimed_name}: {path}"
-                        ) from exc
-                    if restore_error is not None:
+                    replaced_name = directory.replace_preserving_target(
+                        claimed_name,
+                        path.name,
+                        rollback_name,
+                    )
+                except BaseException as restore_exc:
+                    try:
+                        directory.lstat(possible_replaced_name)
+                    except OSError:
+                        pass
+                    else:
+                        claimed_name = possible_replaced_name
+                    preserve_claim = True
+                    if isinstance(exc, (ConfigError, OSError, ValueError)):
                         raise ConfigError(
                             "Output file changed during publication and could not be "
                             f"restored; recover competing bytes from {claimed_name}: "
                             f"{path}"
-                        ) from restore_error
+                        ) from restore_exc
+                    raise
+                claimed_name = replaced_name
+
+                try:
+                    replaced_identity = directory.lstat(claimed_name)
+                    replaced_content = _read_mutation_sibling_bytes(
+                        directory,
+                        claimed_name,
+                        limit=len(payload),
+                    )
+                except (ConfigError, OSError, ValueError):
+                    replaced_identity = None
+                    replaced_content = None
+                if (
+                    replaced_identity is not None
+                    and _same_file_identity(published_identity, replaced_identity)
+                    and replaced_content == payload
+                ):
+                    directory.unlink(claimed_name)
+                    claimed_name = None
+                    preserve_claim = False
+                    directory.fsync()
+                    if isinstance(exc, (ConfigError, OSError, ValueError)):
+                        raise ConfigError(
+                            "Output file changed during publication; competing bytes "
+                            f"were restored and no update was written: {path}"
+                        ) from exc
+                    raise
+
+                # A later writer changed or replaced our publication before
+                # rollback. Put those latest bytes back at the canonical name
+                # and retain the earlier competitor in a named sidecar.
+                recovery_name = _unused_atomic_output_sibling(
+                    directory,
+                    path.name,
+                    ".recovery",
+                )
+                possible_earlier_name = (
+                    recovery_name if os.name == "nt" else claimed_name
+                )
+                try:
+                    earlier_name = directory.replace_preserving_target(
+                        claimed_name,
+                        path.name,
+                        recovery_name,
+                    )
+                except BaseException as recovery_exc:
+                    try:
+                        directory.lstat(possible_earlier_name)
+                    except OSError:
+                        pass
+                    else:
+                        claimed_name = possible_earlier_name
+                    preserve_claim = True
                     raise ConfigError(
-                        "Output file changed during publication; competing bytes "
-                        f"were restored and no update was written: {path}"
-                    ) from exc
-                raise
+                        "Output recovery was interrupted; the canonical target and "
+                        f"preserved sidecars require inspection: {path}"
+                    ) from recovery_exc
+                claimed_name = earlier_name
+                preserve_claim = True
+                raise ConfigError(
+                    "Output file changed during recovery; the latest target was "
+                    "preserved and earlier competing bytes remain at "
+                    f"{claimed_name}: {path}"
+                ) from exc
 
             try:
-                directory.link(temp_name, path.name)
-            except FileExistsError as exc:
+                current_target = directory.lstat(path.name)
+                current_content = _read_mutation_sibling_bytes(
+                    directory,
+                    path.name,
+                    limit=len(payload),
+                )
+            except (ConfigError, OSError, ValueError) as exc:
+                preserve_claim = True
+                raise ConfigError(
+                    "Output target changed after publication; reviewed bytes remain "
+                    f"at {claimed_name}: {path}"
+                ) from exc
+            if (
+                not _same_file_identity(published_identity, current_target)
+                or current_content != payload
+            ):
+                # The displaced bytes were the expected document, so they are
+                # not unique competing data. Preserve the later target and
+                # remove only the redundant reviewed copy.
                 directory.unlink(claimed_name)
                 claimed_name = None
                 preserve_claim = False
                 directory.fsync()
                 raise ConfigError(
-                    "Output file changed during publication; the competing target "
+                    "Output file changed after publication; the competing target "
                     f"was preserved: {path}"
-                ) from exc
-            except OSError as exc:
-                try:
-                    directory.link(claimed_name, path.name)
-                except FileExistsError:
-                    directory.unlink(claimed_name)
-                    claimed_name = None
-                    preserve_claim = False
-                except OSError as restore_exc:
-                    preserve_claim = True
-                    raise ConfigError(
-                        "Cannot publish or restore output; recover the reviewed "
-                        f"bytes from {claimed_name}: {path}"
-                    ) from restore_exc
-                else:
-                    directory.unlink(claimed_name)
-                    claimed_name = None
-                    preserve_claim = False
-                directory.fsync()
-                raise ConfigError(
-                    f"Cannot safely publish output: {path}"
-                ) from exc
-
-            directory.unlink(temp_name)
-            temp_name = None
+                )
             directory.unlink(claimed_name)
             claimed_name = None
             preserve_claim = False
