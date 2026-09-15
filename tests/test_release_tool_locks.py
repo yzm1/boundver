@@ -112,6 +112,16 @@ def test_generated_locks_are_canonical_and_complete():
         assert len(hashes) == len(set(hashes))
 
 
+def test_release_profile_installs_exhaustive_test_runtime():
+    locker = _load_locker()
+    _, profiles = locker.load_manifest()
+    release_requirements = {
+        requirement.name for requirement in profiles["release"].requirements
+    }
+
+    assert {"hypothesis", "sortedcontainers"} <= release_requirements
+
+
 def test_lock_generation_rejects_active_pypi_advisories():
     locker = _load_locker()
     requirement = locker.Requirement("example", "1.0")
