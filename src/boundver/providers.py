@@ -55,6 +55,7 @@ from ._utils import (
     _json_integer_is_bounded,
     _normalize_declared_path,
     _PathGlobOperation,
+    _select_literal_path_prefix,
 )
 
 
@@ -112,14 +113,32 @@ def _resolve_declared_files(
     seen: set[str] = set()
     selected: List[tuple[str, str]] = []
     errors: List[str] = []
-    all_component_files: Optional[List[str]] = None
+    all_component_entries: Optional[List[tuple[str, str]]] = None
+    all_component_children: Optional[List[str]] = None
+    component_repo_by_child: Optional[Dict[str, str]] = None
     glob_operation = _PathGlobOperation("Boundary file selection")
 
-    def component_files() -> List[str]:
-        nonlocal all_component_files
-        if all_component_files is None:
-            all_component_files = sorted(ctx.list_files(ctx.component_path))
-        return all_component_files
+    def component_entries() -> List[tuple[str, str]]:
+        nonlocal all_component_entries
+        if all_component_entries is None:
+            all_component_entries = [
+                (
+                    repo_rel,
+                    _component_relative_path(ctx.component_path, repo_rel),
+                )
+                for repo_rel in sorted(ctx.list_files(ctx.component_path))
+            ]
+        return all_component_entries
+
+    def component_index() -> tuple[List[str], Dict[str, str]]:
+        nonlocal all_component_children, component_repo_by_child
+        if all_component_children is None or component_repo_by_child is None:
+            entries = component_entries()
+            all_component_children = [child_rel for _repo_rel, child_rel in entries]
+            component_repo_by_child = {
+                child_rel: repo_rel for repo_rel, child_rel in entries
+            }
+        return all_component_children, component_repo_by_child
 
     for declared in sorted(paths):
         try:
@@ -133,28 +152,29 @@ def _resolve_declared_files(
                 return [], errors
             continue
 
-        if _is_glob(rel):
-            matches = []
-            try:
+        try:
+            if _is_glob(rel):
+                matches = []
                 glob_operation.prepare(rel)
-                for repo_rel in component_files():
-                    child_rel = _component_relative_path(
-                        ctx.component_path,
-                        repo_rel,
-                    )
+                for repo_rel, child_rel in component_entries():
                     if glob_operation.matches(child_rel, rel):
                         matches.append((repo_rel, child_rel))
-            except GuardrailError as exc:
-                return [], [
-                    _bounded_provider_error_text(
-                        "Boundary glob matching failed closed for "
-                        f"{_bounded_diagnostic_repr(rel)}: {exc}"
+            else:
+                children, by_child = component_index()
+                matches = [
+                    (by_child[child_rel], child_rel)
+                    for child_rel in _select_literal_path_prefix(
+                        children,
+                        rel,
+                        glob_operation,
                     )
                 ]
-        else:
-            matches = [
-                (repo_rel, _component_relative_path(ctx.component_path, repo_rel))
-                for repo_rel in sorted(ctx.list_files(_join_repo_path(ctx.component_path, rel)))
+        except GuardrailError as exc:
+            return [], [
+                _bounded_provider_error_text(
+                    "Boundary path selection failed closed for "
+                    f"{_bounded_diagnostic_repr(rel)}: {exc}"
+                )
             ]
 
         if not matches:

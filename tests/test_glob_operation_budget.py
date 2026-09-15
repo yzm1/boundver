@@ -15,6 +15,7 @@ from boundver._utils import (
     _compile_path_glob,
     _match_path_glob,
     _PathGlobOperation,
+    _select_literal_path_prefix,
 )
 from boundver.providers import PathHashProvider, ProviderContext
 from tests._repo_fixtures import commit_all, init_git_repo
@@ -95,7 +96,7 @@ class CompiledPathGlobTests(unittest.TestCase):
             self.assertIn("aggregate glob compile/match steps", resolved.errors[0])
             self.assertIn("reduce wildcard declarations", resolved.errors[0])
 
-    def test_literal_provider_path_does_not_consume_glob_budget(self) -> None:
+    def test_literal_provider_path_uses_the_shared_selection_budget(self) -> None:
         files = {"svc/file.txt": b"contract\n"}
         context = ProviderContext(
             repo_root=Path("/repo"),
@@ -110,11 +111,28 @@ class CompiledPathGlobTests(unittest.TestCase):
             ],
         )
 
-        with patch.object(utils, "MAX_GLOB_OPERATION_STEPS", 0):
+        with patch.object(utils, "MAX_GLOB_OPERATION_STEPS", 1):
+            starved = PathHashProvider().resolve(context)
+        with patch.object(utils, "MAX_GLOB_OPERATION_STEPS", 2):
             resolved = PathHashProvider().resolve(context)
 
+        self.assertEqual(starved.status, "error")
+        self.assertIn("aggregate glob compile/match steps", starved.errors[0])
         self.assertEqual(resolved.status, "ok", resolved.errors)
         self.assertEqual(resolved.entries, [("file:file.txt", b"contract\n")])
+
+    def test_literal_prefix_lookup_is_indexed_and_charges_returned_paths(self) -> None:
+        paths = [f"group-{index:05d}/contract.json" for index in range(50_000)]
+        operation = _PathGlobOperation("literal selection", max_steps=2)
+
+        selected = _select_literal_path_prefix(
+            paths,
+            "group-49999/contract.json",
+            operation,
+        )
+
+        self.assertEqual(selected, ["group-49999/contract.json"])
+        self.assertEqual(operation.steps, 2)
 
 
 class PrimaryGlobOperationTests(unittest.TestCase):
@@ -150,6 +168,23 @@ class PrimaryGlobOperationTests(unittest.TestCase):
                             ["file-*.txt"],
                             source=source,
                         )
+
+    def test_literal_config_expansion_uses_the_same_operation_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo_with_files(root)
+
+            with patch.object(utils, "MAX_GLOB_OPERATION_STEPS", 5):
+                with self.assertRaisesRegex(
+                    GuardrailError,
+                    "aggregate glob compile/match steps",
+                ):
+                    _expand_component_paths(
+                        root,
+                        "svc",
+                        [f"missing-{index}.txt" for index in range(6)],
+                        source="head",
+                    )
 
     def test_validation_shares_one_budget_across_boundary_and_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -217,6 +252,37 @@ class PrimaryGlobOperationTests(unittest.TestCase):
             )
             self.assertIn("failed closed", result["error"])
             self.assertIn("reduce wildcard declarations", result["error"])
+
+    def test_literal_explain_matching_uses_the_same_operation_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._repo_with_files(root)
+            for path in sorted((root / "svc").glob("*.txt")):
+                path.write_text("changed\n", encoding="utf-8")
+            config = {
+                "project": "p",
+                "components": {
+                    "svc": {
+                        "path": "svc",
+                        "boundary": {
+                            "provider": "path-hash",
+                            "paths": [f"missing-{index}.txt" for index in range(6)],
+                        },
+                    }
+                },
+            }
+
+            with patch.object(utils, "MAX_GLOB_OPERATION_STEPS", 5):
+                result = analyze_explain_changes(
+                    config,
+                    root,
+                    "svc",
+                    base_ref="HEAD",
+                    source="working-tree",
+                )
+
+            self.assertEqual(set(result), {"error"})
+            self.assertIn("aggregate glob compile/match steps", result["error"])
 
 
 def _independent_compile_steps(pattern: str) -> int:

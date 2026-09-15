@@ -13,6 +13,7 @@ from ._utils import (
     _is_glob,
     _normalize_declared_path,
     _PathGlobOperation,
+    _select_literal_path_prefix,
     GuardrailError,
 )
 
@@ -44,20 +45,36 @@ def _selected_paths(
     operation: _PathGlobOperation,
 ) -> Set[str]:
     normalized = tuple(_normalize_declared_path(selector) for selector in selectors)
-    return {
-        path
-        for path in paths
-        if any(_matches_selector(path, selector, operation) for selector in normalized)
-    }
+    selected: Set[str] = set()
+    for selector in normalized:
+        if _is_glob(selector):
+            selected.update(
+                path for path in paths if operation.matches(path, selector)
+            )
+        else:
+            selected.update(_select_literal_path_prefix(paths, selector, operation))
+    return selected
 
 
-def _component_paths(all_files: Sequence[str], component_path: str) -> List[str]:
+def _component_paths(
+    all_files: Sequence[str],
+    component_path: str,
+    operation: _PathGlobOperation,
+) -> List[str]:
     prefix = _normalize_declared_path(component_path).rstrip("/")
-    return [
-        path
-        for path in all_files
-        if path == prefix or path.startswith(prefix + "/")
-    ]
+    return _select_literal_path_prefix(all_files, prefix, operation)
+
+
+def _belongs_to_ownership_root(
+    path: str,
+    ownership_roots: Sequence[str],
+    operation: _PathGlobOperation,
+) -> bool:
+    for root in ownership_roots:
+        operation.spend()
+        if path == root or path.startswith(root + "/"):
+            return True
+    return False
 
 
 def _repo_path(component_path: str, relative_path: str) -> str:
@@ -163,7 +180,7 @@ def declaration_coverage(
         for vendored_path in component.get("vendored_copies", []):
             ownership_roots.add(_normalize_declared_path(vendored_path).rstrip("/"))
 
-        tracked = _component_paths(all_files, component_path)
+        tracked = _component_paths(all_files, component_path, operation)
         relative = [
             path[len(component_path) + 1 :] if path != component_path else ""
             for path in tracked
@@ -259,9 +276,10 @@ def declaration_coverage(
     source_files = sorted(
         _selected_paths(all_files, indicators, operation) if indicators else set()
     )
+    sorted_ownership_roots = sorted(ownership_roots)
     unowned_by_directory: Dict[str, dict] = {}
     for path in source_files:
-        if any(path == root or path.startswith(root + "/") for root in ownership_roots):
+        if _belongs_to_ownership_root(path, sorted_ownership_roots, operation):
             continue
         directory = posixpath.dirname(path) or "."
         group = unowned_by_directory.setdefault(

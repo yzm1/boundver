@@ -1,5 +1,6 @@
 """Shared utilities, enums, and exception types for boundver."""
 
+from bisect import bisect_left
 import io
 import json
 import math
@@ -2056,6 +2057,33 @@ class _PathGlobOperation:
             _step_consumer=self._spend,
             _allow_descendants=allow_descendants,
         )
+
+
+def _select_literal_path_prefix(
+    sorted_paths: Sequence[str],
+    selector: str,
+    operation: _PathGlobOperation,
+) -> List[str]:
+    """Select one literal or directory prefix with bounded indexed work."""
+    exact_index = bisect_left(sorted_paths, selector)
+    matches: List[str] = []
+    if exact_index < len(sorted_paths) and sorted_paths[exact_index] == selector:
+        matches.append(sorted_paths[exact_index])
+
+    descendant_start = bisect_left(sorted_paths, selector + "/")
+    # '/' sorts immediately before '0', so selector + '0' is an exclusive
+    # upper bound for every path beginning with selector + '/'.
+    descendant_end = bisect_left(
+        sorted_paths,
+        selector + "0",
+        descendant_start,
+    )
+    matches.extend(sorted_paths[descendant_start:descendant_end])
+
+    # Charge admission and every returned path. Repeated or overlapping
+    # literals therefore remain bounded even though their lookup is indexed.
+    operation.spend(1 + len(matches))
+    return matches
 
 
 def _match_path_glob(

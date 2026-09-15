@@ -209,6 +209,35 @@ def test_coverage_exclusion_selectors_are_normalized_once(
     assert calls == ["services/api/internal.py"]
 
 
+def test_component_and_source_literal_selection_are_indexed_and_bounded() -> None:
+    paths = [f"services/api/file-{index:05d}.py" for index in range(50_000)]
+    component_operation = _PathGlobOperation("Declaration coverage", max_steps=2)
+    source_operation = _PathGlobOperation("Declaration coverage", max_steps=2)
+
+    assert coverage._component_paths(
+        paths,
+        "services/api/file-49999.py",
+        component_operation,
+    ) == ["services/api/file-49999.py"]
+    assert coverage._selected_paths(
+        paths,
+        ["services/api/file-49999.py"],
+        source_operation,
+    ) == {"services/api/file-49999.py"}
+    assert component_operation.steps == source_operation.steps == 2
+
+
+def test_ownership_root_comparisons_share_the_coverage_operation_budget() -> None:
+    operation = _PathGlobOperation("Declaration coverage", max_steps=2)
+
+    with pytest.raises(GuardrailError, match="aggregate glob compile/match steps"):
+        coverage._belongs_to_ownership_root(
+            "tools/unowned.py",
+            ["first", "second", "third"],
+            operation,
+        )
+
+
 def test_coverage_groups_selector_and_ownership_omissions_with_exclusions(
     tmp_path: Path,
 ) -> None:

@@ -31,6 +31,7 @@ from ._utils import (
     _iter_bounded_json_values,
     _normalize_declared_path,
     _PathGlobOperation,
+    _select_literal_path_prefix,
     boundary_provider_name,
     ConfigError as ConfigError,
     GuardrailError,
@@ -409,7 +410,6 @@ def _expand_component_paths(
             rel_norm = _normalize_declared_path(rel)
         except ValueError:
             continue
-        is_dir_like = rel.endswith("/")
         if _is_glob(rel_norm):
             glob_operation.prepare(rel_norm)
             for file_rel in all_files:
@@ -417,18 +417,13 @@ def _expand_component_paths(
                     matched.add(file_rel)
             continue
 
-        prefix = rel_norm.rstrip("/")
-        is_selected_directory = any(
-            file_rel.startswith(prefix + "/") for file_rel in all_files
+        matched.update(
+            _select_literal_path_prefix(
+                all_files,
+                rel_norm.rstrip("/"),
+                glob_operation,
+            )
         )
-        if is_dir_like or is_selected_directory:
-            for file_rel in all_files:
-                if file_rel == prefix or file_rel.startswith(prefix + "/"):
-                    matched.add(file_rel)
-        else:
-            for file_rel in all_files:
-                if file_rel == prefix:
-                    matched.add(file_rel)
 
     return matched
 

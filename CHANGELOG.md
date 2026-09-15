@@ -289,6 +289,10 @@ All notable changes to this project are documented here. The format follows
 - Pre-normalized declaration-coverage exclusions and charged literal selector
   comparisons to the report-wide work budget, preventing maximum-size valid
   policies from expanding into an unbounded omission/exclusion cross-product.
+- Consolidated indexed literal-prefix selection across config expansion,
+  built-in providers, derivation checks, and declaration coverage. Literal
+  boundary-change and coverage-ownership comparisons now spend the same
+  operation-wide budget as wildcard work.
 - Made the exhaustive embedding-documentation assertion compare normalized
   repository paths, so it exercises the same reference on Windows and POSIX.
 

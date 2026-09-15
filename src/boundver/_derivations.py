@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Set, Tuple
 
@@ -25,6 +24,7 @@ from ._utils import (
     _bounded_json_dumps,
     _is_glob,
     _normalize_declared_path,
+    _select_literal_path_prefix,
 )
 
 
@@ -64,30 +64,6 @@ def _normalized_selector_matches(
     return path == normalized or path.startswith(normalized.rstrip("/") + "/")
 
 
-def _literal_selector_paths(
-    all_files: Sequence[str],
-    selector: str,
-    operation: _PathGlobOperation,
-) -> List[str]:
-    """Select one literal or directory prefix without rescanning the tree."""
-    exact_index = bisect_left(all_files, selector)
-    matches: List[str] = []
-    if exact_index < len(all_files) and all_files[exact_index] == selector:
-        matches.append(all_files[exact_index])
-
-    prefix = selector + "/"
-    descendant_start = bisect_left(all_files, prefix)
-    # '/' sorts immediately before '0', so selector + '0' is an exclusive
-    # upper bound for every path beginning with selector + '/'.
-    descendant_end = bisect_left(all_files, selector + "0", descendant_start)
-    matches.extend(all_files[descendant_start:descendant_end])
-
-    # Charge admission and every returned path. Repeated or overlapping
-    # literals therefore remain bounded even though their lookup is indexed.
-    operation.spend(1 + len(matches))
-    return matches
-
-
 def _select_paths(
     all_files: Sequence[str],
     selectors: object,
@@ -118,7 +94,7 @@ def _select_paths(
                     if operation.matches(path, normalized)
                 ]
             else:
-                matches = _literal_selector_paths(
+                matches = _select_literal_path_prefix(
                     all_files,
                     normalized,
                     operation,
@@ -174,11 +150,10 @@ def _configured_boundary_files(
             root = _normalize_declared_path(component_path).rstrip("/")
         except ValueError:
             continue
-        prefix = root + "/"
-        for path in all_files:
-            if not path.startswith(prefix):
+        for path in _select_literal_path_prefix(all_files, root, operation):
+            if path == root:
                 continue
-            relative = path[len(prefix) :]
+            relative = path[len(root) + 1 :]
             for selector in normalized_selectors:
                 try:
                     if _normalized_selector_matches(relative, selector, operation):

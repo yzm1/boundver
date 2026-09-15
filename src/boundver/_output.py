@@ -773,15 +773,17 @@ def analyze_explain_changes(
                     if glob_operation.matches(component_relative, bp):
                         boundary_changed.append((status, rel))
                         break
-                elif component_relative == bp or component_relative.startswith(
-                    f"{bp}/"
-                ):
-                    boundary_changed.append((status, rel))
-                    break
+                else:
+                    glob_operation.spend()
+                    if component_relative == bp or component_relative.startswith(
+                        f"{bp}/"
+                    ):
+                        boundary_changed.append((status, rel))
+                        break
     except GuardrailError as exc:
         return {
             "error": (
-                "boundary glob analysis failed closed: "
+                "boundary path analysis failed closed: "
                 f"{_bounded_exception_text(exc)}"
             )
         }
