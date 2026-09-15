@@ -555,6 +555,7 @@ readonly codex_clean_emoji_status_regex=':(rocket|tada):'
 readonly codex_clean_verdict_regex="^Codex Review: Didn't find any major issues\\.( (${codex_clean_bang_status_regex}|${codex_clean_period_status_regex}|${codex_clean_question_status_regex}|${codex_clean_emoji_status_regex}))?$"
 readonly codex_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex in GitHub</summary>$'
 readonly codex_security_clean_verdict='Security review completed. No security issues were found in this pull request.'
+readonly codex_security_heading='### 🛡️ Codex Security Review'
 readonly codex_security_report_regex='^\[View security finding report\]\(https://chatgpt\.com/codex/cloud/tasks/task_[A-Za-z0-9_-]{1,128}\)$'
 readonly codex_security_notice='_Only the user who started this review can view the report in Codex._'
 readonly codex_security_footer_open_regex='^<details>[[:space:]]+<summary>.*About Codex security reviews in GitHub</summary>$'
@@ -719,7 +720,7 @@ codex_comment_has_unique_marker() {
 
 codex_body_is_clean_security_review() {
   local body=$1
-  local state=verdict
+  local state=heading_or_verdict
   local footer_state=outside
   local line
   codex_marker_sha=
@@ -739,6 +740,15 @@ codex_body_is_clean_security_review() {
     fi
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
     case "$state" in
+      heading_or_verdict)
+        if [[ "$line" == "$codex_security_heading" ]]; then
+          state=verdict
+        elif [[ "$line" == "$codex_security_clean_verdict" ]]; then
+          state=marker
+        else
+          return 1
+        fi
+        ;;
       verdict)
         [[ "$line" == "$codex_security_clean_verdict" ]] || return 1
         state=marker
@@ -773,7 +783,8 @@ codex_body_is_security_review_candidate() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     line=${line%$'\r'}
     case "$line" in
-      "Security review completed."*|"[View security finding report]"*|\
+      "$codex_security_heading"|"Security review completed."*|\
+        "[View security finding report]"*|\
         "_Only the user who started this review can view the report in Codex._"|\
         *"About Codex security reviews in GitHub</summary>")
         return 0
