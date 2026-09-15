@@ -1058,7 +1058,7 @@ def _require_process_local_git_config(
 
 
 def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
-    """Return bounded local config keys that mark a partial clone."""
+    """Return bounded effective repository config keys marking a partial clone."""
     repo_root = Path(resolved_repo_root)
     environment = _repository_config_query_environment(
         str(repo_root.resolve(strict=False))
@@ -1068,8 +1068,7 @@ def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
             repo_root,
             [
                 "config",
-                "--local",
-                "--no-includes",
+                "--includes",
                 "--null",
                 "--get-regexp",
                 _PARTIAL_CLONE_CONFIG_PATTERN,

@@ -299,6 +299,10 @@ All notable changes to this project are documented here. The format follows
   non-directory ancestors and revalidated each ancestor after the bounded read.
   Repository output paths now also reject lone Unicode surrogates before any
   host-dependent path construction or filesystem mutation.
+- Detected partial-clone signals from effective repository and per-worktree Git
+  configuration, including repository-controlled includes, so Git versions
+  before 2.45 cannot bypass the no-lazy-fetch safety gate through
+  `extensions.worktreeConfig`.
 
 ## [0.15.2] - 2026-09-07
 

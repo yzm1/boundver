@@ -740,6 +740,62 @@ class ReadSurfaceTests(unittest.TestCase):
         self.assertIn(self.absent, result.stdout)
 
 
+class WorktreeConfigShapeTests(unittest.TestCase):
+    """Partial-clone signals in every effective repository scope are visible."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        init_git_repo(self.root, initial_branch="main")
+
+    def test_the_detector_reads_a_worktree_scoped_promisor(self):
+        _git(self.root, "config", "extensions.worktreeConfig", "true")
+        _git(self.root, "config", "--worktree", "remote.origin.promisor", "true")
+
+        signals = git_module._partial_clone_signals(str(self.root.resolve()))
+
+        self.assertIn("remote.origin.promisor", signals)
+
+    def test_old_git_is_refused_for_a_worktree_scoped_promisor(self):
+        _git(self.root, "config", "extensions.worktreeConfig", "true")
+        _git(self.root, "config", "--worktree", "remote.origin.promisor", "true")
+
+        with self.assertRaisesRegex(GuardrailError, "Git 2.45.0 or newer"):
+            git_module._require_safe_partial_clone_support(
+                str(self.root.resolve()),
+                (2, 44, 9),
+                "2.44.9",
+            )
+
+    def test_the_detector_reads_repository_includes_used_by_git(self):
+        included = self.root / "partial-clone.inc"
+        included.write_text(
+            '[remote "included"]\n\tpromisor = true\n',
+            encoding="utf-8",
+        )
+        _git(self.root, "config", "include.path", str(included))
+
+        signals = git_module._partial_clone_signals(str(self.root.resolve()))
+
+        self.assertIn("remote.included.promisor", signals)
+
+    def test_the_effective_query_still_suppresses_ambient_global_config(self):
+        global_config = self.root / "ambient-global.config"
+        global_config.write_text(
+            '[remote "ambient"]\n\tpromisor = true\n',
+            encoding="utf-8",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": str(global_config)},
+            clear=False,
+        ):
+            signals = git_module._partial_clone_signals(str(self.root.resolve()))
+
+        self.assertNotIn("remote.ambient.promisor", signals)
+
+
 class ShapeDetectionTests(unittest.TestCase):
     """OBL-GIT-SOURCE-158: partial-clone shape and version-aware refusal."""
 
