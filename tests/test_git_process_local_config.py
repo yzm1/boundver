@@ -950,13 +950,13 @@ class HostileFilterSuppressionTests(
         """The honest limit of the blast radius, pinned so it is not overstated.
 
         Losing the block does not let this repository's filter run during a
-        boundver command, because boundver issues no command that would
-        consult it. That reason is asserted rather than inferred: every Git
-        process both verifies start is named, none of them is one of the
-        subcommands that compares a working tree against the index, and the
-        two refusals that make it so are provoked directly. The raw ambient
-        control in the same test shows the fixture firing for a command
-        boundver cannot issue.
+        completed boundver command, because the process-config capability gate
+        refuses the operation first. That reason is asserted rather than
+        inferred: every Git process each verify starts is recorded separately,
+        none is one of the subcommands that compares a working tree against the
+        index, and the two command-level refusals that make it so are provoked
+        directly. The raw ambient control in the same test shows the fixture
+        firing for a command boundver cannot issue.
 
         The working-tree verify exits 1 here, and that is the point of running
         it: the hostile edit is exactly what it reports, so it demonstrably
@@ -982,48 +982,73 @@ class HostileFilterSuppressionTests(
                 git._offline_git_command(scene.root, ["diff"])
             self.assertIn("clean filters", str(refused_diff.exception))
 
-            seen: Dict[str, set] = {}
             for label, strip in (
                 ("the process-local block intact", False),
                 ("the process-local block discarded", True),
             ):
                 with self.subTest(mechanism=label):
-                    self._clear_git_caches()
                     self.marker.unlink(missing_ok=True)
-                    with _simulated_git(strip=strip):
-                        with _recorded_git_launches(executable) as launches:
-                            from_head = run_cli_in_process(scene.root, "verify")
-                            from_tree = run_cli_in_process(
-                                scene.root, "verify", "--source", "working-tree"
+                    for source, args in (
+                        ("head", ()),
+                        ("working-tree", ("--source", "working-tree")),
+                    ):
+                        with self.subTest(mechanism=label, source=source):
+                            self._clear_git_caches()
+                            with _simulated_git(strip=strip):
+                                with _recorded_git_launches(executable) as launches:
+                                    result = run_cli_in_process(
+                                        scene.root, "verify", *args
+                                    )
+
+                            subcommands = {
+                                launch.subcommand for launch in launches
+                            }
+                            self.assertEqual(
+                                subcommands & FILTER_INVOKING_SUBCOMMANDS, set()
                             )
-                    self.assertEqual(from_head.returncode, 0, from_head.stderr)
-                    self.assertIn("Lockfile is up to date.", from_head.stdout)
-                    self.assertIn(f"HEAD@{head}", from_head.stdout)
-                    self.assertEqual(from_tree.returncode, 1, from_tree.stderr)
-                    self.assertIn("MISMATCH svc.exact", from_tree.stdout)
-
-                    self.assert_the_verify_did_its_work(launches)
-                    subcommands = {launch.subcommand for launch in launches}
-                    self.assertEqual(subcommands & FILTER_INVOKING_SUBCOMMANDS, set())
-                    self.assertLessEqual(subcommands, git._OFFLINE_GIT_SUBCOMMANDS)
-                    seen[label] = subcommands
-                    if not strip:
-                        self.assert_every_launch_is_hardened(launches, resolved)
-                        for launch in launches:
-                            if not launch.is_bootstrap_query:
-                                self.assertEqual(
-                                    launch.injected.get("filter.evil.clean"), ""
+                            self.assertLessEqual(
+                                subcommands, git._OFFLINE_GIT_SUBCOMMANDS
+                            )
+                            if strip:
+                                self.assertEqual(result.returncode, 2)
+                                self.assertEqual(result.stdout, "")
+                                self.assertIn(
+                                    "did not apply process-local security",
+                                    result.stderr,
                                 )
-                    else:
-                        self.assert_no_launch_carries_a_block(launches)
-                    self.assertFalse(self.marker.exists())
-
-            self.assertEqual(
-                seen["the process-local block intact"],
-                seen["the process-local block discarded"],
-                "the two arms must do the same work; an arm that ran fewer "
-                "commands would explain an absence by itself",
-            )
+                                self.assert_no_launch_carries_a_block(launches)
+                            else:
+                                if source == "head":
+                                    self.assertEqual(
+                                        result.returncode, 0, result.stderr
+                                    )
+                                    self.assertIn(
+                                        "Lockfile is up to date.", result.stdout
+                                    )
+                                    self.assertIn(f"HEAD@{head}", result.stdout)
+                                else:
+                                    self.assertEqual(
+                                        result.returncode, 1, result.stderr
+                                    )
+                                    self.assertIn(
+                                        "MISMATCH svc.exact", result.stdout
+                                    )
+                                if source == "head":
+                                    self.assert_the_verify_did_its_work(launches)
+                                else:
+                                    self.assertLessEqual(
+                                        {
+                                            "rev-parse",
+                                            "ls-files",
+                                            "write-tree",
+                                            "config",
+                                        },
+                                        subcommands,
+                                    )
+                                self.assert_every_launch_is_hardened(
+                                    launches, resolved
+                                )
+                            self.assertFalse(self.marker.exists())
 
 
 class GitCapabilityGateTests(unittest.TestCase):
@@ -1234,13 +1259,15 @@ class ReadBackAndFailClosedTests(_GitCaches, _LaunchAssertions, unittest.TestCas
 
         An equality between two runs proves nothing unless the document could
         have moved, so the middle arm moves it: ``core.filemode`` appended to
-        the block boundver built changes the mode a working-tree sample
-        records for a file the index carries as 100755, and the lockfile comes
-        out different. The hostile filter is not the lever here and could not
-        be, because boundver reads blobs with ``cat-file`` and working-tree
-        content itself, so no digest input ever passes through a clean filter.
-        What the block can move is what it tells Git about the worktree. The
-        third arm proves removing the block is detected before output exists.
+        the block boundver built is set to the opposite of the fixture's real
+        repository value. That changes the mode a working-tree sample records
+        for a file the index carries as 100755, on both Windows and POSIX, and
+        the lockfile comes out different. The hostile filter is not the lever
+        here and could not be, because boundver reads blobs with ``cat-file``
+        and working-tree content itself, so no digest input ever passes through
+        a clean filter. What the block can move is what it tells Git about the
+        worktree. The third arm proves removing the block is detected before
+        output exists.
         """
         with _repository() as scene:
             lockfile = scene.root / "boundary.lock.json"
@@ -1259,7 +1286,16 @@ class ReadBackAndFailClosedTests(_GitCaches, _LaunchAssertions, unittest.TestCas
 
             lockfile.unlink()
             self._clear_git_caches()
-            with _simulated_git_injecting((("core.filemode", "true"),)):
+            configured_filemode = scene.git(
+                "config", "--bool", "core.filemode"
+            ).strip()
+            self.assertIn(configured_filemode, {"true", "false"})
+            opposite_filemode = (
+                "false" if configured_filemode == "true" else "true"
+            )
+            with _simulated_git_injecting(
+                (("core.filemode", opposite_filemode),)
+            ):
                 self.assertEqual(
                     run_cli_in_process(
                         scene.root, "generate", "--source", "working-tree"

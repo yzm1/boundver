@@ -157,6 +157,25 @@ def _config_value(root: Path, key: str) -> Optional[str]:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
+def _require_installed_no_lazy_fetch_support(root: Path) -> None:
+    """Skip behaviour that only Git 2.45+ can enforce.
+
+    The product deliberately refuses partial clones on older supported Git
+    versions before reading objects. Tests for the later missing-object path
+    therefore apply only where ``GIT_NO_LAZY_FETCH`` exists; fixture and
+    explicit old-version-gate tests remain runnable across the full matrix.
+    """
+    installed, display = git_module._installed_git_version(str(root.resolve()))
+    if installed < git_module.MINIMUM_PARTIAL_CLONE_GIT_VERSION:
+        required = ".".join(
+            str(part) for part in git_module.MINIMUM_PARTIAL_CLONE_GIT_VERSION
+        )
+        raise unittest.SkipTest(
+            f"Git {required}+ is required for no-lazy-fetch behaviour; "
+            f"installed Git is {display}"
+        )
+
+
 def _absent_objects(root: Path) -> Tuple[str, ...]:
     """Object ids the repository knows of but does not hold.
 
@@ -474,6 +493,7 @@ class FailClosedOnAnAbsentBlobTests(unittest.TestCase):
         cls.addClassCleanup(cls.fixture.close)
         cls.clone = cls.fixture.absent_blob_clone()
         cls.blob = cls.fixture.blob
+        _require_installed_no_lazy_fetch_support(cls.clone)
 
     def setUp(self):
         git_module._ambient_worktree_config_overrides.cache_clear()
@@ -651,6 +671,7 @@ class UnreachablePromisorTests(unittest.TestCase):
 
     def test_boundver_reports_the_absent_object_and_never_a_failed_fetch(self):
         """Which is the whole difference between fail-closed and offline-by-luck."""
+        _require_installed_no_lazy_fetch_support(self.clone)
         result = run_cli(self.clone, "generate", "--source", "head")
         self.assertEqual(result.returncode, REFUSAL)
         self.assertIn(f"Git blob not found for ref '{self.blob}'", result.stderr)
@@ -687,6 +708,7 @@ class ReadSurfaceTests(unittest.TestCase):
         self.assertEqual(_absent_objects(self.clone), (self.blob,))
 
     def test_every_read_surface_names_the_absent_object_without_fetching(self):
+        _require_installed_no_lazy_fetch_support(self.clone)
         for label, (args, code, stream) in READ_SURFACES.items():
             with self.subTest(command=label):
                 result = run_cli(self.clone, *args)
@@ -695,6 +717,7 @@ class ReadSurfaceTests(unittest.TestCase):
                 self.assertEqual(_absent_objects(self.clone), (self.blob,))
 
     def test_verify_lists_the_absent_object_as_a_current_digest_error(self):
+        _require_installed_no_lazy_fetch_support(self.clone)
         result = run_cli(self.clone, "verify", "--source", "head")
         self.assertEqual(result.returncode, REFUSAL)
         self.assertIn("LOCKFILE OUT OF DATE (7 issues):", result.stdout)
@@ -708,6 +731,7 @@ class ReadSurfaceTests(unittest.TestCase):
                 self.assertIn(issue, result.stdout)
 
     def test_the_json_view_says_not_ok_and_carries_the_same_two_issues(self):
+        _require_installed_no_lazy_fetch_support(self.clone)
         result = run_cli(self.clone, "verify", "--format", "json")
         self.assertEqual(result.returncode, REFUSAL)
         payload = json.loads(result.stdout)
@@ -724,6 +748,7 @@ class ReadSurfaceTests(unittest.TestCase):
         self.assertEqual(_absent_objects(self.clone), (self.blob,))
 
     def test_why_refuses_before_it_can_compare_anything(self):
+        _require_installed_no_lazy_fetch_support(self.clone)
         result = run_cli(self.clone, "why", "svc")
         self.assertEqual(result.returncode, REFUSAL)
         self.assertIn(
@@ -734,6 +759,7 @@ class ReadSurfaceTests(unittest.TestCase):
 
     def test_status_reports_the_drift_and_still_exits_zero(self):
         """Pinned as it stands: the exit code does not follow the diagnosis."""
+        _require_installed_no_lazy_fetch_support(self.clone)
         result = run_cli(self.clone, "status")
         self.assertEqual(result.returncode, 0)
         self.assertIn("DRIFT DETECTED (7 issues):", result.stdout)
@@ -824,6 +850,7 @@ class ShapeDetectionTests(unittest.TestCase):
         partial-clone user, so exit zero here is the requirement, not the bug.
         """
         whole, _ = self.fixture.clone("--filter=blob:none")
+        _require_installed_no_lazy_fetch_support(whole)
         self.assertEqual(_config_value(whole, "remote.origin.promisor"), "true")
         self.assertEqual(_absent_objects(whole), ())
         result = run_cli(whole, "generate", "--source", "head")
@@ -852,6 +879,7 @@ class ShapeDetectionTests(unittest.TestCase):
         detector that surfaced anything, however it was worded, parts them.
         """
         promisor = self.fixture.absent_blob_clone()
+        _require_installed_no_lazy_fetch_support(promisor)
         ordinary = self.fixture.ordinary_repository_missing_the_same_blob()
         self.assertEqual(_config_value(promisor, "remote.origin.promisor"), "true")
         self.assertIsNone(_config_value(ordinary, "remote.origin.promisor"))
@@ -915,6 +943,7 @@ class ShapeDetectionTests(unittest.TestCase):
 
     def test_the_real_git_refuses_the_same_call_and_leaves_the_object_absent(self):
         """The control for the two tests below: one variable is the difference."""
+        _require_installed_no_lazy_fetch_support(self.starved)
         self.assertEqual(_absent_objects(self.starved), (self.blob,))
         with self.assertRaises(ConfigError) as raised:
             generate_lockfile(CONFIG, self.starved, source="head")
@@ -930,6 +959,7 @@ class ShapeDetectionTests(unittest.TestCase):
         is indistinguishable from the run that did not - which is why the
         refusal cannot be left resting on the variable alone.
         """
+        _require_installed_no_lazy_fetch_support(self.starved)
         whole, _ = self.fixture.clone("--filter=blob:none")
         expected = generate_lockfile(CONFIG, whole, source="head")
         clone = self.fixture.absent_blob_clone()
