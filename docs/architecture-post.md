@@ -125,10 +125,11 @@ the lock passes locally and fails after commit, or passes in CI while omitting a
 new untracked boundary file.
 
 A Git-aware contract lock binds its result to an explicit source state. It also
-makes additions and deletions part of identity rather than relying on a list of
-paths observed during the previous run. Selectors are evaluated against the
-chosen Git view, and the resulting file identities are recorded
-deterministically.
+makes Git-known additions and deletions part of identity rather than relying on
+a list of paths observed during the previous run. A new file must first be
+staged or committed; an untracked file is deliberately outside every source
+view. Selectors are evaluated against the chosen Git view, and the resulting
+file identities are recorded deterministically.
 
 Generated contracts require one more link. If `openapi.yaml` comes from an
 infrastructure template, a fresh hash of a stale generated file is still stale.
