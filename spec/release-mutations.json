@@ -28,7 +28,7 @@
       "subsystem": "lockfile",
       "label": "a baseline may overwrite the config or the lockfile",
       "file": "src/boundver/core.py",
-      "tests": ["tests/test_review_shape.py::BaselinePathEquivalenceTests::test_overwriting_the_lock_is_refused_in_either_case"],
+      "tests": ["tests/test_review_shape.py::BaselinePathEquivalenceTests::test_lock_aliases_follow_the_filesystem_case_identity"],
       "obligations": ["OBL-LOCKFILE-009"],
       "search": "            if baseline_path in {\n                Path(os.path.abspath(config_path)),\n                Path(os.path.abspath(lock_path)),\n            }:",
       "replace": "            if False:"
