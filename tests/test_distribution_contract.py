@@ -2239,7 +2239,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1787529600"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1789344000"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2453,15 +2453,23 @@ print(json.dumps(payload, separators=(",", ":")))
             "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20260824T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20260914T000000Z", dockerfile)
+        self.assertIn(
+            "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
+            dockerfile,
+        )
+        self.assertIn(
+            "# http://snapshot.debian.org/archive/debian-security/20260824T000000Z",
+            dockerfile,
+        )
         snapshot_stamps = set(
             re.findall(
-                r"snapshot\.debian\.org/archive/(?:debian|debian-security)/"
+                r"https://snapshot\.debian\.org/archive/(?:debian|debian-security)/"
                 r"(\d{8}T\d{6}Z)",
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20260824T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20260914T000000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2470,6 +2478,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(int(epoch.group(1)), int(snapshot_time.timestamp()))
         self.assertGreaterEqual(dockerfile.count("grep -Fqx"), 2)
         self.assertIn('Acquire::Check-Valid-Until "false"', dockerfile)
+        self.assertIn("apt-get upgrade -y", dockerfile)
         self.assertIn("git=1:2.47.3-0+deb13u1", dockerfile)
         self.assertIn(
             "python -I -m pip uninstall --yes pip setuptools wheel",

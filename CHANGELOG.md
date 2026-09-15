@@ -93,6 +93,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Refreshed the container's immutable Debian package snapshot and upgraded
+  inherited runtime packages before installing Git after the prior residual-
+  risk exceptions expired. Fixable high/critical findings remain release-
+  blocking; only current package-scoped, time-limited no-fix findings may be
+  retained.
 - Stopped drift diagnostics from claiming a fetch boundary or the diff target
   as a precise introducing commit. Shallow history and same-commit lock
   evidence now use disclosed fallbacks; an impossible current-commit diff is

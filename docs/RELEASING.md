@@ -193,13 +193,14 @@ The Dockerfile uses that same Action lock to download a hash-verified
 wheelhouse, builds boundver with dependencies and build isolation disabled, and
 performs the final install offline. The builder clamps archive timestamps with
 `SOURCE_DATE_EPOCH`, so identical source inputs produce identical wheel bytes.
-Its official Python base is pinned to a
-multi-architecture manifest digest, and its required Git client resolves from
-the immutable Debian snapshot recorded by that base image. Review base-digest
-and snapshot updates together; the build verifies that they still match and
-fails closed on an incomplete update. Digest pinning deliberately stops
-automatic security updates, so weekly Docker Dependabot checks surface base
-updates for review.
+Its official Python base is pinned to a multi-architecture manifest digest.
+The runtime upgrades inherited Debian packages and resolves its required Git
+client from a separately pinned immutable Debian snapshot; the build first
+verifies the snapshot provenance recorded by the base. Review the base digest,
+recorded provenance, security snapshot, and package pins together. Digest and
+snapshot pinning deliberately stop automatic security updates, so weekly
+Docker Dependabot checks and expiring scan exceptions surface refreshes for
+review.
 
 The runtime image is scanned at high and critical severity for both supported
 architectures. `.trivyignore.yaml` may contain only temporary, package-scoped

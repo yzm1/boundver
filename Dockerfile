@@ -13,13 +13,14 @@
 # Release images are published at ghcr.io/yzm1/boundver. Prefer an immutable
 # version tag or digest; the Dockerfile is also exercised from exact source in CI.
 
-# Keep the multi-architecture base digest and Debian snapshot together. The
-# snapshot timestamp is the one recorded by this exact official Python image.
+# Keep the multi-architecture base digest and Debian package snapshot explicit.
+# The base records the older snapshot it was built from; the runtime refreshes
+# inherited packages from the newer immutable security-review snapshot below.
 FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998 AS builder
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
 # source inputs produce the same local wheel bytes.
-ENV SOURCE_DATE_EPOCH=1787529600
+ENV SOURCE_DATE_EPOCH=1789344000
 
 WORKDIR /build
 COPY scripts/requirements/action.lock /locks/action.lock
@@ -56,7 +57,7 @@ FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd69
 
 # pip compiles installed modules in this stage. Force hash-based bytecode so
 # retries do not embed the wall clock in hundreds of .pyc headers.
-ENV SOURCE_DATE_EPOCH=1787529600
+ENV SOURCE_DATE_EPOCH=1789344000
 
 ARG BOUNDVER_VERSION=development
 ARG BOUNDVER_REVISION=unknown
@@ -80,12 +81,13 @@ RUN export DEBIAN_FRONTEND=noninteractive \
       '# http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
       /etc/apt/sources.list.d/debian.sources \
     && sed -i \
-      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260824T000000Z|' \
-      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260824T000000Z|' \
+      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260914T000000Z|' \
+      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260914T000000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && printf 'Acquire::Check-Valid-Until "false";\n' \
       > /etc/apt/apt.conf.d/99snapshot \
     && apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends git=1:2.47.3-0+deb13u1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
