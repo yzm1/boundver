@@ -1713,8 +1713,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
     def test_full_local_gate_builds_in_a_disposable_checkout(self):
         source = SCRIPT.read_text(encoding="utf-8")
         gate = source[source.index("def _disposable_gate") : source.index("def _surface_inventory")]
-        self.assertIn("TemporaryDirectory", gate)
-        self.assertIn('TemporaryDirectory(prefix="bv-rel-")', gate)
+        self.assertIn("with _release_temporary_directory() as temporary:", gate)
+        self.assertIn('TemporaryDirectory(prefix="bv-rel-")', source)
         self.assertIn('checkout = Path(temporary) / "c"', gate)
         self.assertIn('sandbox_root=Path(temporary) / "e"', gate)
         self.assertIn('tooling = Path(temporary) / "t"', gate)
@@ -1771,6 +1771,62 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             "BOUNDVER_RELEASE_REVIEW_TOKEN",
         ):
             publisher._disposable_gate(Path("candidate"), "origin", SHA, TAG)
+
+    def test_release_temporary_directory_retries_windows_sharing_violation(self):
+        publisher = _load_script()
+        temporary = mock.Mock(name="temporary_directory")
+        temporary.name = "release-workspace"
+        sharing_violation = PermissionError("still closing")
+        sharing_violation.winerror = 32
+        temporary.cleanup.side_effect = [sharing_violation, None]
+
+        with mock.patch.object(
+            publisher.tempfile,
+            "TemporaryDirectory",
+            return_value=temporary,
+        ), mock.patch.object(
+            publisher,
+            "_is_transient_windows_cleanup_error",
+            return_value=True,
+        ), mock.patch.object(publisher.time, "sleep") as sleep:
+            with publisher._release_temporary_directory() as path:
+                self.assertEqual(path, "release-workspace")
+
+        self.assertEqual(temporary.cleanup.call_count, 2)
+        sleep.assert_called_once_with(
+            publisher.WINDOWS_TEMP_CLEANUP_DELAY_SECONDS
+        )
+
+    def test_release_temporary_directory_remains_fail_closed(self):
+        publisher = _load_script()
+        temporary = mock.Mock(name="temporary_directory")
+        temporary.name = "release-workspace"
+        persistent = PermissionError("still locked")
+        persistent.winerror = 32
+        temporary.cleanup.side_effect = persistent
+
+        with mock.patch.object(
+            publisher.tempfile,
+            "TemporaryDirectory",
+            return_value=temporary,
+        ), mock.patch.object(
+            publisher,
+            "_is_transient_windows_cleanup_error",
+            return_value=True,
+        ), mock.patch.object(publisher.time, "sleep") as sleep, self.assertRaises(
+            PermissionError
+        ):
+            with publisher._release_temporary_directory():
+                pass
+
+        self.assertEqual(
+            temporary.cleanup.call_count,
+            publisher.WINDOWS_TEMP_CLEANUP_ATTEMPTS,
+        )
+        self.assertEqual(
+            sleep.call_count,
+            publisher.WINDOWS_TEMP_CLEANUP_ATTEMPTS - 1,
+        )
 
     def test_start_dispatch_contract_is_main_and_never_publish_workflow(self):
         source = SCRIPT.read_text(encoding="utf-8")
