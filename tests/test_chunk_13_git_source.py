@@ -745,47 +745,28 @@ class ConfigOutsideRepositoryTests(unittest.TestCase):
         after = (self.scene.root / "boundary.config.json").read_text(encoding="utf-8")
         self.assertNotEqual(after, before)
 
-    def test_an_absolute_config_outside_the_repository_is_read_and_rewritten(self):
+    def test_an_absolute_config_outside_the_repository_is_refused_unchanged(self):
         outside = self._outside_directory()
         away = outside / "boundary.config.json"
         before = away.read_text(encoding="utf-8")
         result = run_cli(
             self.scene.root, "add", "inrepo", "inrepo", "--config", str(away)
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Added component 'inrepo' at path 'inrepo'", result.stdout)
-        after = json.loads(away.read_text(encoding="utf-8"))
-        self.assertNotEqual(away.read_text(encoding="utf-8"), before)
-        self.assertEqual(after["project"], "outside")
-        self.assertIn("inrepo", after["components"])
-        # Nothing was created in the repository the paths were checked against.
-        self.assertNotIn(
-            "inrepo",
-            json.loads(
-                (self.scene.root / "boundary.config.json").read_text(encoding="utf-8")
-            )["components"],
-        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Path escapes trusted root while reading config:", result.stderr)
+        self.assertEqual(away.read_text(encoding="utf-8"), before)
 
-    def test_declared_paths_resolve_against_the_repository_not_the_config(self):
-        """Both directions, because either alone is consistent with the other tree."""
+    def test_outside_config_is_refused_before_declared_paths_are_considered(self):
         outside = self._outside_directory()
         away = outside / "boundary.config.json"
-        accepted = run_cli(
-            self.scene.root, "add", "inrepo", "inrepo", "--config", str(away)
-        )
-        self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        refused = run_cli(
+        before = away.read_text(encoding="utf-8")
+        result = run_cli(
             self.scene.root, "add", "besideonly", "besideonly", "--config", str(away)
         )
-        self.assertEqual(refused.returncode, 2)
-        self.assertIn(
-            "ERROR: Adding 'besideonly' would leave an invalid config:",
-            refused.stderr,
-        )
-        self.assertIn(
-            "Component 'besideonly' path not found or not a directory: besideonly",
-            refused.stderr,
-        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Path escapes trusted root while reading config:", result.stderr)
+        self.assertNotIn("would leave an invalid config", result.stderr)
+        self.assertEqual(away.read_text(encoding="utf-8"), before)
         self.assertTrue((outside / "besideonly").is_dir())
 
     def _sibling_directory(self) -> Path:
@@ -795,18 +776,17 @@ class ConfigOutsideRepositoryTests(unittest.TestCase):
         (sibling / "svc").mkdir(exist_ok=True)
         return sibling
 
-    def test_a_relative_parent_config_is_parsed_before_the_write_stage_refuses(self):
-        """The read happens first: a broken file complains about JSON, not traversal."""
+    def test_a_relative_parent_config_is_refused_before_parsing(self):
         sibling = self._sibling_directory()
         (sibling / "boundary.config.json").write_text("{ not json", encoding="utf-8")
         relative = f"../{sibling.name}/boundary.config.json"
         result = run_cli(self.scene.root, "add", "n", "inrepo", "--config", relative)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("JSON parse error in", result.stderr)
+        self.assertIn("Path escapes trusted root while reading config:", result.stderr)
         self.assertIn(sibling.name, result.stderr)
-        self.assertNotIn("parent-directory traversal", result.stderr)
+        self.assertNotIn("JSON parse error", result.stderr)
 
-    def test_a_relative_parent_config_is_refused_only_at_the_write_stage(self):
+    def test_a_relative_parent_config_is_refused_unchanged_at_read_time(self):
         sibling = self._sibling_directory()
         target = sibling / "boundary.config.json"
         target.write_text(self._valid_config("sibling"), encoding="utf-8")
@@ -814,11 +794,7 @@ class ConfigOutsideRepositoryTests(unittest.TestCase):
         relative = f"../{sibling.name}/boundary.config.json"
         result = run_cli(self.scene.root, "add", "n", "inrepo", "--config", relative)
         self.assertEqual(result.returncode, 2)
-        self.assertIn(
-            "ERROR: add failed: Output path must not contain parent-directory "
-            "traversal:",
-            result.stderr,
-        )
+        self.assertIn("Path escapes trusted root while reading config:", result.stderr)
         self.assertEqual(target.read_text(encoding="utf-8"), before)
         self.assertEqual(
             sorted(entry.name for entry in sibling.iterdir()),
@@ -883,7 +859,11 @@ class ConfigOutputLeafTests(unittest.TestCase):
         occupied = self._replace_config_with_a_directory()
         result = run_cli(self.scene.root, "init", "--force")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("ERROR: init failed: Cannot inspect output path:", result.stderr)
+        self.assertRegex(
+            result.stderr,
+            r"ERROR: init failed: (?:Cannot inspect output path|Output path must "
+            r"be a regular file, not a symlink, junction, or reparse point):",
+        )
         self.assertTrue(occupied.is_dir())
         self.assertEqual(
             (occupied / "canary.txt").read_text(encoding="utf-8"), "keep"
@@ -913,7 +893,11 @@ class ConfigOutputLeafTests(unittest.TestCase):
             result = run_cli_in_process(self.scene.root, "init")
         self.assertEqual(result.returncode, 2)
         self.assertNotIn("Config already exists", result.stderr)
-        self.assertIn("ERROR: init failed: Cannot inspect output path:", result.stderr)
+        self.assertRegex(
+            result.stderr,
+            r"ERROR: init failed: (?:Cannot inspect output path|Output path must "
+            r"be a regular file, not a symlink, junction, or reparse point):",
+        )
         self.assertEqual(
             (occupied / "canary.txt").read_text(encoding="utf-8"), "keep"
         )

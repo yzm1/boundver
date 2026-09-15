@@ -61,6 +61,8 @@ DECLARED_CEILINGS = (
     ("boundver._coverage", "MAX_COVERAGE_PATH_CHARS", 32_768),
     ("boundver._derivations", "MAX_DERIVATION_EVIDENCE_BYTES", 65_536),
     ("boundver._derivations", "MAX_DERIVATION_EVIDENCE_FILES", 50_000),
+    ("boundver._derivations", "MAX_DERIVATION_HASH_FILE_VISITS", 100_000),
+    ("boundver._derivations", "MAX_DERIVATION_HASH_TOTAL_BYTES", 536_870_912),
     ("boundver._discovery", "MAX_DISCOVERY_DIFF_COMPONENTS", 10_000),
     ("boundver._discovery", "MAX_DISCOVERY_DIFF_TEXT", 16_384),
     ("boundver._discovery", "MAX_DISCOVERY_EXCLUSIONS", 1_000),

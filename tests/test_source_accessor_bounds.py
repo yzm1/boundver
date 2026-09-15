@@ -377,7 +377,7 @@ class SourceAccessorBoundTests(unittest.TestCase):
         ``os.stat_result`` carries ``st_file_attributes`` on Windows alone, so
         a test built on a real junction could never run on the Linux and macOS
         legs of CI, and ``_verify_working_tree_ancestors`` reads nothing from a
-        sample beyond the four fields copied here.
+        sample beyond the identity and timestamp fields copied here.
         """
         captured = directory.lstat()
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -389,6 +389,7 @@ class SourceAccessorBoundTests(unittest.TestCase):
             st_ino=captured.st_ino,
             st_mode=captured.st_mode,
             st_size=captured.st_size,
+            st_ctime_ns=captured.st_ctime_ns,
             st_mtime_ns=captured.st_mtime_ns,
             st_file_attributes=attributes,
         )

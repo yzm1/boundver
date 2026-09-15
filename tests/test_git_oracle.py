@@ -93,7 +93,9 @@ class WorkingTreeModeTests(unittest.TestCase):
         with Scenario() as scene:
             scene.component("svc", path="svc", provider="leaf")
             for permissions in AGREEING_PERMISSIONS + GROUP_OR_OTHER_EXECUTE_ONLY:
-                scene.file(f"svc/p{permissions:o}.sh", "#!/bin/sh\n", mode=permissions)
+                path = scene.root / f"svc/p{permissions:o}.sh"
+                scene.file(f"svc/p{permissions:o}.sh", "#!/bin/sh\n")
+                os.chmod(path, permissions)
             scene.commit()
             recorded = oracle.index_modes(scene.root)
             for permissions in AGREEING_PERMISSIONS + GROUP_OR_OTHER_EXECUTE_ONLY:

@@ -328,13 +328,15 @@ class LoaderGateOrderTests(_RegistryIsolation):
         tree = ast.parse(source)
         function = tree.body[0]
         loop = next(node for node in function.body if isinstance(node, ast.For))
-        texts = []
+        returns = []
         for node in ast.walk(function):
             if isinstance(node, ast.Return) and node.lineno < loop.lineno:
-                texts.append((node.lineno, ast.dump(node)))
-        ordered = [dump for _, dump in sorted(texts)]
+                returns.append((node.lineno, node))
+        ordered_nodes = [node for _, node in sorted(returns, key=lambda item: item[0])]
+        ordered = [ast.dump(node) for node in ordered_nodes]
         self.assertEqual(len(ordered), 4, ordered)
-        self.assertEqual(ordered[0], "Return(value=List(ctx=Load()))")
+        self.assertIsInstance(ordered_nodes[0].value, ast.List)
+        self.assertEqual(ordered_nodes[0].value.elts, [])
         self.assertIn("loading is not enabled", ordered[1])
         self.assertIn(SHAPE_ERROR, ordered[2])
         self.assertIn("provider limit", ordered[3])
