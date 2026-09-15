@@ -186,9 +186,17 @@ def load_config_file(
     )
 
 
-def load_config_file_with_bytes(path: Path) -> tuple[dict, bytes]:
+def load_config_file_with_bytes(
+    path: Path,
+    *,
+    repo_root: Optional[Path] = None,
+) -> tuple[dict, bytes]:
     """Load a mutable config together with the exact bytes it was parsed from."""
-    return _load_config_file_with_bytes_impl(path, max_bytes=MAX_CONFIG_BYTES)
+    return _load_config_file_with_bytes_impl(
+        path,
+        max_bytes=MAX_CONFIG_BYTES,
+        repo_root=repo_root,
+    )
 
 
 def dump_config(value: dict) -> str:

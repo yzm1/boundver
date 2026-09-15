@@ -1335,6 +1335,8 @@ def _read_bounded_path_bytes(
     path_label: str,
     *,
     max_bytes: int,
+    trusted_root: Optional[Path] = None,
+    operation: str = "hashing",
 ) -> bytes:
     """Read one stable regular file under a hard byte ceiling."""
     try:
@@ -1342,7 +1344,8 @@ def _read_bounded_path_bytes(
             full_path,
             max_bytes,
             path_label=path_label,
-            operation="hashing",
+            operation=operation,
+            trusted_root=trusted_root,
         )
     except FileSizeLimitError as exc:
         observed = f">{max_bytes}" if exc.grew_during_read else str(exc.size)
@@ -1467,6 +1470,10 @@ def _has_windows_invalid_output_character(value: str) -> bool:
 def _has_unportable_output_segment(parts: Iterable[str]) -> bool:
     """Return whether any path segment cannot name a portable output file."""
     for part in parts:
+        try:
+            part.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
         stem = part.split(".", 1)[0].upper()
         if (
             part in {"", ".", ".."}

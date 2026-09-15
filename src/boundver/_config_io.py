@@ -317,7 +317,13 @@ def load_config_file_with_bytes(
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
     try:
-        data = _read_bounded_path_bytes(path, str(path), max_bytes=max_bytes)
+        data = _read_bounded_path_bytes(
+            path,
+            str(path),
+            max_bytes=max_bytes,
+            trusted_root=repo_root,
+            operation="reading config",
+        )
     except GuardrailError as exc:
         raise ConfigError(
             f"Config file exceeds the {max_bytes}-byte limit at {path}"

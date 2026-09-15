@@ -64,6 +64,74 @@ class BoundedFileReadTests(unittest.TestCase):
                     read_bounded_file(path, 4)
         self.assertEqual(raised.exception.size, 5)
 
+    def test_rejects_a_symlink_mode_on_a_trusted_path_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "parent"
+            parent.mkdir()
+            path = parent / "value.bin"
+            path.write_bytes(b"abcd")
+            real_lstat = Path.lstat
+
+            def report_symlink(candidate: Path):
+                identity = real_lstat(candidate)
+                if candidate != parent:
+                    return identity
+                return SimpleNamespace(
+                    st_mode=stat.S_IFLNK | 0o777,
+                    st_size=identity.st_size,
+                    st_mtime_ns=identity.st_mtime_ns,
+                    st_dev=identity.st_dev,
+                    st_ino=identity.st_ino,
+                )
+
+            with patch.object(Path, "lstat", new=report_symlink):
+                with self.assertRaisesRegex(ValueError, "path ancestor.*symlink"):
+                    read_bounded_file(path, 16, trusted_root=root)
+
+    def test_reads_a_nested_file_beneath_plain_trusted_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "parent" / "value.bin"
+            path.parent.mkdir()
+            path.write_bytes(b"abcd")
+
+            self.assertEqual(
+                read_bounded_file(path, 16, trusted_root=root),
+                b"abcd",
+            )
+
+    def test_rejects_an_ancestor_identity_change_after_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "parent"
+            parent.mkdir()
+            path = parent / "value.bin"
+            path.write_bytes(b"abcd")
+            real_lstat = Path.lstat
+            parent_checks = 0
+
+            def replace_parent(candidate: Path):
+                nonlocal parent_checks
+                identity = real_lstat(candidate)
+                if candidate != parent:
+                    return identity
+                parent_checks += 1
+                if parent_checks == 1:
+                    return identity
+                return SimpleNamespace(
+                    st_mode=identity.st_mode,
+                    st_size=identity.st_size,
+                    st_mtime_ns=identity.st_mtime_ns,
+                    st_dev=identity.st_dev,
+                    st_ino=identity.st_ino + 1,
+                )
+
+            with patch.object(Path, "lstat", new=replace_parent):
+                with self.assertRaisesRegex(ValueError, "File changed"):
+                    read_bounded_file(path, 16, trusted_root=root)
+            self.assertEqual(parent_checks, 2)
+
 
 class NonRegularFileTests(unittest.TestCase):
     """A descriptor that is not a regular file must be refused."""

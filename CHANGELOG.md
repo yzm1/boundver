@@ -295,6 +295,10 @@ All notable changes to this project are documented here. The format follows
   operation-wide budget as wildcard work.
 - Made the exhaustive embedding-documentation assertion compare normalized
   repository paths, so it exercises the same reference on Windows and POSIX.
+- Refused working-tree config reads through symlinked, reparse-point, or
+  non-directory ancestors and revalidated each ancestor after the bounded read.
+  Repository output paths now also reject lone Unicode surrogates before any
+  host-dependent path construction or filesystem mutation.
 
 ## [0.15.2] - 2026-09-07
 

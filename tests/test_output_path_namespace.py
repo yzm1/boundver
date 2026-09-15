@@ -24,7 +24,10 @@ import json
 import os
 import subprocess
 import unittest
+from pathlib import Path
 
+from boundver._utils import ConfigError
+from boundver.core import _prepare_atomic_output, _repository_relative_path
 from tests._parity import run_cli
 from tests._scenarios import Scenario
 
@@ -208,6 +211,18 @@ class OutputNameRuleTests(unittest.TestCase):
         result, ancestor = self._generated("deep/here/lock.json")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(ancestor)
+
+    def test_a_lone_surrogate_is_refused_before_path_construction(self):
+        with self.assertRaisesRegex(ConfigError, "portable filenames"):
+            _repository_relative_path(
+                Path.cwd(),
+                "deep/lock\udc80.json",
+                label="Output path",
+            )
+
+    def test_the_atomic_writer_refuses_a_preconstructed_surrogate_path(self):
+        with self.assertRaisesRegex(ConfigError, "portable filenames"):
+            _prepare_atomic_output(Path.cwd() / "deep" / "lock\udc80.json")
 
     def test_a_reserved_device_name_is_refused(self):
         """Known divergence: the name check tests for ':' and little else."""

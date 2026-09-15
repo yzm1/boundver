@@ -212,6 +212,7 @@ class ConfigSymlinkTests(unittest.TestCase):
                 "--config", "linked/boundary.config.json",
             )
             self.assertEqual(result.returncode, COULD_NOT_CHECK, result.stdout)
+            self.assertIn("symlink", result.stderr.lower())
         finally:
             scene.close()
 

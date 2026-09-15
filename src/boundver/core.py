@@ -627,6 +627,13 @@ def _ensure_json_mutation_path(path: Path, command: str) -> None:
 def _repository_relative_path(repo_root: Path, raw_path: str, *, label: str) -> Path:
     """Resolve a lexical repository-relative file path or fail closed."""
     root = Path(os.path.abspath(repo_root))
+    try:
+        raw_path.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ConfigError(
+            f"{label} must use portable filenames: "
+            f"{_bounded_diagnostic_repr(raw_path)}"
+        ) from exc
     if os.path.isabs(raw_path) or os.path.splitdrive(raw_path)[0]:
         raise ConfigError(f"{label} must be relative to the repository root")
     # Check characters whose meaning differs across hosts before constructing
@@ -1682,7 +1689,7 @@ def _working_tree_config_notices(
     selected_digest = semantic_config_digest(config)
     working_digest: Optional[str]
     try:
-        working_config = load_config_file(config_path)
+        working_config = load_config_file(config_path, repo_root=repo_root)
         working_digest = semantic_config_digest(working_config)
         if working_digest == selected_digest:
             return []
@@ -2487,7 +2494,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config = load_config_file(config_path)
+        config = load_config_file(config_path, repo_root=repo_root)
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2594,7 +2601,10 @@ def _cmd_add(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config, config_bytes = load_config_file_with_bytes(config_path)
+        config, config_bytes = load_config_file_with_bytes(
+            config_path,
+            repo_root=repo_root,
+        )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2668,7 +2678,10 @@ def _cmd_remove(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        config, config_bytes = load_config_file_with_bytes(config_path)
+        config, config_bytes = load_config_file_with_bytes(
+            config_path,
+            repo_root=repo_root,
+        )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -2741,7 +2754,7 @@ def _cmd_discover(args, repo_root: Path) -> None:
     if args.diff_config:
         try:
             config_path = find_config_file(repo_root, args.config)
-            config = load_config_file(config_path)
+            config = load_config_file(config_path, repo_root=repo_root)
             config_diff = compare_discovery_to_config(discovered, config)
         except (FileNotFoundError, ValueError, ConfigError) as exc:
             print(
