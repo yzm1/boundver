@@ -427,6 +427,7 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                     if "create-release-tag" in relative
                     else "verify-release"
                 )
+                self.assertEqual(parsed["jobs"][job_name]["timeout-minutes"], 120)
                 steps = parsed["jobs"][job_name]["steps"]
                 by_name = {step["name"]: step for step in steps}
                 install = by_name["Install hash-locked release verification tools"]

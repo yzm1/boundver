@@ -140,6 +140,7 @@ _STREAM_CHUNK_BYTES = 64 * 1024
 DISPATCH_DISCOVERY_ATTEMPTS = 12
 DISPATCH_DISCOVERY_DELAY_SECONDS = 5.0
 MAX_COMMAND_SECONDS = 3_600
+MAX_RELEASE_CANDIDATE_SECONDS = 7_200
 MAX_GITHUB_COMMAND_SECONDS = 120
 MAX_COMMAND_DIAGNOSTIC_CHARS = 4_096
 SURFACES = (
@@ -2455,6 +2456,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             ),
             cwd=checkout,
             env=tool_env,
+            timeout_seconds=MAX_RELEASE_CANDIDATE_SECONDS,
         )
         distributions = _distribution_files(checkout)
         python_dist = checkout / "python-dist"
