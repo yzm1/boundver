@@ -1825,6 +1825,15 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 )
             )
 
+    def test_release_temporary_directory_retry_budget_is_bounded(self):
+        publisher = _load_script()
+
+        self.assertEqual(
+            (publisher.WINDOWS_TEMP_CLEANUP_ATTEMPTS - 1)
+            * publisher.WINDOWS_TEMP_CLEANUP_DELAY_SECONDS,
+            30,
+        )
+
     def test_release_temporary_directory_remains_fail_closed(self):
         publisher = _load_script()
         temporary = mock.Mock(name="temporary_directory")
