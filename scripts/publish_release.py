@@ -14,6 +14,7 @@ container writes and independently verify the compatibility alias.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import functools
 import importlib.util
@@ -98,6 +99,8 @@ MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
 ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 GITHUB_ACTIONS_APP_ID = 15368
+WINDOWS_TEMP_CLEANUP_ATTEMPTS = 20
+WINDOWS_TEMP_CLEANUP_DELAY_SECONDS = 0.25
 CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
 CODEQL_PYTHON_CATEGORY = "/language:python"
 REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
@@ -2292,6 +2295,35 @@ def _source_release_artifacts(
     )
 
 
+def _is_transient_windows_cleanup_error(error: OSError) -> bool:
+    return os.name == "nt" and getattr(error, "winerror", None) in {5, 32}
+
+
+@contextlib.contextmanager
+def _release_temporary_directory():
+    """Remove the disposable release tree despite delayed Windows handle closes.
+
+    A completed child process can briefly retain a file handle while Windows
+    finishes tearing it down. Retry only those sharing/access violations and
+    remain fail-closed if the bounded retry budget is exhausted.
+    """
+    temporary = tempfile.TemporaryDirectory(prefix="bv-rel-")
+    try:
+        yield temporary.name
+    finally:
+        for attempt in range(WINDOWS_TEMP_CLEANUP_ATTEMPTS):
+            try:
+                temporary.cleanup()
+                break
+            except OSError as error:
+                if (
+                    not _is_transient_windows_cleanup_error(error)
+                    or attempt + 1 == WINDOWS_TEMP_CLEANUP_ATTEMPTS
+                ):
+                    raise
+                time.sleep(WINDOWS_TEMP_CLEANUP_DELAY_SECONDS)
+
+
 def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
     token = os.environ.get(REVIEW_TOKEN_ENV, "")
     if not token or token != token.strip() or any(character.isspace() for character in token):
@@ -2302,7 +2334,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
     # Keep the Windows path budget small.  The packaging smoke creates nested
     # virtual environments, and build-tool wheels can contain paths more than
     # 130 characters below those environments.
-    with tempfile.TemporaryDirectory(prefix="bv-rel-") as temporary:
+    with _release_temporary_directory() as temporary:
         checkout = Path(temporary) / "c"
         tool_env = _sanitized_tool_environment(
             sandbox_root=Path(temporary) / "e"
