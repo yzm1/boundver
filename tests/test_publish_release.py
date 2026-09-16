@@ -1797,6 +1797,34 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             publisher.WINDOWS_TEMP_CLEANUP_DELAY_SECONDS
         )
 
+    def test_release_temporary_directory_classifies_only_windows_teardown_races(self):
+        publisher = _load_script()
+
+        for winerror in (5, 32, 145):
+            error = OSError("transient cleanup race")
+            error.winerror = winerror
+            with self.subTest(winerror=winerror), mock.patch.object(
+                publisher.os, "name", "nt"
+            ):
+                self.assertTrue(
+                    publisher._is_transient_windows_cleanup_error(error)
+                )
+
+        other = OSError("unrelated failure")
+        other.winerror = 3
+        with mock.patch.object(publisher.os, "name", "nt"):
+            self.assertFalse(
+                publisher._is_transient_windows_cleanup_error(other)
+            )
+        sharing_violation = OSError("wrong platform")
+        sharing_violation.winerror = 32
+        with mock.patch.object(publisher.os, "name", "posix"):
+            self.assertFalse(
+                publisher._is_transient_windows_cleanup_error(
+                    sharing_violation
+                )
+            )
+
     def test_release_temporary_directory_remains_fail_closed(self):
         publisher = _load_script()
         temporary = mock.Mock(name="temporary_directory")
