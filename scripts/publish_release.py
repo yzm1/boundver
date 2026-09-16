@@ -2302,13 +2302,14 @@ def _is_transient_windows_cleanup_error(error: OSError) -> bool:
 
 
 @contextlib.contextmanager
-def _release_temporary_directory():
+def _release_temporary_directory(cleanup_warnings: list[str] | None = None):
     """Remove the disposable release tree despite delayed Windows handle closes.
 
     A completed child process can briefly retain a file handle while Windows
     finishes tearing it down. Retry only sharing/access violations and the
-    resulting non-empty-directory race, and remain fail-closed if the bounded
-    retry budget is exhausted.
+    resulting non-empty-directory race. After the bounded retry budget, report
+    a known Windows teardown race separately from release verification; all
+    other cleanup failures remain fatal.
     """
     temporary = tempfile.TemporaryDirectory(prefix="bv-rel-")
     try:
@@ -2319,11 +2320,15 @@ def _release_temporary_directory():
                 temporary.cleanup()
                 break
             except OSError as error:
-                if (
-                    not _is_transient_windows_cleanup_error(error)
-                    or attempt + 1 == WINDOWS_TEMP_CLEANUP_ATTEMPTS
-                ):
+                if not _is_transient_windows_cleanup_error(error):
                     raise
+                if attempt + 1 == WINDOWS_TEMP_CLEANUP_ATTEMPTS:
+                    if cleanup_warnings is not None:
+                        cleanup_warnings.append(
+                            "Windows retained a file in disposable workspace "
+                            f"{temporary.name!r} after the 30-second cleanup retry"
+                        )
+                    break
                 time.sleep(WINDOWS_TEMP_CLEANUP_DELAY_SECONDS)
 
 
@@ -2337,7 +2342,8 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
     # Keep the Windows path budget small.  The packaging smoke creates nested
     # virtual environments, and build-tool wheels can contain paths more than
     # 130 characters below those environments.
-    with _release_temporary_directory() as temporary:
+    cleanup_warnings: list[str] = []
+    with _release_temporary_directory(cleanup_warnings) as temporary:
         checkout = Path(temporary) / "c"
         tool_env = _sanitized_tool_environment(
             sandbox_root=Path(temporary) / "e"
@@ -2497,7 +2503,13 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
                     f"{registry} already has exact or partial files for {tag}; "
                     "resume the original workflow run instead of starting a new one"
                 )
-    return "readiness, reviews, tests, reproducible build, Twine, TestPyPI, and PyPI preflights passed"
+    detail = (
+        "readiness, reviews, tests, reproducible build, Twine, TestPyPI, and "
+        "PyPI preflights passed"
+    )
+    if cleanup_warnings:
+        detail += "; WARNING: " + "; ".join(cleanup_warnings)
+    return detail
 
 
 def _surface_inventory(repo: Path) -> str:
