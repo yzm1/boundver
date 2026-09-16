@@ -2296,7 +2296,7 @@ def _source_release_artifacts(
 
 
 def _is_transient_windows_cleanup_error(error: OSError) -> bool:
-    return os.name == "nt" and getattr(error, "winerror", None) in {5, 32}
+    return os.name == "nt" and getattr(error, "winerror", None) in {5, 32, 145}
 
 
 @contextlib.contextmanager
@@ -2304,8 +2304,9 @@ def _release_temporary_directory():
     """Remove the disposable release tree despite delayed Windows handle closes.
 
     A completed child process can briefly retain a file handle while Windows
-    finishes tearing it down. Retry only those sharing/access violations and
-    remain fail-closed if the bounded retry budget is exhausted.
+    finishes tearing it down. Retry only sharing/access violations and the
+    resulting non-empty-directory race, and remain fail-closed if the bounded
+    retry budget is exhausted.
     """
     temporary = tempfile.TemporaryDirectory(prefix="bv-rel-")
     try:
