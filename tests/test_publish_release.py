@@ -1713,7 +1713,11 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
     def test_full_local_gate_builds_in_a_disposable_checkout(self):
         source = SCRIPT.read_text(encoding="utf-8")
         gate = source[source.index("def _disposable_gate") : source.index("def _surface_inventory")]
-        self.assertIn("with _release_temporary_directory() as temporary:", gate)
+        self.assertIn("cleanup_warnings: list[str] = []", gate)
+        self.assertIn(
+            "with _release_temporary_directory(cleanup_warnings) as temporary:",
+            gate,
+        )
         self.assertIn('TemporaryDirectory(prefix="bv-rel-")', source)
         self.assertIn('checkout = Path(temporary) / "c"', gate)
         self.assertIn('sandbox_root=Path(temporary) / "e"', gate)
@@ -1834,13 +1838,14 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             30,
         )
 
-    def test_release_temporary_directory_remains_fail_closed(self):
+    def test_release_temporary_directory_reports_exhausted_windows_cleanup(self):
         publisher = _load_script()
         temporary = mock.Mock(name="temporary_directory")
         temporary.name = "release-workspace"
         persistent = PermissionError("still locked")
         persistent.winerror = 32
         temporary.cleanup.side_effect = persistent
+        warnings = []
 
         with mock.patch.object(
             publisher.tempfile,
@@ -1850,10 +1855,8 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             publisher,
             "_is_transient_windows_cleanup_error",
             return_value=True,
-        ), mock.patch.object(publisher.time, "sleep") as sleep, self.assertRaises(
-            PermissionError
-        ):
-            with publisher._release_temporary_directory():
+        ), mock.patch.object(publisher.time, "sleep") as sleep:
+            with publisher._release_temporary_directory(warnings):
                 pass
 
         self.assertEqual(
@@ -1864,6 +1867,30 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             sleep.call_count,
             publisher.WINDOWS_TEMP_CLEANUP_ATTEMPTS - 1,
         )
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("release-workspace", warnings[0])
+        self.assertIn("30-second cleanup retry", warnings[0])
+
+    def test_release_temporary_directory_rejects_unknown_cleanup_error(self):
+        publisher = _load_script()
+        temporary = mock.Mock(name="temporary_directory")
+        temporary.name = "release-workspace"
+        unexpected = OSError("unexpected cleanup failure")
+        temporary.cleanup.side_effect = unexpected
+
+        with mock.patch.object(
+            publisher.tempfile,
+            "TemporaryDirectory",
+            return_value=temporary,
+        ), mock.patch.object(
+            publisher,
+            "_is_transient_windows_cleanup_error",
+            return_value=False,
+        ), self.assertRaisesRegex(OSError, "unexpected cleanup failure"):
+            with publisher._release_temporary_directory([]):
+                pass
+
+        temporary.cleanup.assert_called_once_with()
 
     def test_start_dispatch_contract_is_main_and_never_publish_workflow(self):
         source = SCRIPT.read_text(encoding="utf-8")
