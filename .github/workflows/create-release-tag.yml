@@ -1640,7 +1640,7 @@ jobs:
   verify-candidate:
     name: Verify candidate before tagging
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     permissions:
       actions: read
       contents: read

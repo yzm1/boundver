@@ -1734,6 +1734,16 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         self.assertNotIn('("gh", "auth", "token"', gate)
         self.assertIn("scripts/install_locked_tools.py", gate)
         self.assertIn("scripts/verify_release_candidate.py", gate)
+        verifier_call = gate[
+            gate.index('"scripts/verify_release_candidate.py"') :
+            gate.index("distributions = _distribution_files")
+        ]
+        self.assertIn(
+            "timeout_seconds=MAX_RELEASE_CANDIDATE_SECONDS",
+            verifier_call,
+        )
+        publisher = _load_script()
+        self.assertEqual(publisher.MAX_RELEASE_CANDIDATE_SECONDS, 7_200)
         self.assertIn('if tag == "v0.17.0":', gate)
         self.assertIn('"semantic-provider-release"', gate)
         self.assertNotIn('if tag == "v0.15.0":', gate)

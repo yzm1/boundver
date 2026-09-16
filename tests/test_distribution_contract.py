@@ -2701,7 +2701,7 @@ print(json.dumps(payload, separators=(",", ":")))
                     timeout = job.get("timeout-minutes")
                     self.assertIs(type(timeout), int)
                     self.assertGreater(timeout, 0)
-                    self.assertLessEqual(timeout, 120)
+                    self.assertLessEqual(timeout, 180)
 
     def test_privileged_release_workflows_pin_git_and_github_transport(self):
         import yaml
