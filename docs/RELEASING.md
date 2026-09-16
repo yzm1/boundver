@@ -34,9 +34,13 @@ The repository owner must configure these controls before starting a release:
 - Keep the checked-in `.github/rulesets/protect-main.json` contract active for
   `refs/heads/main`. It requires pull requests, resolved review conversations,
   and the strict `required-pr-gate` status from the GitHub Actions App; it also
-  blocks deletion and force pushes. The aggregate check fails unless the full
-  supported-platform matrix plus build, public Action, and public installation
-  jobs all succeed. The status is published by `required-pr-gate.yml`, which
+  blocks deletion and force pushes. The aggregate check fails unless the
+  orthogonal supported-runtime matrix plus build, public Action, and public
+  installation jobs all succeed. Python 3.10 through 3.14 run on Linux; one
+  Python 3.12 smoke job runs on Windows and one on macOS. Action and public
+  installation contracts run once on Linux instead of duplicating behavior
+  already covered by those OS smoke jobs. The status is published by
+  `required-pr-gate.yml`, which
   runs trusted code from the pull request's base commit after `CI` completes;
   it never executes pull-request code or consumes its artifacts. It also rejects
   any pull request that changes a workflow, the gate verifier, or the checked-in
@@ -52,6 +56,16 @@ The repository owner must configure these controls before starting a release:
   `main`. Classic branch protection must remain absent because GitHub would
   enforce it in addition to the ruleset; an inherited or stale rule cannot be
   treated as harmless.
+- Keep a GitHub Actions billing budget with **Stop usage when budget limit is
+  reached** enabled. A repository check cannot stop GitHub from scheduling an
+  accidentally enlarged matrix before that check executes, so the account-level
+  hard stop is the final financial boundary. The checked-in CI contract limits
+  ordinary runs to exactly one Windows job and one macOS job, each with no more
+  than 45 runner-minutes. `test_ci_paid_runner_budget_is_bounded` fails if a
+  workflow edit expands either paid-runner count or timeout. Do not weaken that
+  contract to add version coverage: Python-version compatibility belongs on the
+  Linux axis, while OS compatibility belongs on the single Python 3.12 smoke
+  axis.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,

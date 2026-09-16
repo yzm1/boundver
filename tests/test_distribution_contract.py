@@ -2578,7 +2578,7 @@ print(json.dumps(payload, separators=(",", ":")))
         public = jobs["public-installations"]
         self.assertEqual(
             public["strategy"]["matrix"]["os"],
-            ["ubuntu-latest", "windows-latest", "macos-15"],
+            ["ubuntu-latest"],
         )
         script = "\n".join(
             str(step.get("run", "")) for step in public["steps"]
@@ -2597,34 +2597,72 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("docker build", script)
         self.assertIn("verify --source head --facets exact", script)
 
-    def test_ci_covers_both_macos_architectures_without_full_version_cross_product(self):
+    def test_ci_uses_an_orthogonal_supported_runtime_matrix(self):
         import yaml
 
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )
         matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
-        self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
-        self.assertEqual(
-            matrix["python-version"],
-            ["3.10", "3.11", "3.12", "3.13", "3.14"],
-        )
         self.assertEqual(
             matrix["include"],
             [
-                {"os": "macos-15-intel", "python-version": "3.12"},
+                {"os": "ubuntu-latest", "python-version": "3.10"},
+                {"os": "ubuntu-latest", "python-version": "3.11"},
+                {"os": "ubuntu-latest", "python-version": "3.12"},
+                {"os": "ubuntu-latest", "python-version": "3.13"},
+                {"os": "ubuntu-latest", "python-version": "3.14"},
+                {"os": "windows-latest", "python-version": "3.12"},
                 {"os": "macos-15", "python-version": "3.12"},
             ],
         )
         self.assertEqual(
             workflow["jobs"]["action"]["strategy"]["matrix"]["include"],
             [
-                {"os": "ubuntu-latest", "python-version": "3.10"},
                 {"os": "ubuntu-latest", "python-version": "3.12"},
-                {"os": "windows-latest", "python-version": "3.12"},
-                {"os": "macos-15", "python-version": "3.12"},
             ],
         )
+
+    def test_ci_paid_runner_budget_is_bounded(self):
+        import itertools
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        )
+        paid_minutes = {"windows-latest": 0, "macos-15": 0, "macos-15-intel": 0}
+        paid_jobs = {name: 0 for name in paid_minutes}
+        for job in workflow["jobs"].values():
+            runner = job.get("runs-on")
+            timeout = job.get("timeout-minutes")
+            self.assertIs(type(timeout), int)
+            matrix = job.get("strategy", {}).get("matrix", {})
+            runners: list[str]
+            if runner == "${{ matrix.os }}":
+                runners = [row["os"] for row in matrix.get("include", [])]
+                axes = {
+                    key: value
+                    for key, value in matrix.items()
+                    if key != "include"
+                }
+                if axes:
+                    names = list(axes)
+                    runners.extend(
+                        row[names.index("os")]
+                        for row in itertools.product(*(axes[name] for name in names))
+                    )
+            else:
+                runners = [runner]
+            for selected in runners:
+                if selected in paid_jobs:
+                    paid_jobs[selected] += 1
+                    paid_minutes[selected] += timeout
+
+        self.assertEqual(paid_jobs["windows-latest"], 1)
+        self.assertEqual(paid_jobs["macos-15"], 1)
+        self.assertEqual(paid_jobs["macos-15-intel"], 0)
+        self.assertLessEqual(paid_minutes["windows-latest"], 45)
+        self.assertLessEqual(paid_minutes["macos-15"], 45)
 
     def test_ci_lints_undefined_names_and_unused_code_without_auto_fixing(self):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(
