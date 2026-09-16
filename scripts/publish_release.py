@@ -99,8 +99,10 @@ MAX_RELEASE_WORKFLOW_BYTES = 2 * 1024 * 1024
 ALIAS_WORKFLOW_PATH = ".github/workflows/advance-release-alias.yml"
 ACTIVE_PUBLICATION_STATES = {"requested", "pending", "queued", "in_progress", "waiting"}
 GITHUB_ACTIONS_APP_ID = 15368
-WINDOWS_TEMP_CLEANUP_ATTEMPTS = 20
-WINDOWS_TEMP_CLEANUP_DELAY_SECONDS = 0.25
+# Native wheels can remain locked briefly while Windows finishes unloading or
+# scanning them. Keep this finite and fail closed after a 30-second wait.
+WINDOWS_TEMP_CLEANUP_ATTEMPTS = 61
+WINDOWS_TEMP_CLEANUP_DELAY_SECONDS = 0.5
 CODEQL_ANALYSIS_KEY = ".github/workflows/codeql.yml:analyze"
 CODEQL_PYTHON_CATEGORY = "/language:python"
 REQUIRED_PR_GATE_CONTEXT = "required-pr-gate"
