@@ -2239,7 +2239,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1789344000"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1790985600"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2453,7 +2453,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20260914T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20261003T000000Z", dockerfile)
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
             dockerfile,
@@ -2469,7 +2469,7 @@ print(json.dumps(payload, separators=(",", ":")))
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20260914T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20261003T000000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2640,6 +2640,10 @@ print(json.dumps(payload, separators=(",", ":")))
             step.get("run") == "python -I scripts/lock_release_tools.py check"
             for step in preflight["steps"]
         ))
+        self.assertTrue(any(
+            step.get("run") == "python -I scripts/check_security_policy_expiry.py"
+            for step in preflight["steps"]
+        ))
         for job in workflow["jobs"].values():
             runner = job.get("runs-on")
             timeout = job.get("timeout-minutes")
@@ -2753,7 +2757,13 @@ print(json.dumps(payload, separators=(",", ":")))
                     timeout = job.get("timeout-minutes")
                     self.assertIs(type(timeout), int)
                     self.assertGreater(timeout, 0)
-                    self.assertLessEqual(timeout, 180)
+                    extended_candidate = (path.name, job_name) in {
+                        ("create-release-tag.yml", "verify-candidate"),
+                        ("publish.yml", "verify-release"),
+                    }
+                    self.assertLessEqual(timeout, 360 if extended_candidate else 120)
+                    if extended_candidate:
+                        self.assertEqual(job["runs-on"], "ubuntu-latest")
 
     def test_privileged_release_workflows_pin_git_and_github_transport(self):
         import yaml

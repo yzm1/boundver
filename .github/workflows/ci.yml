@@ -32,6 +32,8 @@ jobs:
           python-version: "3.12"
       - name: Reject automation dependencies with current PyPI advisories
         run: python -I scripts/lock_release_tools.py check
+      - name: Reject expired container security exceptions before paid runners
+        run: python -I scripts/check_security_policy_expiry.py
 
   test:
     needs: preflight

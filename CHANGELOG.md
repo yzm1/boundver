@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.16.0] - 2026-09-14
+## [0.16.0] - 2026-10-04
 
 ### Upgrade contract
 
@@ -57,9 +57,14 @@ All notable changes to this project are documented here. The format follows
   newer, where lazy object fetching can be disabled.
 - Refreshed the deterministic range-review fixture provenance after the v0.16
   config-schema and lock-format migration.
-- Gave the complete release-candidate test tier a separate two-hour watchdog
-  for slower supported Windows hosts while retaining the one-hour ceiling for
-  every other candidate-verification command.
+- Gave the complete release-candidate tests and mutation checks independent
+  two-hour watchdogs, with cumulative headroom in the local launcher and the
+  Linux-only release jobs. Short checks retain five-minute limits and packaging
+  has a separate 30-minute limit.
+- Reduced ordinary CI to a Linux Python-version axis and one Python 3.12 job
+  each on Windows and macOS. A Linux preflight rejects dependency advisories
+  and expired container exceptions before paid runners start. Regression tests
+  bound the paid matrix and timeouts; CI artifacts expire after seven days.
 - Split the CLI and behavioral references. Command syntax is generated from
   the live argparse parser and checked in CI; the cookbook now contains only
   operational recipes. Added a concise FAQ, public milestone-based roadmap,

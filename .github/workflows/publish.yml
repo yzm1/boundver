@@ -73,7 +73,7 @@ env:
 jobs:
   verify-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     permissions:
       actions: read
       contents: read

@@ -1743,7 +1743,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
             verifier_call,
         )
         publisher = _load_script()
-        self.assertEqual(publisher.MAX_RELEASE_CANDIDATE_SECONDS, 7_200)
+        self.assertEqual(publisher.MAX_RELEASE_CANDIDATE_SECONDS, 19_800)
         self.assertIn('if tag == "v0.17.0":', gate)
         self.assertIn('"semantic-provider-release"', gate)
         self.assertNotIn('if tag == "v0.15.0":', gate)

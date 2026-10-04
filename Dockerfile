@@ -20,7 +20,7 @@ FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd69
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
 # source inputs produce the same local wheel bytes.
-ENV SOURCE_DATE_EPOCH=1789344000
+ENV SOURCE_DATE_EPOCH=1790985600
 
 WORKDIR /build
 COPY scripts/requirements/action.lock /locks/action.lock
@@ -57,7 +57,7 @@ FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd69
 
 # pip compiles installed modules in this stage. Force hash-based bytecode so
 # retries do not embed the wall clock in hundreds of .pyc headers.
-ENV SOURCE_DATE_EPOCH=1789344000
+ENV SOURCE_DATE_EPOCH=1790985600
 
 ARG BOUNDVER_VERSION=development
 ARG BOUNDVER_REVISION=unknown
@@ -81,8 +81,8 @@ RUN export DEBIAN_FRONTEND=noninteractive \
       '# http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
       /etc/apt/sources.list.d/debian.sources \
     && sed -i \
-      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260914T000000Z|' \
-      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20260914T000000Z|' \
+      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20261003T000000Z|' \
+      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20261003T000000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && printf 'Acquire::Check-Valid-Until "false";\n' \
       > /etc/apt/apt.conf.d/99snapshot \

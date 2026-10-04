@@ -69,6 +69,15 @@ The repository owner must configure these controls before starting a release:
   The Linux automation dependency preflight must succeed before the platform
   matrix starts, so advisory or lock failures do not consume Windows or macOS
   minutes. Check automation locks locally before pushing an update.
+  The same preflight rejects expired container exception dates before paid
+  runners start. Run `python -I scripts/check_security_policy_expiry.py` locally;
+  success checks dates only, not whether accepting a vulnerability is justified.
+  Release-candidate verification is an explicit, Linux-only exception to the
+  ordinary job limits: its two assurance phases each allow two hours, packaging
+  allows 30 minutes, and other commands allow five minutes each. The local
+  launcher allows 5.5 hours for the complete sequence; the two release workflows
+  allow six hours including setup. These are failure ceilings, not expected
+  runtimes, and do not expand the ordinary Windows/macOS budget.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,
@@ -231,6 +240,16 @@ newly fixable high/critical issue fails immediately. It also scans the source
 tree for high/critical secret and configuration findings. Never use a wildcard,
 unscoped CVE, non-expiring entry, or global `--ignore-unfixed` as the primary
 publication gate.
+
+On 2026-10-04, local scans found fixable OpenSSL findings CVE-2026-75804 and
+CVE-2026-84782, and PCRE2 finding CVE-2026-103111. The 2026-10-03 snapshot
+installs Debian's fixed versions rather than exempting those findings. The
+[Debian security tracker](https://security-tracker.debian.org/tracker/)
+still lists the package-scoped residuals in `.trivyignore.yaml` as open for
+trixie; these are re-evaluated through 2026-10-18. The additional Expat
+CVE-2026-93990 concerns malformed UTF-16 XML; boundver's runtime does not parse
+XML. The primary exception-aware scan and the separate no-exceptions
+`--ignore-unfixed` scan remain mandatory for both release architectures.
 
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with

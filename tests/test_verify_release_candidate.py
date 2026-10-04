@@ -240,15 +240,18 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 "-q",
             ),
         )
-        self.assertEqual(verifier.MAX_COMMAND_SECONDS, 3_600)
+        self.assertEqual(verifier.MAX_COMMAND_SECONDS, 300)
         self.assertEqual(verifier.MAX_TEST_TIER_SECONDS, 7_200)
         self.assertEqual(timeouts[3], verifier.MAX_TEST_TIER_SECONDS)
         self.assertEqual(timeouts[4], verifier.MAX_TEST_TIER_SECONDS)
+        self.assertEqual(timeouts[7], verifier.MAX_PACKAGING_SECONDS)
+        # Include the two Git metadata commands, which the mock records apart.
+        self.assertLess(sum(timeouts) + 2 * verifier.MAX_COMMAND_SECONDS, 19_800)
         self.assertTrue(
             all(
                 timeout == verifier.MAX_COMMAND_SECONDS
                 for index, timeout in enumerate(timeouts)
-                if index not in {3, 4}
+                if index not in {3, 4, 7}
             )
         )
         self.assertEqual(
@@ -427,7 +430,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                     if "create-release-tag" in relative
                     else "verify-release"
                 )
-                self.assertEqual(parsed["jobs"][job_name]["timeout-minutes"], 180)
+                self.assertEqual(parsed["jobs"][job_name]["timeout-minutes"], 360)
+                self.assertEqual(parsed["jobs"][job_name]["runs-on"], "ubuntu-latest")
                 steps = parsed["jobs"][job_name]["steps"]
                 by_name = {step["name"]: step for step in steps}
                 install = by_name["Install hash-locked release verification tools"]

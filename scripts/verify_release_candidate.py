@@ -46,8 +46,9 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 MAX_DIST_ENTRIES = 64
 MAX_DIST_NAME_BYTES = 4 * 1024
 MAX_DIST_TOTAL_NAME_BYTES = 64 * 1024
-MAX_COMMAND_SECONDS = 3_600
+MAX_COMMAND_SECONDS = 300
 MAX_TEST_TIER_SECONDS = 7_200
+MAX_PACKAGING_SECONDS = 1_800
 MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024
 
 
@@ -403,6 +404,7 @@ def verify_candidate(
         (bash, "scripts/packaging_smoke.sh"),
         cwd=repo,
         env=build_env,
+        timeout_seconds=MAX_PACKAGING_SECONDS,
     )
 
     wheel, sdist = _release_distributions(repo)
