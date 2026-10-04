@@ -303,6 +303,12 @@ class RequiredCiEvaluationTests(unittest.TestCase):
             ("completed", "failure"),
             ("completed", "cancelled"),
             ("completed", "skipped"),
+            ("completed", "neutral"),
+            ("completed", "timed_out"),
+            ("completed", "action_required"),
+            ("completed", "stale"),
+            ("completed", None),
+            ("queued", None),
             ("in_progress", None),
         ):
             with self.subTest(status=status, conclusion=conclusion):
