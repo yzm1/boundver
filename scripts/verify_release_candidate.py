@@ -128,23 +128,27 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
     try:
         root = repo.resolve(strict=True)
         raw = Path(os.path.abspath(selected))
-        resolved = Path(selected).resolve(strict=True)
+        # Validate the same normalized spelling returned for execution. With a
+        # directory symlink followed by '..', resolving the original spelling
+        # could inspect a different file from the normalized launcher.
+        resolved = _release_platform.resolve_external_tool_path(raw, root)
         identity = resolved.stat()
-    except OSError as error:
+    except _release_platform.RepositoryToolError as error:
+        raise CandidateVerificationError(
+            f"refusing executable selected from the release repository: {command}"
+        ) from error
+    except (OSError, RuntimeError) as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command}"
         ) from error
-    if (
-        not stat.S_ISREG(identity.st_mode)
-        or raw == root
-        or root in raw.parents
-        or resolved == root
-        or root in resolved.parents
-    ):
+    if not stat.S_ISREG(identity.st_mode):
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
         )
-    return str(resolved)
+    # Validate both the selected path and its target, but launch through the
+    # selected path. Resolving a virtualenv's Python symlink would discard its
+    # pyvenv.cfg context and run the base interpreter without the locked tools.
+    return str(raw)
 
 
 def _git_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -333,7 +337,8 @@ def verify_candidate(
         )
 
     tool_env = sanitize_shell_environment(environment)
-    interpreter_dir = str(Path(python).resolve().parent)
+    python = _trusted_tool(python, repo, tool_env.get("PATH"))
+    interpreter_dir = str(Path(python).parent)
     existing_path = tool_env.get("PATH")
     tool_env["PATH"] = (
         interpreter_dir + os.pathsep + existing_path
@@ -341,7 +346,6 @@ def verify_candidate(
         else interpreter_dir
     )
 
-    python = _trusted_tool(python, repo, tool_env.get("PATH"))
     git = _trusted_tool("git", repo, tool_env.get("PATH"))
 
     head = _git_output(

@@ -483,22 +483,13 @@ def _trusted_tool(
     try:
         repo_root = repo.resolve(strict=True)
         selected = Path(os.path.abspath(raw))
-        selected.relative_to(repo_root)
-    except ValueError:
-        pass
-    except OSError as error:
+        path = _release_platform.resolve_external_tool_path(selected, repo_root)
+    except _release_platform.RepositoryToolError as error:
+        raise GateError(
+            f"required command resolves inside the repository: {name}"
+        ) from error
+    except (OSError, RuntimeError) as error:
         raise GateError(f"cannot resolve required command: {name}") from error
-    else:
-        raise GateError(f"required command resolves inside the repository: {name}")
-    try:
-        path = selected.resolve(strict=True)
-        path.relative_to(repo_root)
-    except ValueError:
-        pass
-    except OSError as error:
-        raise GateError(f"cannot resolve required command: {name}") from error
-    else:
-        raise GateError(f"required command resolves inside the repository: {name}")
     try:
         metadata = path.stat()
     except OSError as error:

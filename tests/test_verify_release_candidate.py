@@ -127,6 +127,78 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
             ):
                 verifier._trusted_tool("git", repo, "safe-tools")
 
+    def test_verifier_validates_both_sides_of_tool_symlinks(self):
+        verifier = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            external = root / "trusted-python"
+            external.write_bytes(b"external tool")
+            internal = repo / "untrusted-python"
+            internal.write_bytes(b"repository tool")
+            links = (
+                (root / "external-link", external, False),
+                (repo / "internal-link", external, True),
+                (root / "redirect-to-repo", internal, True),
+            )
+            for link, target, rejected in links:
+                with self.subTest(link=link.name):
+                    try:
+                        link.symlink_to(target)
+                    except OSError:
+                        if sys.platform == "win32":
+                            self.skipTest("Windows symlink permission unavailable")
+                        raise
+                    if rejected:
+                        with self.assertRaisesRegex(
+                            verifier.CandidateVerificationError,
+                            "release repository",
+                        ):
+                            verifier._trusted_tool(str(link), repo, None)
+                    else:
+                        self.assertEqual(
+                            verifier._trusted_tool(str(link), repo, None), str(link)
+                        )
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX virtualenv symlink contract")
+    def test_verifier_preserves_real_virtualenv_interpreter_and_path(self):
+        verifier = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = root / "repo"
+            repo.mkdir()
+            virtualenv = root / "tools"
+            subprocess.run(
+                [sys.executable, "-I", "-m", "venv", "--without-pip",
+                 "--symlinks", str(virtualenv)],
+                check=True, capture_output=True, timeout=60,
+            )
+            interpreter = virtualenv / "bin" / "python"
+            self.assertTrue(interpreter.is_symlink())
+            selected = verifier._trusted_tool(str(interpreter), repo, None)
+            result = subprocess.run(
+                [selected, "-I", "-c", "import sys; print(sys.prefix)"],
+                check=True, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(Path(result.stdout.strip()), virtualenv)
+            with mock.patch.object(
+                verifier, "_git_output", side_effect=(SHA, "1700000000")
+            ), mock.patch.object(verifier, "_run") as run, mock.patch.object(
+                verifier, "_packaging_bash", return_value="/bin/bash"
+            ), mock.patch.object(
+                verifier, "_release_distributions", return_value=(root / "a.whl", root / "a.tar.gz")
+            ):
+                verifier.verify_candidate(
+                    repo, TAG, SHA, python=str(interpreter),
+                )
+            for call in run.call_args_list:
+                self.assertEqual(
+                    call.kwargs["env"]["PATH"].split(verifier.os.pathsep)[0],
+                    str(interpreter.parent),
+                )
+            self.assertEqual(run.call_args_list[0].args[0][0], str(interpreter))
+
     def test_verifier_git_disables_callbacks_replacements_and_prompts(self):
         verifier = _load_script()
         completed = subprocess.CompletedProcess(
