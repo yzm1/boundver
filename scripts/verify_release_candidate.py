@@ -128,7 +128,10 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
     try:
         root = repo.resolve(strict=True)
         raw = Path(os.path.abspath(selected))
-        resolved = Path(selected).resolve(strict=True)
+        # Validate the same normalized spelling returned for execution. With a
+        # directory symlink followed by '..', resolving the original spelling
+        # could inspect a different file from the normalized launcher.
+        resolved = raw.resolve(strict=True)
         identity = resolved.stat()
         repository_local = _release_platform.selected_tool_crosses_repository(
             raw, resolved, root

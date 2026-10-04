@@ -90,3 +90,25 @@ def test_external_directory_alias_remains_usable(tmp_path, selector):
     else:
         module = _load("_release_platform")
         assert module._trusted_external_file(str(selected), repository) == str(executable)
+
+
+def test_normalized_candidate_launcher_is_the_target_that_was_validated(tmp_path):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    internal = repository / "python"
+    internal.write_bytes(b"repository executable")
+    tools = root / "tools"
+    tools.mkdir()
+    _link(tools / "python", internal)
+    external = root / "external"
+    external.mkdir()
+    (external / "nested").mkdir()
+    (external / "python").write_bytes(b"external executable")
+    _link(tools / "redirect", external / "nested", directory=True)
+    selected = tools / "redirect" / ".." / "python"
+    # resolve(selected) is external, but abspath(selected), which the launcher
+    # executes, collapses '..' lexically and points at the repository tool.
+    module = _load("verify_release_candidate")
+    with pytest.raises(module.CandidateVerificationError, match="release repository"):
+        module._trusted_tool(str(selected), repository, None)
