@@ -292,6 +292,27 @@ def sanitize_github_environment(
     return result
 
 
+def selected_tool_crosses_repository(
+    selected: Path, resolved: Path, repository: Path
+) -> bool:
+    """Reject a selection that touches the canonical repository anywhere.
+
+    Callers supply absolute selected/resolved paths and a resolved repository.
+    Checking only the final target misses a repository-owned launcher linked to
+    a trusted interpreter. Checking only lexical parents misses directory aliases
+    such as macOS /var; checking only the immediate resolved parent also misses
+    paths that enter the repository and escape through another directory link.
+    """
+    for path in (selected, resolved):
+        if path == repository or repository in path.parents:
+            return True
+    for ancestor in selected.parents:
+        canonical = ancestor.resolve(strict=True)
+        if canonical == repository or repository in canonical.parents:
+            return True
+    return False
+
+
 def _trusted_external_file(
     candidate: Optional[str], forbidden_root: Optional[Path]
 ) -> Optional[str]:
@@ -305,16 +326,12 @@ def _trusted_external_file(
         raw = Path(os.path.abspath(candidate))
         resolved = Path(candidate).resolve(strict=True)
         identity = resolved.stat()
-    except OSError:
+        repository_local = selected_tool_crosses_repository(raw, resolved, root)
+    except (OSError, RuntimeError):
         return None
     if not stat.S_ISREG(identity.st_mode):
         return None
-    if (
-        raw == root
-        or root in raw.parents
-        or resolved == root
-        or root in resolved.parents
-    ):
+    if repository_local:
         return None
     return str(resolved)
 

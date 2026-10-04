@@ -52,7 +52,8 @@ All notable changes to this project are documented here. The format follows
 - Kept the selected virtualenv interpreter and its tool-directory search path
   during release verification. POSIX Python symlinks no longer lose their
   isolated dependencies; both the launcher and its resolved target must still
-  be outside the release repository.
+  be outside the release repository. Directory aliases and intermediate
+  repository-owned links cannot hide a local tool selection.
 - Raised the minimum supported Git version to 2.32 and added an operation-start
   capability check. Boundver now reports the selected Git version, verifies
   that Git applies the process-local configuration carrying its security

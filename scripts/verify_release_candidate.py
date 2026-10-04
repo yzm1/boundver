@@ -130,16 +130,16 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
         raw = Path(os.path.abspath(selected))
         resolved = Path(selected).resolve(strict=True)
         identity = resolved.stat()
-    except OSError as error:
+        repository_local = _release_platform.selected_tool_crosses_repository(
+            raw, resolved, root
+        )
+    except (OSError, RuntimeError) as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command}"
         ) from error
     if (
         not stat.S_ISREG(identity.st_mode)
-        or raw == root
-        or root in raw.parents
-        or resolved == root
-        or root in resolved.parents
+        or repository_local
     ):
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
