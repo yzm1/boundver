@@ -2632,6 +2632,14 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         paid_minutes = {"windows-latest": 0, "macos-15": 0, "macos-15-intel": 0}
         paid_jobs = {name: 0 for name in paid_minutes}
+        self.assertEqual(workflow["jobs"]["test"]["needs"], "preflight")
+        preflight = workflow["jobs"]["preflight"]
+        self.assertEqual(preflight["runs-on"], "ubuntu-latest")
+        self.assertLessEqual(preflight["timeout-minutes"], 10)
+        self.assertTrue(any(
+            step.get("run") == "python -I scripts/lock_release_tools.py check"
+            for step in preflight["steps"]
+        ))
         for job in workflow["jobs"].values():
             runner = job.get("runs-on")
             timeout = job.get("timeout-minutes")

@@ -66,6 +66,9 @@ The repository owner must configure these controls before starting a release:
   contract to add version coverage: Python-version compatibility belongs on the
   Linux axis, while OS compatibility belongs on the single Python 3.12 smoke
   axis.
+  The Linux automation dependency preflight must succeed before the platform
+  matrix starts, so advisory or lock failures do not consume Windows or macOS
+  minutes. Check automation locks locally before pushing an update.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,

@@ -17,7 +17,24 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: Automation dependency preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Reject automation dependencies with current PyPI advisories
+        run: python -I scripts/lock_release_tools.py check
+
   test:
+    needs: preflight
     if: github.event_name != 'schedule'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -49,10 +66,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Reject automation dependencies with current PyPI advisories
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: python -I scripts/lock_release_tools.py check
 
       - name: Install dev dependencies
         run: |

@@ -44,6 +44,7 @@ MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 EXPECTED_JOBS = (
+    "Automation dependency preflight",
     "Exhaustive obligation suite",
     "Public Action contract (ubuntu-latest, Python 3.12)",
     "Public installation contracts (ubuntu-latest)",

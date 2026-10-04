@@ -3548,11 +3548,11 @@
     },
     "pyjwt": {
       "name": "PyJWT",
-      "version": "2.13.0",
+      "version": "2.15.1",
       "wheels": [
         {
-          "filename": "pyjwt-2.13.0-py3-none-any.whl",
-          "sha256": "66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728"
+          "filename": "pyjwt-2.15.1-py3-none-any.whl",
+          "sha256": "42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193"
         }
       ]
     },
@@ -5072,21 +5072,21 @@
     },
     "urllib3": {
       "name": "urllib3",
-      "version": "2.7.0",
+      "version": "2.8.0",
       "wheels": [
         {
-          "filename": "urllib3-2.7.0-py3-none-any.whl",
-          "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897"
+          "filename": "urllib3-2.8.0-py3-none-any.whl",
+          "sha256": "0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3"
         }
       ]
     },
     "virtualenv": {
       "name": "virtualenv",
-      "version": "21.7.7",
+      "version": "21.14.5",
       "wheels": [
         {
-          "filename": "virtualenv-21.7.7-py3-none-any.whl",
-          "sha256": "67a6a68fef3ad8ca16b8b89f33fd8f97996cc0bf0db31629d07ecf8dec539a2c"
+          "filename": "virtualenv-21.14.5-py3-none-any.whl",
+          "sha256": "b0651e0174982bba17cc6f0aaa2ef496730cb85a3f35eb5d1119d1c904f7d1da"
         }
       ]
     },
