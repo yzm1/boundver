@@ -21,7 +21,7 @@ class SecurityPolicyExpiryTests(unittest.TestCase):
         for days in (-1, 0, 1, 14, 15):
             with self.subTest(days=days):
                 expiry = today + datetime.timedelta(days=days)
-                text = f"  - id: CVE-2026-1234\n    expired_at: {expiry}\n"
+                text = f"vulnerabilities:\n  - id: CVE-2026-1234\n    expired_at: {expiry}\n"
                 if 1 <= days <= 14:
                     POLICY.check_policy(text, today)
                 else:
@@ -29,7 +29,7 @@ class SecurityPolicyExpiryTests(unittest.TestCase):
                         POLICY.check_policy(text, today)
 
     def test_every_entry_and_date_must_be_explicit(self):
-        prefix = "  - id: CVE-2026-1234\n"
+        prefix = "vulnerabilities:\n  - id: CVE-2026-1234\n"
         cases = (
             "", prefix, prefix + "    expired_at: 2026-02-30\n",
             prefix + '    expired_at: "2026-10-10"\n',
@@ -48,7 +48,8 @@ class SecurityPolicyExpiryTests(unittest.TestCase):
             (b"invalid policy", 1),
             (b"\xff", 1),
             (b"x" * (POLICY.MAX_POLICY_BYTES + 1), 1),
-            (b"  - id: CVE-2026-1234\r\n    expired_at: 2026-10-05\r\n", 0),
+            (b"vulnerabilities:\r\n  - id: CVE-2026-1234\r\n"
+             b"    expired_at: 2026-10-05\r\n", 0),
         )
         for data, expected in cases:
             with self.subTest(data=data[:32]):
@@ -72,3 +73,18 @@ class SecurityPolicyExpiryTests(unittest.TestCase):
             mock.patch.object(POLICY.sys, "stderr", io.StringIO()),
         ):
             self.assertEqual(POLICY.main(), 1)
+
+    def test_noncanonical_yaml_cannot_hide_an_undated_entry(self):
+        first = "vulnerabilities:\n  - id: CVE-2026-1234\n    expired_at: 2026-10-10\n"
+        for hidden in (
+            '  - id: "CVE-2026-5678"\n',
+            "  - id: 'CVE-2026-5678'\n",
+            "  - {id: CVE-2026-5678}\n",
+            "  - &hidden\n    id: CVE-2026-5678\n",
+            "  - *hidden\n",
+            "vulnerabilities: [{id: CVE-2026-5678}]\n",
+            "---\nvulnerabilities:\n  - id: CVE-2026-5678\n",
+            "  - id: CVE-2026-5678\n    expired_at: &forever 2026-10-10\n",
+        ):
+            with self.subTest(hidden=hidden), self.assertRaises(ValueError):
+                POLICY.check_policy(first + hidden, datetime.date(2026, 10, 4))

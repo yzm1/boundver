@@ -162,9 +162,10 @@ jobs:
     name: Exhaustive obligation suite
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: test
+    needs: [preflight, test]
     if: >-
       always() &&
+      needs.preflight.result == 'success' &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'schedule' || needs.test.result == 'success')
     steps:
@@ -210,9 +211,10 @@ jobs:
     name: Mutation catalog
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: test
+    needs: [preflight, test]
     if: >-
       always() &&
+      needs.preflight.result == 'success' &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'schedule' || needs.test.result == 'success')
     steps:

@@ -2633,6 +2633,15 @@ print(json.dumps(payload, separators=(",", ":")))
         paid_minutes = {"windows-latest": 0, "macos-15": 0, "macos-15-intel": 0}
         paid_jobs = {name: 0 for name in paid_minutes}
         self.assertEqual(workflow["jobs"]["test"]["needs"], "preflight")
+        for job_name in ("exhaustive", "mutation"):
+            job = workflow["jobs"][job_name]
+            self.assertEqual(set(job["needs"]), {"preflight", "test"})
+            self.assertEqual(
+                " ".join(job["if"].split()),
+                "always() && needs.preflight.result == 'success' && "
+                "github.event_name != 'pull_request' && "
+                "(github.event_name == 'schedule' || needs.test.result == 'success')",
+            )
         preflight = workflow["jobs"]["preflight"]
         self.assertEqual(preflight["runs-on"], "ubuntu-latest")
         self.assertLessEqual(preflight["timeout-minutes"], 10)

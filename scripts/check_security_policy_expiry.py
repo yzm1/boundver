@@ -18,6 +18,25 @@ MAX_POLICY_BYTES = 64 * 1024
 
 
 def check_policy(text: str, today: datetime.date) -> None:
+    # Accept only the canonical checked-in subset, not arbitrary YAML. In
+    # particular, a quoted/flow-style ID must not fold into a prior entry and
+    # inherit its expiry. Trivy remains the authoritative YAML/scan consumer.
+    lines = [line for line in text.splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if not lines or lines[0] != "vulnerabilities:":
+        raise ValueError("expected one canonical vulnerabilities mapping")
+    allowed = (
+        r"  - id: CVE-[0-9]{4}-[0-9]+",
+        r"    purls:",
+        r"      - pkg:deb/debian/[A-Za-z0-9.+-]+",
+        r"    expired_at: [0-9]{4}-[0-9]{2}-[0-9]{2}",
+        r"    statement: [A-Za-z][^\r\n]*",
+    )
+    if len(lines) < 2 or not re.fullmatch(allowed[0], lines[1]):
+        raise ValueError("expected a canonical CVE entry")
+    for line in lines[1:]:
+        if not any(re.fullmatch(pattern, line) for pattern in allowed):
+            raise ValueError("unsupported container exception syntax")
     blocks = re.split(r"^  - id: CVE-[0-9]{4}-[0-9]+$", text, flags=re.MULTILINE)
     if len(blocks) == 1 or re.search(r"expired_at:", blocks[0]):
         raise ValueError("each exception must have one explicit expiry date")
