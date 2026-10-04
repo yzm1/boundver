@@ -144,7 +144,10 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
         )
-    return str(resolved)
+    # Validate both the selected path and its target, but launch through the
+    # selected path. Resolving a virtualenv's Python symlink would discard its
+    # pyvenv.cfg context and run the base interpreter without the locked tools.
+    return str(raw)
 
 
 def _git_environment(environment: Mapping[str, str]) -> dict[str, str]:
@@ -333,7 +336,8 @@ def verify_candidate(
         )
 
     tool_env = sanitize_shell_environment(environment)
-    interpreter_dir = str(Path(python).resolve().parent)
+    python = _trusted_tool(python, repo, tool_env.get("PATH"))
+    interpreter_dir = str(Path(python).parent)
     existing_path = tool_env.get("PATH")
     tool_env["PATH"] = (
         interpreter_dir + os.pathsep + existing_path
@@ -341,7 +345,6 @@ def verify_candidate(
         else interpreter_dir
     )
 
-    python = _trusted_tool(python, repo, tool_env.get("PATH"))
     git = _trusted_tool("git", repo, tool_env.get("PATH"))
 
     head = _git_output(
