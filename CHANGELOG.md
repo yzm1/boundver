@@ -57,10 +57,11 @@ All notable changes to this project are documented here. The format follows
   newer, where lazy object fetching can be disabled.
 - Refreshed the deterministic range-review fixture provenance after the v0.16
   config-schema and lock-format migration.
-- Gave the complete release-candidate tests and mutation checks independent
-  two-hour watchdogs, with cumulative headroom in the local launcher and the
-  Linux-only release jobs. Short checks retain five-minute limits and packaging
-  has a separate 30-minute limit.
+- Gave release-candidate phases separate aggregate watchdogs: two hours for
+  the complete test corpus, one hour for the 12-mutant catalog, and 90 minutes
+  for packaging, including tool installs, reproducible builds, and installation
+  checks. The local launcher and Linux-only release jobs retain cumulative
+  headroom; short checks keep five-minute limits.
 - Reduced ordinary CI to a Linux Python-version axis and one Python 3.12 job
   each on Windows and macOS. A Linux preflight rejects dependency advisories
   and expired container exceptions before paid runners start. Regression tests
