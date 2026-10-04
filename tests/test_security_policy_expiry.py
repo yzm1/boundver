@@ -67,6 +67,32 @@ class SecurityPolicyExpiryTests(unittest.TestCase):
                     self.assertEqual(POLICY.main(), expected)
                 opener().read.assert_called_once_with(POLICY.MAX_POLICY_BYTES + 1)
 
+    def test_alternate_line_breaks_cannot_hide_undated_entries(self):
+        first = "vulnerabilities:\n  - id: CVE-2026-1234\n    expired_at: 2026-10-10"
+        today = datetime.date(2026, 10, 4)
+        for separator in ("\n", "\r\n", "\r", "\x85", "\u2028", "\u2029", "\v", "\f", "\x1c", "\x1d", "\x1e"):
+            with self.subTest(separator=repr(separator)), self.assertRaises(ValueError):
+                POLICY.check_policy(first + separator + "  - id: CVE-2026-5678\n", today)
+
+    def test_only_canonical_line_breaks_accept_two_dated_entries(self):
+        first = "vulnerabilities:\n  - id: CVE-2026-1234\n    expired_at: 2026-10-10"
+        second = "  - id: CVE-2026-5678\n    expired_at: 2026-10-11\n"
+        for separator in ("\n", "\r\n"):
+            with self.subTest(separator=repr(separator)):
+                POLICY.check_policy(first + separator + second, datetime.date(2026, 10, 4))
+        for separator in ("\r", "\x85", "\u2028", "\u2029", "\v", "\f", "\x1c", "\x1d", "\x1e"):
+            with self.subTest(separator=repr(separator)), self.assertRaisesRegex(ValueError, "line break"):
+                POLICY.check_policy(first + separator + second, datetime.date(2026, 10, 4))
+
+    def test_main_rejects_alternate_line_breaks(self):
+        prefix = "vulnerabilities:\n  - id: CVE-2026-1234\n    expired_at: 2026-10-10"
+        for separator in ("\r", "\x85", "\u2028", "\u2029"):
+            data = (prefix + separator + "  - id: CVE-2026-5678\n").encode("utf-8")
+            with self.subTest(separator=repr(separator)), mock.patch.object(
+                Path, "open", mock.mock_open(read_data=data)
+            ), mock.patch.object(POLICY.sys, "stderr", io.StringIO()):
+                self.assertEqual(POLICY.main(), 1)
+
     def test_missing_policy_fails_closed(self):
         with (
             mock.patch.object(Path, "open", side_effect=OSError("missing")),

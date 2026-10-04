@@ -18,10 +18,15 @@ MAX_POLICY_BYTES = 64 * 1024
 
 
 def check_policy(text: str, today: datetime.date) -> None:
+    # The checked-in subset allows LF and CRLF only. Reject other separators
+    # rather than letting Python and the downstream YAML scanner disagree.
+    text = text.replace("\r\n", "\n")
+    if any(separator in text for separator in "\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+        raise ValueError("unsupported container exception line break")
     # Accept only the canonical checked-in subset, not arbitrary YAML. In
     # particular, a quoted/flow-style ID must not fold into a prior entry and
     # inherit its expiry. Trivy remains the authoritative YAML/scan consumer.
-    lines = [line for line in text.splitlines()
+    lines = [line for line in text.split("\n")
              if line.strip() and not line.lstrip().startswith("#")]
     if not lines or lines[0] != "vulnerabilities:":
         raise ValueError("expected one canonical vulnerabilities mapping")
@@ -37,7 +42,8 @@ def check_policy(text: str, today: datetime.date) -> None:
     for line in lines[1:]:
         if not any(re.fullmatch(pattern, line) for pattern in allowed):
             raise ValueError("unsupported container exception syntax")
-    blocks = re.split(r"^  - id: CVE-[0-9]{4}-[0-9]+$", text, flags=re.MULTILINE)
+    canonical = "\n".join(lines)
+    blocks = re.split(r"^  - id: CVE-[0-9]{4}-[0-9]+$", canonical, flags=re.MULTILINE)
     if len(blocks) == 1 or re.search(r"expired_at:", blocks[0]):
         raise ValueError("each exception must have one explicit expiry date")
     for block in blocks[1:]:
@@ -58,8 +64,7 @@ def main() -> int:
             data = stream.read(MAX_POLICY_BYTES + 1)
         if len(data) > MAX_POLICY_BYTES:
             raise ValueError("container exception policy is oversized")
-        # Normalize Windows checkouts without accepting alternate date syntax.
-        text = data.decode("utf-8").replace("\r\n", "\n")
+        text = data.decode("utf-8")
         check_policy(text, datetime.datetime.now(datetime.timezone.utc).date())
     except (OSError, UnicodeError, ValueError) as error:
         print(f"Container security policy preflight failed: {error}", file=sys.stderr)
