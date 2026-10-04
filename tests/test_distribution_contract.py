@@ -2652,8 +2652,14 @@ print(json.dumps(payload, separators=(",", ":")))
                         for row in itertools.product(*(axes[name] for name in names))
                     )
             else:
+                self.assertFalse(matrix, "Static runners must not hide matrix fan-out")
                 runners = [runner]
             for selected in runners:
+                self.assertIn(
+                    selected,
+                    {"ubuntu-latest", "windows-latest", "macos-15"},
+                    "New runner labels require an explicit budget review",
+                )
                 if selected in paid_jobs:
                     paid_jobs[selected] += 1
                     paid_minutes[selected] += timeout
