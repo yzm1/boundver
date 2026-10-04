@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * 1"
@@ -20,7 +21,7 @@ jobs:
   preflight:
     name: Automation dependency preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,7 +38,9 @@ jobs:
 
   test:
     needs: preflight
-    if: github.event_name != 'schedule'
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:

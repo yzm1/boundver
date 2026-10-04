@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -98,7 +99,84 @@ def _supports_platform(filename: str, platform: str) -> bool:
 def test_generated_locks_are_canonical_and_complete():
     locker = _load_locker()
     locker.verify()
+    _assert_generated_locks(locker)
 
+
+def test_metadata_fetches_are_deduplicated_concurrent_and_ordered(monkeypatch):
+    locker = _load_locker()
+    barrier = threading.Barrier(locker.MAX_PYPI_WORKERS)
+    mutex = threading.Lock()
+    active = peak = 0
+    calls = []
+
+    def fetch(item):
+        nonlocal active, peak
+        with mutex:
+            calls.append(item.canonical_name)
+            active += 1
+            peak = max(active, peak)
+        try:
+            barrier.wait(timeout=3)
+            return [{"filename": item.canonical_name}]
+        finally:
+            with mutex:
+                active -= 1
+
+    monkeypatch.setattr(locker, "_pypi_release", fetch)
+    requirements = [locker.Requirement(f"package-{n:02d}", "1.0") for n in range(16)]
+    result = locker._fetch_releases(list(reversed(requirements)) + requirements)
+    assert list(result) == [item.canonical_name for item in requirements]
+    assert sorted(calls) == list(result)
+    assert peak == locker.MAX_PYPI_WORKERS == 8
+
+
+def test_metadata_fetch_limits_fail_before_more_requests_or_writes(monkeypatch):
+    locker = _load_locker()
+    calls = []
+
+    def fetch(item):
+        calls.append(item.canonical_name)
+        return [{"filename": "one"}, {"filename": "two"}]
+
+    monkeypatch.setattr(locker, "_pypi_release", fetch)
+    too_many = [locker.Requirement(f"package-{n}", "1.0")
+                for n in range(locker.MAX_REQUIREMENTS + 1)]
+    with pytest.raises(locker.LockError, match="package limit"):
+        locker._fetch_releases(too_many)
+    assert not calls
+    monkeypatch.setattr(locker, "MAX_TOTAL_WHEELS", 1)
+    with pytest.raises(locker.LockError, match="wheel limit"):
+        locker._fetch_releases(too_many[:16])
+    assert len(calls) <= locker.MAX_PYPI_WORKERS
+
+
+def test_metadata_failure_is_propagated_without_fetching_the_whole_queue(monkeypatch):
+    locker = _load_locker()
+    calls = []
+
+    def fail(item):
+        calls.append(item.canonical_name)
+        raise locker.LockError("active advisory")
+
+    monkeypatch.setattr(locker, "_pypi_release", fail)
+    requirements = [locker.Requirement(f"package-{n:02d}", "1.0") for n in range(32)]
+    with pytest.raises(locker.LockError, match="active advisory"):
+        locker._fetch_releases(requirements)
+    assert len(calls) <= locker.MAX_PYPI_WORKERS
+
+
+def test_preflight_timeout_covers_the_bounded_request_waves():
+    import yaml
+
+    locker = _load_locker()
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    waves = (locker.MAX_REQUIREMENTS + locker.MAX_PYPI_WORKERS - 1) // locker.MAX_PYPI_WORKERS
+    assert workflow["jobs"]["preflight"]["timeout-minutes"] * 60 >= (
+        waves * locker.MAX_PYPI_REQUEST_SECONDS + 120
+    )
+
+
+def _assert_generated_locks(locker):
     _, profiles = locker.load_manifest()
     assert tuple(profiles) == ("action", "ci", "docs", "release")
     for profile in profiles.values():

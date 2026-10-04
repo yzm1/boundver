@@ -72,6 +72,12 @@ The repository owner must configure these controls before starting a release:
   The same preflight rejects expired container exception dates before paid
   runners start. Run `python -I scripts/check_security_policy_expiry.py` locally;
   success checks dates only, not whether accepting a vulnerability is justified.
+  Draft pull requests run the light preflight, documentation, and CodeQL checks;
+  the platform matrix starts only when the PR is marked ready for review. Keep
+  review-driven fixes in draft until local tests and exact-commit reviews pass.
+  A draft's skipped platform jobs cannot satisfy `required-pr-gate`. PyPI
+  metadata reads are deduplicated, limited to eight concurrent requests and 256
+  packages; the Linux preflight allows 20 minutes including setup.
   Release-candidate verification is an explicit, Linux-only exception to the
   ordinary job limits: its two assurance phases each allow two hours, packaging
   allows 30 minutes, and other commands allow five minutes each. The local

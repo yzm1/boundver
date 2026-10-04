@@ -2633,6 +2633,12 @@ print(json.dumps(payload, separators=(",", ":")))
         paid_minutes = {"windows-latest": 0, "macos-15": 0, "macos-15-intel": 0}
         paid_jobs = {name: 0 for name in paid_minutes}
         self.assertEqual(workflow["jobs"]["test"]["needs"], "preflight")
+        self.assertIn("ready_for_review", workflow[True]["pull_request"]["types"])
+        self.assertEqual(
+            " ".join(workflow["jobs"]["test"]["if"].split()),
+            "github.event_name != 'schedule' && "
+            "(github.event_name != 'pull_request' || github.event.pull_request.draft == false)",
+        )
         for job_name in ("exhaustive", "mutation"):
             job = workflow["jobs"][job_name]
             self.assertEqual(set(job["needs"]), {"preflight", "test"})
@@ -2644,7 +2650,7 @@ print(json.dumps(payload, separators=(",", ":")))
             )
         preflight = workflow["jobs"]["preflight"]
         self.assertEqual(preflight["runs-on"], "ubuntu-latest")
-        self.assertLessEqual(preflight["timeout-minutes"], 10)
+        self.assertLessEqual(preflight["timeout-minutes"], 20)
         self.assertTrue(any(
             step.get("run") == "python -I scripts/lock_release_tools.py check"
             for step in preflight["steps"]

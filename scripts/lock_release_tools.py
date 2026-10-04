@@ -22,6 +22,8 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -57,6 +59,8 @@ MAX_PYPI_FILES = 4096
 MAX_PYPI_VULNERABILITIES = 4096
 MAX_WHEEL_FILENAME_BYTES = 1024
 MAX_REQUIREMENTS = 256
+MAX_PYPI_WORKERS = 8
+MAX_PYPI_REQUEST_SECONDS = 30
 MAX_TOTAL_WHEELS = 20_000
 MAX_JSON_INTEGER_DIGITS = 4300
 MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
@@ -708,7 +712,7 @@ def _pypi_release(requirement: Requirement) -> list[dict[str, str]]:
         headers={"Accept": "application/json", "User-Agent": "boundver-lock/1"},
     )
     try:
-        with _open_pypi_url(request, timeout=30) as response:
+        with _open_pypi_url(request, timeout=MAX_PYPI_REQUEST_SECONDS) as response:
             final_url = urllib.parse.urlsplit(response.geturl())
             if (
                 final_url.scheme != "https"
@@ -842,18 +846,53 @@ def _render_lock(
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def _fetch_releases(requirements: Sequence[Requirement]) -> dict[str, list[dict[str, str]]]:
+    # load_manifest has already rejected conflicting cross-profile pins.
+    # Fetch each canonical package once; retain sorted result/error ordering.
+    unique = {item.canonical_name: item for item in requirements}
+    if len(unique) > MAX_REQUIREMENTS:
+        raise LockError(f"metadata requests exceed the {MAX_REQUIREMENTS}-package limit")
+    ordered = [unique[name] for name in sorted(unique)]
+    with ThreadPoolExecutor(max_workers=MAX_PYPI_WORKERS) as executor:
+        remaining = iter(ordered)
+        pending = deque()
+        for _ in range(min(len(ordered), MAX_PYPI_WORKERS)):
+            item = next(remaining)
+            pending.append((item, executor.submit(_pypi_release, item)))
+        artifacts = {}
+        wheel_count = 0
+        try:
+            while pending:
+                item, future = pending.popleft()
+                wheels = future.result()
+                wheel_count += len(wheels)
+                if wheel_count > MAX_TOTAL_WHEELS:
+                    raise LockError(
+                        f"generated evidence exceeds the {MAX_TOTAL_WHEELS}-wheel limit"
+                    )
+                artifacts[item.canonical_name] = wheels
+                next_item = next(remaining, None)
+                if next_item is not None:
+                    pending.append((next_item, executor.submit(_pypi_release, next_item)))
+            return artifacts
+        except BaseException:
+            # Stop queued work on failure. In-flight reads retain their own
+            # transport/byte limits; no output is written on any failed fetch.
+            for _, future in pending:
+                future.cancel()
+            raise
+
+
 def _generate() -> dict[Path, bytes]:
     _, profiles = load_manifest()
-    artifacts: dict[str, list[dict[str, str]]] = {}
+    artifacts = _fetch_releases(_all_requirements(profiles))
     wheel_count = 0
-    for requirement in _all_requirements(profiles):
-        wheels = _pypi_release(requirement)
+    for wheels in artifacts.values():
         wheel_count += len(wheels)
         if wheel_count > MAX_TOTAL_WHEELS:
             raise LockError(
                 f"generated evidence exceeds the {MAX_TOTAL_WHEELS}-wheel limit"
             )
-        artifacts[requirement.canonical_name] = wheels
     outputs = {ARTIFACTS: _artifact_payload(profiles, artifacts)}
     outputs.update(
         {
