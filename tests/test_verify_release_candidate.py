@@ -292,6 +292,47 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         )
         self.assertEqual(commands[8][1]["SAFE_VALUE"], "kept")
 
+    def test_hosted_profile_runs_the_complete_sequence_with_setup_headroom(self):
+        verifier = _load_script()
+        calls = []
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / "dist").mkdir()
+
+            def run(command, *, cwd, env, timeout_seconds=verifier.MAX_COMMAND_SECONDS):
+                calls.append((tuple(command), timeout_seconds))
+                if command[-1] == "scripts/packaging_smoke.sh":
+                    (repo / "dist" / f"boundver-{CURRENT_VERSION}-py3-none-any.whl").touch()
+                    (repo / "dist" / f"boundver-{CURRENT_VERSION}.tar.gz").touch()
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with mock.patch.object(verifier, "_git_output", side_effect=(SHA, "1700000000")), mock.patch.object(
+                verifier, "_run", side_effect=run
+            ), mock.patch.object(verifier, "_packaging_bash", return_value="/tools/bash"), mock.patch.object(
+                verifier, "_trusted_tool", side_effect=lambda command, *_args: command
+            ):
+                verifier.verify_candidate(repo, TAG, SHA, profile="hosted")
+        self.assertEqual(len(calls), 9)
+        self.assertIn("scripts/test_tiers.py", calls[3][0])
+        self.assertIn("all", calls[3][0])
+        self.assertIn("scripts/mutation_check.py", calls[4][0])
+        self.assertEqual(calls[3][1], 5_400)
+        self.assertEqual(calls[4][1], 1_800)
+        self.assertEqual(calls[7][1], 5_400)
+        total = sum(timeout for _, timeout in calls) + 2 * verifier.MAX_COMMAND_SECONDS
+        self.assertEqual(total, 250 * 60)
+        self.assertLess(total, 270 * 60)
+        # The 270-minute step leaves a separate 90-minute setup/publication
+        # window within GitHub's six-hour hosted-job hard limit.
+        self.assertGreaterEqual(360 * 60 - 270 * 60, 1_800 + 32 * 30 + 30 * 60)
+
+    def test_unknown_profile_fails_before_running_commands(self):
+        verifier = _load_script()
+        with mock.patch.object(verifier, "_run") as runner:
+            with self.assertRaisesRegex(verifier.CandidateVerificationError, "profile"):
+                verifier.verify_candidate(REPO_ROOT, TAG, SHA, profile="skip-tests")
+        runner.assert_not_called()
+
     def test_verifier_rejects_wrong_checkout_before_running_candidate_code(self):
         verifier = _load_script()
         with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
@@ -450,6 +491,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 verify = by_name[
                     "Verify release candidate source and distributions"
                 ]
+                self.assertIn("--profile hosted", verify["run"])
+                self.assertEqual(verify["timeout-minutes"], 270)
                 self.assertIn("scripts/install_locked_tools.py release", install["run"])
                 self.assertIn("--no-index --no-deps", install["run"])
                 self.assertNotIn("pip install", verify["run"])

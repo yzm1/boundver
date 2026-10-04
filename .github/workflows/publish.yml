@@ -547,10 +547,12 @@ jobs:
 
       - name: Verify release candidate source and distributions
         if: inputs.resume_run_id == ''
+        timeout-minutes: 270
         run: >-
           python -I scripts/verify_release_candidate.py
           --tag "$RELEASE_TAG"
           --release-sha "$RELEASE_SHA"
+          --profile hosted
 
       - name: Upload verified distributions
         if: inputs.resume_run_id == ''

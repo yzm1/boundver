@@ -62,6 +62,9 @@ All notable changes to this project are documented here. The format follows
   for packaging, including tool installs, reproducible builds, and installation
   checks. The local launcher and Linux-only release jobs retain cumulative
   headroom; short checks keep five-minute limits.
+- Added a Linux-hosted release-verification budget with the same full assurance
+  sequence and separate setup/publication headroom inside GitHub's six-hour
+  job limit. The longer local profile remains the default.
 - Reduced ordinary CI to a Linux Python-version axis and one Python 3.12 job
   each on Windows and macOS. A Linux preflight rejects dependency advisories
   and expired container exceptions before paid runners start. Regression tests

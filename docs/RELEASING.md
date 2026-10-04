@@ -89,6 +89,14 @@ The repository owner must configure these controls before starting a release:
   launcher allows 5.5 hours for the complete sequence; the two release workflows
   allow six hours including setup. These are failure ceilings, not expected
   runtimes, and do not expand the ordinary Windows/macOS budget.
+  Both hosted workflows select `--profile hosted`: 90 minutes for the full
+  suite, 30 for the 12-mutant catalog, and 90 for packaging. Short checks are
+  unchanged, making the cumulative command budget 250 minutes. The verifier
+  step allows 270 minutes, leaving 90 minutes within the six-hour job ceiling
+  for dependency preflight, installation, review audits, and publication checks.
+  The complete verification sequence is identical; no tests or smokes are skipped.
+  GitHub's [hosted job limit](https://docs.github.com/en/actions/reference/limits)
+  cannot be raised by declaring a longer workflow timeout.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,

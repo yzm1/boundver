@@ -53,6 +53,8 @@ MAX_TEST_TIER_SECONDS = 7_200
 # locked-tool installs, reproducible builds, and installation smoke checks.
 MAX_MUTATION_SECONDS = 3_600
 MAX_PACKAGING_SECONDS = 5_400
+HOSTED_MAX_TEST_TIER_SECONDS = 5_400
+HOSTED_MAX_MUTATION_SECONDS = 1_800
 MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024
 
 
@@ -309,8 +311,17 @@ def verify_candidate(
     *,
     python: str = sys.executable,
     environment: Optional[Mapping[str, str]] = None,
+    profile: str = "local",
 ) -> tuple[Path, Path]:
     """Verify readiness, tests, reproducible packages, and package metadata."""
+    if profile not in {"local", "hosted"}:
+        raise CandidateVerificationError("profile must be local or hosted")
+    test_seconds = (
+        HOSTED_MAX_TEST_TIER_SECONDS if profile == "hosted" else MAX_TEST_TIER_SECONDS
+    )
+    mutation_seconds = (
+        HOSTED_MAX_MUTATION_SECONDS if profile == "hosted" else MAX_MUTATION_SECONDS
+    )
     repo = repo.resolve()
     if not repo.is_dir():
         raise CandidateVerificationError(f"repository does not exist: {repo}")
@@ -378,13 +389,13 @@ def verify_candidate(
         (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-q"),
         cwd=repo,
         env=tool_env,
-        timeout_seconds=MAX_TEST_TIER_SECONDS,
+        timeout_seconds=test_seconds,
     )
     _run(
         (python, "-I", "scripts/mutation_check.py"),
         cwd=repo,
         env=tool_env,
-        timeout_seconds=MAX_MUTATION_SECONDS,
+        timeout_seconds=mutation_seconds,
     )
     _run(
         (python, "-I", "scripts/demo_consumer_impact.py"),
@@ -427,13 +438,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--repo", type=Path, default=Path("."))
+    parser.add_argument("--profile", choices=("local", "hosted"), default="local")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        wheel, sdist = verify_candidate(args.repo, args.tag, args.release_sha)
+        wheel, sdist = verify_candidate(
+            args.repo, args.tag, args.release_sha, profile=args.profile
+        )
     except CandidateVerificationError as error:
         print(f"release candidate verification failed: {error}", file=sys.stderr)
         return 1
