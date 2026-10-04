@@ -44,29 +44,20 @@ MAX_JSON_NUMBER_CHARS = MAX_JSON_INTEGER_DIGITS + 32
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 EXPECTED_JOBS = (
+    "Automation dependency preflight",
     "Exhaustive obligation suite",
-    "Public Action contract (macos-15, Python 3.12)",
     "Public Action contract (ubuntu-latest, Python 3.12)",
-    "Public Action contract (ubuntu-latest, Python 3.10)",
-    "Public Action contract (windows-latest, Python 3.12)",
-    "Public installation contracts (macos-15)",
     "Public installation contracts (ubuntu-latest)",
-    "Public installation contracts (windows-latest)",
     "Mutation catalog",
     "Previous release lockfile contract",
     "build",
     "test (macos-15, 3.12)",
-    "test (macos-15-intel, 3.12)",
     "test (ubuntu-latest, 3.10)",
     "test (ubuntu-latest, 3.11)",
     "test (ubuntu-latest, 3.12)",
     "test (ubuntu-latest, 3.13)",
     "test (ubuntu-latest, 3.14)",
-    "test (windows-latest, 3.10)",
-    "test (windows-latest, 3.11)",
     "test (windows-latest, 3.12)",
-    "test (windows-latest, 3.13)",
-    "test (windows-latest, 3.14)",
 )
 PULL_REQUEST_SKIPPED_JOBS = frozenset(
     {"Exhaustive obligation suite", "Mutation catalog"}

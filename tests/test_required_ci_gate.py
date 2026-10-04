@@ -334,6 +334,14 @@ class RequiredCiEvaluationTests(unittest.TestCase):
                         _event(self.gate), _fetcher(self.gate, jobs=jobs)
                     )
 
+    def test_draft_light_checks_cannot_approve_skipped_platform_tests(self) -> None:
+        jobs = _jobs(self.gate, conclusion="skipped")
+        for job in jobs["jobs"]:
+            if job["name"] == "Automation dependency preflight":
+                job["conclusion"] = "success"
+        with self.assertRaisesRegex(self.gate.RequiredCiGateError, "required conclusions"):
+            self.gate.evaluate(_event(self.gate), _fetcher(self.gate, jobs=jobs))
+
     def test_missing_extra_and_duplicate_jobs_are_rejected(self) -> None:
         missing = _jobs(self.gate)
         missing["jobs"].pop()

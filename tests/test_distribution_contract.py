@@ -2239,7 +2239,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1789344000"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1790985600"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2453,7 +2453,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20260914T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20261003T000000Z", dockerfile)
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
             dockerfile,
@@ -2469,7 +2469,7 @@ print(json.dumps(payload, separators=(",", ":")))
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20260914T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20261003T000000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2578,7 +2578,7 @@ print(json.dumps(payload, separators=(",", ":")))
         public = jobs["public-installations"]
         self.assertEqual(
             public["strategy"]["matrix"]["os"],
-            ["ubuntu-latest", "windows-latest", "macos-15"],
+            ["ubuntu-latest"],
         )
         script = "\n".join(
             str(step.get("run", "")) for step in public["steps"]
@@ -2597,34 +2597,108 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("docker build", script)
         self.assertIn("verify --source head --facets exact", script)
 
-    def test_ci_covers_both_macos_architectures_without_full_version_cross_product(self):
+    def test_ci_uses_an_orthogonal_supported_runtime_matrix(self):
         import yaml
 
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         )
         matrix = workflow["jobs"]["test"]["strategy"]["matrix"]
-        self.assertEqual(matrix["os"], ["ubuntu-latest", "windows-latest"])
-        self.assertEqual(
-            matrix["python-version"],
-            ["3.10", "3.11", "3.12", "3.13", "3.14"],
-        )
         self.assertEqual(
             matrix["include"],
             [
-                {"os": "macos-15-intel", "python-version": "3.12"},
+                {"os": "ubuntu-latest", "python-version": "3.10"},
+                {"os": "ubuntu-latest", "python-version": "3.11"},
+                {"os": "ubuntu-latest", "python-version": "3.12"},
+                {"os": "ubuntu-latest", "python-version": "3.13"},
+                {"os": "ubuntu-latest", "python-version": "3.14"},
+                {"os": "windows-latest", "python-version": "3.12"},
                 {"os": "macos-15", "python-version": "3.12"},
             ],
         )
         self.assertEqual(
             workflow["jobs"]["action"]["strategy"]["matrix"]["include"],
             [
-                {"os": "ubuntu-latest", "python-version": "3.10"},
                 {"os": "ubuntu-latest", "python-version": "3.12"},
-                {"os": "windows-latest", "python-version": "3.12"},
-                {"os": "macos-15", "python-version": "3.12"},
             ],
         )
+
+    def test_ci_paid_runner_budget_is_bounded(self):
+        import itertools
+        import yaml
+
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        )
+        paid_minutes = {"windows-latest": 0, "macos-15": 0, "macos-15-intel": 0}
+        paid_jobs = {name: 0 for name in paid_minutes}
+        self.assertEqual(workflow["jobs"]["test"]["needs"], "preflight")
+        self.assertIn("ready_for_review", workflow[True]["pull_request"]["types"])
+        self.assertIn("converted_to_draft", workflow[True]["pull_request"]["types"])
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        self.assertEqual(workflow["concurrency"]["group"], "ci-${{ github.ref }}")
+        self.assertEqual(
+            " ".join(workflow["jobs"]["test"]["if"].split()),
+            "github.event_name != 'schedule' && "
+            "(github.event_name != 'pull_request' || github.event.pull_request.draft == false)",
+        )
+        for job_name in ("exhaustive", "mutation"):
+            job = workflow["jobs"][job_name]
+            self.assertEqual(set(job["needs"]), {"preflight", "test"})
+            self.assertEqual(
+                " ".join(job["if"].split()),
+                "always() && needs.preflight.result == 'success' && "
+                "github.event_name != 'pull_request' && "
+                "(github.event_name == 'schedule' || needs.test.result == 'success')",
+            )
+        preflight = workflow["jobs"]["preflight"]
+        self.assertEqual(preflight["runs-on"], "ubuntu-latest")
+        self.assertLessEqual(preflight["timeout-minutes"], 20)
+        self.assertTrue(any(
+            step.get("run") == "python -I scripts/lock_release_tools.py check"
+            for step in preflight["steps"]
+        ))
+        self.assertTrue(any(
+            step.get("run") == "python -I scripts/check_security_policy_expiry.py"
+            for step in preflight["steps"]
+        ))
+        for job in workflow["jobs"].values():
+            runner = job.get("runs-on")
+            timeout = job.get("timeout-minutes")
+            self.assertIs(type(timeout), int)
+            matrix = job.get("strategy", {}).get("matrix", {})
+            runners: list[str]
+            if runner == "${{ matrix.os }}":
+                runners = [row["os"] for row in matrix.get("include", [])]
+                axes = {
+                    key: value
+                    for key, value in matrix.items()
+                    if key != "include"
+                }
+                if axes:
+                    names = list(axes)
+                    runners.extend(
+                        row[names.index("os")]
+                        for row in itertools.product(*(axes[name] for name in names))
+                    )
+            else:
+                self.assertFalse(matrix, "Static runners must not hide matrix fan-out")
+                runners = [runner]
+            for selected in runners:
+                self.assertIn(
+                    selected,
+                    {"ubuntu-latest", "windows-latest", "macos-15"},
+                    "New runner labels require an explicit budget review",
+                )
+                if selected in paid_jobs:
+                    paid_jobs[selected] += 1
+                    paid_minutes[selected] += timeout
+
+        self.assertEqual(paid_jobs["windows-latest"], 1)
+        self.assertEqual(paid_jobs["macos-15"], 1)
+        self.assertEqual(paid_jobs["macos-15-intel"], 0)
+        self.assertLessEqual(paid_minutes["windows-latest"], 45)
+        self.assertLessEqual(paid_minutes["macos-15"], 45)
 
     def test_ci_lints_undefined_names_and_unused_code_without_auto_fixing(self):
         workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(
@@ -2701,7 +2775,13 @@ print(json.dumps(payload, separators=(",", ":")))
                     timeout = job.get("timeout-minutes")
                     self.assertIs(type(timeout), int)
                     self.assertGreater(timeout, 0)
-                    self.assertLessEqual(timeout, 120)
+                    extended_candidate = (path.name, job_name) in {
+                        ("create-release-tag.yml", "verify-candidate"),
+                        ("publish.yml", "verify-release"),
+                    }
+                    self.assertLessEqual(timeout, 360 if extended_candidate else 120)
+                    if extended_candidate:
+                        self.assertEqual(job["runs-on"], "ubuntu-latest")
 
     def test_privileged_release_workflows_pin_git_and_github_transport(self):
         import yaml

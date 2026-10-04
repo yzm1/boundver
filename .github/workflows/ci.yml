@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * 1"
@@ -17,17 +18,46 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: Automation dependency preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Reject automation dependencies with current PyPI advisories
+        run: python -I scripts/lock_release_tools.py check
+      - name: Reject expired container security exceptions before paid runners
+        run: python -I scripts/check_security_policy_expiry.py
+
   test:
-    if: github.event_name != 'schedule'
+    needs: preflight
+    if: >-
+      github.event_name != 'schedule' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
-          - os: macos-15-intel
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: windows-latest
             python-version: "3.12"
           - os: macos-15
             python-version: "3.12"
@@ -41,10 +71,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Reject automation dependencies with current PyPI advisories
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: python -I scripts/lock_release_tools.py check
 
       - name: Install dev dependencies
         run: |
@@ -92,6 +118,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}
+          retention-days: 7
           path: |
             pytest_results.xml
             runtime_benchmark.json
@@ -138,9 +165,10 @@ jobs:
     name: Exhaustive obligation suite
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    needs: test
+    needs: [preflight, test]
     if: >-
       always() &&
+      needs.preflight.result == 'success' &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'schedule' || needs.test.result == 'success')
     steps:
@@ -179,15 +207,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pytest-exhaustive-results
+          retention-days: 7
           path: pytest_exhaustive_results.xml
 
   mutation:
     name: Mutation catalog
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: test
+    needs: [preflight, test]
     if: >-
       always() &&
+      needs.preflight.result == 'success' &&
       github.event_name != 'pull_request' &&
       (github.event_name == 'schedule' || needs.test.result == 'success')
     steps:
@@ -244,6 +274,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dist
+          retention-days: 7
           path: dist/
 
   action:
@@ -256,12 +287,6 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: "3.10"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: macos-15
             python-version: "3.12"
     steps:
       - name: Checkout
@@ -405,7 +430,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

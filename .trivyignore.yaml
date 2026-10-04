@@ -1,7 +1,7 @@
-# Temporary, fail-closed exceptions for the pinned Debian 13.7 runtime image.
+# Temporary, fail-closed exceptions for the pinned Debian 13 runtime image.
 #
-# Trivy reported no fixed Debian package for these IDs on 2026-09-15 after the
-# image upgraded every inherited package from the immutable 2026-09-14
+# Trivy reported no fixed Debian package for these IDs on 2026-10-04 after the
+# image upgraded every inherited package from the immutable 2026-10-03
 # snapshot. The container runs as an unprivileged user, strips every set-ID
 # bit, removes its Python build/package managers, and boundver performs
 # local-only Git object reads with lazy fetching disabled. A second CI scan
@@ -14,28 +14,28 @@ vulnerabilities:
       - pkg:deb/debian/libtinfo6
       - pkg:deb/debian/ncurses-base
       - pkg:deb/debian/ncurses-bin
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Inherited ncurses libraries are not used by the noninteractive boundver entrypoint; no Debian fix is available.
   - id: CVE-2026-12064
     purls:
       - pkg:deb/debian/libcurl3t64-gnutls
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
   - id: CVE-2026-16742
     purls:
       - pkg:deb/debian/libsystemd0
       - pkg:deb/debian/libudev1
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: The affected systemd-homed package and executable are absent from the non-root image; no Debian trixie fix is available.
   - id: CVE-2026-54369
     purls:
       - pkg:deb/debian/libacl1
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: The runtime is non-root with set-ID helpers stripped; no Debian libacl fix is available.
   - id: CVE-2026-66046
     purls:
       - pkg:deb/debian/libexpat1
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver and its local Git plumbing do not parse attacker-controlled XML; Debian classifies this as a postponed minor issue and provides no trixie fix.
   - id: CVE-2026-76642
     purls:
@@ -48,17 +48,22 @@ vulnerabilities:
       - pkg:deb/debian/login
       - pkg:deb/debian/mount
       - pkg:deb/debian/util-linux
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: The affected privileged mount post-hook path is unused; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
+  - id: CVE-2026-93990
+    purls:
+      - pkg:deb/debian/libexpat1
+    expired_at: 2026-10-18
+    statement: Boundver and its local Git plumbing do not parse attacker-controlled XML; the malformed UTF-16 XML issue has no Debian trixie fix.
   - id: CVE-2026-76956
     purls:
       - pkg:deb/debian/libexpat1
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver and its local Git plumbing do not parse attacker-controlled XML; no Debian libexpat fix is available.
   - id: CVE-2026-76957
     purls:
       - pkg:deb/debian/libexpat1
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver and its local Git plumbing do not use libexpat custom-encoding callbacks; no Debian libexpat fix is available.
   - id: CVE-2026-78408
     purls:
@@ -71,7 +76,7 @@ vulnerabilities:
       - pkg:deb/debian/login
       - pkg:deb/debian/mount
       - pkg:deb/debian/util-linux
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver never invokes nsenter or cgroup migration; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
   - id: CVE-2026-78409
     purls:
@@ -84,7 +89,7 @@ vulnerabilities:
       - pkg:deb/debian/login
       - pkg:deb/debian/mount
       - pkg:deb/debian/util-linux
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver never invokes fstab-authorized X-mount.subdir operations; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
   - id: CVE-2026-78410
     purls:
@@ -97,22 +102,22 @@ vulnerabilities:
       - pkg:deb/debian/login
       - pkg:deb/debian/mount
       - pkg:deb/debian/util-linux
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver never invokes restricted bind-mount ownership hooks; the runtime is non-root with every set-ID bit stripped, and Debian trixie has no fix.
   - id: CVE-2026-8286
     purls:
       - pkg:deb/debian/libcurl3t64-gnutls
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
   - id: CVE-2026-8458
     purls:
       - pkg:deb/debian/libcurl3t64-gnutls
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
   - id: CVE-2026-8927
     purls:
       - pkg:deb/debian/libcurl3t64-gnutls
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Git network transports are outside boundver's local-only runtime path; no Debian libcurl fix is available.
   - id: CVE-2026-9538
     purls:
@@ -120,5 +125,5 @@ vulnerabilities:
       - pkg:deb/debian/perl
       - pkg:deb/debian/perl-base
       - pkg:deb/debian/perl-modules-5.40
-    expired_at: 2026-09-29
+    expired_at: 2026-10-18
     statement: Boundver never invokes Perl archive extraction; Debian has deferred the fix.

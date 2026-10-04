@@ -34,9 +34,13 @@ The repository owner must configure these controls before starting a release:
 - Keep the checked-in `.github/rulesets/protect-main.json` contract active for
   `refs/heads/main`. It requires pull requests, resolved review conversations,
   and the strict `required-pr-gate` status from the GitHub Actions App; it also
-  blocks deletion and force pushes. The aggregate check fails unless the full
-  supported-platform matrix plus build, public Action, and public installation
-  jobs all succeed. The status is published by `required-pr-gate.yml`, which
+  blocks deletion and force pushes. The aggregate check fails unless the
+  orthogonal supported-runtime matrix plus build, public Action, and public
+  installation jobs all succeed. Python 3.10 through 3.14 run on Linux; one
+  Python 3.12 smoke job runs on Windows and one on macOS. Action and public
+  installation contracts run once on Linux instead of duplicating behavior
+  already covered by those OS smoke jobs. The status is published by
+  `required-pr-gate.yml`, which
   runs trusted code from the pull request's base commit after `CI` completes;
   it never executes pull-request code or consumes its artifacts. It also rejects
   any pull request that changes a workflow, the gate verifier, or the checked-in
@@ -52,6 +56,47 @@ The repository owner must configure these controls before starting a release:
   `main`. Classic branch protection must remain absent because GitHub would
   enforce it in addition to the ruleset; an inherited or stale rule cannot be
   treated as harmless.
+- Keep a GitHub Actions billing budget with **Stop usage when budget limit is
+  reached** enabled. A repository check cannot stop GitHub from scheduling an
+  accidentally enlarged matrix before that check executes, so the account-level
+  hard stop is the final financial boundary. The checked-in CI contract limits
+  ordinary runs to exactly one Windows job and one macOS job, each with no more
+  than 45 runner-minutes. `test_ci_paid_runner_budget_is_bounded` fails if a
+  workflow edit expands either paid-runner count or timeout. Do not weaken that
+  contract to add version coverage: Python-version compatibility belongs on the
+  Linux axis, while OS compatibility belongs on the single Python 3.12 smoke
+  axis.
+  The Linux automation dependency preflight must succeed before the platform
+  matrix starts, so advisory or lock failures do not consume Windows or macOS
+  minutes. Check automation locks locally before pushing an update.
+  The same preflight rejects expired container exception dates before paid
+  runners start. Run `python -I scripts/check_security_policy_expiry.py` locally;
+  success checks dates only, not whether accepting a vulnerability is justified.
+  Draft pull requests run the light preflight, documentation, and CodeQL checks;
+  the platform matrix starts only when the PR is marked ready for review. Keep
+  review-driven fixes in draft until local tests and exact-commit reviews pass.
+  Converting a ready PR back to draft starts a light run and cancels its previous
+  platform run through the same concurrency group.
+  A draft's skipped platform jobs cannot satisfy `required-pr-gate`. PyPI
+  metadata reads are deduplicated, limited to eight concurrent requests and 256
+  packages; the Linux preflight allows 20 minutes including setup.
+  Release-candidate verification is an explicit, Linux-only exception to the
+  ordinary job limits: the full suite allows two hours, the 12-mutant catalog
+  allows one hour, packaging allows 90 minutes, and other commands allow five minutes
+  each. Packaging reserves time for both locked-tool installs plus builds and
+  installation checks. These are aggregate phase deadlines; nested watchdogs
+  do not each receive an independent extension of the phase. The local
+  launcher allows 5.5 hours for the complete sequence; the two release workflows
+  allow six hours including setup. These are failure ceilings, not expected
+  runtimes, and do not expand the ordinary Windows/macOS budget.
+  Both hosted workflows select `--profile hosted`: 90 minutes for the full
+  suite, 30 for the 12-mutant catalog, and 90 for packaging. Short checks are
+  unchanged, making the cumulative command budget 250 minutes. The verifier
+  step allows 270 minutes, leaving 90 minutes within the six-hour job ceiling
+  for dependency preflight, installation, review audits, and publication checks.
+  The complete verification sequence is identical; no tests or smokes are skipped.
+  GitHub's [hosted job limit](https://docs.github.com/en/actions/reference/limits)
+  cannot be raised by declaring a longer workflow timeout.
 - A necessary change to a protected gate control requires a short, auditable
   maintenance window. Freeze the exact reviewed pull-request head, require all
   ordinary CI and review gates, record the reason and exact commit in its issue,
@@ -214,6 +259,16 @@ newly fixable high/critical issue fails immediately. It also scans the source
 tree for high/critical secret and configuration findings. Never use a wildcard,
 unscoped CVE, non-expiring entry, or global `--ignore-unfixed` as the primary
 publication gate.
+
+On 2026-10-04, local scans found fixable OpenSSL findings CVE-2026-75804 and
+CVE-2026-84782, and PCRE2 finding CVE-2026-103111. The 2026-10-03 snapshot
+installs Debian's fixed versions rather than exempting those findings. The
+[Debian security tracker](https://security-tracker.debian.org/tracker/)
+still lists the package-scoped residuals in `.trivyignore.yaml` as open for
+trixie; these are re-evaluated through 2026-10-18. The additional Expat
+CVE-2026-93990 concerns malformed UTF-16 XML; boundver's runtime does not parse
+XML. The primary exception-aware scan and the separate no-exceptions
+`--ignore-unfixed` scan remain mandatory for both release architectures.
 
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with
