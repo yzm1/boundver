@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -28,6 +29,18 @@ def _link(path, target, *, directory=False):
         path.symlink_to(target, target_is_directory=directory)
     except OSError:
         if sys.platform == "win32":
+            if directory:
+                # NTFS junctions exercise reparse-point traversal without the
+                # privilege required to create ordinary Windows symlinks.
+                result = subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", str(path), str(target)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=10,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    return
             pytest.skip("Windows symlink permission unavailable")
         raise
 
@@ -85,10 +98,12 @@ def test_external_relative_file_link_chain_remains_usable(tmp_path, selector):
     elif selector == "publisher":
         module = _load("publish_release")
         with mock.patch.object(module.shutil, "which", return_value=str(selected)):
-            assert module._trusted_tool("gh", repository) == str(executable)
+            assert Path(module._trusted_tool("gh", repository)).samefile(executable)
     else:
         module = _load("_release_platform")
-        assert module._trusted_external_file(str(selected), repository) == str(executable)
+        resolved = module._trusted_external_file(str(selected), repository)
+        assert resolved is not None
+        assert Path(resolved).samefile(executable)
 
 
 @pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
@@ -153,10 +168,48 @@ def test_external_directory_alias_remains_usable(tmp_path, selector):
     elif selector == "publisher":
         module = _load("publish_release")
         with mock.patch.object(module.shutil, "which", return_value=str(selected)):
-            assert module._trusted_tool("gh", repository) == str(executable)
+            assert Path(module._trusted_tool("gh", repository)).samefile(executable)
     else:
         module = _load("_release_platform")
-        assert module._trusted_external_file(str(selected), repository) == str(executable)
+        # Windows readlink may retain the valid extended-length '\\?\' prefix.
+        # Target identity, not one spelling of its path, is the contract.
+        resolved = module._trusted_external_file(str(selected), repository)
+        assert resolved is not None
+        assert Path(resolved).samefile(executable)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reparse-point launch")
+@pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
+def test_windows_directory_alias_can_launch_the_external_tool(tmp_path, selector):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    executable = Path(sys.executable).resolve()
+    alias = root / "tools"
+    _link(alias, executable.parent, directory=True)
+    selected = alias / executable.name
+    if selector == "candidate":
+        module = _load("verify_release_candidate")
+        command = module._trusted_tool(str(selected), repository, None)
+        assert command == str(selected)
+    elif selector == "publisher":
+        module = _load("publish_release")
+        with mock.patch.object(module.shutil, "which", return_value=str(selected)):
+            command = module._trusted_tool("python", repository)
+    else:
+        module = _load("_release_platform")
+        command = module._trusted_external_file(str(selected), repository)
+    assert command is not None
+    assert Path(command).samefile(executable)
+    result = subprocess.run(
+        [command, "-I", "-c", "print('external-tool-ok')"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+    assert result.stdout.strip() == "external-tool-ok"
 
 
 def test_normalized_candidate_launcher_is_the_target_that_was_validated(tmp_path):
