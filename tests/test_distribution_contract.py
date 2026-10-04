@@ -2634,6 +2634,9 @@ print(json.dumps(payload, separators=(",", ":")))
         paid_jobs = {name: 0 for name in paid_minutes}
         self.assertEqual(workflow["jobs"]["test"]["needs"], "preflight")
         self.assertIn("ready_for_review", workflow[True]["pull_request"]["types"])
+        self.assertIn("converted_to_draft", workflow[True]["pull_request"]["types"])
+        self.assertTrue(workflow["concurrency"]["cancel-in-progress"])
+        self.assertEqual(workflow["concurrency"]["group"], "ci-${{ github.ref }}")
         self.assertEqual(
             " ".join(workflow["jobs"]["test"]["if"].split()),
             "github.event_name != 'schedule' && "

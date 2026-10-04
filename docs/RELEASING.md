@@ -75,6 +75,8 @@ The repository owner must configure these controls before starting a release:
   Draft pull requests run the light preflight, documentation, and CodeQL checks;
   the platform matrix starts only when the PR is marked ready for review. Keep
   review-driven fixes in draft until local tests and exact-commit reviews pass.
+  Converting a ready PR back to draft starts a light run and cancels its previous
+  platform run through the same concurrency group.
   A draft's skipped platform jobs cannot satisfy `required-pr-gate`. PyPI
   metadata reads are deduplicated, limited to eight concurrent requests and 256
   packages; the Linux preflight allows 20 minutes including setup.
