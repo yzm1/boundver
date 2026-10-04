@@ -243,8 +243,20 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         self.assertEqual(verifier.MAX_COMMAND_SECONDS, 300)
         self.assertEqual(verifier.MAX_TEST_TIER_SECONDS, 7_200)
         self.assertEqual(timeouts[3], verifier.MAX_TEST_TIER_SECONDS)
-        self.assertEqual(timeouts[4], verifier.MAX_TEST_TIER_SECONDS)
+        self.assertEqual(verifier.MAX_MUTATION_SECONDS, 3_600)
+        self.assertEqual(timeouts[4], verifier.MAX_MUTATION_SECONDS)
         self.assertEqual(timeouts[7], verifier.MAX_PACKAGING_SECONDS)
+        installer_path = REPO_ROOT / "scripts" / "install_locked_tools.py"
+        spec = importlib.util.spec_from_file_location("packaging_installer", installer_path)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        # Packaging installs release tools and the sdist's action dependencies.
+        # Both installers can consume their watchdog; leave 30 minutes for the
+        # reproducible builds and installation checks under the aggregate cap.
+        self.assertGreaterEqual(
+            verifier.MAX_PACKAGING_SECONDS,
+            2 * installer.MAX_INSTALL_SECONDS + 1_800,
+        )
         # Include the two Git metadata commands, which the mock records apart.
         self.assertLess(sum(timeouts) + 2 * verifier.MAX_COMMAND_SECONDS, 19_800)
         self.assertTrue(

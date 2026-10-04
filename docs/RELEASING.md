@@ -81,8 +81,11 @@ The repository owner must configure these controls before starting a release:
   metadata reads are deduplicated, limited to eight concurrent requests and 256
   packages; the Linux preflight allows 20 minutes including setup.
   Release-candidate verification is an explicit, Linux-only exception to the
-  ordinary job limits: its two assurance phases each allow two hours, packaging
-  allows 30 minutes, and other commands allow five minutes each. The local
+  ordinary job limits: the full suite allows two hours, the 12-mutant catalog
+  allows one hour, packaging allows 90 minutes, and other commands allow five minutes
+  each. Packaging reserves time for both locked-tool installs plus builds and
+  installation checks. These are aggregate phase deadlines; nested watchdogs
+  do not each receive an independent extension of the phase. The local
   launcher allows 5.5 hours for the complete sequence; the two release workflows
   allow six hours including setup. These are failure ceilings, not expected
   runtimes, and do not expand the ordinary Windows/macOS budget.

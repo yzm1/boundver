@@ -48,7 +48,11 @@ MAX_DIST_NAME_BYTES = 4 * 1024
 MAX_DIST_TOTAL_NAME_BYTES = 64 * 1024
 MAX_COMMAND_SECONDS = 300
 MAX_TEST_TIER_SECONDS = 7_200
-MAX_PACKAGING_SECONDS = 1_800
+# These are aggregate phase deadlines, not a promise that every nested command
+# can exhaust its own watchdog sequentially. Reserve packaging time for both
+# locked-tool installs, reproducible builds, and installation smoke checks.
+MAX_MUTATION_SECONDS = 3_600
+MAX_PACKAGING_SECONDS = 5_400
 MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024
 
 
@@ -380,7 +384,7 @@ def verify_candidate(
         (python, "-I", "scripts/mutation_check.py"),
         cwd=repo,
         env=tool_env,
-        timeout_seconds=MAX_TEST_TIER_SECONDS,
+        timeout_seconds=MAX_MUTATION_SECONDS,
     )
     _run(
         (python, "-I", "scripts/demo_consumer_impact.py"),
