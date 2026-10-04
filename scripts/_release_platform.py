@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import tempfile
+from collections import deque
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
 
@@ -292,31 +293,65 @@ def sanitize_github_environment(
     return result
 
 
-def selected_tool_crosses_repository(
-    selected: Path, resolved: Path, repository: Path
-) -> bool:
-    """Reject a selection that touches the canonical repository anywhere.
+class RepositoryToolError(RuntimeError):
+    """An executable lookup traversed the release repository."""
 
-    Callers supply absolute selected/resolved paths and a resolved repository.
-    Checking only the final target misses a repository-owned launcher linked to
-    a trusted interpreter. Checking only lexical parents misses directory aliases
-    such as macOS /var; checking only the immediate resolved parent also misses
-    paths that enter the repository and escape through another directory link.
+
+def resolve_external_tool_path(selected: Path, repository: Path) -> Path:
+    """Resolve every directory and file link, rejecting repository traversal.
+
+    Both inputs are absolute; the repository is already resolved. Inspect links
+    before following them so an intermediate repository-owned link cannot be
+    hidden by its final external target. Filesystem identity also catches aliases
+    whose spelling differs on case-insensitive filesystems. Work is bounded even
+    for cycles or expanding link chains; external filesystem mutation is outside
+    the repository threat model.
     """
-    for path in (selected, resolved):
-        if path == repository or repository in path.parents:
-            return True
+    if not selected.is_absolute():
+        raise RuntimeError("tool path must be absolute")
     repository_identity = repository.stat()
-    for path in (selected, resolved):
-        for ancestor in path.parents:
-            canonical = ancestor.resolve(strict=True)
-            if (
-                canonical == repository
-                or repository in canonical.parents
-                or os.path.samestat(canonical.stat(), repository_identity)
-            ):
-                return True
-    return False
+    current = Path(selected.anchor)
+    pending = deque(selected.parts[1:])
+    steps = links = target_bytes = 0
+    while pending:
+        steps += 1
+        if steps > 4096:
+            raise RuntimeError("tool path component budget exceeded")
+        part = pending.popleft()
+        if part == ".":
+            continue
+        if part == "..":
+            current = current.parent
+            continue
+        candidate = current / part
+        if candidate == repository or repository in candidate.parents:
+            raise RepositoryToolError("tool path crosses release repository")
+        identity = candidate.lstat()
+        if os.path.samestat(identity, repository_identity):
+            raise RepositoryToolError("tool path crosses release repository")
+        if stat.S_ISLNK(identity.st_mode) or _is_windows_reparse_point(identity):
+            links += 1
+            if links > 64:
+                raise RuntimeError("tool path link budget exceeded")
+            target = candidate.readlink()
+            target_bytes += len(os.fsencode(target))
+            if target_bytes > 262144:
+                raise RuntimeError("tool path link target budget exceeded")
+            if target.is_absolute():
+                current = Path(target.anchor)
+                parts = target.parts[1:]
+            elif target.drive or target.root:
+                raise RuntimeError("unsupported drive-relative tool link")
+            else:
+                parts = target.parts
+            pending.extendleft(reversed(parts))
+        else:
+            # An intermediate regular file is not a traversable directory,
+            # including before '..', which must not hide an invalid path.
+            if pending and not stat.S_ISDIR(identity.st_mode):
+                raise NotADirectoryError(str(candidate))
+            current = candidate
+    return current
 
 
 def _trusted_external_file(
@@ -330,14 +365,11 @@ def _trusted_external_file(
     try:
         root = forbidden_root.resolve(strict=True)
         raw = Path(os.path.abspath(candidate))
-        resolved = Path(candidate).resolve(strict=True)
+        resolved = resolve_external_tool_path(raw, root)
         identity = resolved.stat()
-        repository_local = selected_tool_crosses_repository(raw, resolved, root)
     except (OSError, RuntimeError):
         return None
     if not stat.S_ISREG(identity.st_mode):
-        return None
-    if repository_local:
         return None
     return str(resolved)
 

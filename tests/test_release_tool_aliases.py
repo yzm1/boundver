@@ -68,6 +68,73 @@ def test_repository_alias_cannot_hide_an_external_tool(
 
 
 @pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
+def test_external_relative_file_link_chain_remains_usable(tmp_path, selector):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    tools = root / "tools"
+    tools.mkdir()
+    executable = root / "external-python"
+    executable.write_bytes(b"trusted executable")
+    _link(tools / "hop", Path("../external-python"))
+    selected = tools / "launcher"
+    _link(selected, Path("hop"))
+    if selector == "candidate":
+        module = _load("verify_release_candidate")
+        assert module._trusted_tool(str(selected), repository, None) == str(selected)
+    elif selector == "publisher":
+        module = _load("publish_release")
+        with mock.patch.object(module.shutil, "which", return_value=str(selected)):
+            assert module._trusted_tool("gh", repository) == str(executable)
+    else:
+        module = _load("_release_platform")
+        assert module._trusted_external_file(str(selected), repository) == str(executable)
+
+
+@pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
+@pytest.mark.parametrize("shape", ["cycle", "expanding"])
+def test_external_link_work_is_bounded(tmp_path, selector, shape):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    selected = root / "launcher"
+    _link(selected, Path("launcher" if shape == "cycle" else "launcher/launcher"))
+    if selector == "candidate":
+        module = _load("verify_release_candidate")
+        with pytest.raises(module.CandidateVerificationError, match="unavailable"):
+            module._trusted_tool(str(selected), repository, None)
+    elif selector == "publisher":
+        module = _load("publish_release")
+        with mock.patch.object(module.shutil, "which", return_value=str(selected)):
+            with pytest.raises(module.GateError, match="cannot resolve"):
+                module._trusted_tool("gh", repository)
+    else:
+        module = _load("_release_platform")
+        assert module._trusted_external_file(str(selected), repository) is None
+
+
+def test_external_tool_component_budget(tmp_path):
+    module = _load("_release_platform")
+    repository = tmp_path.resolve() / "repository"
+    repository.mkdir()
+    selected = tmp_path.resolve().joinpath(*([".."] * 4097))
+    with pytest.raises(RuntimeError, match="component budget"):
+        module.resolve_external_tool_path(selected, repository)
+
+
+def test_external_tool_link_target_budget(tmp_path):
+    module = _load("_release_platform")
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    selected = root / "launcher"
+    _link(selected, Path("launcher"))
+    with mock.patch.object(Path, "readlink", return_value=Path("x" * 262145)):
+        with pytest.raises(RuntimeError, match="link target budget"):
+            module.resolve_external_tool_path(selected, repository)
+
+
+@pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
 def test_external_directory_alias_remains_usable(tmp_path, selector):
     root = tmp_path.resolve()
     repository = root / "repository"
@@ -157,3 +224,29 @@ def test_repository_identity_wins_over_a_different_resolved_spelling(
         else:
             module = _load("_release_platform")
             assert module._trusted_external_file(str(selected), repository) is None
+
+
+@pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
+@pytest.mark.parametrize("relative", [False, True])
+def test_repository_owned_intermediate_file_link_is_rejected(tmp_path, selector, relative):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    external = root / "external-python"
+    external.write_bytes(b"trusted executable")
+    _link(repository / "hop", external)
+    selected = root / "launcher"
+    target = Path("repository/hop") if relative else repository / "hop"
+    _link(selected, target)
+    if selector == "candidate":
+        module = _load("verify_release_candidate")
+        with pytest.raises(module.CandidateVerificationError, match="release repository"):
+            module._trusted_tool(str(selected), repository, None)
+    elif selector == "publisher":
+        module = _load("publish_release")
+        with mock.patch.object(module.shutil, "which", return_value=str(selected)):
+            with pytest.raises(module.GateError, match="inside the repository"):
+                module._trusted_tool("gh", repository)
+    else:
+        module = _load("_release_platform")
+        assert module._trusted_external_file(str(selected), repository) is None

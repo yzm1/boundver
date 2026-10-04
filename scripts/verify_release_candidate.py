@@ -131,19 +131,17 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
         # Validate the same normalized spelling returned for execution. With a
         # directory symlink followed by '..', resolving the original spelling
         # could inspect a different file from the normalized launcher.
-        resolved = raw.resolve(strict=True)
+        resolved = _release_platform.resolve_external_tool_path(raw, root)
         identity = resolved.stat()
-        repository_local = _release_platform.selected_tool_crosses_repository(
-            raw, resolved, root
-        )
+    except _release_platform.RepositoryToolError as error:
+        raise CandidateVerificationError(
+            f"refusing executable selected from the release repository: {command}"
+        ) from error
     except (OSError, RuntimeError) as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command}"
         ) from error
-    if (
-        not stat.S_ISREG(identity.st_mode)
-        or repository_local
-    ):
+    if not stat.S_ISREG(identity.st_mode):
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
         )
