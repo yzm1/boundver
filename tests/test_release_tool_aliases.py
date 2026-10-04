@@ -112,3 +112,48 @@ def test_normalized_candidate_launcher_is_the_target_that_was_validated(tmp_path
     module = _load("verify_release_candidate")
     with pytest.raises(module.CandidateVerificationError, match="release repository"):
         module._trusted_tool(str(selected), repository, None)
+
+
+@pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
+@pytest.mark.parametrize("target_only", [False, True])
+def test_repository_identity_wins_over_a_different_resolved_spelling(
+    tmp_path, selector, target_only
+):
+    root = tmp_path.resolve()
+    repository = root / "repository"
+    repository.mkdir()
+    external = root / "external-python"
+    external.write_bytes(b"external executable")
+    alias = root / "alias"
+    _link(alias, repository, directory=True)
+    if target_only:
+        (repository / "python").write_bytes(b"repository executable")
+        selected = root / "launcher"
+        _link(selected, alias / "python")
+    else:
+        _link(repository / "python", external)
+        selected = alias / "python"
+    original_resolve = Path.resolve
+
+    def preserve_spelling(path, *args, **kwargs):
+        # A resolver need not canonicalize spelling on a case-insensitive
+        # filesystem. The actual directory identities still agree here.
+        if path == alias:
+            return path
+        if target_only and path == selected:
+            return alias / "python"
+        return original_resolve(path, *args, **kwargs)
+
+    with mock.patch.object(Path, "resolve", preserve_spelling):
+        if selector == "candidate":
+            module = _load("verify_release_candidate")
+            with pytest.raises(module.CandidateVerificationError, match="release repository"):
+                module._trusted_tool(str(selected), repository, None)
+        elif selector == "publisher":
+            module = _load("publish_release")
+            with mock.patch.object(module.shutil, "which", return_value=str(selected)):
+                with pytest.raises(module.GateError, match="inside the repository"):
+                    module._trusted_tool("gh", repository)
+        else:
+            module = _load("_release_platform")
+            assert module._trusted_external_file(str(selected), repository) is None

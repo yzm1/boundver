@@ -306,10 +306,16 @@ def selected_tool_crosses_repository(
     for path in (selected, resolved):
         if path == repository or repository in path.parents:
             return True
-    for ancestor in selected.parents:
-        canonical = ancestor.resolve(strict=True)
-        if canonical == repository or repository in canonical.parents:
-            return True
+    repository_identity = repository.stat()
+    for path in (selected, resolved):
+        for ancestor in path.parents:
+            canonical = ancestor.resolve(strict=True)
+            if (
+                canonical == repository
+                or repository in canonical.parents
+                or os.path.samestat(canonical.stat(), repository_identity)
+            ):
+                return True
     return False
 
 
