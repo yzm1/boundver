@@ -576,6 +576,7 @@ def _run_bytes(
         raise GateError("required command output pipes are unavailable")
 
     captured: dict[str, bytes] = {}
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
     overflows: list[str] = []
     read_errors: list[BaseException] = []
     state_lock = threading.Lock()
@@ -587,11 +588,14 @@ def _run_bytes(
             pass
 
     def read_stream(stream: BinaryIO, name: str, limit: int) -> None:
-        data = bytearray()
+        data = buffers[name]
         try:
             while True:
                 remaining = limit - len(data)
-                chunk = stream.read(min(_STREAM_CHUNK_BYTES, remaining + 1))
+                # read1 exposes already-written diagnostics even when a
+                # descendant retains the pipe after its parent exits.
+                read = getattr(stream, "read1", stream.read)
+                chunk = read(min(_STREAM_CHUNK_BYTES, remaining + 1))
                 if not chunk:
                     break
                 if len(chunk) > remaining:
@@ -599,7 +603,8 @@ def _run_bytes(
                         overflows.append(name)
                     terminate()
                     break
-                data.extend(chunk)
+                with state_lock:
+                    data.extend(chunk)
         except BaseException as error:
             with state_lock:
                 read_errors.append(error)
@@ -641,7 +646,38 @@ def _run_bytes(
 
     if any(reader.is_alive() for reader in readers):
         terminate()
-        raise GateError(f"{' '.join(command)}: output pipes did not close")
+        # Fail closed, but do not discard the failure that preceded the pipe
+        # leak. Snapshot bounded heads and tails while readers may still run:
+        # progress is usually at the head and the actual failure at the tail.
+        with state_lock:
+            names = [name for name in ("stdout", "stderr") if buffers[name]]
+            # Divide the FINAL budget first. Trimming a concatenation again
+            # would discard stdout's tail and stderr's head.
+            budget, extra = divmod(
+                MAX_COMMAND_DIAGNOSTIC_CHARS - max(0, len(names) - 1),
+                max(1, len(names)),
+            )
+            pieces = []
+            marker = b"\n...[diagnostic truncated]...\n"
+            for index, name in enumerate(names):
+                allowance = budget + int(index < extra)
+                buffer = buffers[name]
+                if len(buffer) <= allowance:
+                    pieces.append(bytes(buffer))
+                else:
+                    retained = allowance - len(marker)
+                    prefix = retained // 2
+                    pieces.append(
+                        bytes(buffer[:prefix]) + marker
+                        + bytes(buffer[-(retained - prefix):])
+                    )
+            raw_detail = b"\n".join(pieces)
+        detail = raw_detail.decode(locale.getpreferredencoding(False), "replace")
+        suffix = f"\n{detail}" if detail else ""
+        raise GateError(
+            f"{' '.join(command)}: output pipes did not close "
+            f"(parent exit {returncode}){suffix}"
+        )
 
     if read_errors:
         raise read_errors[0]

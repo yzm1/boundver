@@ -109,7 +109,10 @@ def assert_source_modes_agree(case, scene: Scenario, subject: str = "source mode
 def run_cli(root: Path, *args: str) -> subprocess.CompletedProcess:
     """Invoke the installed CLI the way a user would."""
     env = os.environ.copy()
-    env["PYTHONPATH"] = _SRC + (
+    # Synthetic repository modules are intentional fixture imports. Declare
+    # their path explicitly rather than relying on Python's implicit cwd,
+    # which the release launcher disables with PYTHONSAFEPATH.
+    env["PYTHONPATH"] = _SRC + os.pathsep + str(root) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
     return subprocess.run(

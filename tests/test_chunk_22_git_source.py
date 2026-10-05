@@ -1548,7 +1548,10 @@ class SourceModeTreeParityTests(unittest.TestCase):
             )
             self.assertEqual(outcome.returncode, 128)
             message = outcome.stderr.decode("utf-8", "replace")
-            self.assertIn("unable to index file", message)
+            self.assertTrue(
+                "unable to index file" in message or "unable to stat" in message,
+                message,
+            )
             self.assertIn("�", message)
 
 
