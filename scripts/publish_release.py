@@ -650,25 +650,29 @@ def _run_bytes(
         # leak. Snapshot bounded heads and tails while readers may still run:
         # progress is usually at the head and the actual failure at the tail.
         with state_lock:
-            diagnostic_truncated = any(
-                len(buffer) > MAX_COMMAND_DIAGNOSTIC_CHARS
-                for buffer in buffers.values()
+            names = [name for name in ("stdout", "stderr") if buffers[name]]
+            # Divide the FINAL budget first. Trimming a concatenation again
+            # would discard stdout's tail and stderr's head.
+            budget, extra = divmod(
+                MAX_COMMAND_DIAGNOSTIC_CHARS - max(0, len(names) - 1),
+                max(1, len(names)),
             )
-            raw_detail = b"\n".join(
-                (
-                    bytes(buffers[name])
-                    if len(buffers[name]) <= MAX_COMMAND_DIAGNOSTIC_CHARS
-                    else bytes(buffers[name][:MAX_COMMAND_DIAGNOSTIC_CHARS // 2])
-                    + bytes(buffers[name][-(MAX_COMMAND_DIAGNOSTIC_CHARS // 2):])
-                )
-                for name in ("stdout", "stderr") if buffers[name]
-            )
+            pieces = []
+            marker = b"\n...[diagnostic truncated]...\n"
+            for index, name in enumerate(names):
+                allowance = budget + int(index < extra)
+                buffer = buffers[name]
+                if len(buffer) <= allowance:
+                    pieces.append(bytes(buffer))
+                else:
+                    retained = allowance - len(marker)
+                    prefix = retained // 2
+                    pieces.append(
+                        bytes(buffer[:prefix]) + marker
+                        + bytes(buffer[-(retained - prefix):])
+                    )
+            raw_detail = b"\n".join(pieces)
         detail = raw_detail.decode(locale.getpreferredencoding(False), "replace")
-        if diagnostic_truncated or len(detail) > MAX_COMMAND_DIAGNOSTIC_CHARS:
-            marker = "\n...[diagnostic truncated]..."
-            retained = MAX_COMMAND_DIAGNOSTIC_CHARS - len(marker)
-            prefix = retained // 2
-            detail = detail[:prefix] + marker + detail[-(retained - prefix):]
         suffix = f"\n{detail}" if detail else ""
         raise GateError(
             f"{' '.join(command)}: output pipes did not close "

@@ -429,10 +429,12 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         program = "\n".join((
             "import pathlib, subprocess, sys",
             "child = subprocess.Popen([sys.executable, '-I', '-c', "
-            "'import time; time.sleep(30)'], stderr=subprocess.DEVNULL)",
+            "'import time; time.sleep(30)'])",
             "pathlib.Path(sys.argv[1]).write_text(str(child.pid))",
             "print('underlying test failure: ' + 'x' * 6000, flush=True)",
             "print('failure summary at tail', flush=True)",
+            "print('stderr opening context: ' + 'y' * 6000, file=sys.stderr, flush=True)",
+            "print('stderr final summary', file=sys.stderr, flush=True)",
             "raise SystemExit(7)",
         ))
         with tempfile.TemporaryDirectory() as temporary:
@@ -443,13 +445,18 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                         (sys.executable, "-I", "-c", program, str(pid_file)),
                         cwd=REPO_ROOT,
                     )
-                detail = str(raised.exception)
-                self.assertIn("output pipes did not close", detail)
-                self.assertIn("parent exit 7", detail)
+                message = str(raised.exception)
+                self.assertIn("output pipes did not close", message)
+                self.assertIn("parent exit 7", message)
+                # Marker literals also appear in the echoed -c argument;
+                # only the captured payload proves they survived trimming.
+                detail = message.split("(parent exit 7)\n", 1)[1]
                 self.assertIn("underlying test failure", detail)
                 self.assertIn("failure summary at tail", detail)
+                self.assertIn("stderr opening context", detail)
+                self.assertIn("stderr final summary", detail)
                 self.assertIn("[diagnostic truncated]", detail)
-                self.assertLess(len(detail), publisher.MAX_COMMAND_DIAGNOSTIC_CHARS + 1024)
+                self.assertLessEqual(len(detail), publisher.MAX_COMMAND_DIAGNOSTIC_CHARS)
             finally:
                 if pid_file.exists():
                     try:
