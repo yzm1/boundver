@@ -465,9 +465,15 @@ class SurrogateEscapedPathPipelineTests(unittest.TestCase):
             self.skipTest("the lossy wide-character conversion is Windows-only")
         scene, _parent = self._odd_repository()
         with scene:
-            self.assertEqual(
+            # Git 2.55 no longer reports the tracked surrogate name deleted,
+            # but still invents the replacement-character untracked name.
+            # The product's exact source/digest assertions remain separate.
+            self.assertIn(
                 scene.git("status", "--porcelain"),
-                'D "svc/da\\355\\263\\277.bin"\n?? "svc/da\\357\\277\\275.bin"',
+                (
+                    'D "svc/da\\355\\263\\277.bin"\n?? "svc/da\\357\\277\\275.bin"',
+                    '?? "svc/da\\357\\277\\275.bin"',
+                ),
             )
 
     def test_every_source_mode_lists_and_hashes_the_surrogate_named_file(self):

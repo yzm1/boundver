@@ -321,6 +321,13 @@ class PartialCloneFixture:
         """Clone over file:// so the filter is negotiated, not short-circuited."""
         self._clones += 1
         destination = self.root / f"clone{self._clones}"
+        # Initial sparse checkout needs to fetch its declared root blobs.
+        # Only fixture construction permits this; boundver's later reads
+        # retain the fail-closed guard and their no-fetch assertions.
+        environment = {
+            name: value for name, value in os.environ.items()
+            if name.upper() != "GIT_NO_LAZY_FETCH"
+        }
         result = subprocess.run(
             [
                 "git",
@@ -337,6 +344,7 @@ class PartialCloneFixture:
             capture_output=True,
             text=True,
             check=True,
+            env=environment,
         )
         return destination, result
 
@@ -445,6 +453,13 @@ class PartialCloneFixtureTests(unittest.TestCase):
         self.assertEqual(_absent_objects(self.clone), (self.blob,))
         self.assertFalse((self.clone / COMPONENT_FILE).exists())
         self.assertTrue((self.clone / "boundary.config.json").exists())
+
+    def test_fixture_checkout_preserves_the_callers_lazy_fetch_guard(self):
+        with mock.patch.dict(os.environ, {"GIT_NO_LAZY_FETCH": "1"}):
+            clone = self.fixture.absent_blob_clone()
+            self.assertEqual(os.environ["GIT_NO_LAZY_FETCH"], "1")
+            self.assertEqual(_absent_objects(clone), (self.blob,))
+            self.assertTrue((clone / "boundary.config.json").exists())
 
     def test_the_promisor_remote_would_serve_that_blob_if_the_guard_were_lifted(self):
         """The premise every "nothing was fetched" assertion in this file rests on.

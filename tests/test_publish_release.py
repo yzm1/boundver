@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -409,6 +410,52 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 cwd=REPO_ROOT,
                 timeout_seconds=1,
             )
+
+    def test_fixture_cli_declares_its_import_path_without_disabling_safe_path(self):
+        from tests._parity import run_cli
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.dict(os.environ, {"PYTHONSAFEPATH": "1"}), mock.patch(
+                "tests._parity.subprocess.run"
+            ) as run:
+                run_cli(root, "validate-config")
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(environment["PYTHONSAFEPATH"], "1")
+            self.assertIn(str(root), environment["PYTHONPATH"].split(os.pathsep))
+
+    def test_leaked_descendant_pipe_retains_bounded_failure_diagnostics(self):
+        publisher = _load_script()
+        program = "\n".join((
+            "import pathlib, subprocess, sys",
+            "child = subprocess.Popen([sys.executable, '-I', '-c', "
+            "'import time; time.sleep(30)'], stderr=subprocess.DEVNULL)",
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid))",
+            "print('underlying test failure: ' + 'x' * 6000, flush=True)",
+            "print('failure summary at tail', flush=True)",
+            "raise SystemExit(7)",
+        ))
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "owned-child.pid"
+            try:
+                with self.assertRaises(publisher.GateError) as raised:
+                    publisher._run(
+                        (sys.executable, "-I", "-c", program, str(pid_file)),
+                        cwd=REPO_ROOT,
+                    )
+                detail = str(raised.exception)
+                self.assertIn("output pipes did not close", detail)
+                self.assertIn("parent exit 7", detail)
+                self.assertIn("underlying test failure", detail)
+                self.assertIn("failure summary at tail", detail)
+                self.assertIn("[diagnostic truncated]", detail)
+                self.assertLess(len(detail), publisher.MAX_COMMAND_DIAGNOSTIC_CHARS + 1024)
+            finally:
+                if pid_file.exists():
+                    try:
+                        os.kill(int(pid_file.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
 
     def test_release_json_shape_is_rejected_before_decoder_allocation(self):
         publisher = _load_script()

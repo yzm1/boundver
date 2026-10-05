@@ -412,6 +412,10 @@ def home_pointed_at(home: Path) -> Iterator[None]:
     }
     with mock.patch.dict(os.environ, replacement, clear=False):
         os.environ.pop("HOMESHARE", None)
+        # This fixture deliberately exposes its synthetic global config.
+        # A release launcher's inherited null redirect would otherwise make
+        # the positive attack control harmless before boundver is exercised.
+        os.environ.pop("GIT_CONFIG_GLOBAL", None)
         yield
 
 

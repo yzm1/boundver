@@ -49,6 +49,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Kept bounded failure diagnostics when a release subprocess exits while a
+  descendant still holds an output pipe. Release-isolated test fixtures now
+  declare their synthetic import paths and checkout permissions explicitly,
+  without disabling the launcher's safe-path or no-lazy-fetch guards. Windows
+  path fixtures also recognize Git 2.55's updated diagnostics.
 - Kept the selected virtualenv interpreter and its tool-directory search path
   during release verification. POSIX Python symlinks no longer lose their
   isolated dependencies; both the launcher and its resolved target must still
