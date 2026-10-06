@@ -164,7 +164,12 @@ def test_external_directory_alias_remains_usable(tmp_path, selector):
 
     if selector == "candidate":
         module = _load("verify_release_candidate")
-        assert module._trusted_tool(str(selected), repository, None) == str(selected)
+        command = module._trusted_tool(str(selected), repository, None)
+        assert Path(command).samefile(executable)
+        if sys.platform == "win32":
+            assert command != str(selected)
+        else:
+            assert command == str(selected)
     elif selector == "publisher":
         module = _load("publish_release")
         with mock.patch.object(module.shutil, "which", return_value=str(selected)):
@@ -180,18 +185,26 @@ def test_external_directory_alias_remains_usable(tmp_path, selector):
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows reparse-point launch")
 @pytest.mark.parametrize("selector", ["candidate", "publisher", "bash"])
-def test_windows_directory_alias_can_launch_the_external_tool(tmp_path, selector):
+@pytest.mark.parametrize("virtualenv", [False, True])
+def test_windows_directory_alias_can_launch_the_external_tool(tmp_path, selector, virtualenv):
     root = tmp_path.resolve()
     repository = root / "repository"
     repository.mkdir()
     executable = Path(sys.executable).resolve()
+    if virtualenv:
+        environment = root / "venv"
+        subprocess.run(
+            [sys.executable, "-I", "-m", "venv", "--without-pip", str(environment)],
+            check=True, capture_output=True, timeout=60,
+        )
+        executable = environment / "Scripts" / "python.exe"
     alias = root / "tools"
     _link(alias, executable.parent, directory=True)
     selected = alias / executable.name
     if selector == "candidate":
         module = _load("verify_release_candidate")
         command = module._trusted_tool(str(selected), repository, None)
-        assert command == str(selected)
+        assert command != str(selected)
     elif selector == "publisher":
         module = _load("publish_release")
         with mock.patch.object(module.shutil, "which", return_value=str(selected)):
@@ -210,6 +223,12 @@ def test_windows_directory_alias_can_launch_the_external_tool(tmp_path, selector
         check=True,
     )
     assert result.stdout.strip() == "external-tool-ok"
+    if virtualenv:
+        prefix = subprocess.run(
+            [command, "-I", "-c", "import sys; print(sys.prefix)"],
+            check=True, capture_output=True, text=True, timeout=20,
+        )
+        assert Path(prefix.stdout.strip()).samefile(environment)
 
 
 def test_normalized_candidate_launcher_is_the_target_that_was_validated(tmp_path):
