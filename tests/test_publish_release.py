@@ -344,6 +344,18 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    def test_signal_and_cancellation_exits_are_unsafe_even_after_pipe_eof(self):
+        publisher = _load_script()
+        for returncode in (-9, -15, -2, 125, 130, 143):
+            with self.subTest(returncode=returncode):
+                process = mock.Mock(returncode=returncode)
+                process.wait.return_value = returncode
+                process.stdout = io.BytesIO(b"")
+                process.stderr = io.BytesIO(b"")
+                with mock.patch.object(publisher.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(publisher.UnsafeSubprocessCleanupError):
+                        publisher._run([sys.executable], cwd=REPO_ROOT)
+
     @unittest.skipUnless(os.name == "posix", "POSIX helper timeout")
     def test_posix_helper_timeout_retains_checkout_with_closed_child_pipes(self):
         publisher = _load_script()

@@ -15,6 +15,13 @@ from typing import Mapping, Optional
 UNSAFE_CLEANUP_EXIT_CODE = 125
 
 
+def uncertain_command_exit(returncode: Optional[int]) -> bool:
+    """A signal/cancellation exit cannot attest that descendants stopped."""
+    return isinstance(returncode, int) and (
+        returncode < 0 or returncode in (UNSAFE_CLEANUP_EXIT_CODE, 130, 143)
+    )
+
+
 def terminate_windows_process_tree(process: subprocess.Popen) -> None:
     """Terminate one owned Windows PID and its descendants, not just a redirector."""
     if os.name != "nt":

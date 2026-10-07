@@ -45,6 +45,24 @@ def _load_platform_helper():
 
 
 class VerifyReleaseCandidateTests(unittest.TestCase):
+    def test_signal_and_cancellation_exits_are_not_ordinary_gate_failures(self):
+        verifier = _load_script()
+        for returncode in (-9, -15, -2, 125, 130, 143):
+            with self.subTest(returncode=returncode):
+                process = mock.Mock(returncode=returncode)
+                process.communicate.return_value = (None, None)
+                with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
+                    verifier, "_terminate_command_tree"
+                ):
+                    with self.assertRaises(verifier.UnsafeCandidateCleanupError):
+                        verifier._run([sys.executable], cwd=REPO_ROOT, env={})
+
+    def test_exit_classification_preserves_ordinary_failure_codes(self):
+        helper = _load_platform_helper()
+        for returncode in (None, 0, 1, 2, 7, 126, 128, 129):
+            with self.subTest(returncode=returncode):
+                self.assertFalse(helper.uncertain_command_exit(returncode))
+
     def test_uncertain_cleanup_has_distinct_exit_status(self):
         verifier = _load_script()
         for error, expected in (
@@ -99,24 +117,27 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         self._assert_signal_contained(signal.SIGTERM)
 
     @unittest.skipUnless(os.name == "posix", "POSIX termination")
-    def test_sigterm_during_spawn_and_cleanup_is_deferred_until_reap(self):
+    def test_termination_signals_during_spawn_and_cleanup_are_deferred_until_reap(self):
         verifier = _load_script()
-        previous = signal.getsignal(signal.SIGTERM)
-        process = mock.Mock()
-        process.communicate.return_value = (None, None)
+        previous = {signum: signal.getsignal(signum) for signum in (signal.SIGTERM, signal.SIGINT)}
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            with self.subTest(signum=signum):
+                process = mock.Mock()
+                process.communicate.return_value = (None, None)
 
-        def spawning(*args, **kwargs):
-            signal.raise_signal(signal.SIGTERM)
-            return process
+                def spawning(*args, **kwargs):
+                    signal.raise_signal(signum)
+                    return process
 
-        with mock.patch.object(verifier.subprocess, "Popen", side_effect=spawning), mock.patch.object(
-            verifier, "_terminate_command_tree", side_effect=lambda _: signal.raise_signal(signal.SIGTERM)
-        ) as terminate:
-            with self.assertRaises(verifier.UnsafeCandidateCleanupError):
-                verifier._run([sys.executable], cwd=REPO_ROOT, env={})
-        terminate.assert_called_once_with(process)
-        process.communicate.assert_called_once_with(timeout=5)
-        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+                with mock.patch.object(verifier.subprocess, "Popen", side_effect=spawning), mock.patch.object(
+                    verifier, "_terminate_command_tree", side_effect=lambda _: signal.raise_signal(signum)
+                ) as terminate:
+                    with self.assertRaises(verifier.UnsafeCandidateCleanupError):
+                        verifier._run([sys.executable], cwd=REPO_ROOT, env={})
+                terminate.assert_called_once_with(process)
+                process.communicate.assert_called_once_with(timeout=5)
+                for saved_signum, handler in previous.items():
+                    self.assertEqual(signal.getsignal(saved_signum), handler)
 
     def _assert_signal_contained(self, termination_signal):
         with tempfile.TemporaryDirectory() as temporary:

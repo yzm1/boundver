@@ -483,6 +483,8 @@ helpers always retain the checkout: stopping a root or its original process
 group cannot prove that a descendant which started another session has exited.
 This is a fail-closed retention
 policy, not a sandbox or a guarantee that arbitrary descendants were killed.
+Signal-terminated children and cancellation exit statuses also indicate
+uncertain cleanup, even if their output pipes have closed.
 
 ```powershell
 .\scripts\publish_release.ps1 check --tag vX.Y.Z

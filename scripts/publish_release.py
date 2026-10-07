@@ -675,7 +675,7 @@ def _run_bytes(
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "owned command did not exit after termination; child containment is uncertain"
             ))
-        if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+        if _release_platform.uncertain_command_exit(process.returncode):
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "child command reported uncertain containment"
             ))
@@ -692,7 +692,7 @@ def _run_bytes(
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "owned command did not exit after termination; child containment is uncertain"
             ))
-        if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+        if _release_platform.uncertain_command_exit(process.returncode):
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "child command reported uncertain containment"
             ))
@@ -711,7 +711,7 @@ def _run_bytes(
                 f"{name} exceeds the {limit}-byte limit; {termination_failures[0]}"
             )
         raise termination_failures[0]
-    if returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+    if _release_platform.uncertain_command_exit(returncode):
         raise UnsafeSubprocessCleanupError("child command reported uncertain containment")
     if any(reader.is_alive() for reader in readers):
         terminate()

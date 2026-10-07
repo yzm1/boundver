@@ -91,22 +91,26 @@ def _run(
     timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     process: Optional[subprocess.Popen[str]] = None
-    termination_requested = False
+    termination_requested: Optional[int] = None
     cleaning_up = False
-    previous_termination_handler = None
+    previous_termination_handlers = {}
 
-    def request_termination(_signum, _frame):
+    def request_termination(signum, _frame):
         nonlocal termination_requested
-        termination_requested = True
+        if termination_requested is None:
+            termination_requested = signum
         # Do not interrupt Popen before its process handle has been assigned.
         # Defer that signal until the child can be contained, and do not let a
         # second termination signal interrupt the bounded cleanup itself.
         if process is not None and not cleaning_up:
-            raise SystemExit(128 + signal.SIGTERM)
+            if termination_requested == signal.SIGINT:
+                raise KeyboardInterrupt
+            raise SystemExit(128 + termination_requested)
 
-    if os.name == "posix":
-        previous_termination_handler = signal.signal(signal.SIGTERM, request_termination)
     try:
+        if os.name == "posix":
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                previous_termination_handlers[signum] = signal.signal(signum, request_termination)
         process = subprocess.Popen(
             list(command),
             cwd=cwd,
@@ -119,7 +123,7 @@ def _run(
         )
         try:
             if termination_requested:
-                raise SystemExit(128 + signal.SIGTERM)
+                request_termination(termination_requested, None)
             stdout, stderr = process.communicate(timeout=timeout_seconds)
         except BaseException as phase_error:
             # A detached POSIX session cannot receive the terminal's Ctrl-C.
@@ -149,7 +153,7 @@ def _run(
                 )
             raise
         if process.returncode:
-            if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+            if _release_platform.uncertain_command_exit(process.returncode):
                 raise UnsafeCandidateCleanupError("child command reported uncertain containment")
             raise subprocess.CalledProcessError(
                 process.returncode, command, output=stdout, stderr=stderr
@@ -188,8 +192,8 @@ def _run(
                 )
         raise
     finally:
-        if os.name == "posix":
-            signal.signal(signal.SIGTERM, previous_termination_handler)
+        for signum, previous_handler in previous_termination_handlers.items():
+            signal.signal(signum, previous_handler)
 
 
 def _terminate_command_tree(process: subprocess.Popen[str]) -> None:
