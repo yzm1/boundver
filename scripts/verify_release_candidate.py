@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -86,16 +87,32 @@ def _run(
     timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
+        process = subprocess.Popen(
             list(command),
             cwd=cwd,
             env=dict(env),
             text=True,
-            capture_output=capture_output,
-            check=True,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
             stdin=subprocess.DEVNULL,
-            timeout=timeout_seconds,
+            start_new_session=os.name == "posix",
         )
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            _terminate_command_tree(process)
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired as drain_error:
+                raise CandidateVerificationError(
+                    f"{' '.join(command)} timed out; descendant pipes did not close"
+                ) from drain_error
+            raise error
+        if process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode, command, output=stdout, stderr=stderr
+            )
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     except FileNotFoundError as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command[0]}"
@@ -112,6 +129,38 @@ def _run(
         raise CandidateVerificationError(
             f"{' '.join(command)} timed out"
         ) from error
+
+
+def _terminate_command_tree(process: subprocess.Popen[str]) -> None:
+    """Kill only the timed-out command's owned group/tree before cleanup.
+
+    Killing a Windows venv redirector or the tier wrapper alone leaves pytest
+    alive, holding output pipes and accessing a checkout being removed.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return
+    # Resolve the OS utility through the system API, not candidate-controlled
+    # PATH or environment variables. /T targets descendants of this exact PID.
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not length or length >= len(directory):
+        raise CandidateVerificationError("cannot locate system process-tree terminator")
+    result = subprocess.run(
+        [str(Path(directory.value) / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode:
+        raise CandidateVerificationError("timed-out command tree could not be terminated")
 
 
 def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
@@ -401,7 +450,7 @@ def verify_candidate(
         env=tool_env,
     )
     _run(
-        (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-q"),
+        (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-v", "-x"),
         cwd=repo,
         env=tool_env,
         timeout_seconds=test_seconds,

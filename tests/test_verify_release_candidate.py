@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -41,6 +43,48 @@ def _load_platform_helper():
 
 
 class VerifyReleaseCandidateTests(unittest.TestCase):
+    def test_timeout_terminates_descendant_before_it_can_modify_checkout(self):
+        verifier = _load_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = root / "surviving-child"
+            ready = root / "child-started"
+            child = (
+                "import time; from pathlib import Path; "
+                f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                f"Path({str(marker)!r}).touch()"
+            )
+            parent = (
+                "import subprocess, sys, time; "
+                f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}]); "
+                "time.sleep(30)"
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(verifier.CandidateVerificationError, "timed out"):
+                verifier._run(
+                    [sys.executable, "-I", "-c", parent],
+                    cwd=root,
+                    env=os.environ,
+                    capture_output=True,
+                    timeout_seconds=1,
+                )
+            # Include the bounded Windows tree terminator and pipe-drain grace;
+            # correctness comes from the absent child write, not spawn speed.
+            self.assertLess(time.monotonic() - started, 25)
+            self.assertTrue(ready.exists(), "regression child never started")
+            time.sleep(3)
+            self.assertFalse(marker.exists(), "descendant survived the phase timeout")
+
+    def test_command_failure_retains_exit_status_and_captured_diagnostic(self):
+        verifier = _load_script()
+        with self.assertRaisesRegex(verifier.CandidateVerificationError, "fixture failure"):
+            verifier._run(
+                [sys.executable, "-I", "-c", "import sys; sys.exit('fixture failure')"],
+                cwd=REPO_ROOT,
+                env=os.environ,
+                capture_output=True,
+            )
+
     def test_isolated_direct_startup_loads_adjacent_platform_helper(self):
         result = subprocess.run(
             [sys.executable, "-I", str(SCRIPT), "--help"],
@@ -309,7 +353,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 "run",
                 "all",
                 "--",
-                "-q",
+                "-v",
+                "-x",
             ),
         )
         self.assertEqual(verifier.MAX_COMMAND_SECONDS, 300)

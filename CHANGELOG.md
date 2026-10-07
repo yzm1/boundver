@@ -49,6 +49,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Release test phases now terminate the timed-out command's process tree before
+  checkout cleanup. Complete-suite verification prints test names and stops at
+  the first failure without changing its deadline or pass criteria.
 - Preserved Windows virtualenv context when candidate-verifier tools are
   selected through directory junctions, while retaining POSIX interpreter
   symlinks and repository-traversal rejection.
