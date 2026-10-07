@@ -577,7 +577,9 @@ def _run_bytes(
             process.kill()
         except OSError:
             pass
-        raise GateError("required command output pipes are unavailable")
+        raise UnsafeSubprocessCleanupError(
+            "required command output pipes are unavailable; child containment is uncertain"
+        )
 
     captured: dict[str, bytes] = {}
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
@@ -591,6 +593,13 @@ def _run_bytes(
             if os.name == "nt":
                 _release_platform.terminate_windows_process_tree(process)
             else:
+                # Setup helpers do not all implement the verifier's signal
+                # cleanup protocol. Even a prompt root exit cannot establish
+                # that children (including ones with closed pipes) stopped.
+                with state_lock:
+                    termination_failures.append(UnsafeSubprocessCleanupError(
+                        "POSIX command termination cannot prove descendant containment"
+                    ))
                 # The verifier owns detached phase groups and handles SIGTERM.
                 # Give it bounded time to reap those groups before escalating;
                 # immediate SIGKILL can interrupt that cleanup on Ctrl-C.
@@ -671,7 +680,9 @@ def _run_bytes(
                 "child command reported uncertain containment"
             ))
         if termination_failures:
-            raise termination_failures[0] from error
+            raise UnsafeSubprocessCleanupError(
+                f"{' '.join(command)}: command timed out; {termination_failures[0]}"
+            ) from error
         raise GateError(f"{' '.join(command)}: command timed out") from error
     except BaseException as error:
         terminate()

@@ -344,6 +344,57 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX helper timeout")
+    def test_posix_helper_timeout_retains_checkout_with_closed_child_pipes(self):
+        publisher = _load_script()
+        retained = None
+        marker = None
+        try:
+            with self.assertRaisesRegex(
+                publisher.UnsafeSubprocessCleanupError, "command timed out.*workspace retained"
+            ):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    marker = retained / "child-finished"
+                    ready = retained / "child-started"
+                    child = (
+                        "import time; from pathlib import Path; "
+                        f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                        f"Path({str(marker)!r}).touch()"
+                    )
+                    parent = (
+                        "import subprocess, sys, time; "
+                        f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}], "
+                        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(30)"
+                    )
+                    original_popen = publisher.subprocess.Popen
+
+                    def spawn_ready(*args, **kwargs):
+                        process = original_popen(*args, **kwargs)
+                        deadline = time.monotonic() + 15
+                        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        return process
+
+                    with mock.patch.object(publisher.subprocess, "Popen", side_effect=spawn_ready):
+                        publisher._run(
+                            [sys.executable, "-I", "-c", parent],
+                            cwd=REPO_ROOT, timeout_seconds=1,
+                        )
+            self.assertTrue(ready.exists(), "regression child never started")
+            self.assertTrue(retained.is_dir())
+            deadline = time.monotonic() + 10
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists(), "helper child never finished its delayed write")
+        finally:
+            # Only delete this fixture's retained checkout after the child
+            # completed its final operation, including on assertion failures.
+            if retained is not None and marker is not None and marker.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
     def test_outer_timeout_preserves_child_unsafe_status(self):
         publisher = _load_script()
         process = mock.Mock(returncode=125)
@@ -510,7 +561,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 "try:\n"
                 f" publisher._run([sys.executable, '-I', '-c', {verifier_code!r}], "
                 f"cwd=Path({str(root)!r}), env=dict(os.environ), timeout_seconds=30)\n"
-                "except KeyboardInterrupt:\n raise SystemExit(0)\n"
+                "except (KeyboardInterrupt, publisher.UnsafeSubprocessCleanupError):\n raise SystemExit(0)\n"
                 "raise SystemExit('parent cancellation was not propagated')\n"
             )
             worker = subprocess.Popen(

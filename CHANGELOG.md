@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.16.0] - 2026-10-04
+## [0.16.0] - 2026-10-07
 
 ### Upgrade contract
 
@@ -49,8 +49,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Release test phases now terminate timed-out or cancelled command groups/trees before
-  checkout cleanup. Complete-suite verification prints test names and stops at
+- Release test phases terminate their owned command groups/trees on timeout or
+  cancellation. When descendant termination cannot be proved, including POSIX
+  setup-helper timeouts, the disposable checkout is retained for diagnostics
+  rather than deleted beneath potentially live children. Complete-suite
+  verification prints test names and stops at
   the first failure without changing its deadline or pass criteria.
 - Preserved Windows virtualenv context when candidate-verifier tools are
   selected through directory junctions, while retaining POSIX interpreter
