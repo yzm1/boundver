@@ -21,8 +21,12 @@ def uncertain_command_exit(returncode: Optional[int]) -> bool:
         # Windows returns unsigned native statuses, including Ctrl-C's
         # 0xC000013A. Conservatively retain on every non-byte native status,
         # rather than maintaining an incomplete list of cancellation/crashes.
-        returncode < 0 or returncode > 255
-        or returncode in (UNSAFE_CLEANUP_EXIT_CODE, 130, 143)
+        # Shells encode a signal as 128 + signum; Python wrappers returning
+        # a negative child status through SystemExit encode it modulo 256.
+        # Both occupy the high byte range. Keep Git's ordinary fatal 128,
+        # but fail closed on ambiguous statuses 129..255 as well.
+        returncode < 0 or returncode >= 129
+        or returncode == UNSAFE_CLEANUP_EXIT_CODE
     )
 
 

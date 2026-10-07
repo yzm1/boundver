@@ -367,7 +367,7 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
     def test_signal_and_cancellation_exits_are_unsafe_even_after_pipe_eof(self):
         publisher = _load_script()
-        for returncode in (-9, -15, -2, 125, 130, 143, 256, 0xC000013A, -1073741510, 0xC0000005):
+        for returncode in (-9, -15, -2, 125, *range(129, 256), 256, 0xC000013A, -1073741510, 0xC0000005):
             with self.subTest(returncode=returncode):
                 process = mock.Mock(returncode=returncode)
                 process.wait.return_value = returncode
@@ -376,6 +376,33 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                 with mock.patch.object(publisher.subprocess, "Popen", return_value=process):
                     with self.assertRaises(publisher.UnsafeSubprocessCleanupError):
                         publisher._run([sys.executable], cwd=REPO_ROOT)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX wrapped signal statuses")
+    def test_python_wrapper_signal_exit_retains_checkout_after_pipe_eof(self):
+        publisher = _load_script()
+        for signum in (signal.SIGKILL, signal.SIGTERM):
+            child = f"import os; os.kill(os.getpid(), {int(signum)})"
+            wrapper = (
+                "import subprocess, sys; "
+                f"result=subprocess.run([sys.executable, '-I', '-c', {child!r}]); "
+                "raise SystemExit(result.returncode)"
+            )
+            retained = None
+            try:
+                with self.subTest(signum=signum), self.assertRaisesRegex(
+                    publisher.UnsafeSubprocessCleanupError, "workspace retained"
+                ):
+                    with publisher._release_temporary_directory() as temporary:
+                        retained = Path(temporary)
+                        publisher._run([sys.executable, "-I", "-c", wrapper], cwd=REPO_ROOT)
+                self.assertTrue(retained.is_dir())
+            finally:
+                # subprocess.run has reaped the self-signalling child; the
+                # wrapper starts no other descendants or delayed operations.
+                if retained is not None and retained.exists():
+                    self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                    self.assertTrue(retained.name.startswith("bv-rel-"))
+                    shutil.rmtree(retained)
 
     @unittest.skipUnless(os.name == "posix", "POSIX helper timeout")
     def test_posix_helper_timeout_retains_checkout_with_closed_child_pipes(self):

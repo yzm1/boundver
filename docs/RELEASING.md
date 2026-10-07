@@ -485,7 +485,11 @@ This is a fail-closed retention
 policy, not a sandbox or a guarantee that arbitrary descendants were killed.
 Signal-terminated children, cancellation exit statuses, and native exit values
 outside the portable byte range also indicate uncertain cleanup, even if their
-output pipes have closed. This includes Windows' unsigned Ctrl-C status.
+output pipes have closed. This includes Windows' unsigned Ctrl-C status and
+the high byte statuses (129–255) used by shell and Python wrappers to relay
+signals. Those ambiguous statuses retain the checkout even when an ordinary
+command deliberately uses the same exit code; Git's fatal status 128 remains
+an ordinary failure.
 
 ```powershell
 .\scripts\publish_release.ps1 check --tag vX.Y.Z

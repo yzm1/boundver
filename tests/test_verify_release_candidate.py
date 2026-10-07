@@ -66,7 +66,7 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
 
     def test_signal_and_cancellation_exits_are_not_ordinary_gate_failures(self):
         verifier = _load_script()
-        for returncode in (-9, -15, -2, 125, 130, 143, 256, 0xC000013A, -1073741510, 0xC0000005):
+        for returncode in (-9, -15, -2, 125, *range(129, 256), 256, 0xC000013A, -1073741510, 0xC0000005):
             with self.subTest(returncode=returncode):
                 process = mock.Mock(returncode=returncode)
                 process.communicate.return_value = (None, None)
@@ -78,9 +78,31 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
 
     def test_exit_classification_preserves_ordinary_failure_codes(self):
         helper = _load_platform_helper()
-        for returncode in (None, 0, 1, 2, 7, 126, 128, 129):
+        for returncode in (None, 0, 1, 2, 7, 126, 127, 128):
             with self.subTest(returncode=returncode):
                 self.assertFalse(helper.uncertain_command_exit(returncode))
+
+    @unittest.skipUnless(os.name == "posix", "POSIX wrapped signal statuses")
+    def test_python_wrapper_signal_exit_reaches_main_as_unsafe_exit(self):
+        verifier = _load_script()
+        for signum in (signal.SIGKILL, signal.SIGTERM):
+            child = f"import os; os.kill(os.getpid(), {int(signum)})"
+            wrapper = (
+                "import subprocess, sys; "
+                f"result=subprocess.run([sys.executable, '-I', '-c', {child!r}]); "
+                "raise SystemExit(result.returncode)"
+            )
+
+            def verify(*args, **kwargs):
+                verifier._run(
+                    [sys.executable, "-I", "-c", wrapper],
+                    cwd=REPO_ROOT, env=os.environ, capture_output=True,
+                )
+
+            with self.subTest(signum=signum), mock.patch.object(
+                verifier, "verify_candidate", side_effect=verify
+            ), mock.patch.object(verifier.sys, "stderr"):
+                self.assertEqual(verifier.main(["--tag", TAG, "--release-sha", SHA]), 125)
 
     def test_uncertain_cleanup_has_distinct_exit_status(self):
         verifier = _load_script()
