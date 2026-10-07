@@ -363,7 +363,10 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
 
     def test_failed_windows_termination_retains_workspace_and_reaps_owned_root(self):
         publisher = _load_script()
-        for failure in (RuntimeError("system lookup failed"), subprocess.TimeoutExpired("taskkill", 15), None):
+        for failure in (
+            RuntimeError("system lookup failed"), subprocess.TimeoutExpired("taskkill", 15),
+            KeyboardInterrupt(), SystemExit(143), None,
+        ):
             with self.subTest(failure=type(failure).__name__):
                 process = mock.Mock(stdout=io.BytesIO(), stderr=io.BytesIO())
                 process.wait.side_effect = [

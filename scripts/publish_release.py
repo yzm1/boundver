@@ -603,7 +603,7 @@ def _run_bytes(
                             "command cleanup grace expired; child containment is uncertain"
                         ))
                     process.kill()
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, KeyboardInterrupt, SystemExit) as error:
             with state_lock:
                 termination_failures.append(UnsafeSubprocessCleanupError(
                     f"command tree termination failed ({type(error).__name__}); "
@@ -613,7 +613,7 @@ def _run_bytes(
             # proof that its descendants stopped. The workspace is retained.
             try:
                 process.kill()
-            except OSError:
+            except (OSError, KeyboardInterrupt, SystemExit):
                 pass
 
     def read_stream(stream: BinaryIO, name: str, limit: int) -> None:
@@ -2387,7 +2387,7 @@ def _release_temporary_directory(cleanup_warnings: list[str] | None = None):
     retained = False
     try:
         yield temporary.name
-    except UnsafeSubprocessCleanupError as error:
+    except (UnsafeSubprocessCleanupError, KeyboardInterrupt, SystemExit) as error:
         # TemporaryDirectory's finalizer would otherwise remove the checkout
         # when this frame is collected, even after explicit cleanup is skipped.
         retained = True
