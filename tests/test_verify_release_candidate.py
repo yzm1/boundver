@@ -45,9 +45,28 @@ def _load_platform_helper():
 
 
 class VerifyReleaseCandidateTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "native Windows process exit status")
+    def test_native_windows_cancellation_reaches_main_as_unsafe_exit(self):
+        verifier = _load_script()
+        native_exit = (
+            "import ctypes; terminate=ctypes.windll.kernel32.ExitProcess; "
+            "terminate.argtypes=[ctypes.c_uint]; terminate(0xC000013A)"
+        )
+
+        def verify(*args, **kwargs):
+            verifier._run(
+                [sys.executable, "-I", "-c", native_exit],
+                cwd=REPO_ROOT, env=os.environ, capture_output=True,
+            )
+
+        with mock.patch.object(verifier, "verify_candidate", side_effect=verify), mock.patch.object(
+            verifier, "_terminate_command_tree"
+        ), mock.patch.object(verifier.sys, "stderr"):
+            self.assertEqual(verifier.main(["--tag", TAG, "--release-sha", SHA]), 125)
+
     def test_signal_and_cancellation_exits_are_not_ordinary_gate_failures(self):
         verifier = _load_script()
-        for returncode in (-9, -15, -2, 125, 130, 143):
+        for returncode in (-9, -15, -2, 125, 130, 143, 256, 0xC000013A, -1073741510, 0xC0000005):
             with self.subTest(returncode=returncode):
                 process = mock.Mock(returncode=returncode)
                 process.communicate.return_value = (None, None)

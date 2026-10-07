@@ -344,9 +344,30 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "native Windows process exit status")
+    def test_native_windows_cancellation_retains_checkout_after_pipe_eof(self):
+        publisher = _load_script()
+        native_exit = (
+            "import ctypes; terminate=ctypes.windll.kernel32.ExitProcess; "
+            "terminate.argtypes=[ctypes.c_uint]; terminate(0xC000013A)"
+        )
+        retained = None
+        try:
+            with self.assertRaisesRegex(publisher.UnsafeSubprocessCleanupError, "workspace retained"):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    publisher._run([sys.executable, "-I", "-c", native_exit], cwd=REPO_ROOT)
+            self.assertTrue(retained.is_dir())
+        finally:
+            # This fixture exits immediately and starts no descendants.
+            if retained is not None and retained.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
     def test_signal_and_cancellation_exits_are_unsafe_even_after_pipe_eof(self):
         publisher = _load_script()
-        for returncode in (-9, -15, -2, 125, 130, 143):
+        for returncode in (-9, -15, -2, 125, 130, 143, 256, 0xC000013A, -1073741510, 0xC0000005):
             with self.subTest(returncode=returncode):
                 process = mock.Mock(returncode=returncode)
                 process.wait.return_value = returncode

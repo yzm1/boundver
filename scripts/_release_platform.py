@@ -18,7 +18,11 @@ UNSAFE_CLEANUP_EXIT_CODE = 125
 def uncertain_command_exit(returncode: Optional[int]) -> bool:
     """A signal/cancellation exit cannot attest that descendants stopped."""
     return isinstance(returncode, int) and (
-        returncode < 0 or returncode in (UNSAFE_CLEANUP_EXIT_CODE, 130, 143)
+        # Windows returns unsigned native statuses, including Ctrl-C's
+        # 0xC000013A. Conservatively retain on every non-byte native status,
+        # rather than maintaining an incomplete list of cancellation/crashes.
+        returncode < 0 or returncode > 255
+        or returncode in (UNSAFE_CLEANUP_EXIT_CODE, 130, 143)
     )
 
 
