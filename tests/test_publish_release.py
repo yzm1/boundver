@@ -353,13 +353,42 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
         with mock.patch.object(publisher, "os", SimpleNamespace(name="posix")), mock.patch.object(
             publisher.subprocess, "Popen", return_value=process
         ):
-            with self.assertRaises(KeyboardInterrupt):
+            with self.assertRaises(publisher.UnsafeSubprocessCleanupError):
                 publisher._run_bytes([sys.executable], cwd=REPO_ROOT, timeout_seconds=1)
         process.terminate.assert_called_once_with()
         process.kill.assert_called_once_with()
         self.assertEqual(process.wait.call_args_list, [
             mock.call(timeout=1), mock.call(timeout=10), mock.call(timeout=5)
         ])
+
+    def test_failed_windows_termination_retains_workspace_and_reaps_owned_root(self):
+        publisher = _load_script()
+        for failure in (RuntimeError("system lookup failed"), subprocess.TimeoutExpired("taskkill", 15), None):
+            with self.subTest(failure=type(failure).__name__):
+                process = mock.Mock(stdout=io.BytesIO(), stderr=io.BytesIO())
+                process.wait.side_effect = [
+                    KeyboardInterrupt(), subprocess.TimeoutExpired("root", 5) if failure is None else 0
+                ]
+                retained = None
+                try:
+                    with self.assertRaisesRegex(publisher.UnsafeSubprocessCleanupError, "workspace retained"):
+                        with publisher._release_temporary_directory() as directory:
+                            retained = Path(directory)
+                            with mock.patch.object(publisher, "os", SimpleNamespace(name="nt")), mock.patch.object(
+                                publisher.subprocess, "Popen", return_value=process
+                            ), mock.patch.object(
+                                publisher._release_platform, "terminate_windows_process_tree", side_effect=failure
+                            ):
+                                publisher._run_bytes([sys.executable], cwd=REPO_ROOT, timeout_seconds=1)
+                    self.assertTrue(retained.is_dir(), "unsafe workspace was deleted")
+                    if failure is not None:
+                        process.kill.assert_called_once_with()
+                    self.assertEqual(process.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=5)])
+                finally:
+                    if retained is not None and retained.exists():
+                        self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                        self.assertTrue(retained.name.startswith("bv-rel-"))
+                        shutil.rmtree(retained)
 
     @unittest.skipUnless(os.name == "posix", "POSIX parent cancellation")
     def test_publisher_cancellation_waits_for_verifier_group_cleanup(self):

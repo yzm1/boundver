@@ -474,6 +474,11 @@ zeroes the unmanaged plaintext buffer before returning. It also rejects a
 repository-local Python executable. Do not pass the token as a command-line
 argument or paste it into a terminal command.
 
+If subprocess containment fails or descendants keep output pipes open, the
+launcher fails the gate and reports a retained disposable workspace path.
+Do not delete that directory until its child processes have stopped. It is
+kept for diagnostics, not used as evidence for a later release attempt.
+
 ```powershell
 .\scripts\publish_release.ps1 check --tag vX.Y.Z
 $sha = git rev-parse HEAD
