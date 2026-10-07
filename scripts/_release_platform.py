@@ -12,6 +12,9 @@ from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
 
 
+UNSAFE_CLEANUP_EXIT_CODE = 125
+
+
 def terminate_windows_process_tree(process: subprocess.Popen) -> None:
     """Terminate one owned Windows PID and its descendants, not just a redirector."""
     if os.name != "nt":
@@ -30,9 +33,8 @@ def terminate_windows_process_tree(process: subprocess.Popen) -> None:
         timeout=15,
         check=False,
     )
-    # A descendant can finish during enumeration, producing a nonzero status
-    # even though the root was terminated. Callers still require pipe EOF.
-    if result.returncode and process.poll() is None:
+    # Root exit and pipe EOF do not prove that every descendant stopped.
+    if result.returncode:
         raise RuntimeError("owned Windows command tree could not be terminated")
 
 

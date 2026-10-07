@@ -63,6 +63,10 @@ class CandidateVerificationError(RuntimeError):
     """The candidate could not be proved ready for publication."""
 
 
+class UnsafeCandidateCleanupError(CandidateVerificationError):
+    """Report uncertain containment distinctly across the publisher boundary."""
+
+
 def _is_windows_reparse_point(identity: os.stat_result) -> bool:
     attributes = getattr(identity, "st_file_attributes", 0)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -117,20 +121,36 @@ def _run(
             if termination_requested:
                 raise SystemExit(128 + signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except BaseException:
+        except BaseException as phase_error:
             # A detached POSIX session cannot receive the terminal's Ctrl-C.
             # Contain interruptions and unexpected communication failures too,
             # before the publisher can clean up the disposable checkout.
             cleaning_up = True
-            _terminate_command_tree(process)
+            containment_error = None
+            try:
+                _terminate_command_tree(process)
+            except UnsafeCandidateCleanupError as error:
+                containment_error = error
             try:
                 process.communicate(timeout=5)
-            except subprocess.TimeoutExpired as drain_error:
-                raise CandidateVerificationError(
+            except BaseException as drain_error:
+                raise UnsafeCandidateCleanupError(
                     f"{' '.join(command)} aborted; descendant pipes did not close"
                 ) from drain_error
+            if containment_error is not None:
+                reason = "timed out" if isinstance(phase_error, subprocess.TimeoutExpired) else "aborted"
+                raise UnsafeCandidateCleanupError(
+                    f"phase {reason}; {containment_error}"
+                ) from containment_error
+            if os.name == "posix":
+                raise UnsafeCandidateCleanupError(
+                    "phase timed out or was interrupted; original process group stopped, "
+                    "but session-separated descendants cannot be ruled out"
+                )
             raise
         if process.returncode:
+            if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+                raise UnsafeCandidateCleanupError("child command reported uncertain containment")
             raise subprocess.CalledProcessError(
                 process.returncode, command, output=stdout, stderr=stderr
             )
@@ -156,7 +176,16 @@ def _run(
         if process is not None and not cleaning_up:
             cleaning_up = True
             _terminate_command_tree(process)
-            process.communicate(timeout=5)
+            try:
+                process.communicate(timeout=5)
+            except BaseException as drain_error:
+                raise UnsafeCandidateCleanupError(
+                    "command cleanup could not be confirmed"
+                ) from drain_error
+            if os.name == "posix":
+                raise UnsafeCandidateCleanupError(
+                    "interrupted phase may have session-separated descendants"
+                )
         raise
     finally:
         if os.name == "posix":
@@ -169,16 +198,16 @@ def _terminate_command_tree(process: subprocess.Popen[str]) -> None:
     Killing a Windows venv redirector or the tier wrapper alone leaves pytest
     alive, holding output pipes and accessing a checkout being removed.
     """
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        return
     try:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return
         _release_platform.terminate_windows_process_tree(process)
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
-        raise CandidateVerificationError("command tree could not be terminated") from error
+    except BaseException as error:
+        raise UnsafeCandidateCleanupError("command tree could not be terminated") from error
 
 
 def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
@@ -530,6 +559,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         wheel, sdist = verify_candidate(
             args.repo, args.tag, args.release_sha, profile=args.profile
         )
+    except UnsafeCandidateCleanupError as error:
+        print(f"release candidate containment failed: {error}", file=sys.stderr)
+        return _release_platform.UNSAFE_CLEANUP_EXIT_CODE
     except CandidateVerificationError as error:
         print(f"release candidate verification failed: {error}", file=sys.stderr)
         return 1

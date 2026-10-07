@@ -666,6 +666,10 @@ def _run_bytes(
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "owned command did not exit after termination; child containment is uncertain"
             ))
+        if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "child command reported uncertain containment"
+            ))
         if termination_failures:
             raise termination_failures[0] from error
         raise GateError(f"{' '.join(command)}: command timed out") from error
@@ -677,6 +681,10 @@ def _run_bytes(
             termination_failures.append(UnsafeSubprocessCleanupError(
                 "owned command did not exit after termination; child containment is uncertain"
             ))
+        if process.returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "child command reported uncertain containment"
+            ))
         if termination_failures:
             raise termination_failures[0] from error
         raise
@@ -685,7 +693,15 @@ def _run_bytes(
             reader.join(timeout=5)
 
     if termination_failures:
+        if overflows:
+            name = "stdout" if "stdout" in overflows else "stderr"
+            limit = stdout_limit if name == "stdout" else stderr_limit
+            raise UnsafeSubprocessCleanupError(
+                f"{name} exceeds the {limit}-byte limit; {termination_failures[0]}"
+            )
         raise termination_failures[0]
+    if returncode == _release_platform.UNSAFE_CLEANUP_EXIT_CODE:
+        raise UnsafeSubprocessCleanupError("child command reported uncertain containment")
     if any(reader.is_alive() for reader in readers):
         terminate()
         # Fail closed, but do not discard the failure that preceded the pipe

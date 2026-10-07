@@ -478,6 +478,10 @@ If subprocess containment fails or descendants keep output pipes open, the
 launcher fails the gate and reports a retained disposable workspace path.
 Do not delete that directory until its child processes have stopped. It is
 kept for diagnostics, not used as evidence for a later release attempt.
+On POSIX, timed-out or interrupted verification phases always retain the
+checkout: stopping the original process group cannot prove that a descendant
+which started another session has exited. This is a fail-closed retention
+policy, not a sandbox or a guarantee that arbitrary descendants were killed.
 
 ```powershell
 .\scripts\publish_release.ps1 check --tag vX.Y.Z

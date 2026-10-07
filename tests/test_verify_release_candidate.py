@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tests._project_metadata import CURRENT_TAG, CURRENT_VERSION
@@ -44,6 +45,51 @@ def _load_platform_helper():
 
 
 class VerifyReleaseCandidateTests(unittest.TestCase):
+    def test_uncertain_cleanup_has_distinct_exit_status(self):
+        verifier = _load_script()
+        for error, expected in (
+            (verifier.CandidateVerificationError("ordinary failure"), 1),
+            (verifier.UnsafeCandidateCleanupError("uncertain containment"), 125),
+        ):
+            with self.subTest(expected=expected), mock.patch.object(
+                verifier, "verify_candidate", side_effect=error
+            ), mock.patch.object(verifier.sys, "stderr"):
+                self.assertEqual(
+                    verifier.main(["--tag", TAG, "--release-sha", SHA]), expected
+                )
+
+    def test_windows_tree_failure_is_unsafe_even_after_root_exit(self):
+        import ctypes
+
+        helper = _load_platform_helper()
+        process = mock.Mock(pid=12345)
+        process.poll.return_value = 0
+
+        def system_directory(buffer, size):
+            buffer.value = r"C:\Windows\System32"
+            return len(buffer.value)
+
+        windows = SimpleNamespace(
+            kernel32=SimpleNamespace(GetSystemDirectoryW=system_directory)
+        )
+        with mock.patch.object(helper, "os", SimpleNamespace(name="nt")), mock.patch.object(
+            ctypes, "windll", windows, create=True
+        ), mock.patch.object(
+            helper.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)
+        ):
+            with self.assertRaisesRegex(RuntimeError, "could not be terminated"):
+                helper.terminate_windows_process_tree(process)
+
+    def test_cleanup_drain_interruption_is_unsafe(self):
+        verifier = _load_script()
+        process = mock.Mock()
+        process.communicate.side_effect = [KeyboardInterrupt(), KeyboardInterrupt()]
+        with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
+            verifier, "_terminate_command_tree"
+        ):
+            with self.assertRaises(verifier.UnsafeCandidateCleanupError):
+                verifier._run([sys.executable], cwd=REPO_ROOT, env={})
+
     @unittest.skipUnless(os.name == "posix", "POSIX terminal interruption")
     def test_sigint_stops_detached_command_before_checkout_cleanup(self):
         self._assert_signal_contained(signal.SIGINT)
@@ -66,9 +112,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
         with mock.patch.object(verifier.subprocess, "Popen", side_effect=spawning), mock.patch.object(
             verifier, "_terminate_command_tree", side_effect=lambda _: signal.raise_signal(signal.SIGTERM)
         ) as terminate:
-            with self.assertRaises(SystemExit) as raised:
+            with self.assertRaises(verifier.UnsafeCandidateCleanupError):
                 verifier._run([sys.executable], cwd=REPO_ROOT, env={})
-        self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
         terminate.assert_called_once_with(process)
         process.communicate.assert_called_once_with(timeout=5)
         self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
@@ -91,6 +136,7 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 f" verifier._run([sys.executable, '-I', '-c', {child!r}], "
                 f"cwd=Path({str(root)!r}), env=os.environ, timeout_seconds=30)\n"
                 "except KeyboardInterrupt:\n raise SystemExit(0)\n"
+                "except verifier.UnsafeCandidateCleanupError:\n raise SystemExit(0)\n"
                 "except SystemExit as error:\n"
                 " if error.code == 143: raise SystemExit(0)\n"
                 " raise\n"
@@ -124,7 +170,8 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
                     verifier, "_terminate_command_tree"
                 ) as terminate:
-                    with self.assertRaises(type(failure)):
+                    expected = verifier.UnsafeCandidateCleanupError if os.name == "posix" else type(failure)
+                    with self.assertRaises(expected):
                         verifier._run([sys.executable], cwd=REPO_ROOT, env={})
                 terminate.assert_called_once_with(process)
                 self.assertEqual(process.communicate.call_args_list, [
@@ -147,8 +194,27 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}]); "
                 "time.sleep(30)"
             )
+            # Start the deliberately short timeout only after the child is
+            # ready. A saturated host can take longer than one second merely
+            # to start the Windows virtualenv redirector and two interpreters.
+            original_popen = verifier.subprocess.Popen
+
+            def spawn_ready(*args, **kwargs):
+                process = original_popen(*args, **kwargs)
+                if args[0][0] == sys.executable:
+                    deadline = time.monotonic() + 15
+                    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    if not ready.exists():
+                        verifier._terminate_command_tree(process)
+                        process.communicate(timeout=5)
+                        self.fail("regression child never started")
+                return process
+
             started = time.monotonic()
-            with self.assertRaisesRegex(verifier.CandidateVerificationError, "timed out"):
+            with mock.patch.object(verifier.subprocess, "Popen", side_effect=spawn_ready), self.assertRaisesRegex(
+                verifier.CandidateVerificationError, "timed out"
+            ):
                 verifier._run(
                     [sys.executable, "-I", "-c", parent],
                     cwd=root,
@@ -158,7 +224,7 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 )
             # Include the bounded Windows tree terminator and pipe-drain grace;
             # correctness comes from the absent child write, not spawn speed.
-            self.assertLess(time.monotonic() - started, 25)
+            self.assertLess(time.monotonic() - started, 40)
             self.assertTrue(ready.exists(), "regression child never started")
             time.sleep(3)
             self.assertFalse(marker.exists(), "descendant survived the phase timeout")
