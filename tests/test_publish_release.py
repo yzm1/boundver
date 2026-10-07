@@ -8,6 +8,7 @@ belong to protected workflows.
 from __future__ import annotations
 
 import copy
+import io
 import json
 import importlib.util
 import os
@@ -17,7 +18,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -341,6 +344,73 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    def test_parent_cancellation_grace_escalates_with_bounded_waits(self):
+        publisher = _load_script()
+        process = mock.Mock(stdout=io.BytesIO(), stderr=io.BytesIO())
+        process.wait.side_effect = [
+            KeyboardInterrupt(), subprocess.TimeoutExpired("fixture", 10), 0
+        ]
+        with mock.patch.object(publisher, "os", SimpleNamespace(name="posix")), mock.patch.object(
+            publisher.subprocess, "Popen", return_value=process
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                publisher._run_bytes([sys.executable], cwd=REPO_ROOT, timeout_seconds=1)
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_args_list, [
+            mock.call(timeout=1), mock.call(timeout=10), mock.call(timeout=5)
+        ])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX parent cancellation")
+    def test_publisher_cancellation_waits_for_verifier_group_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready, marker = root / "ready", root / "survived"
+            child = (
+                "import time; from pathlib import Path; "
+                f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                f"Path({str(marker)!r}).touch()"
+            )
+            verifier_path = SCRIPT.with_name("verify_release_candidate.py")
+            verifier_code = (
+                "import importlib.util, os, sys, time; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('verifier', {str(verifier_path)!r}); "
+                "verifier=importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier); "
+                "original=verifier._terminate_command_tree; "
+                "verifier._terminate_command_tree=lambda process: (time.sleep(0.5), original(process)); "
+                f"verifier._run([sys.executable, '-I', '-c', {child!r}], "
+                f"cwd=Path({str(root)!r}), env=os.environ, timeout_seconds=30)"
+            )
+            worker_code = (
+                "import importlib.util, os, sys; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('publisher', {str(SCRIPT)!r}); "
+                "publisher=importlib.util.module_from_spec(spec); sys.modules[spec.name]=publisher; "
+                "spec.loader.exec_module(publisher)\n"
+                "try:\n"
+                f" publisher._run([sys.executable, '-I', '-c', {verifier_code!r}], "
+                f"cwd=Path({str(root)!r}), env=dict(os.environ), timeout_seconds=30)\n"
+                "except KeyboardInterrupt:\n raise SystemExit(0)\n"
+                "raise SystemExit('parent cancellation was not propagated')\n"
+            )
+            worker = subprocess.Popen(
+                [sys.executable, "-I", "-c", worker_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not ready.exists() and worker.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "detached phase never started")
+                os.killpg(worker.pid, signal.SIGINT)
+                _, stderr = worker.communicate(timeout=20)
+                self.assertEqual(worker.returncode, 0, stderr)
+                time.sleep(3)
+                self.assertFalse(marker.exists(), "publisher killed the verifier before cleanup")
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=5)
+
     def test_isolated_direct_startup_loads_adjacent_platform_helper(self):
         result = subprocess.run(
             [sys.executable, "-I", str(SCRIPT), "--help"],

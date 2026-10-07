@@ -5,10 +5,35 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from collections import deque
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
+
+
+def terminate_windows_process_tree(process: subprocess.Popen) -> None:
+    """Terminate one owned Windows PID and its descendants, not just a redirector."""
+    if os.name != "nt":
+        raise RuntimeError("Windows process-tree termination is unavailable")
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not length or length >= len(directory):
+        raise RuntimeError("cannot locate system process-tree terminator")
+    result = subprocess.run(
+        [str(Path(directory.value) / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    # A descendant can finish during enumeration, producing a nonzero status
+    # even though the root was terminated. Callers still require pipe EOF.
+    if result.returncode and process.poll() is None:
+        raise RuntimeError("owned Windows command tree could not be terminated")
 
 
 _GIT_AMBIENT_OVERRIDE_NAMES = frozenset({"SSH_ASKPASS"})

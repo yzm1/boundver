@@ -583,7 +583,17 @@ def _run_bytes(
 
     def terminate() -> None:
         try:
-            process.kill()
+            if os.name == "nt":
+                _release_platform.terminate_windows_process_tree(process)
+            else:
+                # The verifier owns detached phase groups and handles SIGTERM.
+                # Give it bounded time to reap those groups before escalating;
+                # immediate SIGKILL can interrupt that cleanup on Ctrl-C.
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
         except OSError:
             pass
 
@@ -638,7 +648,10 @@ def _run_bytes(
         raise GateError(f"{' '.join(command)}: command timed out") from error
     except BaseException:
         terminate()
-        process.wait()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         raise
     finally:
         for reader in readers:

@@ -175,24 +175,10 @@ def _terminate_command_tree(process: subprocess.Popen[str]) -> None:
         except ProcessLookupError:
             pass
         return
-    # Resolve the OS utility through the system API, not candidate-controlled
-    # PATH or environment variables. /T targets descendants of this exact PID.
-    import ctypes
-
-    directory = ctypes.create_unicode_buffer(32768)
-    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
-    if not length or length >= len(directory):
-        raise CandidateVerificationError("cannot locate system process-tree terminator")
-    result = subprocess.run(
-        [str(Path(directory.value) / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=15,
-        check=False,
-    )
-    if result.returncode:
-        raise CandidateVerificationError("timed-out command tree could not be terminated")
+    try:
+        _release_platform.terminate_windows_process_tree(process)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        raise CandidateVerificationError("command tree could not be terminated") from error
 
 
 def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
