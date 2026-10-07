@@ -86,6 +86,22 @@ def _run(
     capture_output: bool = False,
     timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    process: Optional[subprocess.Popen[str]] = None
+    termination_requested = False
+    cleaning_up = False
+    previous_termination_handler = None
+
+    def request_termination(_signum, _frame):
+        nonlocal termination_requested
+        termination_requested = True
+        # Do not interrupt Popen before its process handle has been assigned.
+        # Defer that signal until the child can be contained, and do not let a
+        # second termination signal interrupt the bounded cleanup itself.
+        if process is not None and not cleaning_up:
+            raise SystemExit(128 + signal.SIGTERM)
+
+    if os.name == "posix":
+        previous_termination_handler = signal.signal(signal.SIGTERM, request_termination)
     try:
         process = subprocess.Popen(
             list(command),
@@ -98,11 +114,14 @@ def _run(
             start_new_session=os.name == "posix",
         )
         try:
+            if termination_requested:
+                raise SystemExit(128 + signal.SIGTERM)
             stdout, stderr = process.communicate(timeout=timeout_seconds)
         except BaseException:
             # A detached POSIX session cannot receive the terminal's Ctrl-C.
             # Contain interruptions and unexpected communication failures too,
             # before the publisher can clean up the disposable checkout.
+            cleaning_up = True
             _terminate_command_tree(process)
             try:
                 process.communicate(timeout=5)
@@ -132,6 +151,16 @@ def _run(
         raise CandidateVerificationError(
             f"{' '.join(command)} timed out"
         ) from error
+    except BaseException:
+        # Also cover a signal between Popen's return and communicate's try block.
+        if process is not None and not cleaning_up:
+            cleaning_up = True
+            _terminate_command_tree(process)
+            process.communicate(timeout=5)
+        raise
+    finally:
+        if os.name == "posix":
+            signal.signal(signal.SIGTERM, previous_termination_handler)
 
 
 def _terminate_command_tree(process: subprocess.Popen[str]) -> None:

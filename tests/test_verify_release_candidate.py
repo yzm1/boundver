@@ -46,6 +46,34 @@ def _load_platform_helper():
 class VerifyReleaseCandidateTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "posix", "POSIX terminal interruption")
     def test_sigint_stops_detached_command_before_checkout_cleanup(self):
+        self._assert_signal_contained(signal.SIGINT)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX termination")
+    def test_sigterm_stops_detached_command_before_checkout_cleanup(self):
+        self._assert_signal_contained(signal.SIGTERM)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX termination")
+    def test_sigterm_during_spawn_and_cleanup_is_deferred_until_reap(self):
+        verifier = _load_script()
+        previous = signal.getsignal(signal.SIGTERM)
+        process = mock.Mock()
+        process.communicate.return_value = (None, None)
+
+        def spawning(*args, **kwargs):
+            signal.raise_signal(signal.SIGTERM)
+            return process
+
+        with mock.patch.object(verifier.subprocess, "Popen", side_effect=spawning), mock.patch.object(
+            verifier, "_terminate_command_tree", side_effect=lambda _: signal.raise_signal(signal.SIGTERM)
+        ) as terminate:
+            with self.assertRaises(SystemExit) as raised:
+                verifier._run([sys.executable], cwd=REPO_ROOT, env={})
+        self.assertEqual(raised.exception.code, 128 + signal.SIGTERM)
+        terminate.assert_called_once_with(process)
+        process.communicate.assert_called_once_with(timeout=5)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+
+    def _assert_signal_contained(self, termination_signal):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ready = root / "ready"
@@ -63,6 +91,9 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 f" verifier._run([sys.executable, '-I', '-c', {child!r}], "
                 f"cwd=Path({str(root)!r}), env=os.environ, timeout_seconds=30)\n"
                 "except KeyboardInterrupt:\n raise SystemExit(0)\n"
+                "except SystemExit as error:\n"
+                " if error.code == 143: raise SystemExit(0)\n"
+                " raise\n"
                 "raise SystemExit('interruption was not propagated')\n"
             )
             worker = subprocess.Popen(
@@ -74,11 +105,11 @@ class VerifyReleaseCandidateTests(unittest.TestCase):
                 while not ready.exists() and worker.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(ready.exists(), "detached command never started")
-                worker.send_signal(signal.SIGINT)
+                worker.send_signal(termination_signal)
                 _, stderr = worker.communicate(timeout=10)
                 self.assertEqual(worker.returncode, 0, stderr)
                 time.sleep(3)
-                self.assertFalse(marker.exists(), "detached command survived Ctrl-C")
+                self.assertFalse(marker.exists(), "detached command survived cancellation")
             finally:
                 if worker.poll() is None:
                     worker.kill()
