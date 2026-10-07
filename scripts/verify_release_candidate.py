@@ -133,6 +133,17 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
         # could inspect a different file from the normalized launcher.
         resolved = _release_platform.resolve_external_tool_path(raw, root)
         identity = resolved.stat()
+        # Windows venv redirectors locate pyvenv.cfg from their launch path.
+        # A directory junction can hide that context even when the executable
+        # identity is unchanged. Resolve directory aliases, not the final file
+        # link: POSIX venv interpreters must retain their symlink spelling.
+        launcher = (
+            _release_platform.resolve_external_tool_path(raw.parent, root) / raw.name
+            if os.name == "nt"
+            else raw
+        )
+        if not os.path.samestat(identity, launcher.stat()):
+            raise RuntimeError("tool launch path identity changed")
     except _release_platform.RepositoryToolError as error:
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
@@ -145,10 +156,10 @@ def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
         raise CandidateVerificationError(
             f"refusing executable selected from the release repository: {command}"
         )
-    # Validate both the selected path and its target, but launch through the
-    # selected path. Resolving a virtualenv's Python symlink would discard its
+    # Validate both the selected path and its target, but retain the final file
+    # link for launch. Resolving a virtualenv's Python symlink would discard its
     # pyvenv.cfg context and run the base interpreter without the locked tools.
-    return str(raw)
+    return str(launcher)
 
 
 def _git_environment(environment: Mapping[str, str]) -> dict[str, str]:

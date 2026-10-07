@@ -49,6 +49,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Preserved Windows virtualenv context when candidate-verifier tools are
+  selected through directory junctions, while retaining POSIX interpreter
+  symlinks and repository-traversal rejection.
 - Kept bounded failure diagnostics when a release subprocess exits while a
   descendant still holds an output pipe. Release-isolated test fixtures now
   declare their synthetic import paths and checkout permissions explicitly,
