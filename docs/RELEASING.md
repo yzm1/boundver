@@ -474,6 +474,23 @@ zeroes the unmanaged plaintext buffer before returning. It also rejects a
 repository-local Python executable. Do not pass the token as a command-line
 argument or paste it into a terminal command.
 
+If subprocess containment fails or descendants keep output pipes open, the
+launcher fails the gate and reports a retained disposable workspace path.
+Do not delete that directory until its child processes have stopped. It is
+kept for diagnostics, not used as evidence for a later release attempt.
+On POSIX, timed-out or interrupted verification phases and terminated setup
+helpers always retain the checkout: stopping a root or its original process
+group cannot prove that a descendant which started another session has exited.
+This is a fail-closed retention
+policy, not a sandbox or a guarantee that arbitrary descendants were killed.
+Signal-terminated children, cancellation exit statuses, and native exit values
+outside the portable byte range also indicate uncertain cleanup, even if their
+output pipes have closed. This includes Windows' unsigned Ctrl-C status and
+the high byte statuses (129–255) used by shell and Python wrappers to relay
+signals. Those ambiguous statuses retain the checkout even when an ordinary
+command deliberately uses the same exit code; Git's fatal status 128 remains
+an ordinary failure.
+
 ```powershell
 .\scripts\publish_release.ps1 check --tag vX.Y.Z
 $sha = git rev-parse HEAD

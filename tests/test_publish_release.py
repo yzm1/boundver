@@ -8,6 +8,7 @@ belong to protected workflows.
 from __future__ import annotations
 
 import copy
+import io
 import json
 import importlib.util
 import os
@@ -17,7 +18,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -341,6 +344,305 @@ def _verify_release_job_log(
 
 
 class PublishReleaseInterfaceTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "native Windows process exit status")
+    def test_native_windows_cancellation_retains_checkout_after_pipe_eof(self):
+        publisher = _load_script()
+        native_exit = (
+            "import ctypes; terminate=ctypes.windll.kernel32.ExitProcess; "
+            "terminate.argtypes=[ctypes.c_uint]; terminate(0xC000013A)"
+        )
+        retained = None
+        try:
+            with self.assertRaisesRegex(publisher.UnsafeSubprocessCleanupError, "workspace retained"):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    publisher._run([sys.executable, "-I", "-c", native_exit], cwd=REPO_ROOT)
+            self.assertTrue(retained.is_dir())
+        finally:
+            # This fixture exits immediately and starts no descendants.
+            if retained is not None and retained.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
+    def test_signal_and_cancellation_exits_are_unsafe_even_after_pipe_eof(self):
+        publisher = _load_script()
+        for returncode in (-9, -15, -2, 125, *range(129, 256), 256, 0xC000013A, -1073741510, 0xC0000005):
+            with self.subTest(returncode=returncode):
+                process = mock.Mock(returncode=returncode)
+                process.wait.return_value = returncode
+                process.stdout = io.BytesIO(b"")
+                process.stderr = io.BytesIO(b"")
+                with mock.patch.object(publisher.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(publisher.UnsafeSubprocessCleanupError):
+                        publisher._run([sys.executable], cwd=REPO_ROOT)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX wrapped signal statuses")
+    def test_python_wrapper_signal_exit_retains_checkout_after_pipe_eof(self):
+        publisher = _load_script()
+        for signum in (signal.SIGKILL, signal.SIGTERM):
+            child = f"import os; os.kill(os.getpid(), {int(signum)})"
+            wrapper = (
+                "import subprocess, sys; "
+                f"result=subprocess.run([sys.executable, '-I', '-c', {child!r}]); "
+                "raise SystemExit(result.returncode)"
+            )
+            retained = None
+            try:
+                with self.subTest(signum=signum), self.assertRaisesRegex(
+                    publisher.UnsafeSubprocessCleanupError, "workspace retained"
+                ):
+                    with publisher._release_temporary_directory() as temporary:
+                        retained = Path(temporary)
+                        publisher._run([sys.executable, "-I", "-c", wrapper], cwd=REPO_ROOT)
+                self.assertTrue(retained.is_dir())
+            finally:
+                # subprocess.run has reaped the self-signalling child; the
+                # wrapper starts no other descendants or delayed operations.
+                if retained is not None and retained.exists():
+                    self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                    self.assertTrue(retained.name.startswith("bv-rel-"))
+                    shutil.rmtree(retained)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX helper timeout")
+    def test_posix_helper_timeout_retains_checkout_with_closed_child_pipes(self):
+        publisher = _load_script()
+        retained = None
+        marker = None
+        try:
+            with self.assertRaisesRegex(
+                publisher.UnsafeSubprocessCleanupError, "command timed out.*workspace retained"
+            ):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    marker = retained / "child-finished"
+                    ready = retained / "child-started"
+                    child = (
+                        "import time; from pathlib import Path; "
+                        f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                        f"Path({str(marker)!r}).touch()"
+                    )
+                    parent = (
+                        "import subprocess, sys, time; "
+                        f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}], "
+                        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(30)"
+                    )
+                    original_popen = publisher.subprocess.Popen
+
+                    def spawn_ready(*args, **kwargs):
+                        process = original_popen(*args, **kwargs)
+                        deadline = time.monotonic() + 15
+                        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        return process
+
+                    with mock.patch.object(publisher.subprocess, "Popen", side_effect=spawn_ready):
+                        publisher._run(
+                            [sys.executable, "-I", "-c", parent],
+                            cwd=REPO_ROOT, timeout_seconds=1,
+                        )
+            self.assertTrue(ready.exists(), "regression child never started")
+            self.assertTrue(retained.is_dir())
+            deadline = time.monotonic() + 10
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists(), "helper child never finished its delayed write")
+        finally:
+            # Only delete this fixture's retained checkout after the child
+            # completed its final operation, including on assertion failures.
+            if retained is not None and marker is not None and marker.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
+    def test_outer_timeout_preserves_child_unsafe_status(self):
+        publisher = _load_script()
+        process = mock.Mock(returncode=125)
+        process.stdout = io.BytesIO(b"")
+        process.stderr = io.BytesIO(b"")
+        process.wait.side_effect = [subprocess.TimeoutExpired(["verifier"], 1), 0]
+        with mock.patch.object(publisher.subprocess, "Popen", return_value=process), mock.patch.object(
+            publisher, "os", SimpleNamespace(name="nt")
+        ), mock.patch.object(publisher._release_platform, "terminate_windows_process_tree"):
+            with self.assertRaisesRegex(
+                publisher.UnsafeSubprocessCleanupError, "uncertain containment"
+            ):
+                publisher._run(["verifier"], cwd=REPO_ROOT, timeout_seconds=1)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX session-separated descendants")
+    def test_session_separated_descendant_cannot_trigger_checkout_deletion(self):
+        publisher = _load_script()
+        verifier_path = REPO_ROOT / "scripts" / "verify_release_candidate.py"
+        retained = None
+        started = time.monotonic()
+        try:
+            with self.assertRaisesRegex(
+                publisher.UnsafeSubprocessCleanupError, "workspace retained"
+            ):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    marker = retained / "escaped-child-finished"
+                    child = (
+                        "import time; from pathlib import Path; time.sleep(3); "
+                        f"Path({str(marker)!r}).touch()"
+                    )
+                    phase = (
+                        "import subprocess, sys, time; "
+                        f"subprocess.Popen([sys.executable, '-I', '-c', {child!r}], "
+                        "start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+                        "time.sleep(30)"
+                    )
+                    code = (
+                        "import importlib.util, os, sys; from pathlib import Path; "
+                        f"spec=importlib.util.spec_from_file_location('verifier', {str(verifier_path)!r}); "
+                        "verifier=importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)\n"
+                        "def verify(*args, **kwargs):\n"
+                        f" verifier._run([sys.executable, '-I', '-c', {phase!r}], "
+                        f"cwd=Path({temporary!r}), env=os.environ, timeout_seconds=1, capture_output=True)\n"
+                        "verifier.verify_candidate=verify\n"
+                        f"sys.exit(verifier.main(['--tag', {TAG!r}, '--release-sha', {SHA!r}]))\n"
+                    )
+                    publisher._run([sys.executable, "-I", "-c", code], cwd=REPO_ROOT)
+            self.assertTrue(retained.is_dir())
+            deadline = time.monotonic() + 10
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(marker.exists(), "session-separated child never finished")
+        finally:
+            # The fixture child exits naturally after its one write. Never
+            # remove its checkout while that delayed operation can still run.
+            time.sleep(max(0, 5 - (time.monotonic() - started)))
+            if retained is not None and retained.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
+    def test_verifier_unsafe_exit_retains_workspace_even_with_pipe_eof(self):
+        publisher = _load_script()
+        verifier_path = REPO_ROOT / "scripts" / "verify_release_candidate.py"
+        code = (
+            "import importlib.util, sys; "
+            f"spec=importlib.util.spec_from_file_location('verifier', {str(verifier_path)!r}); "
+            "verifier=importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)\n"
+            "def unsafe(*args, **kwargs):\n"
+            " raise verifier.UnsafeCandidateCleanupError('tree termination failed')\n"
+            "verifier.verify_candidate=unsafe\n"
+            f"sys.exit(verifier.main(['--tag', {TAG!r}, '--release-sha', {SHA!r}]))\n"
+        )
+        retained = None
+        try:
+            with self.assertRaisesRegex(
+                publisher.UnsafeSubprocessCleanupError, "workspace retained"
+            ):
+                with publisher._release_temporary_directory() as temporary:
+                    retained = Path(temporary)
+                    publisher._run([sys.executable, "-I", "-c", code], cwd=REPO_ROOT)
+            self.assertTrue(retained.is_dir())
+        finally:
+            if retained is not None and retained.exists():
+                self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                self.assertTrue(retained.name.startswith("bv-rel-"))
+                shutil.rmtree(retained)
+
+    def test_parent_cancellation_grace_escalates_with_bounded_waits(self):
+        publisher = _load_script()
+        process = mock.Mock(stdout=io.BytesIO(), stderr=io.BytesIO())
+        process.wait.side_effect = [
+            KeyboardInterrupt(), subprocess.TimeoutExpired("fixture", 10), 0
+        ]
+        with mock.patch.object(publisher, "os", SimpleNamespace(name="posix")), mock.patch.object(
+            publisher.subprocess, "Popen", return_value=process
+        ):
+            with self.assertRaises(publisher.UnsafeSubprocessCleanupError):
+                publisher._run_bytes([sys.executable], cwd=REPO_ROOT, timeout_seconds=1)
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertEqual(process.wait.call_args_list, [
+            mock.call(timeout=1), mock.call(timeout=10), mock.call(timeout=5)
+        ])
+
+    def test_failed_windows_termination_retains_workspace_and_reaps_owned_root(self):
+        publisher = _load_script()
+        for failure in (
+            RuntimeError("system lookup failed"), subprocess.TimeoutExpired("taskkill", 15),
+            KeyboardInterrupt(), SystemExit(143), None,
+        ):
+            with self.subTest(failure=type(failure).__name__):
+                process = mock.Mock(stdout=io.BytesIO(), stderr=io.BytesIO())
+                process.wait.side_effect = [
+                    KeyboardInterrupt(), subprocess.TimeoutExpired("root", 5) if failure is None else 0
+                ]
+                retained = None
+                try:
+                    with self.assertRaisesRegex(publisher.UnsafeSubprocessCleanupError, "workspace retained"):
+                        with publisher._release_temporary_directory() as directory:
+                            retained = Path(directory)
+                            with mock.patch.object(publisher, "os", SimpleNamespace(name="nt")), mock.patch.object(
+                                publisher.subprocess, "Popen", return_value=process
+                            ), mock.patch.object(
+                                publisher._release_platform, "terminate_windows_process_tree", side_effect=failure
+                            ):
+                                publisher._run_bytes([sys.executable], cwd=REPO_ROOT, timeout_seconds=1)
+                    self.assertTrue(retained.is_dir(), "unsafe workspace was deleted")
+                    if failure is not None:
+                        process.kill.assert_called_once_with()
+                    self.assertEqual(process.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=5)])
+                finally:
+                    if retained is not None and retained.exists():
+                        self.assertEqual(retained.resolve().parent, Path(tempfile.gettempdir()).resolve())
+                        self.assertTrue(retained.name.startswith("bv-rel-"))
+                        shutil.rmtree(retained)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX parent cancellation")
+    def test_publisher_cancellation_waits_for_verifier_group_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready, marker = root / "ready", root / "survived"
+            child = (
+                "import time; from pathlib import Path; "
+                f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                f"Path({str(marker)!r}).touch()"
+            )
+            verifier_path = SCRIPT.with_name("verify_release_candidate.py")
+            verifier_code = (
+                "import importlib.util, os, sys, time; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('verifier', {str(verifier_path)!r}); "
+                "verifier=importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier); "
+                "original=verifier._terminate_command_tree; "
+                "verifier._terminate_command_tree=lambda process: (time.sleep(0.5), original(process)); "
+                f"verifier._run([sys.executable, '-I', '-c', {child!r}], "
+                f"cwd=Path({str(root)!r}), env=os.environ, timeout_seconds=30)"
+            )
+            worker_code = (
+                "import importlib.util, os, sys; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('publisher', {str(SCRIPT)!r}); "
+                "publisher=importlib.util.module_from_spec(spec); sys.modules[spec.name]=publisher; "
+                "spec.loader.exec_module(publisher)\n"
+                "try:\n"
+                f" publisher._run([sys.executable, '-I', '-c', {verifier_code!r}], "
+                f"cwd=Path({str(root)!r}), env=dict(os.environ), timeout_seconds=30)\n"
+                "except (KeyboardInterrupt, publisher.UnsafeSubprocessCleanupError):\n raise SystemExit(0)\n"
+                "raise SystemExit('parent cancellation was not propagated')\n"
+            )
+            worker = subprocess.Popen(
+                [sys.executable, "-I", "-c", worker_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not ready.exists() and worker.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "detached phase never started")
+                os.killpg(worker.pid, signal.SIGINT)
+                _, stderr = worker.communicate(timeout=20)
+                self.assertEqual(worker.returncode, 0, stderr)
+                time.sleep(3)
+                self.assertFalse(marker.exists(), "publisher killed the verifier before cleanup")
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=5)
+
     def test_isolated_direct_startup_loads_adjacent_platform_helper(self):
         result = subprocess.run(
             [sys.executable, "-I", str(SCRIPT), "--help"],

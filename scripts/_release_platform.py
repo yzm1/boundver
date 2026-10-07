@@ -5,10 +5,52 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from collections import deque
 from pathlib import Path, PureWindowsPath
 from typing import Mapping, Optional
+
+
+UNSAFE_CLEANUP_EXIT_CODE = 125
+
+
+def uncertain_command_exit(returncode: Optional[int]) -> bool:
+    """A signal/cancellation exit cannot attest that descendants stopped."""
+    return isinstance(returncode, int) and (
+        # Windows returns unsigned native statuses, including Ctrl-C's
+        # 0xC000013A. Conservatively retain on every non-byte native status,
+        # rather than maintaining an incomplete list of cancellation/crashes.
+        # Shells encode a signal as 128 + signum; Python wrappers returning
+        # a negative child status through SystemExit encode it modulo 256.
+        # Both occupy the high byte range. Keep Git's ordinary fatal 128,
+        # but fail closed on ambiguous statuses 129..255 as well.
+        returncode < 0 or returncode >= 129
+        or returncode == UNSAFE_CLEANUP_EXIT_CODE
+    )
+
+
+def terminate_windows_process_tree(process: subprocess.Popen) -> None:
+    """Terminate one owned Windows PID and its descendants, not just a redirector."""
+    if os.name != "nt":
+        raise RuntimeError("Windows process-tree termination is unavailable")
+    import ctypes
+
+    directory = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(directory, len(directory))
+    if not length or length >= len(directory):
+        raise RuntimeError("cannot locate system process-tree terminator")
+    result = subprocess.run(
+        [str(Path(directory.value) / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    # Root exit and pipe EOF do not prove that every descendant stopped.
+    if result.returncode:
+        raise RuntimeError("owned Windows command tree could not be terminated")
 
 
 _GIT_AMBIENT_OVERRIDE_NAMES = frozenset({"SSH_ASKPASS"})

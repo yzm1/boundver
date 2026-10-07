@@ -169,6 +169,10 @@ class GateError(RuntimeError):
     """A release prerequisite is absent, conflicting, or unreadable."""
 
 
+class UnsafeSubprocessCleanupError(GateError):
+    """A disposable checkout must be retained until children are contained."""
+
+
 def _bounded_json_int(value: str) -> int:
     """Parse a JSON integer independently of Python's mutable digit limit."""
     if re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value) is None:
@@ -573,19 +577,53 @@ def _run_bytes(
             process.kill()
         except OSError:
             pass
-        raise GateError("required command output pipes are unavailable")
+        raise UnsafeSubprocessCleanupError(
+            "required command output pipes are unavailable; child containment is uncertain"
+        )
 
     captured: dict[str, bytes] = {}
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
     overflows: list[str] = []
     read_errors: list[BaseException] = []
+    termination_failures: list[UnsafeSubprocessCleanupError] = []
     state_lock = threading.Lock()
 
     def terminate() -> None:
         try:
-            process.kill()
-        except OSError:
-            pass
+            if os.name == "nt":
+                _release_platform.terminate_windows_process_tree(process)
+            else:
+                # Setup helpers do not all implement the verifier's signal
+                # cleanup protocol. Even a prompt root exit cannot establish
+                # that children (including ones with closed pipes) stopped.
+                with state_lock:
+                    termination_failures.append(UnsafeSubprocessCleanupError(
+                        "POSIX command termination cannot prove descendant containment"
+                    ))
+                # The verifier owns detached phase groups and handles SIGTERM.
+                # Give it bounded time to reap those groups before escalating;
+                # immediate SIGKILL can interrupt that cleanup on Ctrl-C.
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    with state_lock:
+                        termination_failures.append(UnsafeSubprocessCleanupError(
+                            "command cleanup grace expired; child containment is uncertain"
+                        ))
+                    process.kill()
+        except (OSError, RuntimeError, subprocess.TimeoutExpired, KeyboardInterrupt, SystemExit) as error:
+            with state_lock:
+                termination_failures.append(UnsafeSubprocessCleanupError(
+                    f"command tree termination failed ({type(error).__name__}); "
+                    "child containment is uncertain"
+                ))
+            # Reap the owned root if possible, but never treat this fallback as
+            # proof that its descendants stopped. The workspace is retained.
+            try:
+                process.kill()
+            except (OSError, KeyboardInterrupt, SystemExit):
+                pass
 
     def read_stream(stream: BinaryIO, name: str, limit: int) -> None:
         data = buffers[name]
@@ -634,16 +672,47 @@ def _run_bytes(
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            pass
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "owned command did not exit after termination; child containment is uncertain"
+            ))
+        if _release_platform.uncertain_command_exit(process.returncode):
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "child command reported uncertain containment"
+            ))
+        if termination_failures:
+            raise UnsafeSubprocessCleanupError(
+                f"{' '.join(command)}: command timed out; {termination_failures[0]}"
+            ) from error
         raise GateError(f"{' '.join(command)}: command timed out") from error
-    except BaseException:
+    except BaseException as error:
         terminate()
-        process.wait()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "owned command did not exit after termination; child containment is uncertain"
+            ))
+        if _release_platform.uncertain_command_exit(process.returncode):
+            termination_failures.append(UnsafeSubprocessCleanupError(
+                "child command reported uncertain containment"
+            ))
+        if termination_failures:
+            raise termination_failures[0] from error
         raise
     finally:
         for reader in readers:
             reader.join(timeout=5)
 
+    if termination_failures:
+        if overflows:
+            name = "stdout" if "stdout" in overflows else "stderr"
+            limit = stdout_limit if name == "stdout" else stderr_limit
+            raise UnsafeSubprocessCleanupError(
+                f"{name} exceeds the {limit}-byte limit; {termination_failures[0]}"
+            )
+        raise termination_failures[0]
+    if _release_platform.uncertain_command_exit(returncode):
+        raise UnsafeSubprocessCleanupError("child command reported uncertain containment")
     if any(reader.is_alive() for reader in readers):
         terminate()
         # Fail closed, but do not discard the failure that preceded the pipe
@@ -674,7 +743,7 @@ def _run_bytes(
             raw_detail = b"\n".join(pieces)
         detail = raw_detail.decode(locale.getpreferredencoding(False), "replace")
         suffix = f"\n{detail}" if detail else ""
-        raise GateError(
+        raise UnsafeSubprocessCleanupError(
             f"{' '.join(command)}: output pipes did not close "
             f"(parent exit {returncode}){suffix}"
         )
@@ -2342,10 +2411,19 @@ def _release_temporary_directory(cleanup_warnings: list[str] | None = None):
     other cleanup failures remain fatal.
     """
     temporary = tempfile.TemporaryDirectory(prefix="bv-rel-")
+    retained = False
     try:
         yield temporary.name
+    except (UnsafeSubprocessCleanupError, KeyboardInterrupt, SystemExit) as error:
+        # TemporaryDirectory's finalizer would otherwise remove the checkout
+        # when this frame is collected, even after explicit cleanup is skipped.
+        retained = True
+        temporary._finalizer.detach()
+        raise UnsafeSubprocessCleanupError(
+            f"{error}; disposable workspace retained at {temporary.name}"
+        ) from error
     finally:
-        for attempt in range(WINDOWS_TEMP_CLEANUP_ATTEMPTS):
+        for attempt in range(0 if retained else WINDOWS_TEMP_CLEANUP_ATTEMPTS):
             try:
                 temporary.cleanup()
                 break

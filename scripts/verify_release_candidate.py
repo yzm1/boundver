@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -62,6 +63,10 @@ class CandidateVerificationError(RuntimeError):
     """The candidate could not be proved ready for publication."""
 
 
+class UnsafeCandidateCleanupError(CandidateVerificationError):
+    """Report uncertain containment distinctly across the publisher boundary."""
+
+
 def _is_windows_reparse_point(identity: os.stat_result) -> bool:
     attributes = getattr(identity, "st_file_attributes", 0)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -85,17 +90,75 @@ def _run(
     capture_output: bool = False,
     timeout_seconds: int = MAX_COMMAND_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    process: Optional[subprocess.Popen[str]] = None
+    termination_requested: Optional[int] = None
+    cleaning_up = False
+    previous_termination_handlers = {}
+
+    def request_termination(signum, _frame):
+        nonlocal termination_requested
+        if termination_requested is None:
+            termination_requested = signum
+        # Do not interrupt Popen before its process handle has been assigned.
+        # Defer that signal until the child can be contained, and do not let a
+        # second termination signal interrupt the bounded cleanup itself.
+        if process is not None and not cleaning_up:
+            if termination_requested == signal.SIGINT:
+                raise KeyboardInterrupt
+            raise SystemExit(128 + termination_requested)
+
     try:
-        return subprocess.run(
+        if os.name == "posix":
+            for signum in (signal.SIGTERM, signal.SIGINT):
+                previous_termination_handlers[signum] = signal.signal(signum, request_termination)
+        process = subprocess.Popen(
             list(command),
             cwd=cwd,
             env=dict(env),
             text=True,
-            capture_output=capture_output,
-            check=True,
+            stdout=subprocess.PIPE if capture_output else None,
+            stderr=subprocess.PIPE if capture_output else None,
             stdin=subprocess.DEVNULL,
-            timeout=timeout_seconds,
+            start_new_session=os.name == "posix",
         )
+        try:
+            if termination_requested:
+                request_termination(termination_requested, None)
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except BaseException as phase_error:
+            # A detached POSIX session cannot receive the terminal's Ctrl-C.
+            # Contain interruptions and unexpected communication failures too,
+            # before the publisher can clean up the disposable checkout.
+            cleaning_up = True
+            containment_error = None
+            try:
+                _terminate_command_tree(process)
+            except UnsafeCandidateCleanupError as error:
+                containment_error = error
+            try:
+                process.communicate(timeout=5)
+            except BaseException as drain_error:
+                raise UnsafeCandidateCleanupError(
+                    f"{' '.join(command)} aborted; descendant pipes did not close"
+                ) from drain_error
+            if containment_error is not None:
+                reason = "timed out" if isinstance(phase_error, subprocess.TimeoutExpired) else "aborted"
+                raise UnsafeCandidateCleanupError(
+                    f"phase {reason}; {containment_error}"
+                ) from containment_error
+            if os.name == "posix":
+                raise UnsafeCandidateCleanupError(
+                    "phase timed out or was interrupted; original process group stopped, "
+                    "but session-separated descendants cannot be ruled out"
+                )
+            raise
+        if process.returncode:
+            if _release_platform.uncertain_command_exit(process.returncode):
+                raise UnsafeCandidateCleanupError("child command reported uncertain containment")
+            raise subprocess.CalledProcessError(
+                process.returncode, command, output=stdout, stderr=stderr
+            )
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
     except FileNotFoundError as error:
         raise CandidateVerificationError(
             f"required command is unavailable: {command[0]}"
@@ -112,6 +175,43 @@ def _run(
         raise CandidateVerificationError(
             f"{' '.join(command)} timed out"
         ) from error
+    except BaseException:
+        # Also cover a signal between Popen's return and communicate's try block.
+        if process is not None and not cleaning_up:
+            cleaning_up = True
+            _terminate_command_tree(process)
+            try:
+                process.communicate(timeout=5)
+            except BaseException as drain_error:
+                raise UnsafeCandidateCleanupError(
+                    "command cleanup could not be confirmed"
+                ) from drain_error
+            if os.name == "posix":
+                raise UnsafeCandidateCleanupError(
+                    "interrupted phase may have session-separated descendants"
+                )
+        raise
+    finally:
+        for signum, previous_handler in previous_termination_handlers.items():
+            signal.signal(signum, previous_handler)
+
+
+def _terminate_command_tree(process: subprocess.Popen[str]) -> None:
+    """Kill only the timed-out command's owned group/tree before cleanup.
+
+    Killing a Windows venv redirector or the tier wrapper alone leaves pytest
+    alive, holding output pipes and accessing a checkout being removed.
+    """
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            return
+        _release_platform.terminate_windows_process_tree(process)
+    except BaseException as error:
+        raise UnsafeCandidateCleanupError("command tree could not be terminated") from error
 
 
 def _trusted_tool(command: str, repo: Path, search_path: Optional[str]) -> str:
@@ -401,7 +501,7 @@ def verify_candidate(
         env=tool_env,
     )
     _run(
-        (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-q"),
+        (python, "-I", "scripts/test_tiers.py", "run", "all", "--", "-v", "-x"),
         cwd=repo,
         env=tool_env,
         timeout_seconds=test_seconds,
@@ -463,6 +563,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         wheel, sdist = verify_candidate(
             args.repo, args.tag, args.release_sha, profile=args.profile
         )
+    except UnsafeCandidateCleanupError as error:
+        print(f"release candidate containment failed: {error}", file=sys.stderr)
+        return _release_platform.UNSAFE_CLEANUP_EXIT_CODE
     except CandidateVerificationError as error:
         print(f"release candidate verification failed: {error}", file=sys.stderr)
         return 1
