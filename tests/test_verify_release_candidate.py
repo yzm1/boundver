@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,62 @@ def _load_platform_helper():
 
 
 class VerifyReleaseCandidateTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX terminal interruption")
+    def test_sigint_stops_detached_command_before_checkout_cleanup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ready = root / "ready"
+            marker = root / "survived"
+            child = (
+                "import time; from pathlib import Path; "
+                f"Path({str(ready)!r}).touch(); time.sleep(3); "
+                f"Path({str(marker)!r}).touch()"
+            )
+            worker_code = (
+                "import importlib.util, os, sys; from pathlib import Path; "
+                f"spec=importlib.util.spec_from_file_location('verifier', {str(SCRIPT)!r}); "
+                "verifier=importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)\n"
+                "try:\n"
+                f" verifier._run([sys.executable, '-I', '-c', {child!r}], "
+                f"cwd=Path({str(root)!r}), env=os.environ, timeout_seconds=30)\n"
+                "except KeyboardInterrupt:\n raise SystemExit(0)\n"
+                "raise SystemExit('interruption was not propagated')\n"
+            )
+            worker = subprocess.Popen(
+                [sys.executable, "-I", "-c", worker_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 10
+                while not ready.exists() and worker.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "detached command never started")
+                worker.send_signal(signal.SIGINT)
+                _, stderr = worker.communicate(timeout=10)
+                self.assertEqual(worker.returncode, 0, stderr)
+                time.sleep(3)
+                self.assertFalse(marker.exists(), "detached command survived Ctrl-C")
+            finally:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.wait(timeout=5)
+
+    def test_interruption_and_communication_error_terminate_and_reap(self):
+        verifier = _load_script()
+        for failure in (KeyboardInterrupt(), OSError("communication failed")):
+            with self.subTest(failure=type(failure).__name__):
+                process = mock.Mock()
+                process.communicate.side_effect = [failure, (None, None)]
+                with mock.patch.object(verifier.subprocess, "Popen", return_value=process), mock.patch.object(
+                    verifier, "_terminate_command_tree"
+                ) as terminate:
+                    with self.assertRaises(type(failure)):
+                        verifier._run([sys.executable], cwd=REPO_ROOT, env={})
+                terminate.assert_called_once_with(process)
+                self.assertEqual(process.communicate.call_args_list, [
+                    mock.call(timeout=verifier.MAX_COMMAND_SECONDS), mock.call(timeout=5)
+                ])
+
     def test_timeout_terminates_descendant_before_it_can_modify_checkout(self):
         verifier = _load_script()
         with tempfile.TemporaryDirectory() as temporary:

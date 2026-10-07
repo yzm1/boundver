@@ -16,6 +16,11 @@
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/boundver)](https://pypi.org/project/boundver/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/yzm1/boundver/blob/main/LICENSE)
 
+This README follows `main`; its examples can reference a version still in
+development. Check the [latest published release](https://github.com/yzm1/boundver/releases/latest)
+for available packages, Action tags, and download assets. For that version's
+instructions, read the README at its release tag.
+
 ## Did we change something other teams depend on?
 
 Declare what each component publishes and who consumes it. Boundver records

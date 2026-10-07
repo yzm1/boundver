@@ -99,15 +99,18 @@ def _run(
         )
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as error:
+        except BaseException:
+            # A detached POSIX session cannot receive the terminal's Ctrl-C.
+            # Contain interruptions and unexpected communication failures too,
+            # before the publisher can clean up the disposable checkout.
             _terminate_command_tree(process)
             try:
                 process.communicate(timeout=5)
             except subprocess.TimeoutExpired as drain_error:
                 raise CandidateVerificationError(
-                    f"{' '.join(command)} timed out; descendant pipes did not close"
+                    f"{' '.join(command)} aborted; descendant pipes did not close"
                 ) from drain_error
-            raise error
+            raise
         if process.returncode:
             raise subprocess.CalledProcessError(
                 process.returncode, command, output=stdout, stderr=stderr
