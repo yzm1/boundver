@@ -7,7 +7,27 @@
 # local-only Git object reads with lazy fetching disabled. A second CI scan
 # ignores no fixable finding, so an available vendor fix blocks immediately
 # even before these narrow exceptions expire.
+# On 2026-10-11, the retained v0.16.0 image also reported CVE-2026-77214,
+# CVE-2026-88647, and CVE-2026-88648. Debian trixie has no fixes for them.
+# The maintainer authorized the scoped residual-risk review and exceptions.
+# These cover only the built-in, local-only CLI, not arbitrary custom providers
+# or other commands run in the image; see docs/RELEASING.md for the assessment.
 vulnerabilities:
+  - id: CVE-2026-77214
+    purls:
+      - pkg:deb/debian/libexpat1
+    expired_at: 2026-10-18
+    statement: The built-in CLI and its allowed local Git operations do not parse XML or call XML_ParseBuffer; no Debian trixie fix is available.
+  - id: CVE-2026-88647
+    purls:
+      - pkg:deb/debian/libgnutls30t64
+    expired_at: 2026-10-18
+    statement: The built-in CLI performs no TLS connections and allows only local Git operations with lazy fetching disabled; no Debian trixie fix is available.
+  - id: CVE-2026-88648
+    purls:
+      - pkg:deb/debian/libgnutls30t64
+    expired_at: 2026-10-18
+    statement: The built-in CLI performs no TLS connections or X.509 validation and disables Git lazy fetching; no Debian trixie fix is available.
   - id: CVE-2025-69720
     purls:
       - pkg:deb/debian/libncursesw6
