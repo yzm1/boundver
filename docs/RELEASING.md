@@ -270,6 +270,31 @@ CVE-2026-93990 concerns malformed UTF-16 XML; boundver's runtime does not parse
 XML. The primary exception-aware scan and the separate no-exceptions
 `--ignore-unfixed` scan remain mandatory for both release architectures.
 
+On 2026-10-11, publication run `37992981023` retained the exact v0.16.0
+multi-platform image, then rejected three newly reported HIGH findings:
+[Expat CVE-2026-77214](https://security-tracker.debian.org/tracker/CVE-2026-77214),
+[GnuTLS CVE-2026-88647](https://security-tracker.debian.org/tracker/CVE-2026-88647),
+and [GnuTLS CVE-2026-88648](https://security-tracker.debian.org/tracker/CVE-2026-88648).
+Debian lists trixie as vulnerable for all three: Expat's fix is in unstable,
+and the GnuTLS reports await upstream assessment. Do not classify them as false
+positives or import unstable packages into the pinned stable image.
+
+The maintainer authorized temporary, package-scoped exceptions through
+2026-10-18. The Expat report requires XML parsing through `XML_ParseBuffer`;
+the built-in CLI has no XML parser path. The GnuTLS reports concern TLS hostname
+and certificate restriction validation; the built-in CLI has no network client,
+and its Git subprocess allowlist excludes network operations and disables lazy
+fetching. These are reachability assessments, not patched-library claims.
+Custom providers are arbitrary Python, and overriding the image entrypoint can
+reach other library functions: neither is covered by this assessment. Use the
+documented network-disabled, read-only container invocation for untrusted input.
+
+Recovery scans the retained image against `.trivyignore.yaml` from the reviewed
+release-control commit, checking its expiry before scanning. It leaves the
+immutable tag, published packages, and retained OCI bytes untouched. The
+exception-aware and independent fixable-finding scans still run for both
+architectures; any new finding or available vendor fix blocks publication.
+
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with
 member-count and byte limits, rejects links and unexpected paths, verifies every

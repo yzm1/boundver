@@ -266,12 +266,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Recovery reviews policy at the control commit, not the immutable
+          # release checkout. The retained image bytes remain unchanged.
+          python3 -I .release-control/scripts/check_security_policy_expiry.py
           cache="$RUNNER_TEMP/trivy-cache"
           mkdir -m 700 "$cache"
           scan=(
             docker run --rm
             --volume "$RUNNER_TEMP:/scan:ro"
-            --volume "$GITHUB_WORKSPACE:/policy:ro"
+            --volume "$GITHUB_WORKSPACE/.release-control:/policy:ro"
             --volume "$cache:/root/.cache"
             "$TRIVY_IMAGE" image
             --input /scan/trivy-oci-scan/layout

@@ -2866,6 +2866,15 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("for platform in linux/amd64 linux/arm64", container)
         self.assertIn("Checkout the reviewed release-control commit", container)
         self.assertIn(
+            '--volume "$GITHUB_WORKSPACE/.release-control:/policy:ro"',
+            container,
+        )
+        self.assertNotIn('--volume "$GITHUB_WORKSPACE:/policy:ro"', container)
+        self.assertIn(
+            "python3 -I .release-control/scripts/check_security_policy_expiry.py",
+            container,
+        )
+        self.assertIn(
             "python3 -I .release-control/scripts/prepare_oci_scan_layout.py",
             container,
         )
@@ -2888,6 +2897,18 @@ print(json.dumps(payload, separators=(",", ":")))
         identifiers = [entry["id"] for entry in exceptions]
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertGreaterEqual(len(identifiers), 1)
+        recovery_exceptions = {
+            "CVE-2026-77214": ["pkg:deb/debian/libexpat1"],
+            "CVE-2026-88647": ["pkg:deb/debian/libgnutls30t64"],
+            "CVE-2026-88648": ["pkg:deb/debian/libgnutls30t64"],
+        }
+        by_id = {entry["id"]: entry for entry in exceptions}
+        for identifier, purls in recovery_exceptions.items():
+            with self.subTest(recovery_exception=identifier):
+                self.assertEqual(by_id[identifier]["purls"], purls)
+                self.assertEqual(
+                    by_id[identifier]["expired_at"], datetime.date(2026, 10, 18)
+                )
         for entry in exceptions:
             self.assertRegex(entry["id"], r"^CVE-[0-9]{4}-[0-9]+$")
             self.assertIs(type(entry["expired_at"]), datetime.date)
