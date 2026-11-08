@@ -126,8 +126,14 @@ families, derivation receipts, slices and version sources. HEAD runs with a held
 index lock. Full versus scoped output can retain different historical key
 layouts; transport preserves each path's configuration/base-lock ordering.
 
+A separate disposable-interpreter test installs a provider module in private
+site-packages without pip or network access. Both paths refuse to import it
+without authorization. Authorized ordinary generation imports in the controller;
+timed generation imports in the worker and returns byte-identical JSON. Process
+identity is captured inside Python, not inferred from a Windows venv launcher.
+
 This does not close issue #164 or satisfy the complete v0.17 release gate.
 Supported Python/platform CI, macOS evidence, production wheel/standalone-format
-installation checks, installed custom-provider equivalence, no-fetch
+installation checks, no-fetch
 and filesystem-safety regressions, and exact-commit review remain required.
 Native-provider residual risks must remain explicit in release acceptance.
