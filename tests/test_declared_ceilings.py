@@ -68,6 +68,7 @@ DECLARED_CEILINGS = (
     ("boundver._generation_diagnostics", "MAX_GENERATION_COMPONENT_ROWS", 128),
     ("boundver._generation_diagnostics", "MAX_GENERATION_PHASE_ROWS", 32),
     ("boundver._generation_protocol", "MAX_GENERATION_RESULT_HEADER_BYTES", 1_024),
+    ("boundver._generation_worker", "MAX_GENERATION_REQUEST_BYTES", 67_108_864),
     ("boundver._generation_diagnostics", "MAX_GENERATION_PROGRESS_LINES", 256),
     ("boundver._generation_diagnostics", "MAX_GENERATION_LABEL_CHARS", 256),
     ("boundver._generation_diagnostics", "MAX_GENERATION_DIAGNOSTIC_BYTES", 65_536),

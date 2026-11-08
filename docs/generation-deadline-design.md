@@ -143,3 +143,22 @@ Tests cover SHA-1/SHA-256, executable/symlink/submodule entries, unusual names,
 invalid paths, duplicate entries and inconsistent membership. This codec does
 not snapshot live working-tree file contents or independently attest object
 provenance. Worker launch and the complete invocation request remain pending.
+
+`_generation_worker` now validates a complete computation invocation and returns
+the result envelope without publishing. Its request includes a fresh-operation
+identity supplied by the controller, runtime version, repository, config,
+source, captured HEAD/index snapshot, strict/custom-provider policy and optional
+component selection with an explicit base lock. Unknown fields (including an
+output destination) are rejected. Requests have a 64 MiB transfer ceiling;
+config and lock limits remain separately enforced. Large escaped snapshot
+metadata may hit this transfer ceiling before the underlying Git path budgets.
+
+Working-tree requests explicitly have no immutable snapshot, matching ordinary
+generation: tracking is captured by its existing accessors and file bytes stay
+live. This does not promise frozen index membership across the separate
+validation and computation passes. HEAD/index workers do not recapture refs.
+Tests compare all three modes with direct generation, advance HEAD between
+capture and computation, preserve a sentinel destination and confirm scoped
+generation still checks unselected-component integrity. The implementation is
+currently a computation function; private transport, contained invocation,
+diagnostic forwarding and the CLI timeout are not yet connected.
