@@ -335,6 +335,9 @@ OBLIGATION_FIELDS: Dict[str, Tuple[str, ...]] = {
     "version_source.constant": (
         "components", "*", "version_source", "constant",
     ),
+    "version_source.repo_file": (
+        "components", "*", "version_source", "repo_file",
+    ),
     "derivation inputs": ("derivations", "*", "inputs", "[]"),
     "derivation outputs": ("derivations", "*", "outputs", "[]"),
     "derivation evidence": ("derivations", "*", "evidence"),
@@ -368,9 +371,8 @@ SET_LIKE_LISTS: Dict[str, Tuple[str, ...]] = {
 #: custom provider's import-time behaviour depends on what was imported first.
 ORDERED_LIST: Tuple[str, ...] = ("providers",)
 
-#: One configuration populating every field the schema declares. Two
-#: components and two slices are needed because `version_source` and the
-#: slice membership keys are mutually exclusive one declaration at a time.
+#: Separate components exercise mutually exclusive version-source forms;
+#: separate slices exercise explicit membership and graph closure.
 BASE_CONFIG: Dict[str, Any] = {
     "$schema": "https://example.invalid/boundary.config.schema.json",
     "project": "alpha",
@@ -428,6 +430,11 @@ BASE_CONFIG: Dict[str, Any] = {
         "z-constant": {
             "path": "services/constant",
             "version_source": {"constant": "1.2.3"},
+            "boundary": {"provider": "leaf", "paths": []},
+        },
+        "z-repository-file": {
+            "path": "services/repository-version",
+            "version_source": {"repo_file": "release/version.json", "field": "version"},
             "boundary": {"provider": "leaf", "paths": []},
         },
     },
@@ -586,6 +593,13 @@ class SemanticConfigFieldCoverageTests(unittest.TestCase):
                 candidate = _mutated(BASE_CONFIG, path)
                 self.assertNotEqual(candidate, BASE_CONFIG)
                 self.assertEqual(semantic_config_digest(candidate), self.base)
+
+    def test_repository_relative_version_source_is_not_component_relative(self):
+        candidate = copy.deepcopy(BASE_CONFIG)
+        candidate["components"]["z-repository-file"]["version_source"] = {
+            "file": "release/version.json", "field": "version",
+        }
+        self.assertNotEqual(semantic_config_digest(candidate), self.base)
 
 
 class SemanticConfigListOrderTests(unittest.TestCase):
