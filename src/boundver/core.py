@@ -206,6 +206,7 @@ from ._baseline import (
     replace_baseline_if_unchanged,
     write_baseline_create_only,
 )
+from ._version_paths import version_file_repo_path
 from .versions import (
     _extract_json_field as _extract_json_field,
     _extract_toml_field as _extract_toml_field,
@@ -554,6 +555,30 @@ def _ensure_lock_outside_components(
             f"Lockfile path {lock_paths[0]} aliases the selected config "
             f"{config_paths[0]}; choose a different output path"
         )
+
+    # Root-relative version files need the same publication protection that
+    # component roots already provide for component-relative version files.
+    # Check each distinct input once, including filesystem aliases; inherited
+    # readers refer to one of these declared source components.
+    checked_version_paths = set()
+    for name, component in config.get("components", {}).items():
+        if not isinstance(component, dict):
+            continue
+        version_path = version_file_repo_path(
+            component.get("path"), component.get("version_source"),
+        )
+        if version_path is None or version_path in checked_version_paths:
+            continue
+        checked_version_paths.add(version_path)
+        version_paths = _normalized_filesystem_paths(
+            repo_root / version_path, "version input", relative_to=repo_root,
+        )
+        if _filesystem_paths_alias(lock_paths, version_paths):
+            raise ConfigError(
+                f"Lockfile path {lock_paths[0]} aliases version input "
+                f"{version_paths[0]} declared by component '{name}'; choose "
+                "a different output path"
+            )
 
     try:
         repo_paths = _normalized_filesystem_paths(

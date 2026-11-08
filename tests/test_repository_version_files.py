@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import subprocess
 
 import pytest
@@ -48,6 +49,83 @@ def _repository(root):
     (root / "config" / "boundary.json").write_text(json.dumps(config), encoding="utf-8")
     commit_all(root)
     return config
+
+
+@pytest.mark.parametrize("source", ["head", "index", "working-tree"])
+@pytest.mark.parametrize("timed", [False, True])
+def test_lock_publication_cannot_replace_a_repository_version_input(tmp_path, source, timed):
+    _repository(tmp_path)
+    manifest = tmp_path / "releases/task.json"
+    before = manifest.read_bytes()
+    index = _git(tmp_path, "ls-files", "--stage", "-z").stdout
+    options = ("--timeout", "30") if timed else ()
+    result = run_cli(
+        tmp_path, "generate", "--source", source, "--config", "config/boundary.json",
+        "--out", "releases/task.json", "--quiet", *options,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "version input" in result.stderr
+    assert manifest.read_bytes() == before
+    assert _git(tmp_path, "ls-files", "--stage", "-z").stdout == index
+
+
+@pytest.mark.parametrize("alias", ["hardlink", "symlink", "parent-symlink"])
+def test_lock_output_aliases_cannot_replace_a_repository_version_input(tmp_path, alias):
+    _repository(tmp_path)
+    manifest = tmp_path / "releases/task.json"
+    before = manifest.read_bytes()
+    output = tmp_path / "alias.json"
+    try:
+        if alias == "hardlink":
+            os.link(manifest, output)
+        elif alias == "symlink":
+            output.symlink_to(manifest)
+        else:
+            directory = tmp_path / "version-alias"
+            directory.symlink_to(manifest.parent, target_is_directory=True)
+            output = directory / manifest.name
+    except OSError as error:
+        pytest.skip(f"alias creation unavailable: {error}")
+    result = run_cli(
+        tmp_path, "generate", "--source", "head", "--config", "config/boundary.json",
+        "--out", output.relative_to(tmp_path).as_posix(), "--quiet",
+    )
+    assert result.returncode == 2, result.stderr
+    assert "version input" in result.stderr
+    assert manifest.read_bytes() == before
+    assert output.read_bytes() == before
+
+
+def test_public_api_refuses_version_input_output_but_valid_output_still_writes(tmp_path, monkeypatch):
+    import boundver
+
+    _repository(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    manifest = tmp_path / "releases/task.json"
+    before = manifest.read_bytes()
+    with pytest.raises(ConfigError, match="version input"):
+        boundver.generate(config_path="config/boundary.json", out_path="releases/task.json")
+    assert manifest.read_bytes() == before
+    candidate = boundver.generate(
+        config_path="config/boundary.json", out_path="releases/generated.lock.json",
+    )
+    assert json.loads((tmp_path / "releases/generated.lock.json").read_text()) == candidate
+    assert manifest.read_bytes() == before
+
+
+@pytest.mark.parametrize("arguments", [
+    ("generate", "--dry-run", "--out", "releases/task.json"),
+    ("generate", "--components", "ui", "--out", "releases/task.json"),
+    ("verify", "--update", "--lock", "releases/task.json"),
+])
+def test_other_publication_modes_do_not_bypass_version_input_protection(tmp_path, arguments):
+    _repository(tmp_path)
+    manifest = tmp_path / "releases/task.json"
+    before = manifest.read_bytes()
+    result = run_cli(tmp_path, *arguments, "--source", "head", "--config", "config/boundary.json")
+    assert result.returncode == 2, result.stderr
+    assert "version input" in result.stderr
+    assert manifest.read_bytes() == before
 
 
 def test_sibling_shared_manifest_resolves_from_repository_not_config_directory(tmp_path):

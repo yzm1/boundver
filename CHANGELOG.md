@@ -118,6 +118,13 @@ All notable changes to this project are documented here. The format follows
   plus measured process/relative-latency budgets. This does not claim to
   resolve all downstream generation latency.
 
+### Fixed
+
+- Lock publication refuses destinations that alias declared version inputs,
+  including repository-root files outside component roots. Direct, timed,
+  scoped and API generation cannot overwrite a shared version manifest;
+  filesystem aliases receive the same protection.
+
 ## [0.16.0] - 2026-10-07
 
 ### Upgrade contract
