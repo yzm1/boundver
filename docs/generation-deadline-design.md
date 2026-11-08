@@ -226,3 +226,13 @@ extend an outer deadline; exception exit restores the previous scope. Tests
 cover timer capping, boundary expiry, context restoration and thread isolation.
 The controller exposes its immutable deadline for this purpose. Public generate
 dispatch has not yet enabled this scope or exposed the timeout option.
+
+Generation dispatch now has an internal, unadvertised timeout path joining the
+controller, Git-preparation scope, captured request and atomic publication
+admission. Direct dispatch tests on Windows and Linux cover all source modes,
+JSON dry runs, expiry, successful publication and cancellation after result
+validation but before commit. The ordinary path remains unchanged. There is
+still no parser option: parent-side provider import/validation, streamed worker
+diagnostics, controller-death cleanup and installed/platform acceptance must be
+addressed before exposing the feature. No claim of a hard filesystem commit
+deadline is made.

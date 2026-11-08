@@ -30,6 +30,7 @@ Requires: Git and Python 3.10+.
 
 import os
 import secrets
+from contextlib import nullcontext
 import stat
 import subprocess
 import sys
@@ -127,6 +128,11 @@ from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
 from ._generation_diagnostics import GenerationDiagnostics
+from ._generation_control import GenerationControl, GenerationState
+from ._generation_runner import run_generation
+from ._generation_snapshot import snapshot_to_value
+from ._generation_worker import REQUEST_SCHEMA, encode_request
+from ._git import git_operation_deadline
 from ._derivations import (
     build_derivation_evidence,
     derivation_inputs_selecting_path,
@@ -1613,19 +1619,29 @@ def _cmd_generate(args, repo_root: Path) -> None:
     diagnostics = GenerationDiagnostics(
         progress=getattr(args, "progress", False), timing=getattr(args, "timing", False),
     )
+    timeout = getattr(args, "timeout", None)
+    control = GenerationControl(timeout) if timeout is not None else None
     try:
-        _cmd_generate_observed(args, repo_root, diagnostics)
+        with git_operation_deadline(control.monotonic_deadline) if control is not None else nullcontext():
+            if control is None:
+                _cmd_generate_observed(args, repo_root, diagnostics)
+            else:
+                _cmd_generate_observed(args, repo_root, diagnostics, control=control)
     except KeyboardInterrupt:
+        if control is not None:
+            control.cancel()
         diagnostics.finish("cancelled")
         raise
     except BaseException:
-        diagnostics.finish("failed")
+        state = control.state if control is not None else None
+        diagnostics.finish(state.value if state in (GenerationState.EXPIRED, GenerationState.CANCELLED) else "failed")
         raise
     else:
         diagnostics.finish("success")
 
 
-def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnostics) -> None:
+def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnostics,
+                           control: Optional[GenerationControl] = None) -> None:
     inspect_working_tree = getattr(args, "inspect_working_tree", False)
     if inspect_working_tree and args.source != "head":
         print("ERROR: --inspect-working-tree requires --source head", file=sys.stderr)
@@ -1714,7 +1730,23 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
     try:
         observer_args = {"observer": diagnostics} if diagnostics.enabled else {}
         with diagnostics.phase("compute-lock"):
-            if components_filter:
+            if control is not None:
+                existing = None
+                if components_filter:
+                    existing = load_lockfile_file(
+                        out_path, repo_root=repo_root, source=args.source,
+                        snapshot=snapshot if args.source in {"head", "index"} else None,
+                    )
+                request = encode_request({
+                    "schema": REQUEST_SCHEMA, "operation_id": secrets.token_hex(32),
+                    "repo_root": str(repo_root), "config": config, "source": args.source,
+                    "snapshot": snapshot_to_value(snapshot) if snapshot is not None else None,
+                    "strict": not args.allow_partial, "allow_custom_providers": allow_custom,
+                    "components": components_filter or None, "existing_lock": existing,
+                    "running_version": _get_version(),
+                })
+                lockfile = run_generation(request, control=control, running_version=_get_version())
+            elif components_filter:
                 lockfile = generate_lockfile_for_components(
                     config, repo_root, selected_components=components_filter,
                     out_path=out_path, source=args.source,
@@ -1736,15 +1768,28 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
         )
         sys.exit(EXIT_USAGE)
     if args.dry_run:
+        if control is not None and control.state is not GenerationState.READY:
+            raise ConfigError(f"Generation did not publish: {control.state.value}")
         diagnostics.publication = "dry-run"
         _log(
             f"Dry run: lockfile not written ({out_path})",
             quiet=(args.quiet or args.format == "json"),
         )
     else:
-        diagnostics.publication = "attempted-outcome-unconfirmed"
-        with diagnostics.phase("publish"):
+        def publish():
+            diagnostics.publication = "attempted-outcome-unconfirmed"
             _write_lockfile_atomic(out_path, lockfile)
+
+        with diagnostics.phase("publish"):
+            if control is None:
+                publish()
+            else:
+                try:
+                    control.publish(publish)
+                except RuntimeError as exc:
+                    if control.state in (GenerationState.EXPIRED, GenerationState.CANCELLED, GenerationState.FAILED):
+                        raise ConfigError(f"Generation did not publish: {control.state.value}") from exc
+                    raise
         diagnostics.publication = "written"
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
     if args.verbose and not args.quiet and args.format != "json":

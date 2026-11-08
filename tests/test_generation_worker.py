@@ -312,3 +312,72 @@ def test_posix_controller_reaps_real_worker_after_stop(invocation, monkeypatch, 
         run_generation(encode_request(invocation), control=control, running_version=_get_version())
     assert reaped == [True]
     assert control.state is (GenerationState.EXPIRED if stop == "expire" else GenerationState.CANCELLED)
+
+
+@pytest.mark.parametrize("source", ["head", "index", "working-tree"])
+def test_internal_timed_dispatch_preserves_json_and_dry_run(invocation, tmp_path, capsys, source):
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    args = build_parser(version="test", epilog="").parse_args([
+        "--quiet", "generate", "--source", source, "--dry-run", "--format", "json",
+    ])
+    # Deliberately internal until provider/diagnostic/platform gates are met.
+    args.timeout = 20
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    core._cmd_generate(args, tmp_path)
+    output = capsys.readouterr()
+    expected = generate_lockfile(invocation["config"], tmp_path, source=source)
+    assert json.loads(output.out) == expected
+    assert sentinel.read_bytes() == b"prior lock"
+    assert not output.err
+
+
+def test_internal_expired_dispatch_preserves_destination(invocation, tmp_path, capsys):
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    args = build_parser(version="test", epilog="").parse_args([
+        "--quiet", "generate", "--source", "head", "--timing",
+    ])
+    args.timeout = 0.000000001
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    with pytest.raises(SystemExit) as error:
+        core._cmd_generate(args, tmp_path)
+    assert error.value.code == 2
+    assert sentinel.read_bytes() == b"prior lock"
+    assert "outcome=expired" in capsys.readouterr().err
+
+
+def test_internal_timed_dispatch_publishes_only_validated_result(invocation, tmp_path, capsys):
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    args = build_parser(version="test", epilog="").parse_args(["--quiet", "generate", "--timing"])
+    args.timeout = 20
+    expected = generate_lockfile(invocation["config"], tmp_path)
+    core._cmd_generate(args, tmp_path)
+    assert json.loads((tmp_path / "boundary.lock.json").read_text()) == expected
+    assert "publication=written" in capsys.readouterr().err
+
+
+def test_internal_cancel_after_result_validation_cannot_enter_publication(invocation, tmp_path, monkeypatch, capsys):
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    from boundver._utils import ConfigError
+    original = core.run_generation
+
+    def cancel_after_result(*args, **kwargs):
+        lock = original(*args, **kwargs)
+        assert kwargs["control"].cancel()
+        return lock
+
+    monkeypatch.setattr(core, "run_generation", cancel_after_result)
+    args = build_parser(version="test", epilog="").parse_args(["--quiet", "generate", "--timing"])
+    args.timeout = 20
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    with pytest.raises(ConfigError, match="did not publish: cancelled"):
+        core._cmd_generate(args, tmp_path)
+    assert sentinel.read_bytes() == b"prior lock"
+    stderr = capsys.readouterr().err
+    assert "publication=not-attempted" in stderr and "outcome=cancelled" in stderr
