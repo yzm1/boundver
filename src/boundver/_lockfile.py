@@ -1497,6 +1497,8 @@ def verify_lockfile(
         verification_report.update(
             traversal_complete=False, computed_components=[], compared_components=[],
             version_components=[], compared_slices=[], component_findings=[],
+            component_diagnostics=[],
+            unavailable_components=[],
         )
     if observations is not None:
         if not isinstance(observations, list):
@@ -1691,6 +1693,7 @@ def verify_lockfile(
             max_chars=prefix_limit,
         ) + suffix
 
+    incomplete_comparisons: Set[str] = set()
     # Per-component verification with optional early exit.
     for name, comp_cfg in check_components.items():
         if issues.truncated:
@@ -1718,6 +1721,7 @@ def verify_lockfile(
             current_vendored_issues = []
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
+            incomplete_comparisons.add(name)
             if drifted_components is not None:
                 drifted_components.add(name)
             issues.append(f"NEW component not in lockfile: {display_name}")
@@ -1729,6 +1733,8 @@ def verify_lockfile(
             include_vendored=False,
         )
         locked_errors = _generation_errors({"components": {name: locked_comp}})
+        if current_errors or locked_errors:
+            incomplete_comparisons.add(name)
         for message in current_errors:
             if drifted_components is not None:
                 drifted_components.add(name)
@@ -1760,6 +1766,7 @@ def verify_lockfile(
                 and facet in component_gated_facets
                 and (cv is None or lv is None)
             ):
+                incomplete_comparisons.add(name)
                 if drifted_components is not None:
                     drifted_components.add(name)
                 issues.append(
@@ -1772,18 +1779,19 @@ def verify_lockfile(
                 # policy error; do not also classify it as ordinary drift.
                 continue
             if cv != lv:
-                if verification_report is not None:
-                    verification_report["component_findings"].append({
-                        "component": name, "facet": facet,
-                        "gating": facet in component_gated_facets,
-                        "before": lv, "after": cv,
-                    })
                 if drifted_components is not None:
                     drifted_components.add(name)
                 message = (
                     f"MISMATCH {display_name}.{facet}: "
                     f"lockfile={_short(lv)} current={_short(cv)}"
                 )
+                if verification_report is not None:
+                    verification_report["component_findings"].append({
+                        "component": name, "facet": facet,
+                        "gating": facet in component_gated_facets,
+                        "before": lv, "after": cv,
+                    })
+                    verification_report["component_diagnostics"].append(message)
                 if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
@@ -1825,10 +1833,13 @@ def verify_lockfile(
                         if consumers:
                             qualifier = " (TRANSITIVE)" if transitive_consumers else ""
                             consumer_preview = _diagnostic_list_preview(consumers)
-                            issues.append(
+                            annotation = (
                                 f"AFFECTED CONSUMERS{qualifier} {display_name}: "
                                 f"{consumer_preview}"
                             )
+                            issues.append(annotation)
+                            if verification_report is not None:
+                                verification_report["component_diagnostics"].append(annotation)
                     if fail_fast:
                         return issues
                 else:
@@ -2014,6 +2025,7 @@ def verify_lockfile(
         observations[:] = list(non_gating)
     if verification_report is not None:
         verification_report["traversal_complete"] = not (issues.truncated or non_gating.truncated)
+        verification_report["unavailable_components"] = sorted(incomplete_comparisons)
     if limit_report and issues:
         if issues.truncated:
             return [_DIAGNOSTIC_TRUNCATION_MARKER]

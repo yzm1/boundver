@@ -54,6 +54,7 @@ nav:
       - Range-review case study: case-study-range-review.md
       - CI cookbook: ci-cookbook.md
       - Migration and ratcheting: migration-and-ratcheting.md
+      - Scoped verification: scoped-verification.md
       - Lockfile merges: LOCKFILE_MERGE.md
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md

@@ -208,6 +208,7 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
 }
 
 _COMMAND_OPTION_CHOICES: Dict[Tuple[str, str], Tuple[str, ...]] = {
+    ("verify", "--format"): ("json", "text", "scoped-json"),
     ("review", "--format"): ("json", "text", "plan"),
 }
 

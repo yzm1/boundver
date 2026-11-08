@@ -128,6 +128,7 @@ from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
 from ._deployment import MAX_DEPLOYMENT_RESULT_BYTES, compare_deployment
+from ._verification_scope import verification_scope_result
 from ._generation_diagnostics import GenerationDiagnostics
 from ._bounded_output import BoundedDiagnosticOutput
 from ._generation_control import GenerationControl, GenerationState
@@ -1842,6 +1843,7 @@ def _print_verify_json(
     consumer_impact: List[dict],
     notices: Optional[List[dict]] = None,
     baseline: Optional[dict] = None,
+    scope_context=None,
 ) -> None:
     """Print the stable structured result for every verify outcome."""
     payload = {
@@ -1863,6 +1865,9 @@ def _print_verify_json(
     }
     if baseline is not None:
         payload["baseline"] = baseline
+    if scope_context is not None:
+        args, receipt = scope_context
+        payload = verification_scope_result(args, receipt, payload)
     _print_json(payload)
 
 
@@ -1950,6 +1955,15 @@ def _print_update_failure(exc: ValueError) -> None:
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
+    receipt = {}
+    scoped_json = args.format == "scoped-json"
+    if scoped_json:
+        # Copy the argparse namespace: downstream verification keeps the same
+        # JSON-only code paths, without changing the caller's requested format.
+        args = type(args)(**vars(args))
+        args.format = "json"
+
+    scope_context = (args, receipt) if scoped_json else None
     baseline_mode = next(
         (
             mode
@@ -2001,6 +2015,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=reported_config_errors,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=[],
                 facets=None,
@@ -2085,6 +2100,16 @@ def _cmd_verify(args, repo_root: Path) -> None:
         name for name in components_filter if name not in config.get("components", {})
     ]
     if unknown:
+        if args.format == "json":
+            _print_verify_json(
+                ok=False, updated=False,
+                issues=["Unknown verification component(s): " + ", ".join(unknown)],
+                scope_context=scope_context,
+                resolved_issues=[], observations=[], facets=None,
+                facet_policy=_facet_policy_payload(config, None),
+                components_filter=requested_components_filter, changed_components=[],
+                inputs=inputs, consumer_impact=[],
+            )
         print(
             f"ERROR: unknown --components entries: {', '.join(unknown)}",
             file=sys.stderr,
@@ -2221,6 +2246,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     preflight_issues,
                     fail_fast=args.fail_fast,
                 ),
+                scope_context=scope_context,
                 observations=[],
                 facets=explicit_gated_facets,
                 facet_policy=facet_policy,
@@ -2244,6 +2270,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=reported_preflight_issues,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=[],
                 facets=explicit_gated_facets,
@@ -2258,6 +2285,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
             if not args.quiet:
                 print(input_line, file=sys.stderr)
             print("ERROR: lockfile preflight failed:", file=sys.stderr)
+            if args.components or args.changed_from:
+                print("Selected fingerprint comparison not performed; repository preflight failed.", file=sys.stderr)
             for issue in reported_preflight_issues:
                 print(f"  - {issue}", file=sys.stderr)
         sys.exit(_drift_exit_code(preflight_issues))
@@ -2277,10 +2306,23 @@ def _cmd_verify(args, repo_root: Path) -> None:
             snapshot=snapshot,
             transitive_consumers=args.transitive,
             consumer_impact=consumer_impact,
+            verification_report=receipt if scoped_json or args.components or args.changed_from else None,
         )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    if args.format != "json" and not args.quiet and (args.components or args.changed_from):
+        scoped = verification_scope_result(args, receipt, {
+            "components_filter": reported_components_filter,
+            "changed_components": changed_components, "issues": issues,
+        })
+        selection = scoped["selection"]
+        status = (
+            "incomplete" if not selection["comparison_complete"] else
+            "fingerprint drift found" if selection["fingerprint_drift"] else "no fingerprint drift"
+        )
+        print(f"Selected components ({len(selection['components'])}): {status}.")
+        print("Repository integrity and affected-slice checks still gate the aggregate result.")
     baseline_info: Optional[dict] = None
     if baseline_mode is not None:
         raw_baseline_path = getattr(args, baseline_mode)
@@ -2441,6 +2483,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     ok=False,
                     updated=False,
                     issues=issues,
+                    scope_context=scope_context,
                     resolved_issues=[],
                     observations=observations,
                     facets=explicit_gated_facets,
@@ -2489,6 +2532,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     updated=True,
                     issues=[],
                     resolved_issues=issues,
+                    scope_context=scope_context,
                     observations=observations,
                     facets=explicit_gated_facets,
                     facet_policy=facet_policy,
@@ -2506,6 +2550,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=issues,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=observations,
                 facets=explicit_gated_facets,
@@ -2559,6 +2604,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     updated=True,
                     issues=[],
                     resolved_issues=[],
+                    scope_context=scope_context,
                     observations=observations,
                     facets=explicit_gated_facets,
                     facet_policy=facet_policy,
@@ -2576,6 +2622,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=True,
                 updated=False,
                 issues=[],
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=observations,
                 facets=explicit_gated_facets,

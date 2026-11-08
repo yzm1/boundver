@@ -202,7 +202,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Shrink an existing baseline by removing resolved identities; never adds violations",
     )
     ver.add_argument(
-        "--format", choices=["json", "text"], default="text", help="Output format"
+        "--format", choices=["json", "text", "scoped-json"], default="text",
+        help="Output format; scoped-json adds versioned selection and analysis attribution",
     )
     ver.add_argument(
         "--allow-custom-providers",

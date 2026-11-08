@@ -91,7 +91,7 @@ usage: boundver verify [-h] [--config CONFIG] [--lock LOCK] [--source {head,inde
                        [--components COMPONENTS] [--changed-from CHANGED_FROM] [--fail-fast]
                        [--facets FACETS] [--transitive] [--update] [--strict-config-source]
                        [--baseline PATH | --write-baseline PATH | --update-baseline PATH]
-                       [--format {json,text}] [--allow-custom-providers]
+                       [--format {json,text,scoped-json}] [--allow-custom-providers]
 ```
 
 Verify the lockfile is up to date with the current repo state.
@@ -122,7 +122,7 @@ Exit codes:
 | `--baseline` | `PATH` | empty | Allow reviewed violation identities from a baseline while failing on new ones |
 | `--write-baseline` | `PATH` | empty | Explicitly capture current baselinable violations in a new JSON file |
 | `--update-baseline` | `PATH` | empty | Shrink an existing baseline by removing resolved identities; never adds violations |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,scoped-json}` | `text` | Output format; scoped-json adds versioned selection and analysis attribution |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
 ```text
