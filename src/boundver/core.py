@@ -2803,8 +2803,12 @@ def _cmd_init(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
+    schema = _load_config_schema(repo_root)
+    schema_id = schema.get("$id") if isinstance(schema, dict) else None
+    if not isinstance(schema_id, str) or not schema_id or len(schema_id) > 1024 or not schema_id.isprintable():
+        raise ConfigError("Cannot initialize config: the validation schema has no usable identity")
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+        "$schema": schema_id,
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered

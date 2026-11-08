@@ -108,7 +108,7 @@ SIDECAR_MODULE = (
 #: the one field it copies from the checkout. A release that moves the schema
 #: URL has to move this line deliberately; that is what makes it a golden.
 INIT_SCAFFOLD = """{
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
   "project": %s,
   "defaults": {
     "compat_mode": "major"
