@@ -269,3 +269,46 @@ def test_posix_session_does_not_inherit_controller_session(invocation, tmp_path)
             process.terminate_group()
             process.wait(5)
         assert not process.group_exists()
+
+
+def test_platform_controller_matches_direct_generation(invocation, tmp_path):
+    from boundver._generation_control import GenerationControl, GenerationState
+    from boundver._generation_runner import run_generation
+    control = GenerationControl(20)
+    result = run_generation(encode_request(invocation), control=control, running_version=_get_version())
+    assert result == generate_lockfile(invocation["config"], tmp_path)
+    assert control.state is GenerationState.READY
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX controller")
+@pytest.mark.parametrize("stop", ["expire", "cancel"])
+def test_posix_controller_reaps_real_worker_after_stop(invocation, monkeypatch, stop):
+    from boundver._generation_control import GenerationControl, GenerationState
+    from boundver._generation_runner import run_generation
+    from boundver._posix_worker import PosixJob, PosixWorker
+    from boundver._utils import ConfigError
+    now = [0.0]
+    control = GenerationControl(1, clock=lambda: now[0])
+    launch = PosixJob.launch_python
+    close = PosixWorker.close
+    reaped = []
+
+    def stop_after_launch(job, *args, **kwargs):
+        process = launch(job, *args, **kwargs)
+        if stop == "expire":
+            now[0] = 2.0
+        else:
+            control.cancel()
+        return process
+
+    def record_reap(process):
+        reaped.append(process.poll() is not None)
+        close(process)
+
+    monkeypatch.setattr(PosixJob, "launch_python", stop_after_launch)
+    monkeypatch.setattr(PosixWorker, "close", record_reap)
+    with pytest.raises(ConfigError, match="did not publish"):
+        run_generation(encode_request(invocation), control=control, running_version=_get_version())
+    assert reaped == [True]
+    assert control.state is (GenerationState.EXPIRED if stop == "expire" else GenerationState.CANCELLED)

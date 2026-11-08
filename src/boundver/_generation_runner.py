@@ -15,6 +15,7 @@ from ._generation_worker import (
     _validate_request, write_transfer,
 )
 from ._lockfile import MAX_LOCKFILE_BYTES
+from ._posix_worker import PosixJob
 from ._structured_data import strict_json_loads
 from ._utils import ConfigError, _bounded_diagnostic_text
 from ._windows_job import WindowsJob
@@ -37,6 +38,18 @@ def run_windows_generation(data: bytes, *, control: GenerationControl, running_v
     """
     if os.name != "nt":
         raise ConfigError("Windows generation containment is unavailable")
+    return _run_generation(data, control=control, running_version=running_version, job_factory=WindowsJob)
+
+
+def run_generation(data: bytes, *, control: GenerationControl, running_version: str) -> dict:
+    if os.name == "nt":
+        return run_windows_generation(data, control=control, running_version=running_version)
+    if os.name != "posix":
+        raise ConfigError("Generation process containment is unavailable")
+    return _run_generation(data, control=control, running_version=running_version, job_factory=PosixJob)
+
+
+def _run_generation(data: bytes, *, control: GenerationControl, running_version: str, job_factory) -> dict:
     _require_computing(control)
     if not isinstance(data, bytes) or len(data) > MAX_GENERATION_REQUEST_BYTES:
         raise ConfigError("Invalid generation request size")
@@ -50,7 +63,7 @@ def run_windows_generation(data: bytes, *, control: GenerationControl, running_v
     cleanup_confirmed = True
     try:
         write_transfer(directory, "request.json", data)
-        with WindowsJob() as job:
+        with job_factory() as job:
             process = None
             try:
                 _require_computing(control)
@@ -75,7 +88,7 @@ def run_windows_generation(data: bytes, *, control: GenerationControl, running_v
                 try:
                     job.terminate()
                     end = time.monotonic() + MAX_GENERATION_CLEANUP_SECONDS
-                    while job.active_processes or (process is not None and process.poll() is None):
+                    while (process is not None and process.poll() is None) or job.active_processes:
                         if time.monotonic() >= end:
                             raise ConfigError(f"Generation cleanup unconfirmed; transfer retained at {directory}")
                         time.sleep(0.01)

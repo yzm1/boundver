@@ -43,3 +43,34 @@ class PosixWorker:
 
     def wait(self, timeout: float):
         return self.process.wait(timeout=timeout)
+
+    def close(self):
+        if self.poll() is None:
+            raise OSError("Cannot close an unreaped POSIX worker")
+
+
+class PosixJob:
+    """Controller adapter for one session, with explicit group-only scope."""
+
+    def __init__(self):
+        self.worker = None
+
+    def launch_python(self, arguments, *, cwd, env):
+        if self.worker is not None or len(arguments) != 4 or arguments[:3] != ["-I", "-m", "boundver._generation_worker"]:
+            raise ValueError("POSIX job only launches one fixed generation worker")
+        self.worker = PosixWorker(Path(arguments[3]), cwd=Path(cwd), env=env)
+        return self.worker
+
+    def terminate(self):
+        if self.worker is not None:
+            self.worker.terminate_group()
+
+    @property
+    def active_processes(self):
+        return int(self.worker is not None and self.worker.group_exists())
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.terminate()

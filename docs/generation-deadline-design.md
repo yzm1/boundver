@@ -207,3 +207,13 @@ claim complete descendant cleanup from leader exit alone, and do not silently
 delete transfer storage if ownership/cleanup cannot be confirmed. Python's
 [subprocess documentation](https://docs.python.org/3/library/subprocess.html)
 specifies that session creation happens before worker execution.
+
+The shared controller now selects the Windows job or POSIX session adapter.
+POSIX cleanup polls/reaps the leader before checking group existence, avoiding
+a zombie leader keeping its own group visible indefinitely. A local disposable
+Ubuntu/Python 3.14 environment passed 96 worker/control/protocol/snapshot/offline
+tests (five Windows-only skips); the corresponding Windows checks passed 38
+tests (four POSIX-only skips) and 268 subtests. These are local development
+checks, not the supported-platform release matrix. POSIX deliberately detached
+descendants, abrupt controller death, diagnostic forwarding and CLI integration
+still require explicit treatment before the feature is release-ready.
