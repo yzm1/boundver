@@ -36,6 +36,17 @@ All notable changes to this project are documented here. The format follows
   inheritance and tags. Synthetic measurements do not reproduce or claim to
   resolve reported downstream generation latency.
 
+### Changed
+
+- HEAD generation no longer fingerprints the working tree and captures the
+  shared index merely to print an advisory warning. Request that extra scan
+  explicitly with `--inspect-working-tree`; it retains the existing bounded
+  no-fetch/filter/fsmonitor safeguards and never changes generation inputs.
+  Source context stays visible, canonical lock bytes are unchanged, and a
+  local CLI profile enforces zero default working-tree reads/index captures
+  plus measured process/relative-latency budgets. This does not claim to
+  resolve all downstream generation latency.
+
 ## [0.16.0] - 2026-10-07
 
 ### Upgrade contract

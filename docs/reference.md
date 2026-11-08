@@ -65,6 +65,14 @@ change its result. `generate --source head` likewise reads committed inputs;
 it does not require a clean checkout, but **writes its output on disk**. Do not
 let multiple sessions regenerate the same output concurrently.
 
+From v0.17 development, HEAD generation no longer scans the working tree just
+to warn about it. Text output still names `Source: head`. To explicitly request
+the old advisory, use `generate --source head --inspect-working-tree`. That
+scan can be expensive, captures the index, and may warn if another session
+holds `index.lock`; it never changes which source gets fingerprinted. The flag
+requires HEAD. Explicit inspection still runs with `--quiet` and writes any
+warning to stderr, leaving JSON stdout unchanged.
+
 The index source is different: capturing a coherent index uses `git write-tree`
 and can contend with another index writer. It refuses an unavailable or
 conflicted index rather than falling back to HEAD. The default working-tree

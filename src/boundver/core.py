@@ -1609,6 +1609,10 @@ def _cmd_review(args, repo_root: Path) -> None:
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
+    inspect_working_tree = getattr(args, "inspect_working_tree", False)
+    if inspect_working_tree and args.source != "head":
+        print("ERROR: --inspect-working-tree requires --source head", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
@@ -1649,8 +1653,9 @@ def _cmd_generate(args, repo_root: Path) -> None:
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    # Warn when --source head but working tree has uncommitted changes
-    if args.source == "head" and not args.quiet:
+    # HEAD generation must not implicitly fingerprint a second source merely
+    # to warn about it. The explicit diagnostic retains its bounded safe scan.
+    if inspect_working_tree:
         comp_paths = [c.get("path", "") for c in config.get("components", {}).values()]
         try:
             dirty = dirty_component_paths(repo_root, comp_paths)

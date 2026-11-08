@@ -54,8 +54,8 @@ and repeated runs, median/range/standard deviation, phase CPU/wall timings,
 Git process counts and generation/verification source-read attribution.
 Use `--components 116` to examine growth; the permitted range is 6 through 232.
 
-The profile uses the in-process APIs. It does not include CLI startup or
-atomic lock publication, and does not flush OS caches. It is not an adopter
+The profile uses the in-process APIs. It does not include CLI startup,
+CLI-only advisory scans, or atomic lock publication, and does not flush OS caches. It is not an adopter
 benchmark or a new enforced CI latency promise. Validation uses the explicit
 HEAD source; the CLI's compatibility default remains working-tree. Compare
 equivalent source modes and record the host and fixture with any results.
@@ -66,7 +66,51 @@ measured generation median 1.350 seconds (range 1.349-1.379), verification
 Generation started 38 Git processes; verification started 40. This fixture
 does **not** reproduce the adopter's 90-315 second generation timings. More
 representative file counts, tag/history topology, selectors and host/container
-I/O need investigation before an optimization or numerical budget is justified.
+I/O still need investigation. These API numbers alone cannot explain CLI
+generation latency; the separate CLI profile below measures a previously
+implicit advisory cost.
+
+### HEAD generation CLI work budget (local)
+
+```bash
+python -I scripts/benchmark_generation_cli.py --runs 3 --include-inspect --enforce \
+  --output generation-cli.json
+```
+
+This runs actual CLI dispatch in-process with `--dry-run`, using the same 58
+components plus 512 tracked files outside every declared component. It includes
+CLI preparation and rendering, but not interpreter startup, final file
+publication or physical cold-disk measurements. The counterfactual mode
+suppresses only the advisory warning helper, never validation or fingerprinting.
+The explicit inspection mode runs that helper normally. Host, repeat variance,
+Git commands, working-tree reads/bytes and computed lock hashes are recorded.
+
+Before the change, a local Windows/Python 3.14 run measured default generation
+at a repeated median of 6.334s versus 3.492s quiet. The warning scan added 24 Git
+processes and 1,337 working-tree reads, including 525 outside declared roots.
+After making the scan explicit, a separate run measured default 2.530s, quiet
+2.549s, and explicitly inspected 6.176s. Both runs computed the same canonical
+lock bytes. Between-run quiet timings also moved, so the structural difference
+and within-run comparisons are stronger evidence than a claimed absolute
+speedup. This does not prove the cause of every adopter's reported latency.
+
+The enforceable fixture contract is:
+
+- Default HEAD generation performs zero working-tree content reads, zero
+  advisory calls and zero `git write-tree` commands.
+- Git starts are bounded by `20 + 2 * floor(component_count / 4)` (48 for 58
+  components), allowing two independently guarded calls per tag prefix.
+- Repeated default median is at most `1.5 * quiet median + 0.25 seconds` on the
+  same fixture/host. This is not an arbitrary-repository latency promise.
+- Every measured mode computes identical canonical lock bytes and succeeds.
+
+This profile is local; no additional hosted job is scheduled. Small executable
+regressions enforce the zero-read/index/advisory and lock-equivalence properties
+in ordinary tests. The optional `--inspect-working-tree` diagnostic keeps its
+existing no-fetch, filter, fsmonitor and resource protections; opting in may
+still capture a contended index. The default optimization does not skip any
+integrity check or add a persistent cache. User-facing timing/progress and
+deadline-safe generation remain separate v0.17 work.
 
 ### Existing verification contract
 

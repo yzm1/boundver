@@ -629,6 +629,9 @@ class RepositoryStateMachineTests(unittest.TestCase):
             for label, root in cls.states.items()
             for command, argv in MATRIX_COMMANDS.items()
         }
+        cls.conflicted_inspection = run_cli(
+            cls.states["conflicted-merge"], "generate", "--inspect-working-tree",
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -1061,9 +1064,7 @@ class RepositoryStateMachineTests(unittest.TestCase):
         ("refs-directory-removed", "review"): (2, "ERROR: Not inside a git repository."),
         ("conflicted-merge", "generate"): (
             0,
-            "WARNING: Could not inspect uncommitted component changes: Cannot "
-            "capture index as a complete Git tree: git write-tree failed "
-            "(return code 128; stderr='boundary.lock.json: unmerged (",
+            None,
         ),
         ("conflicted-merge", "generate --source working-tree"): (
             2,
@@ -1090,10 +1091,9 @@ class RepositoryStateMachineTests(unittest.TestCase):
         ("dangling-git-file", "review"): (2, "ERROR: Not inside a git repository."),
     }
 
-    #: The one cell whose recorded text is a prefix rather than the whole line:
-    #: the rest of it is `git write-tree`'s list of unmerged blob ids, which is
-    #: a fact about the fixture's own lockfile bytes and not about the state.
-    PREFIX_ONLY_CELLS = {("conflicted-merge", "generate")}
+    #: Default HEAD generation no longer inspects an unrelated index. The
+    #: explicit scan's variable Git conflict diagnostic is tested separately.
+    PREFIX_ONLY_CELLS = set()
 
     def test_every_cell_of_the_matrix_matches_its_pinned_outcome(self):
         self.assertEqual(sorted(self.MATRIX_OUTCOMES), sorted(self.results))
@@ -1117,7 +1117,12 @@ class RepositoryStateMachineTests(unittest.TestCase):
 
     def test_the_conflicted_merge_warning_names_both_unmerged_paths(self):
         """The half of that cell the prefix leaves out, asserted by content."""
-        stderr = self.results[("conflicted-merge", "generate")].stderr
+        self.assertEqual(self.conflicted_inspection.returncode, 0)
+        stderr = self.conflicted_inspection.stderr
+        self.assertTrue(stderr.startswith(
+            "WARNING: Could not inspect uncommitted component changes: Cannot "
+            "capture index as a complete Git tree: git write-tree failed "
+        ), stderr)
         self.assertIn("boundary.lock.json: unmerged (", stderr)
         self.assertIn("svc/c.txt: unmerged (", stderr)
         self.assertIn("fatal: git-write-tree: error building trees", stderr)

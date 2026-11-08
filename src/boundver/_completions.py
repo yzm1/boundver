@@ -52,6 +52,7 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "generate": (
         "-h", "--help", "--config", "--out", "--source", "--allow-partial",
         "--dry-run", "--components", "--format", "--allow-custom-providers",
+        "--inspect-working-tree",
     ),
     "verify": (
         "-h", "--help", "--config", "--lock", "--source", "--components",
@@ -126,6 +127,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--format": "Output format",
     "--summary-file": "Bounded Markdown plan summary",
     "--allow-custom-providers": "Allow external provider modules",
+    "--inspect-working-tree": "Also inspect working-tree drift during HEAD generation",
     "--lock": "Lockfile",
     "--changed-from": "Git base ref",
     "--base": "Review base Git ref",

@@ -54,6 +54,7 @@ Detect declared component, behavior, boundary, and compatibility drift
 usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,index,working-tree}]
                          [--allow-partial] [--dry-run] [--components COMPONENTS]
                          [--format {json,text}] [--allow-custom-providers]
+                         [--inspect-working-tree]
 ```
 
 | Argument | Value | Default | Description |
@@ -67,6 +68,7 @@ usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,inde
 | `--components` | `COMPONENTS` | — | Comma-separated component names to regenerate |
 | `--format` | `{json,text}` | `text` | Output format |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key (or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1) |
+| `--inspect-working-tree` | — | `false` | With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs |
 
 ```text
 Examples:
