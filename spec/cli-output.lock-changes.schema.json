@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.lock-changes.schema.json",
+  "title": "Boundver read-only lock changes v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "operation", "publication", "current_lock_verification", "complete", "exit_code", "source", "locked_source", "comparison", "changed_headers", "counts", "components", "slices", "presentation", "issues"],
+  "properties": {
+    "schema": {"const": "boundver-lock-changes/v1"},
+    "operation": {"enum": ["generate-preview", "lock-diff"]}, "publication": {"const": "not-written"},
+    "current_lock_verification": {"const": "not-performed"},
+    "complete": {"type": "boolean"}, "exit_code": {"enum": [0, 2]},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "commit", "tree", "lock"],
+      "properties": {"mode": {"enum": ["head", "index", "working-tree", "lockfiles"]}, "commit": {"$ref": "#/$defs/oid"}, "tree": {"$ref": "#/$defs/oid"}, "lock": {"type": "string"}, "previous_lock": {"type": "string"}, "components_filter": {"type": "array", "items": {"type": "string"}}}
+    },
+    "locked_source": {
+      "type": "object", "additionalProperties": false, "required": ["status", "commit"],
+      "properties": {"status": {"const": "unavailable"}, "commit": {"const": null}}
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false, "required": ["previous_present", "contract_compatible", "declarations_match"],
+      "properties": {"previous_present": {"type": "boolean"}, "contract_compatible": {"type": ["boolean", "null"]}, "declarations_match": {"type": ["boolean", "null"]}}
+    },
+    "changed_headers": {"type": "array", "uniqueItems": true, "items": {"enum": ["schema", "config_contract", "config_digest", "project"]}},
+    "counts": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["components", "added", "removed", "changed", "unchanged", "incomparable", "observed_common_changes", "version_changes", "slices", "changed_slices"],
+      "properties": {
+        "components": {"$ref": "#/$defs/count"}, "added": {"$ref": "#/$defs/count"}, "removed": {"$ref": "#/$defs/count"},
+        "changed": {"$ref": "#/$defs/count"}, "unchanged": {"$ref": "#/$defs/count"}, "incomparable": {"$ref": "#/$defs/count"},
+        "observed_common_changes": {"$ref": "#/$defs/count"}, "version_changes": {"$ref": "#/$defs/count"},
+        "slices": {"$ref": "#/$defs/count"}, "changed_slices": {"$ref": "#/$defs/count"}
+      }
+    },
+    "components": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["component", "status", "comparable", "reason", "facets", "metadata_fields", "version"],
+        "properties": {
+          "component": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"},
+          "comparable": {"type": "boolean"}, "reason": {"type": ["string", "null"]},
+          "facets": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"exact": {"$ref": "#/$defs/delta"}, "behavior": {"$ref": "#/$defs/delta"}, "boundary": {"$ref": "#/$defs/delta"}, "compat": {"$ref": "#/$defs/delta"}}
+          },
+          "metadata_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "version": {
+            "type": "object", "additionalProperties": false, "required": ["previous", "current", "status"],
+            "properties": {"previous": {"type": ["string", "null"]}, "current": {"type": ["string", "null"]}, "status": {"enum": ["changed", "unchanged", "unavailable"]}}
+          }
+        }
+      }
+    },
+    "slices": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["slice", "status", "previous", "current"],
+        "properties": {"slice": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"}, "previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"}}
+      }
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false, "required": ["limit", "shown", "omitted", "truncated"],
+      "properties": {"limit": {"type": "integer", "minimum": 0, "maximum": 10000}, "shown": {"$ref": "#/$defs/count"}, "omitted": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"}}
+    },
+    "issues": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 4096}}
+  },
+  "allOf": [
+    {"if": {"properties": {"complete": {"const": false}}}, "then": {"properties": {"exit_code": {"const": 2}, "counts": {"const": null}, "components": {"maxItems": 0}, "slices": {"maxItems": 0}, "issues": {"minItems": 1}}}},
+    {"if": {"properties": {"complete": {"const": true}}}, "then": {"properties": {"exit_code": {"const": 0}, "counts": {"type": "object"}, "issues": {"maxItems": 0}}}}
+  ],
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["added", "removed", "changed", "unchanged", "incomparable"]},
+    "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "delta": {"type": "object", "additionalProperties": false, "required": ["previous", "current"], "properties": {"previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"}}}
+  }
+}

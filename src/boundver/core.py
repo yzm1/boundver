@@ -62,6 +62,8 @@ from ._git import (
     _git_batch_cat as _git_batch_cat,
 )
 from ._hashing import (
+    _capture_working_tree_ancestors,
+    _verify_working_tree_ancestors,
     MAX_HASH_FILE_BYTES as MAX_HASH_FILE_BYTES,
     MAX_HASH_FILES as MAX_HASH_FILES,
     _content_only_digest as _content_only_digest,
@@ -130,6 +132,7 @@ from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_c
 from ._deployment import MAX_DEPLOYMENT_RESULT_BYTES, compare_deployment
 from ._verification_scope import verification_scope_result
 from ._slice_explanation import MAX_SLICE_EXPLANATION_BYTES, analyze_slice_drift
+from ._change_report import MAX_CHANGE_REPORT_BYTES, lock_change_report
 from ._generation_diagnostics import GenerationDiagnostics
 from ._bounded_output import BoundedDiagnosticOutput
 from ._generation_control import GenerationControl, GenerationState
@@ -1550,6 +1553,11 @@ def _cmd_migrate_lock(args) -> None:
 
 
 def _cmd_diff(args) -> None:
+    if args.format == "changes-json":
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Change report limit must be 0..10000")
+    elif getattr(args, "summary", False) or getattr(args, "limit", 1000) != 1000:
+        raise ConfigError("--summary and --limit require --format changes-json")
     for label, fpath in (("old", args.old), ("new", args.new)):
         if not Path(fpath).exists():
             print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
@@ -1566,6 +1574,17 @@ def _cmd_diff(args) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
+    if args.format == "changes-json":
+        result = lock_change_report(
+            old, new, operation="lock-diff",
+            source={"mode": "lockfiles", "commit": None, "tree": None,
+                    "lock": str(args.new), "previous_lock": str(args.old)},
+            limit=0 if args.summary else args.limit,
+        )
+        _print_json(result, max_bytes=MAX_CHANGE_REPORT_BYTES)
+        if result["exit_code"]:
+            sys.exit(result["exit_code"])
+        return
     result = diff_lockfiles(old, new)
     if args.format == "json":
         _print_json(result)
@@ -1653,6 +1672,16 @@ def _cmd_generate_reporting(args, repo_root: Path, control: Optional[GenerationC
 
 def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnostics,
                            control: Optional[GenerationControl] = None) -> None:
+    preview = args.format == "changes-json"
+    if preview:
+        if not args.dry_run:
+            raise ConfigError("--format changes-json requires --dry-run; it never publishes a lock")
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Change report limit must be 0..10000")
+        args = type(args)(**vars(args))
+        args.format = "json"  # Preserve all existing machine-output guards.
+    elif getattr(args, "summary", False) or getattr(args, "limit", 1000) != 1000:
+        raise ConfigError("--summary and --limit require --format changes-json")
     inspect_working_tree = getattr(args, "inspect_working_tree", False)
     if inspect_working_tree and args.source != "head":
         print("ERROR: --inspect-working-tree requires --source head", file=sys.stderr)
@@ -1701,6 +1730,19 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    preview_previous = None
+    if preview:
+        preview_ancestors = (
+            _capture_working_tree_ancestors(repo_root, out_path, out_path.relative_to(repo_root).as_posix())
+            if snapshot is None else None
+        )
+        try:
+            preview_previous = load_lockfile_file(out_path, repo_root=repo_root, snapshot=snapshot)
+        except FileNotFoundError:
+            if snapshot is None and out_path.is_symlink():
+                raise ConfigError("Previous lock is a symlink, not an absent checkpoint")
+        if preview_ancestors is not None:
+            _verify_working_tree_ancestors(preview_ancestors, out_path.relative_to(repo_root).as_posix())
     # HEAD generation must not implicitly fingerprint a second source merely
     # to warn about it. The explicit diagnostic retains its bounded safe scan.
     if inspect_working_tree:
@@ -1744,14 +1786,18 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
         sys.exit(EXIT_USAGE)
     try:
         observer_args = {"observer": diagnostics} if diagnostics.enabled else {}
+        if preview and components_filter and preview_previous is None:
+            raise ConfigError("Scoped generation preview requires a previous selected-source lock")
         with diagnostics.phase("compute-lock"):
             if control is not None:
                 existing = None
                 if components_filter:
-                    existing = load_lockfile_file(
+                    existing = preview_previous if preview else load_lockfile_file(
                         out_path, repo_root=repo_root,
                         snapshot=snapshot if args.source in {"head", "index"} else None,
                     )
+                    if existing is None:
+                        raise ConfigError("Scoped generation preview requires a previous selected-source lock")
                 request = encode_request({
                     "schema": REQUEST_SCHEMA, "operation_id": secrets.token_hex(32),
                     "repo_root": str(repo_root), "config": config, "source": args.source,
@@ -1768,6 +1814,7 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
                     out_path=out_path, source=args.source,
                     strict=(not args.allow_partial), allow_custom_providers=allow_custom,
                     snapshot=snapshot, running_version=_get_version(), **observer_args,
+                    **({"existing_lockfile": preview_previous} if preview else {}),
                 )
             else:
                 lockfile = generate_lockfile(
@@ -1787,6 +1834,19 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
         if control is not None and control.state is not GenerationState.READY:
             raise ConfigError(f"Generation did not publish: {control.state.value}")
         diagnostics.publication = "dry-run"
+        if preview:
+            report = lock_change_report(
+                preview_previous, lockfile,
+                source={"mode": args.source, "commit": snapshot.head_oid if snapshot else None,
+                        "tree": snapshot.tree_oid if snapshot else None,
+                        "lock": out_path.relative_to(repo_root).as_posix(),
+                        "components_filter": components_filter},
+                limit=0 if args.summary else args.limit,
+            )
+            _print_json(report, max_bytes=MAX_CHANGE_REPORT_BYTES)
+            if report["exit_code"]:
+                sys.exit(report["exit_code"])
+            return
         _log(
             f"Dry run: lockfile not written ({out_path})",
             quiet=(args.quiet or args.format == "json"),

@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added read-only `generate --dry-run --format changes-json` and
+  `diff --format changes-json` reports for component/facet differences, explicit
+  version status and slice changes. Summary/row limits preserve counts;
+  incompatible declarations or provider contracts are marked incomparable.
+  Existing JSON lock/diff output is unchanged. Reports neither publish locks
+  nor replace current-lock verification or attest deployment provenance.
+
 - Added `why --slice NAME` with deterministic text/JSON explanations of slice
   drift, contributing members, changed facets and version movement. Summary
   and row limits preserve complete counts. Incompatible declarations/provider

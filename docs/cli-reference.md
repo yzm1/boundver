@@ -54,8 +54,9 @@ Detect declared component, behavior, boundary, and compatibility drift
 ```text
 usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,index,working-tree}]
                          [--allow-partial] [--dry-run] [--components COMPONENTS]
-                         [--format {json,text}] [--allow-custom-providers]
-                         [--inspect-working-tree] [--progress] [--timing] [--timeout SECONDS]
+                         [--format {json,text,changes-json}] [--limit LIMIT] [--summary]
+                         [--allow-custom-providers] [--inspect-working-tree] [--progress]
+                         [--timing] [--timeout SECONDS]
 ```
 
 | Argument | Value | Default | Description |
@@ -67,7 +68,9 @@ usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,inde
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices (not provider or source errors) |
 | `--dry-run` | — | `false` | Compute lockfile and print status without writing output |
 | `--components` | `COMPONENTS` | — | Comma-separated component names to regenerate |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,changes-json}` | `text` | Output format; changes-json requires --dry-run and compares the previous selected-source lock |
+| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json only |
+| `--summary` | — | `false` | Change-report counts without rows; changes-json only |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key (or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1) |
 | `--inspect-working-tree` | — | `false` | With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs |
 | `--progress` | — | `false` | Print bounded generation progress to stderr |
@@ -176,7 +179,7 @@ Examples:
 ## `boundver diff`
 
 ```text
-usage: boundver diff [-h] [--format {json,text}] old new
+usage: boundver diff [-h] [--format {json,text,changes-json}] [--limit LIMIT] [--summary] old new
 ```
 
 | Argument | Value | Default | Description |
@@ -184,7 +187,9 @@ usage: boundver diff [-h] [--format {json,text}] old new
 | `-h`, `--help` | — | — | show this help message and exit |
 | `old` | `OLD` | required | Old lockfile |
 | `new` | `NEW` | required | New lockfile |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,changes-json}` | `text` | Output format; changes-json adds bounded component/version reporting for current contracts |
+| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json only |
+| `--summary` | — | `false` | Change-report counts without rows; changes-json only |
 
 <a id="slice"></a>
 

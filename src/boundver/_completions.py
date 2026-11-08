@@ -52,7 +52,8 @@ _POST_COMMAND_GLOBAL_OPTIONS: Tuple[str, ...] = ("--quiet", "--verbose")
 _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "generate": (
         "-h", "--help", "--config", "--out", "--source", "--allow-partial",
-        "--dry-run", "--components", "--format", "--allow-custom-providers",
+        "--dry-run", "--components", "--format", "--limit", "--summary",
+        "--allow-custom-providers",
         "--inspect-working-tree",
         "--progress", "--timing", "--timeout",
     ),
@@ -67,7 +68,7 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--lock", "--facets", "--transitive", "--format", "--summary-file",
         "--allow-custom-providers",
     ),
-    "diff": ("-h", "--help", "--format"),
+    "diff": ("-h", "--help", "--format", "--limit", "--summary"),
     "slice": ("-h", "--help", "--lock", "--format"),
     "validate-config": (
         "-h", "--help", "--config", "--source", "--allow-partial",
@@ -210,6 +211,8 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
 }
 
 _COMMAND_OPTION_CHOICES: Dict[Tuple[str, str], Tuple[str, ...]] = {
+    ("generate", "--format"): ("json", "text", "changes-json"),
+    ("diff", "--format"): ("json", "text", "changes-json"),
     ("verify", "--format"): ("json", "text", "scoped-json"),
     ("review", "--format"): ("json", "text", "plan"),
 }

@@ -56,6 +56,7 @@ nav:
       - Migration and ratcheting: migration-and-ratcheting.md
       - Scoped verification: scoped-verification.md
       - Slice explanations: slice-explanations.md
+      - Generation previews: generation-previews.md
       - Lockfile merges: LOCKFILE_MERGE.md
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md
