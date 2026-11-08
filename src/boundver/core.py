@@ -129,6 +129,7 @@ from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
 from ._deployment import MAX_DEPLOYMENT_RESULT_BYTES, compare_deployment
 from ._verification_scope import verification_scope_result
+from ._slice_explanation import MAX_SLICE_EXPLANATION_BYTES, analyze_slice_drift
 from ._generation_diagnostics import GenerationDiagnostics
 from ._bounded_output import BoundedDiagnosticOutput
 from ._generation_control import GenerationControl, GenerationState
@@ -3470,6 +3471,11 @@ def _cmd_explain(args, repo_root: Path) -> None:
 
 
 def _cmd_why(args, repo_root: Path) -> None:
+    if args.slice is not None:
+        if args.base_ref is not None or args.transitive:
+            raise ConfigError("Slice explanations do not support --base-ref or --transitive; no file attribution is inferred")
+    elif args.summary or args.limit != 1000:
+        raise ConfigError("--summary and --limit apply to why --slice")
     lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
@@ -3507,6 +3513,35 @@ def _cmd_why(args, repo_root: Path) -> None:
         config_path=config_path,
         lock_path=lock_path,
     )
+    if args.slice is not None:
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Slice explanation limit must be 0..10000")
+        result = analyze_slice_drift(
+            config, lockfile, repo_root, args.slice, source=args.source, snapshot=snapshot,
+            limit=0 if args.summary else args.limit, allow_custom_providers=allow_custom,
+        )
+        if args.format == "json":
+            _print_json(result, max_bytes=MAX_SLICE_EXPLANATION_BYTES)
+        else:
+            print(f"Slice: {_display_path(result['slice'])} ({result['mode'] or 'unavailable'})")
+            print("Locked source provenance: unavailable; this is not deployment evidence.")
+            if result["complete"]:
+                counts = result["counts"]
+                print(f"Members: {counts['members']}; contributors to aggregate drift: {counts['contributing_members']}")
+                print(f"Slice fingerprint: {'changed' if result['slice_changed'] else 'unchanged'}")
+                print(f"Resolved versions: {counts['version_changes']} changed, {counts['unavailable_versions']} unavailable")
+                for member in result["members"]:
+                    facets = ', '.join(member['changes']) or 'none'
+                    print(f"  {_display_path(member['component'])}: changed facets={facets}; version={member['version']['status']}")
+                if result["presentation"]["omitted"]:
+                    print(f"  {result['presentation']['omitted']} member row(s) omitted; analysis is unchanged.")
+            else:
+                print("Slice comparison incomplete; no drift conclusion.")
+            for issue in result["issues"]:
+                print(f"ERROR: {_display_path(issue)}")
+        if result["exit_code"]:
+            sys.exit(result["exit_code"])
+        return
     rc = why_component(
         config,
         lockfile,

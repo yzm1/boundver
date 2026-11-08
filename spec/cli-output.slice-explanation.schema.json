@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.slice-explanation.schema.json",
+  "title": "Boundver slice explanation v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "slice", "mode", "complete", "comparable", "drifted", "slice_changed", "gating", "exit_code", "previous", "current", "counts", "members", "source", "locked_source", "presentation", "issues"],
+  "properties": {
+    "schema": {"const": "boundver-slice-explanation/v1"},
+    "slice": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "mode": {"enum": [null, "exact", "behavior", "boundary", "compat"]},
+    "complete": {"type": "boolean"}, "comparable": {"type": "boolean"},
+    "drifted": {"type": ["boolean", "null"]}, "slice_changed": {"type": ["boolean", "null"]},
+    "gating": {"type": ["boolean", "null"]}, "exit_code": {"enum": [0, 1, 2]},
+    "previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"},
+    "counts": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["members", "changed_members", "contributing_members", "version_changes", "unavailable_versions"],
+      "properties": {
+        "members": {"$ref": "#/$defs/count"}, "changed_members": {"$ref": "#/$defs/count"},
+        "contributing_members": {"$ref": "#/$defs/count"}, "version_changes": {"$ref": "#/$defs/count"},
+        "unavailable_versions": {"$ref": "#/$defs/count"}
+      }
+    },
+    "members": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["component", "contributes", "changes", "version"],
+        "properties": {
+          "component": {"type": "string", "minLength": 1}, "contributes": {"type": "boolean"},
+          "changes": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"exact": {"$ref": "#/$defs/delta"}, "behavior": {"$ref": "#/$defs/delta"}, "boundary": {"$ref": "#/$defs/delta"}, "compat": {"$ref": "#/$defs/delta"}}
+          },
+          "version": {
+            "type": "object", "additionalProperties": false, "required": ["previous", "current", "status"],
+            "properties": {"previous": {"type": ["string", "null"]}, "current": {"type": ["string", "null"]}, "status": {"enum": ["changed", "unchanged", "unavailable"]}}
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "commit", "tree"],
+      "properties": {"mode": {"enum": ["head", "index", "working-tree"]}, "commit": {"$ref": "#/$defs/oid"}, "tree": {"$ref": "#/$defs/oid"}}
+    },
+    "locked_source": {
+      "type": "object", "additionalProperties": false, "required": ["status", "commit"],
+      "properties": {"status": {"const": "unavailable"}, "commit": {"const": null}}
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false, "required": ["limit", "shown", "omitted", "truncated"],
+      "properties": {"limit": {"type": "integer", "minimum": 0, "maximum": 10000}, "shown": {"$ref": "#/$defs/count"}, "omitted": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"}}
+    },
+    "issues": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 4096}}
+  },
+  "allOf": [
+    {"if": {"properties": {"complete": {"const": false}}}, "then": {"properties": {"comparable": {"const": false}, "exit_code": {"const": 2}, "drifted": {"const": null}, "slice_changed": {"const": null}, "counts": {"const": null}, "members": {"maxItems": 0}, "issues": {"minItems": 1}}}},
+    {"if": {"properties": {"complete": {"const": true}}}, "then": {"properties": {"comparable": {"const": true}, "counts": {"type": "object"}, "mode": {"type": "string"}, "drifted": {"type": "boolean"}, "slice_changed": {"type": "boolean"}, "gating": {"type": "boolean"}, "previous": {"type": "string"}, "current": {"type": "string"}, "issues": {"maxItems": 0}, "exit_code": {"enum": [0, 1]}}}},
+    {"if": {"properties": {"drifted": {"const": true}}}, "then": {"properties": {"complete": {"const": true}, "slice_changed": {"const": true}, "gating": {"const": true}, "exit_code": {"const": 1}}}},
+    {"if": {"properties": {"drifted": {"const": false}}}, "then": {"properties": {"complete": {"const": true}, "exit_code": {"const": 0}}}}
+  ],
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "delta": {"type": "object", "additionalProperties": false, "required": ["previous", "current"], "properties": {"previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"}}}
+  }
+}

@@ -26,7 +26,7 @@ configuration examples, and exit-code semantics, use the
 | [`boundver coverage`](#coverage) | Find tracked files missing from declarations |
 | [`boundver record-derivation`](#record-derivation) | Record generated-artifact freshness after a trusted generator runs |
 | [`boundver explain`](#explain) | Explain changed files for a component |
-| [`boundver why`](#why) | Explain why a component's lockfile is out of date |
+| [`boundver why`](#why) | Explain component or slice drift |
 | [`boundver discover`](#discover) | Find Git-tracked component manifests |
 | [`boundver migrate-lock`](#migrate-lock) | Normalize a current lock or explain why regeneration is required |
 | [`boundver completions`](#completions) | Emit shell completion scripts |
@@ -432,10 +432,10 @@ usage: boundver explain [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_RE
 ## `boundver why`
 
 ```text
-usage: boundver why [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_REF]
-                    [--source {head,index,working-tree}] [--format {json,text}] [--transitive]
-                    [--allow-custom-providers]
-                    component
+usage: boundver why [-h] [--limit LIMIT] [--summary] [--config CONFIG] [--lock LOCK]
+                    [--base-ref BASE_REF] [--source {head,index,working-tree}]
+                    [--format {json,text}] [--transitive] [--allow-custom-providers]
+                    (--slice SLICE | component)
 ```
 
 Compare current fingerprints against the lockfile and explain what changed.
@@ -444,15 +444,18 @@ Shows which facets (exact/behavior/boundary/compat) drifted, what type of change
 
 ```text
 Exit codes:
-  0  Component is up to date
-  1  Component has drifted
+  0  No gated component/slice drift
+  1  Selected component/slice has drifted
   2  Usage error (unknown component, missing config, etc.)
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
-| `component` | `COMPONENT` | required | Component name from config |
+| `component` | `COMPONENT?` | — | Component name from config |
+| `--slice` | `SLICE` | — | Explain a declared slice instead of one component |
+| `--limit` | `LIMIT` | `1000` | Slice member rows, 0..10000; counts remain complete |
+| `--summary` | — | `false` | Slice counts without member rows |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
 | `--lock` | `LOCK` | `boundary.lock.json` | — |
 | `--base-ref` | `BASE_REF` | — | Git ref resolved to an immutable commit for changed-file diagnostics (required for source=head file lists; defaults to HEAD for index/working-tree). A lock-containing commit does not prove the generating source |

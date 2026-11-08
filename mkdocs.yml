@@ -55,6 +55,7 @@ nav:
       - CI cookbook: ci-cookbook.md
       - Migration and ratcheting: migration-and-ratcheting.md
       - Scoped verification: scoped-verification.md
+      - Slice explanations: slice-explanations.md
       - Lockfile merges: LOCKFILE_MERGE.md
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md

@@ -551,19 +551,23 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
 
     why = sub.add_parser(
         "why",
-        help="Explain why a component's lockfile is out of date",
+        help="Explain component or slice drift",
         description=(
             "Compare current fingerprints against the lockfile and explain what changed.\n\n"
             "Shows which facets (exact/behavior/boundary/compat) drifted, what type of change\n"
             "it is. Explicit --base-ref adds a source comparison, not proof of lock provenance.\n\n"
             "Exit codes:\n"
-            "  0  Component is up to date\n"
-            "  1  Component has drifted\n"
+            "  0  No gated component/slice drift\n"
+            "  1  Selected component/slice has drifted\n"
             "  2  Usage error (unknown component, missing config, etc.)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    why.add_argument("component", help="Component name from config")
+    why_target = why.add_mutually_exclusive_group(required=True)
+    why_target.add_argument("component", nargs="?", help="Component name from config")
+    why_target.add_argument("--slice", default=None, help="Explain a declared slice instead of one component")
+    why.add_argument("--limit", type=int, default=1000, help="Slice member rows, 0..10000; counts remain complete")
+    why.add_argument("--summary", action="store_true", help="Slice counts without member rows")
     why.add_argument("--config", default="boundary.config.json")
     why.add_argument("--lock", default="boundary.lock.json")
     why.add_argument(

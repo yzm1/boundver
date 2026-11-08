@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added `why --slice NAME` with deterministic text/JSON explanations of slice
+  drift, contributing members, changed facets and version movement. Summary
+  and row limits preserve complete counts. Incompatible declarations/provider
+  contracts and unavailable facets fail closed; lock-source provenance remains
+  explicitly unavailable rather than inferred from history.
+
 - Added `verify --format scoped-json` to separate requested selection, actual
   computation dependencies, selected fingerprint drift and repository-level
   diagnostics. Existing JSON output and aggregate gating remain unchanged.

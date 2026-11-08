@@ -36,6 +36,9 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "boundver"
 
 #: (module, constant name, reviewed value). One row per declared ceiling.
 DECLARED_CEILINGS = (
+    ("boundver._slice_explanation", "MAX_SLICE_EXPLANATION_ROWS", 10_000),
+    ("boundver._slice_explanation", "MAX_SLICE_EXPLANATION_BYTES", 4_194_304),
+    ("boundver._slice_explanation", "MAX_SLICE_EXPLANATION_NAME_CHARS", 16_384),
     ("boundver._deployment", "MAX_DEPLOYMENT_RESULT_BYTES", 4_194_304),
     ("boundver._deployment", "MAX_DEPLOYMENT_ROWS", 10_000),
     ("boundver._deployment", "MAX_DEPLOYMENT_ISSUES", 100),

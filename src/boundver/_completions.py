@@ -102,7 +102,7 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--allow-custom-providers",
     ),
     "why": (
-        "-h", "--help", "--config", "--lock", "--base-ref", "--source", "--format",
+        "-h", "--help", "--slice", "--limit", "--summary", "--config", "--lock", "--base-ref", "--source", "--format",
         "--transitive", "--allow-custom-providers",
     ),
     "discover": (
@@ -122,6 +122,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--quiet": "Reduce output",
     "--verbose": "Extra diagnostics",
     "--config": "Config file",
+    "--slice": "Declared slice to explain",
     "--environment": "Asserted environment label",
     "--ref": "Explicit local deployment Git ref",
     "--reference-config": "Reference config file",
@@ -171,6 +172,7 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
 # option -> (argument label, zsh completion action).  An empty action still
 # marks the option as taking a value.  Fish uses the same table to add -r.
 _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
+    "--slice": ("slice", ""),
     "--environment": ("environment", ""),
     "--ref": ("Git ref", ""),
     "--reference-config": ("file", "_files"),
