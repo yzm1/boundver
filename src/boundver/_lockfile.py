@@ -1469,6 +1469,7 @@ def verify_lockfile(
     transitive_consumers: bool = False,
     consumer_impact: Optional[List[dict]] = None,
     drifted_components: Optional[Set[str]] = None,
+    verification_report: Optional[dict] = None,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches.
 
@@ -1480,7 +1481,23 @@ def verify_lockfile(
     with both gating and non-gating drift. A truncated diagnostic result may
     leave that set incomplete, so callers must retain the truncation signal.
     *observations* is an output list: each invocation replaces its contents.
+    *verification_report* is an optional structured computation receipt. It
+    records facet findings at their origin, never by parsing display labels.
+    It is not an independent integrity verdict; the returned issues still gate.
+    ``traversal_complete`` means comparisons finished without diagnostic
+    truncation, not that the repository is valid. Computed components include
+    slice dependencies; version components also include inheritance readers.
+    No claim about component metadata or global integrity follows from an
+    empty ``component_findings`` list.
     """
+    if verification_report is not None:
+        if not isinstance(verification_report, dict):
+            raise TypeError("verification_report must be a dict or None")
+        verification_report.clear()
+        verification_report.update(
+            traversal_complete=False, computed_components=[], compared_components=[],
+            version_components=[], compared_slices=[], component_findings=[],
+        )
     if observations is not None:
         if not isinstance(observations, list):
             raise TypeError("observations must be a list or None")
@@ -1657,6 +1674,10 @@ def verify_lockfile(
                         version_result=resolved_versions.get(name),
                     )
 
+    if verification_report is not None:
+        verification_report["computed_components"] = sorted(computed_entries)
+        verification_report["version_components"] = sorted(resolved_versions)
+
     def identity_label(value: str) -> str:
         """Return a bounded display label that remains identity-distinct."""
         rendered = _bounded_diagnostic_text(value)
@@ -1675,6 +1696,8 @@ def verify_lockfile(
         if issues.truncated:
             return truncated_issue_result()
         display_name = identity_label(name)
+        if verification_report is not None:
+            verification_report["compared_components"].append(name)
         component_gated_facets = explicit_gated_facets
         configured_component_facets = comp_cfg.get("verify_facets")
         if component_gated_facets is None:
@@ -1749,6 +1772,12 @@ def verify_lockfile(
                 # policy error; do not also classify it as ordinary drift.
                 continue
             if cv != lv:
+                if verification_report is not None:
+                    verification_report["component_findings"].append({
+                        "component": name, "facet": facet,
+                        "gating": facet in component_gated_facets,
+                        "before": lv, "after": cv,
+                    })
                 if drifted_components is not None:
                     drifted_components.add(name)
                 message = (
@@ -1868,6 +1897,8 @@ def verify_lockfile(
             )
             if use_filter and not (selected & resolved_slice_components):
                 continue
+            if verification_report is not None:
+                verification_report["compared_slices"].append(sname)
             current_slice = _recompute_slice_entry(
                 sname,
                 sdef,
@@ -1981,6 +2012,8 @@ def verify_lockfile(
 
     if observations is not None:
         observations[:] = list(non_gating)
+    if verification_report is not None:
+        verification_report["traversal_complete"] = not (issues.truncated or non_gating.truncated)
     if limit_report and issues:
         if issues.truncated:
             return [_DIAGNOSTIC_TRUNCATION_MARKER]
