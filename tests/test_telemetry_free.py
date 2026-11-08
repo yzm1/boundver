@@ -116,6 +116,19 @@ def test_runtime_has_no_outbound_network_or_telemetry_imports() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_native_worker_creation_is_statically_interpreter_rooted() -> None:
+    calls = []
+    for path in sorted(RUNTIME_ROOT.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls.extend((path, node) for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and _qualified_name(node.func).endswith(".CreateProcessW"))
+    assert len(calls) == 1
+    path, call = calls[0]
+    assert path.name == "_windows_job.py"
+    assert _qualified_name(call.args[0]) == "sys.executable"
+    assert isinstance(call.args[4], ast.Constant) and call.args[4].value is False
+
+
 def test_runtime_processes_are_statically_git_rooted() -> None:
     process_calls: list[tuple[Path, ast.Call]] = []
     git_command_assignments: list[ast.Assign] = []

@@ -102,8 +102,12 @@ evidence and an operator-facing timeout contract are still required.
 The packaged `_windows_job` helper creates an unnamed, non-inheritable job with
 kill-on-close and without breakaway permissions. Local kernel tests cover
 suspended assignment without user-code execution, descendant termination after
-parent exit, handle closure and rejected assignment. It does not yet launch or
-resume workers, and is not wired into generation.
+parent exit, handle closure and rejected assignment. `launch_python` now uses
+creation-time job assignment and a fixed absolute interpreter, without a shell
+or inherited standard handles. Tests cover Unicode environment values, quoted
+arguments and worker/descendant termination. The controller must confirm both
+zero active job processes and the worker process's signalled exit: these are
+separate kernel observations. The helper is not yet wired into generation.
 
 Microsoft documents [job ownership and kill-on-close behavior](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
 The launch implementation must also address the crash window between suspended

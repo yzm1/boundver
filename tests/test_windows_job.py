@@ -87,3 +87,59 @@ def test_invalid_assignment_does_not_destroy_job():
         with pytest.raises(OSError):
             job.assign(0)
         assert job.active_processes == 0
+
+
+def test_creation_time_assignment_environment_and_quoted_arguments(tmp_path):
+    import json
+    marker = tmp_path / "worker result.json"
+    argument = 'spaces "quotes" \\ and \u03bb'
+    with WindowsJob() as job:
+        process = job.launch_python(
+            ["-I", "-c", "import json,os,pathlib,sys;pathlib.Path(sys.argv[1]).write_text(json.dumps([sys.argv[2],os.environ['BV_PROBE'],os.getcwd()]),encoding='utf-8')",
+             str(marker), argument],
+            cwd=str(tmp_path), env={**os.environ, "BV_PROBE": "\u03bb environment"},
+        )
+        try:
+            end = time.monotonic() + 5
+            while process.poll() is None and time.monotonic() < end:
+                time.sleep(0.01)
+            assert process.poll() == 0
+            assert json.loads(marker.read_text(encoding="utf-8")) == [
+                argument, "\u03bb environment", str(tmp_path),
+            ]
+        finally:
+            job.terminate()
+            process.close()
+
+
+def test_creation_time_job_contains_worker_and_its_descendant(tmp_path):
+    marker = tmp_path / "spawned"
+    script = (
+        "import subprocess,sys,pathlib,time;"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+        "pathlib.Path(sys.argv[1]).touch();time.sleep(60)"
+    )
+    with WindowsJob() as job:
+        process = job.launch_python(["-I", "-c", script, str(marker)], cwd=str(tmp_path), env=dict(os.environ))
+        try:
+            end = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < end:
+                time.sleep(0.01)
+            assert marker.exists()
+            assert job.active_processes >= 2
+            job.terminate()
+            end = time.monotonic() + 5
+            while job.active_processes and time.monotonic() < end:
+                time.sleep(0.01)
+            assert job.active_processes == 0
+            assert process.wait(5) is not None
+        finally:
+            job.terminate()
+            process.close()
+
+
+def test_closed_job_cannot_launch(tmp_path):
+    job = WindowsJob()
+    job.close()
+    with pytest.raises(OSError, match="closed"):
+        job.launch_python(["-c", "pass"], cwd=str(tmp_path), env=dict(os.environ))
