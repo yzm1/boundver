@@ -701,7 +701,12 @@ class ConfigDiagnosticConfidentialityTests(unittest.TestCase):
             "JSON parse error in boundary.config.json: ValueError",
         )
 
-        with mock.patch("tomllib.loads", side_effect=ValueError(f"bad token {canary}")):
+        try:
+            import tomllib as toml_parser
+        except ImportError:  # Python 3.10 uses the declared tomli dependency.
+            import tomli as toml_parser
+
+        with mock.patch.object(toml_parser, "loads", side_effect=ValueError(f"bad token {canary}")):
             with self.assertRaises(ConfigError) as caught:
                 parse_config_text('project = "p"\n', Path("boundary.config.toml"))
         self.assertEqual(
