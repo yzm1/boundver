@@ -80,6 +80,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Corrected the merge/re-lock workflow: resolve and explicitly stage reviewed
+  source/config and a temporary generated-lock placeholder before full index
+  regeneration. Real merge tests show that even a lock-only unmerged index
+  prevents coherent working-tree capture. Added shared-checkout guidance for
+  validation contention, source inputs and manual atomic relocking; no automatic
+  staging, conflict resolution or new wrapper is introduced.
+
 - `why --source head` no longer infers its changed-file base from the commit
   that introduced a lock entry. That commit is not proof of the generating
   source. Fingerprint drift remains available; pass `--base-ref` explicitly

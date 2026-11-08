@@ -8,7 +8,9 @@ boundver generate --source index --dry-run --format changes-json --summary
 boundver diff old.lock.json new.lock.json --format changes-json
 ```
 
-`generate --format changes-json` requires `--dry-run`. It cannot publish a lock.
+`generate --format changes-json` requires `--dry-run`. The controller does not
+publish a lock. Authorized native custom providers remain trusted code and can
+have their own side effects; dry-run is not a sandbox.
 The existing `--format json` still returns the candidate lock itself.
 
 The report lists component status, differing facets, changed metadata field
