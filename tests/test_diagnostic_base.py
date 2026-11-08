@@ -1,9 +1,8 @@
-"""How `why` picks the commit it explains a change against.
+"""Explicit source comparisons must not infer provenance from lock storage.
 
-The walk is `--first-parent`, so only mainline commits are candidates, and the
-base it lands on is disclosed to the user as a precise attribution. Both halves
-need a shaped history to test: a topic branch merged with `--no-ff`, so the
-mainline and the full history genuinely differ.
+A shaped merge history distinguishes an operator-selected source from the
+commit that happened to introduce a lock. Legacy storage lookup remains
+separately identified below; it is not the CLI's provenance authority.
 
 Covers OBL-LOCKFILE-056, OBL-LOCKFILE-058 and OBL-LOCKFILE-059.
 """
@@ -16,28 +15,18 @@ import unittest
 from tests._parity import run_cli
 from tests._scenarios import Scenario
 
-#: Origins that name a specific commit, as opposed to a disclosed fallback.
-PRECISE_ORIGINS = (
-    "commit that introduced the current lock entry",
-    "last commit that changed",
-)
-
-
-def _why(scene: Scenario, component: str = "svc") -> dict:
+def _why(scene: Scenario, component: str = "svc", *, base_ref=None) -> dict:
+    options = ("--base-ref", base_ref) if base_ref is not None else ()
     result = run_cli(
-        scene.root, "why", component, "--source", "head", "--format", "json"
+        scene.root, "why", component, "--source", "head", "--format", "json", *options
     )
     payload = json.loads(result.stdout) if result.stdout.strip() else {}
     payload["_returncode"] = result.returncode
     return payload
 
 
-def _is_precise(origin) -> bool:
-    return bool(origin) and any(phrase in origin for phrase in PRECISE_ORIGINS)
-
-
 class FirstParentHistoryTests(unittest.TestCase):
-    """OBL-LOCKFILE-059: only mainline commits are candidates."""
+    """A merge does not authorize automatic lock-source attribution."""
 
     def _merged_history(self, scene: Scenario) -> tuple:
         """Introduce the lock entry on a topic branch and merge it."""
@@ -68,19 +57,18 @@ class FirstParentHistoryTests(unittest.TestCase):
             self.assertIn(merge_commit, mainline)
             self.assertNotIn(topic_commit, mainline)
 
-    def test_the_base_is_the_merge_commit_not_the_topic_commit(self):
-        """The entry entered the mainline at the merge, so that is the base."""
+    def test_an_explicit_merge_base_is_used_not_the_topic_commit(self):
         with Scenario() as scene:
             topic_commit, merge_commit = self._merged_history(scene)
-            result = _why(scene)
+            result = _why(scene, base_ref=merge_commit)
             self.assertEqual(result["diagnostic_base"], merge_commit)
             self.assertNotEqual(result["diagnostic_base"], topic_commit)
-            self.assertTrue(_is_precise(result["diagnostic_base_origin"]))
+            self.assertEqual(result["diagnostic_base_origin"], "explicit --base-ref")
 
     def test_the_change_is_reported_against_that_base(self):
         with Scenario() as scene:
-            self._merged_history(scene)
-            result = _why(scene)
+            _, merge_commit = self._merged_history(scene)
+            result = _why(scene, base_ref=merge_commit)
             self.assertEqual(result["changed_files_status"], "ok")
             self.assertEqual(
                 [entry["path"] for entry in result["changed_files"]],
@@ -89,14 +77,7 @@ class FirstParentHistoryTests(unittest.TestCase):
 
 
 class PreciseOriginTests(unittest.TestCase):
-    """OBL-LOCKFILE-056: a precise attribution must be able to back itself up.
-
-    `why` exits non-zero, names a commit, and calls that commit the one that
-    introduced the current lock entry. When the lock has never been committed
-    there is no such commit, and the resolution lands on the diff target
-    itself, so the report explains a change against the very state it is
-    diffing and lists nothing.
-    """
+    """Recorded locks cannot prove their own generating source."""
 
     def _uncommitted_lock(self, scene: Scenario) -> None:
         scene.component("svc", path="svc", boundary=["api"])
@@ -118,46 +99,44 @@ class PreciseOriginTests(unittest.TestCase):
         scene.append_line("svc/api/v1.yaml", "drift: true")
         scene.commit("drift")
 
-    def test_a_committed_lock_backs_up_its_attribution(self):
-        """The ordinary case, and the contrast the divergence is measured against."""
+    def test_a_committed_lock_does_not_imply_source_attribution(self):
         with Scenario() as scene:
             self._committed_lock(scene)
             result = _why(scene)
             self.assertEqual(result["_returncode"], 1)
-            self.assertTrue(_is_precise(result["diagnostic_base_origin"]))
-            self.assertNotEqual(result["diagnostic_base"], scene.head())
-            self.assertTrue(result["changed_files"])
+            self.assertIsNone(result["diagnostic_base"])
+            self.assertEqual(result["changed_files_status"], "not-run")
+            self.assertEqual(result["changed_files"], [])
+            self.assertIn("unavailable", result["diagnostic_base_origin"])
 
-    def test_a_precise_origin_never_resolves_to_the_diff_target(self):
-        """A lock first recorded at the target uses a disclosed broad fallback."""
+    def test_an_explicit_target_is_an_honest_empty_source_comparison(self):
         with Scenario() as scene:
             self._uncommitted_lock(scene)
-            result = _why(scene)
-            if _is_precise(result["diagnostic_base_origin"]):
-                self.assertNotEqual(result["diagnostic_base"], scene.head())
+            result = _why(scene, base_ref="HEAD")
+            self.assertEqual(result["diagnostic_base"], scene.head())
+            self.assertEqual(result["diagnostic_base_origin"], "explicit --base-ref")
+            self.assertEqual(result["changed_files_status"], "ok")
+            self.assertEqual(result["changed_files"], [])
 
-    def test_a_precise_origin_comes_with_a_non_empty_changed_set(self):
-        """Precise attribution always has changed-file evidence."""
+    def test_an_explicit_earlier_source_lists_the_actual_changed_files(self):
         with Scenario() as scene:
             self._uncommitted_lock(scene)
-            result = _why(scene)
-            if (
-                result["_returncode"] != 0
-                and result["changed_files_status"] == "ok"
-                and _is_precise(result["diagnostic_base_origin"])
-            ):
-                self.assertTrue(result["changed_files"])
+            result = _why(scene, base_ref="HEAD~1")
+            self.assertEqual(result["diagnostic_base_origin"], "explicit --base-ref")
+            self.assertEqual(result["changed_files_status"], "ok")
+            self.assertEqual(result["changed_files"], [
+                {"path": "svc/api/v1.yaml", "status": "M"},
+            ])
 
-    def test_a_lock_first_recorded_with_the_drift_uses_a_root_fallback(self):
+    def test_a_lock_first_recorded_with_drift_does_not_invent_a_fallback(self):
         with Scenario() as scene:
             self._uncommitted_lock(scene)
             result = _why(scene)
             self.assertEqual(result["_returncode"], 1)
-            self.assertNotEqual(result["diagnostic_base"], scene.head())
-            self.assertEqual(result["changed_files_status"], "ok")
-            self.assertTrue(result["changed_files"])
-            self.assertFalse(_is_precise(result["diagnostic_base_origin"]))
-            self.assertIn("diff target", result["diagnostic_base_origin"])
+            self.assertIsNone(result["diagnostic_base"])
+            self.assertEqual(result["changed_files_status"], "not-run")
+            self.assertEqual(result["changed_files"], [])
+            self.assertIn("unavailable", result["diagnostic_base_origin"])
 
 
 class DisclosedFallbackTests(unittest.TestCase):

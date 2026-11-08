@@ -196,9 +196,14 @@ def test_lock_history_treats_malformed_historical_components_as_no_entry(
 
     explained = _run(tmp_path, "explain", "svc", "--source", "head")
 
+    assert explained.returncode == 2
+    assert "Pass --base-ref" in explained.stderr
+    explained = _run(
+        tmp_path, "explain", "svc", "--source", "head", "--base-ref", "HEAD~1"
+    )
     assert explained.returncode == 0, explained.stderr
     assert "svc/impl.py" in explained.stdout
-    assert "commit that introduced the current lock entry for svc" in explained.stdout
+    assert "explicit --base-ref" in explained.stdout
 
 
 def test_lock_history_allows_signature_tokens_in_the_lock_path(tmp_path: Path) -> None:
@@ -223,10 +228,17 @@ def test_lock_history_allows_signature_tokens_in_the_lock_path(tmp_path: Path) -
 
     assert why_json.returncode == 0, why_json.stderr
     payload = json.loads(why_json.stdout)
+    assert payload["changed_files"] == []
+    assert payload["diagnostic_base"] is None
+    assert "unavailable" in payload["diagnostic_base_origin"]
+    explicit = _run(
+        tmp_path, "why", "svc", "--source", "head", "--lock", "%Good.lock",
+        "--format", "json", "--base-ref", "HEAD~1",
+    )
+    assert explicit.returncode == 0, explicit.stderr
+    payload = json.loads(explicit.stdout)
     assert payload["changed_files"] == [{"path": "svc/impl.py", "status": "M"}]
-    assert "introduced the current lock entry for svc" in payload[
-        "diagnostic_base_origin"
-    ]
+    assert payload["diagnostic_base_origin"] == "explicit --base-ref"
 
 
 def test_verify_json_exposes_typed_transitive_consumer_impact(
