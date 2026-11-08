@@ -555,7 +555,7 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         description=(
             "Compare current fingerprints against the lockfile and explain what changed.\n\n"
             "Shows which facets (exact/behavior/boundary/compat) drifted, what type of change\n"
-            "it is, and which files are responsible.\n\n"
+            "it is. Explicit --base-ref adds a source comparison, not proof of lock provenance.\n\n"
             "Exit codes:\n"
             "  0  Component is up to date\n"
             "  1  Component has drifted\n"
@@ -571,8 +571,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Git ref resolved to an immutable commit for changed-file diagnostics "
-            "(default: commit that introduced "
-            "the component's current lock entry for source=head; HEAD otherwise)"
+            "(required for source=head file lists; defaults to HEAD for index/working-tree). "
+            "A lock-containing commit does not prove the generating source"
         ),
     )
     why.add_argument(

@@ -1015,7 +1015,7 @@ def why_component(
     Compares current fingerprints against the locked values and shows:
     - Which facets (exact/behavior/boundary/compat) changed and how
     - What type of change it is (impl-only, behavioral, boundary, breaking)
-    - Files that changed under the component path (bounded source comparison)
+    - Files in an explicit source comparison, not proof of lock provenance
 
     Returns 0 if no drift, 1 if drift found, 2 on usage/config error.
     """
@@ -1239,8 +1239,8 @@ def why_component(
         print(f"Changed-file diagnostics were not run for source={source}.")
         if source == "head":
             print(
-                f"  Tip: run `git log --oneline -- "
-                f"{_display_path(comp_path)}` to inspect component history."
+                "  Lock source provenance is unavailable. Supply --base-ref "
+                "for an explicit source comparison; it is not deployment evidence."
             )
 
     boundary_paths = comp_cfg.get("boundary", {}).get("paths", [])
@@ -1580,63 +1580,26 @@ def analyze_component_drift(
                     changed_files = []
                     changed_files_status = "error"
                     changed_files_error = _bounded_exception_text(exc)
+        elif source == "head" and resolved_diagnostic_base is None:
+            # A commit storing a lock is not necessarily the commit whose
+            # inputs generated it (copied locks and pre-commit generation are
+            # ordinary examples). Do not turn lock history into provenance.
+            diagnostic_base_origin = "unavailable: lock does not record its generating source"
         elif source == "head":
             try:
-                if resolved_diagnostic_base is not None:
-                    diagnostic_base = resolved_diagnostic_base
-                    diagnostic_base_origin = "explicit --base-ref"
-                else:
-                    diagnostic_base, diagnostic_base_origin = (
-                        _resolve_lock_history_base(
-                            repo_root,
-                            source,
-                            snapshot,
-                            lock_path,
-                            component_name=component_name,
-                            locked_component=locked_comp,
-                        )
-                    )
-                if diagnostic_base is None:
-                    raise ValueError("no committed diagnostic base is available")
+                diagnostic_base = resolved_diagnostic_base
+                diagnostic_base_origin = "explicit --base-ref"
                 target = (
                     snapshot.head_oid
                     if snapshot is not None and snapshot.head_oid is not None
                     else "HEAD"
                 )
-                if diagnostic_base_origin.startswith("current commit fallback"):
-                    changed_files = []
-                    changed_files_status = "not-run"
-                else:
-                    diff_command = (
-                        [
-                            "diff-tree",
-                            "--root",
-                            "--no-commit-id",
-                            "--name-status",
-                            "-r",
-                            "-z",
-                            target,
-                        ]
-                        if diagnostic_base == target
-                        and diagnostic_base_origin.startswith("root commit fallback")
-                        else [
-                            "diff",
-                            "--name-status",
-                            "-z",
-                            diagnostic_base,
-                            target,
-                        ]
-                    )
-                    changed_files = _git_name_status(
-                        repo_root,
-                        [
-                            "--literal-pathspecs",
-                            *diff_command,
-                            "--",
-                            *component_pathspecs,
-                        ],
-                    )
-                    changed_files_status = "ok"
+                changed_files = _git_name_status(
+                    repo_root,
+                    ["--literal-pathspecs", "diff", "--name-status", "-z",
+                     diagnostic_base, target, "--", *component_pathspecs],
+                )
+                changed_files_status = "ok"
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
                 changed_files_status = "error"

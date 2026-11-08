@@ -633,19 +633,14 @@ class RootAndCurrentCommitFallbackTests(unittest.TestCase):
         self.assertEqual(len(base), 40)
         self.assertTrue(set(base) <= set("0123456789abcdef"))
 
-    def test_the_root_branch_diffs_a_base_older_than_the_target(self):
-        """Clause (a): a strictly older base, and a non-empty change set."""
+    def test_why_does_not_use_a_root_fallback_as_lock_source_evidence(self):
         with self._squeezed():
             payload = _why_json(self.scene.root)
         self.assertEqual(payload["_returncode"], 1)
-        self.assertEqual(payload["diagnostic_base"], self.root_commit)
-        self.assertEqual(payload["diagnostic_base_origin"], ROOT_BYTE_LIMIT)
-        self.assertNotEqual(payload["diagnostic_base"], self.head)
-        self.assertEqual(payload["changed_files_status"], "ok")
-        self.assertEqual(
-            [entry["path"] for entry in payload["changed_files"]],
-            ["svc/api/v1.yaml"],
-        )
+        self.assertIsNone(payload["diagnostic_base"])
+        self.assertIn("unavailable", payload["diagnostic_base_origin"])
+        self.assertEqual(payload["changed_files_status"], "not-run")
+        self.assertEqual(payload["changed_files"], [])
 
     def test_the_root_branch_lists_the_changed_file_in_explain_too(self):
         """The premise for the current-commit pin: explain can list a file."""
@@ -689,17 +684,15 @@ class RootAndCurrentCommitFallbackTests(unittest.TestCase):
         self.assertEqual(origin, CURRENT_BYTE_LIMIT)
         self.assertEqual(base, self.head)
 
-    def test_the_current_commit_branch_is_distinguishable_in_why_json(self):
-        """Clause (b), first half: the JSON view names the rung it landed on."""
+    def test_why_does_not_use_current_commit_fallback_as_provenance(self):
         with self._squeezed(), mock.patch.object(
             _output, "_git_run", _broken_root_lookup
         ):
             payload = _why_json(self.scene.root)
         self.assertEqual(payload["_returncode"], 1)
-        self.assertEqual(payload["diagnostic_base_origin"], CURRENT_BYTE_LIMIT)
-        self.assertEqual(payload["diagnostic_base"], self.head)
-        self.assertNotEqual(payload["diagnostic_base_origin"], ROOT_BYTE_LIMIT)
-        self.assertNotIn(PRECISE_ORIGIN, payload["diagnostic_base_origin"])
+        self.assertIsNone(payload["diagnostic_base"])
+        self.assertIn("unavailable", payload["diagnostic_base_origin"])
+        self.assertEqual(payload["changed_files_status"], "not-run")
 
     def test_the_current_commit_branch_discloses_that_no_diff_was_run(self):
         with self._squeezed(), mock.patch.object(
@@ -815,19 +808,15 @@ class ShallowCheckoutBaseTests(unittest.TestCase):
         self.assertEqual(fetched.splitlines(), [self.scene.head()])
         self.assertEqual(len(_lock_commits(self.scene)), 4)
 
-    def test_the_full_checkout_resolves_a_base_older_than_head(self):
-        """The contrast the shallow answer is measured against."""
+    def test_full_history_still_does_not_prove_the_generating_source(self):
         result = run_cli(
             self.scene.root, "why", "svc", "--source", "head", "--format", "json"
         )
         payload = json.loads(result.stdout)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(payload["diagnostic_base_origin"], PRECISE_ORIGIN)
-        self.assertNotEqual(payload["diagnostic_base"], self.scene.head())
-        self.assertEqual(
-            [entry["path"] for entry in payload["changed_files"]],
-            ["svc/api/v1.yaml"],
-        )
+        self.assertIn("unavailable", payload["diagnostic_base_origin"])
+        self.assertIsNone(payload["diagnostic_base"])
+        self.assertEqual(payload["changed_files"], [])
 
     def test_a_shallow_checkout_matches_the_full_one_or_discloses_truncation(self):
         """A fetch boundary is disclosed instead of claimed as precise history."""
@@ -862,21 +851,21 @@ class ShallowCheckoutBaseTests(unittest.TestCase):
         self.assertIn(SHALLOW_REMEDIATION, result.stderr)
         self.assertIn("shallow", result.stderr.lower())
 
-    def test_the_shallow_fallback_is_explicit_and_still_lists_evidence(self):
+    def test_shallow_why_reports_unavailable_source_instead_of_fallback_evidence(self):
         shallow = self._clone_why()
         self.assertEqual(shallow["_returncode"], 1)
-        self.assertEqual(shallow["diagnostic_base"], self.scene.head())
-        self.assertIn("shallow", shallow["diagnostic_base_origin"])
+        self.assertIsNone(shallow["diagnostic_base"])
+        self.assertIn("unavailable", shallow["diagnostic_base_origin"])
         self.assertNotEqual(shallow["diagnostic_base_origin"], PRECISE_ORIGIN)
-        self.assertEqual(shallow["changed_files_status"], "ok")
-        self.assertTrue(shallow["changed_files"])
+        self.assertEqual(shallow["changed_files_status"], "not-run")
+        self.assertEqual(shallow["changed_files"], [])
         why = run_cli(
             self.clone, "why", "svc", "--source", "head", "--format", "json"
         )
         explain = run_cli(self.clone, "explain", "svc", "--source", "head")
         self.assertEqual(explain.returncode, 0)
         self.assertNotIn(NO_CHANGES_LINE, explain.stdout)
-        self.assertIn("shallow", why.stdout.lower())
+        self.assertIn("unavailable", why.stdout.lower())
         self.assertIn("shallow", explain.stdout.lower())
         self.assertIn("fetch complete history", explain.stdout.lower())
 

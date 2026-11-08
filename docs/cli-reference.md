@@ -440,7 +440,7 @@ usage: boundver why [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_REF]
 
 Compare current fingerprints against the lockfile and explain what changed.
 
-Shows which facets (exact/behavior/boundary/compat) drifted, what type of change it is, and which files are responsible.
+Shows which facets (exact/behavior/boundary/compat) drifted, what type of change it is. Explicit --base-ref adds a source comparison, not proof of lock provenance.
 
 ```text
 Exit codes:
@@ -455,7 +455,7 @@ Exit codes:
 | `component` | `COMPONENT` | required | Component name from config |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
 | `--lock` | `LOCK` | `boundary.lock.json` | — |
-| `--base-ref` | `BASE_REF` | — | Git ref resolved to an immutable commit for changed-file diagnostics (default: commit that introduced the component's current lock entry for source=head; HEAD otherwise) |
+| `--base-ref` | `BASE_REF` | — | Git ref resolved to an immutable commit for changed-file diagnostics (required for source=head file lists; defaults to HEAD for index/working-tree). A lock-containing commit does not prove the generating source |
 | `--source` | `{head,index,working-tree}` | `head` | Fingerprint source to compare against (default: head) |
 | `--format` | `{json,text}` | `text` | Output format |
 | `--transitive` | — | `false` | Report the transitive downstream consumer closure |

@@ -61,6 +61,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `why --source head` no longer infers its changed-file base from the commit
+  that introduced a lock entry. That commit is not proof of the generating
+  source. Fingerprint drift remains available; pass `--base-ref` explicitly
+  for a source comparison. This does not attest lock provenance or deployment.
+
 - Declaration-only config validation no longer incorrectly requires custom
   providers to have been runtime-registered when runtime validation is disabled.
   Explicit provider-name cross-checks remain enforced; normal validation still

@@ -141,24 +141,26 @@ fail with `ConfigError` instead of approximating an immutable source.
 
 ### Diagnostic bases
 
-Fingerprint drift accumulates from the source represented by the lock, not
-necessarily from the previous commit. For `source=head`, `why` and `explain`
-therefore inspect bounded lock history and default their changed-file comparison
-to the commit that introduced the component's current lock entry. This remains
-correct when a later partial update changes another component in the same lock.
-They print the inferred base and its origin. If bounded history cannot establish
-that entry-specific point, they report and use a broader root/lock-history
-fallback instead of silently claiming that the previous commit is authoritative.
-The inference avoids adding a commit SHA that would make identical locks differ
-between `head`, `index`, and `working-tree` generation.
+The lock does not record its generating source commit. A commit that stores or
+introduces a lock entry is not proof of that source: locks can be copied, or
+generated before other changes are committed. Fingerprint equality is not
+unique source provenance either.
 
-Use `--base-ref REF` to override the inference. Boundver resolves an explicit
-ref once to an immutable commit before the diff and discloses both the requested
-name and resolved object ID. Empty, whitespace-only, missing, or ambiguous refs
-are usage errors. `index` and `working-tree` default to `HEAD`, because their
-staged or on-disk source does not yet have a commit identity. Inference is
-diagnostic evidence, not lock integrity: verify still recomputes every selected
-fingerprint from the requested source.
+In v0.17 development, `why --source head` therefore leaves changed-file
+attribution unavailable unless you supply `--base-ref REF`. Fingerprint drift
+is still computed and reported. An explicit ref is resolved once to an immutable
+commit and compared with the captured current source. This is an operator-chosen
+source comparison, not proof that the lock was generated there or deployed.
+Empty, whitespace-only, missing and ambiguous refs are usage errors.
+
+`index` and `working-tree` diagnostics default to `HEAD` as a source-comparison
+convenience, not as lock-source provenance. Verification still recomputes
+fingerprints from the selected source independently of file diagnostics.
+
+The legacy `explain` default still uses bounded lock-history heuristics in this
+development branch. Its inferred base is advisory only, never generating-source
+evidence. Replacing that inference is part of the remaining v0.17 work; use an
+explicit `--base-ref` for an intentional comparison.
 
 When `explain` finds no changes in the selected source, text output names the
 other exact `--source` forms without silently reading those additional views.

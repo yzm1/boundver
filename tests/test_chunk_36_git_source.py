@@ -987,13 +987,13 @@ class BaseRefNormalizationTests(unittest.TestCase):
         self.assertEqual(document["diagnostic_base_origin"], "explicit --base-ref")
         self.assertEqual(document["changed_files_status"], "ok")
 
-    def test_no_base_ref_infers_the_lock_history_origin(self):
+    def test_no_base_ref_leaves_lock_source_unproven(self):
         with _drift_scene() as scene:
             result, document = self._why_json(scene)
-            head = scene.head()
         self.assertEqual(result.returncode, DRIFT, result.stderr)
-        self.assertEqual(document["diagnostic_base_origin"], self.INFERRED_ORIGIN)
-        self.assertNotEqual(document["diagnostic_base"], head)
+        self.assertIn("unavailable", document["diagnostic_base_origin"])
+        self.assertIsNone(document["diagnostic_base"])
+        self.assertEqual(document["changed_files_status"], "not-run")
 
     def test_an_empty_base_ref_is_used_or_refused_but_never_inferred(self):
         """An explicitly empty CI variable is a usage error, never inference."""
