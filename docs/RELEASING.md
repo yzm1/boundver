@@ -345,6 +345,20 @@ scans on both architectures. It does not accept new findings, waive a vendor
 fix or authorize publication. The assessed report's SHA-256 is
 `bcc7ec8552a74f3a692d0e6a0f530c404518de170127ffe1089f46d4d772436d`.
 
+The Python 3.12.16 amd64 development image built from source
+`bf7215d28786cb7d4d7d386598147651bec006d5` was subsequently scanned on
+2026-11-08. Its Docker archive SHA-256 is
+`b1026da5e9ed4dae9600c05e61ddb7319f80240f06cb00d124dd94f4c1486b1b`.
+Using the pinned CI scanner and database updated at
+`2026-11-08T12:51:20.684876801Z`, its unfiltered report contains the same
+56 package/CVE pairs and 17 HIGH IDs as the conditionally accepted report,
+with no CRITICAL or fixable HIGH findings. The separate no-exceptions
+fixable-finding gate passed on that same archive. The unfiltered report's
+SHA-256 is
+`7f52461d96d2d2bd618e36d75e3ee27fdb23aba8d4c613c3125f6af1d9723648`.
+This is amd64 development evidence, not ARM validation, independent approval
+or final release-image acceptance; it does not renew the exception policy.
+
 Both architecture scans and reassessment of every remaining exception are still
 required by issue #175. The earlier arm64 build and a fresh direct-runtime
 probe returned `exec format error`; a separate BuildKit arm64 probe failed the
