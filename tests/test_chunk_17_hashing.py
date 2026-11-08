@@ -576,9 +576,17 @@ def _committed_lock_then_drift(scene: Scenario, members: Sequence[str]) -> None:
 
 
 def _drive_generate(members: Sequence[str]) -> _Outcome:
+    return _drive_generate_args(members)
+
+
+def _drive_generate_timeout(members: Sequence[str]) -> _Outcome:
+    return _drive_generate_args(members, "--timeout", "60")
+
+
+def _drive_generate_args(members: Sequence[str], *extra: str) -> _Outcome:
     with _slice_repository(members) as scene:
         before = _lock_bytes(scene)
-        result = run_cli(scene.root, "generate")
+        result = run_cli(scene.root, "generate", *extra)
         return _Outcome(
             result.returncode != 0, result.stderr, _lock_bytes(scene) != before
         )
@@ -623,7 +631,9 @@ def _drive_public_generate(members: Sequence[str]) -> _Outcome:
 #: derived at runtime by `_lock_writing_functions`; a function that starts
 #: writing a lock and is not listed here fails the first test below.
 LOCK_WRITERS: Dict[str, Tuple[str, ...]] = {
-    "core.py::_cmd_generate": ("generate", "generate --components"),
+    "core.py::_cmd_generate_observed.publish": (
+        "generate", "generate --components", "generate --timeout",
+    ),
     "core.py::_cmd_verify": ("verify --update",),
     "__init__.py::generate": ("boundver.generate",),
 }
@@ -631,6 +641,7 @@ LOCK_WRITERS: Dict[str, Tuple[str, ...]] = {
 #: One runnable driver per spelling named above.
 DRIVERS = {
     "generate": _drive_generate,
+    "generate --timeout": _drive_generate_timeout,
     "generate --components": _drive_generate_components,
     "verify --update": _drive_verify_update,
     "boundver.generate": _drive_public_generate,
@@ -640,21 +651,30 @@ DRIVERS = {
 def _writers_in_source(label: str, source: str) -> Set[str]:
     """Functions in *source* that call the lock writer, by `label::name`."""
     found: Set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for inner in ast.walk(node):
-            if not isinstance(inner, ast.Call):
-                continue
-            called = inner.func
+    class Writers(ast.NodeVisitor):
+        def __init__(self):
+            self.scope = []
+
+        def visit_FunctionDef(self, node):
+            self.scope.append(node.name)
+            self.generic_visit(node)
+            self.scope.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Call(self, node):
+            called = node.func
             name = (
                 called.id
                 if isinstance(called, ast.Name)
                 else called.attr if isinstance(called, ast.Attribute) else None
             )
-            if name == "_write_lockfile_atomic":
-                found.add(f"{label}::{node.name}")
-                break
+            if name == "_write_lockfile_atomic" and self.scope:
+                found.add(f"{label}::{'.'.join(self.scope)}")
+            self.generic_visit(node)
+
+    Writers().visit(ast.parse(source))
     return found
 
 
@@ -676,7 +696,7 @@ class UnknownSliceMemberTests(unittest.TestCase):
         synthetic = (
             "def outer():\n"
             "    def helper():\n"
-            "        pass\n"
+            "        _write_lockfile_atomic(path, value)\n"
             "    _write_lockfile_atomic(path, value)\n"
             "\n"
             "def bystander():\n"
@@ -687,7 +707,7 @@ class UnknownSliceMemberTests(unittest.TestCase):
         )
         self.assertEqual(
             _writers_in_source("fake.py", synthetic),
-            {"fake.py::outer", "fake.py::bystander"},
+            {"fake.py::outer", "fake.py::outer.helper", "fake.py::bystander"},
         )
 
     def test_the_driver_table_covers_every_function_that_writes_a_lock(self):

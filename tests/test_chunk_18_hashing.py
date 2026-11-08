@@ -703,6 +703,9 @@ def _drift(explanation: str) -> dict:
         "current_fps": {"boundary": "b" * 64},
         "changed_files": [],
         "version": "1.0.0",
+        "version_change": {
+            "previous": "1.0.0", "current": "1.0.0", "status": "unchanged",
+        },
         "provider_explanation": explanation,
     }
 

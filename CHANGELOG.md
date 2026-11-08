@@ -38,12 +38,13 @@ All notable changes to this project are documented here. The format follows
 
 - Added `verify --format scoped-json` to separate requested selection, actual
   computation dependencies, selected fingerprint drift and repository-level
-  diagnostics. Existing JSON output and aggregate gating remain unchanged.
+  diagnostics. The existing JSON shape and aggregate gating remain unchanged;
+  unknown component selections now produce a structured JSON failure.
   Scoped text output also distinguishes a clean selected fingerprint comparison
   from global integrity failures; `--changed-from` still verifies full integrity.
 
 - Added read-only `compare-deployment --environment NAME --ref LOCAL_REF`,
-  with text/JSON output, summary counts and bounded component listings. It
+  with text/JSON output, summary counts and bounded component/slice listings. It
   requires a reconciled reference lock and compatible declarations, computes
   current contracts without refreshing a lock, and never fetches or moves refs.
   Environment labels are operator assertions, not deployment attestations;

@@ -7,10 +7,13 @@ and an explicit baseline that lets CI reject new verification debt.
 The inspection and ratcheting tools in this guide are available in v0.13 and
 later. They are not available in the v0.12 package or Action.
 
-All commands that accept `--source` default to `head`. That means committed
+The inspection and ratcheting commands default to `head`. That means committed
 state, not unstaged local edits. Use `index` for a staged review and
 `working-tree` for tracked files on disk; use the same source when generating
 and verifying a lock.
+
+`validate-config` instead defaults to `working-tree`; pass `--source head`
+explicitly when validating committed configuration.
 
 ## Rename delimiter-ambiguous component identifiers
 

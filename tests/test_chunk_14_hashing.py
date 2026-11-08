@@ -635,6 +635,7 @@ BASE_LOCK_PRECONDITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "verify": (
             "ERROR: lockfile preflight failed:\n"
+            "Selected fingerprint comparison not performed; repository preflight failed.\n"
             "  - LOCKFILE schema unsupported: boundary-lock/v2 "
             "(expected boundary-lock/v4)\n"
         ),
@@ -647,6 +648,7 @@ BASE_LOCK_PRECONDITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "verify": (
             "ERROR: lockfile preflight failed:\n"
+            "Selected fingerprint comparison not performed; repository preflight failed.\n"
             "  - LOCKFILE malformed: component 'a' missing fingerprints object\n"
         ),
     },
@@ -658,6 +660,7 @@ BASE_LOCK_PRECONDITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "verify": (
             "ERROR: lockfile preflight failed:\n"
+            "Selected fingerprint comparison not performed; repository preflight failed.\n"
             "  - METADATA MISMATCH project: lockfile='renamed' current='scoped'\n"
             "  - LOCKFILE scoped --update cannot repair global component or "
             "slice preflight issues; rerun without --components after "
@@ -672,6 +675,7 @@ BASE_LOCK_PRECONDITIONS: Dict[str, Dict[str, Any]] = {
         ),
         "verify": (
             "ERROR: lockfile preflight failed:\n"
+            "Selected fingerprint comparison not performed; repository preflight failed.\n"
             "  - LOCKFILE component set differs from config: "
             "locked=['a', 'b'] configured=['a', 'b', 'c']\n"
             "  - LOCKFILE scoped --update cannot repair global component or "
