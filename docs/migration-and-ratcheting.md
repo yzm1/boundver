@@ -182,6 +182,11 @@ second change to the same component/facet remains known; drift in another
 component or facet is new and fails with its normal severity code. JSON output
 separates `issues`, `baselined_issues`, and stale baseline IDs.
 
+This is category-level debt, not approval of one exact change. The
+[reviewed-drift design](reviewed-drift-design.md) describes that limitation and
+the evidence required before a narrower acknowledgement could be introduced.
+No baseline can waive a configuration or graph-integrity failure.
+
 Baseline context binds the exact canonical digest of the reviewed lock as well
 as the project, lock schema, semantic-config contract,
 source mode, component/facet selection, transitive-consumer choice, and
