@@ -470,10 +470,11 @@ class AutomationContractTests(unittest.TestCase):
                 schema_path = REPO_ROOT / "spec" / schema_name
                 self.assertTrue(schema_path.is_file())
                 schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                schema_ref = "main" if schema_name == "cli-output.coverage.schema.json" else "v0.16.0"
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"
-                    f"v0.16.0/spec/{schema_name}",
+                    f"{schema_ref}/spec/{schema_name}",
                 )
 
     def test_packaging_smoke_removes_stale_build_outputs(self):

@@ -326,7 +326,8 @@ Examples:
 ## `boundver coverage`
 
 ```text
-usage: boundver coverage [-h] [--config CONFIG] [--source {head,index,working-tree}]
+usage: boundver coverage [-h] [--config CONFIG] [--component NAME] [--path-prefix PATH]
+                         [--limit LIMIT] [--summary] [--source {head,index,working-tree}]
                          [--format {json,text}] [--strict]
 ```
 
@@ -334,6 +335,10 @@ usage: boundver coverage [-h] [--config CONFIG] [--source {head,index,working-tr
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--component` | `NAME` | — | Audit this component's facets; repeat to select more. Skips repository ownership audit |
+| `--path-prefix` | `PATH` | none | Restrict findings to a literal repository-relative path prefix; repeat for a union |
+| `--limit` | `LIMIT` | `1000` | Maximum displayed path entries, 0..10000; analysis and strict totals remain complete |
+| `--summary` | — | `false` | Report per-component/facet counts without listing paths |
 | `--source` | `{head,index,working-tree}` | `head` | Snapshot to inspect (default: head) |
 | `--format` | `{json,text}` | `text` | Output format |
 | `--strict` | — | `false` | Exit 1 when any uncovered declaration path is reported |

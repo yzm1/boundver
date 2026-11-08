@@ -428,6 +428,22 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     coverage.add_argument("--config", default="boundary.config.json")
     coverage.add_argument(
+        "--component", action="append", default=None, metavar="NAME",
+        help="Audit this component's facets; repeat to select more. Skips repository ownership audit",
+    )
+    coverage.add_argument(
+        "--path-prefix", action="append", default=[], metavar="PATH",
+        help="Restrict findings to a literal repository-relative path prefix; repeat for a union",
+    )
+    coverage.add_argument(
+        "--limit", type=int, default=1000,
+        help="Maximum displayed path entries, 0..10000; analysis and strict totals remain complete",
+    )
+    coverage.add_argument(
+        "--summary", action="store_true",
+        help="Report per-component/facet counts without listing paths",
+    )
+    coverage.add_argument(
         "--source",
         choices=SOURCE_MODES,
         default="head",

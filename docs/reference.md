@@ -229,7 +229,10 @@ reported separately.
 ```bash
 boundver coverage --source head                 # advisory; exits 0
 boundver coverage --source head --strict        # exits 1 on uncovered paths
-boundver coverage --source index --format json  # boundver-declaration-coverage/v1
+boundver coverage --source index --format json  # boundver-declaration-coverage/v2
+boundver coverage --source head --summary --strict
+boundver coverage --component payment-api --component payment-client --summary
+boundver coverage --path-prefix services/payment --limit 2000 --format json
 ```
 
 The result names the selected config identity and the JSON Pointer responsible
@@ -238,6 +241,52 @@ does not change config digests, component identities, slices, locks, or
 `verify` results. Ignored untracked files are absent because coverage begins
 from Git's tracked path set; a deliberately tracked ignored file remains in the
 report.
+
+### Large and filtered coverage reports
+
+Coverage analyzes the selected scope even when its path listing is shortened.
+The default listing limit is 1,000 **path entries** across all facets and
+ownership groups, not 1,000 unique files. A file omitted from both behavior and
+boundary declarations contributes two entries. `--limit 0` or `--summary`
+prints counts without paths; `--limit` accepts 0 through 10,000. A separate
+512 KiB detail budget may shorten a listing before the requested row limit.
+Shell redirection to a file does not remove these limits.
+
+`--component NAME` is repeatable and audits only those components' facets. It
+does not run repository-wide ownership auditing: unowned paths cannot be
+attributed to a selected component. `--path-prefix PATH` is a repeatable union
+of literal, repository-relative path prefixes with segment boundaries, not
+globs. It narrows both facet paths and ownership paths when ownership auditing
+is enabled. Both filters may be combined. The full config must still validate;
+filters cannot hide an invalid declaration elsewhere.
+
+The v2 JSON contract records `scope` and `presentation` separately:
+
+- `complete: true` means analysis finished **within the explicit scope**. Check
+  `scope.filtered` before treating it as a whole-repository audit.
+- `presentation.total_paths`, `shown_paths` and `omitted_paths` count entries;
+  `truncated` says that paths were omitted from presentation. Each facet or
+  ownership group has full `uncovered_count` and `excluded_count`, independently
+  of its displayed `uncovered_files` and `excluded` arrays.
+- `ok` and `--strict` use all in-scope findings, including undisplayed paths.
+  A summary or truncated listing can therefore exit 1 even if no uncovered
+  path is displayed. A complete all-excluded report remains advisory-clean.
+
+Existing v1 consumers must explicitly accept and handle v2; the shorter arrays
+are no longer exhaustive when presentation is truncated. Matchers retain their
+work budgets. Coverage additionally bounds analyzed omitted entries to
+1,000,000, facet/ownership groups to 10,000, filters to 256 of each kind, and
+the full serialized result to 4 MiB. Exhausting an analysis/result budget exits
+2 with no partial-success report; JSON analysis failures have `complete: false`
+and `ok: false`. These are resource limits, not invitations to weaken policy.
+
+Reasoned `coverage.exclusions` remain policy decisions. Do not add exclusions
+or narrow declarations merely to make a large listing fit; use summary or
+presentation filters instead.
+
+Ownership auditing only considers `coverage.source_indicators`. With no
+indicators it has no candidates; a clean result does not establish that every
+source file in the repository has a declared owner.
 
 ## Selector work limits
 

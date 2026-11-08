@@ -10,6 +10,7 @@ from ._config import _expand_component_paths
 from ._git import GitSourceSnapshot, _list_files_for_source
 from ._utils import (
     _available_component_facets,
+    _bounded_json_dumps,
     _is_glob,
     _normalize_declared_path,
     _PathGlobOperation,
@@ -18,9 +19,67 @@ from ._utils import (
 )
 
 
-COVERAGE_SCHEMA = "boundver-declaration-coverage/v1"
+COVERAGE_SCHEMA = "boundver-declaration-coverage/v2"
 MAX_COVERAGE_LISTED_PATHS = 1_000
 MAX_COVERAGE_PATH_CHARS = 32_768
+MAX_COVERAGE_DETAIL_BYTES = 512 * 1024
+MAX_COVERAGE_RESULT_BYTES = 4 * 1024 * 1024
+MAX_COVERAGE_LIMIT = 10_000
+MAX_COVERAGE_GROUPS = 10_000
+MAX_COVERAGE_FILTERS = 256
+MAX_COVERAGE_ANALYZED_PATHS = 1_000_000
+
+
+class _CoverageDetails:
+    """Bound presentation independently of analysis and strict-gate totals."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.shown = 0
+        self.total = 0
+        self.bytes = 0
+
+    def record(self, group: dict, path: str, exclusion: Optional[dict]) -> None:
+        key = "excluded" if exclusion is not None else "uncovered_files"
+        count = "excluded_count" if exclusion is not None else "uncovered_count"
+        group[count] += 1
+        self.total += 1
+        if self.total > MAX_COVERAGE_ANALYZED_PATHS:
+            raise GuardrailError("Declaration coverage exceeds its analyzed-path work budget")
+        if self.shown >= self.limit:
+            return
+        value = exclusion if exclusion is not None else path
+        # Include conservative pretty-print/list overhead. Final serialization
+        # independently enforces the complete-document byte bound.
+        size = len(_bounded_json_dumps(value, ensure_ascii=True).encode("utf-8")) + 256
+        if self.bytes + size > MAX_COVERAGE_DETAIL_BYTES:
+            return
+        group[key].append(value)
+        self.bytes += size
+        self.shown += 1
+
+
+def _coverage_group(**fields) -> dict:
+    return {**fields, "uncovered_files": [], "excluded": [],
+            "uncovered_count": 0, "excluded_count": 0}
+
+
+def _coverage_prefixes(prefixes: Sequence[str]) -> Tuple[str, ...]:
+    if len(prefixes) > MAX_COVERAGE_FILTERS:
+        raise ValueError(f"Coverage accepts at most {MAX_COVERAGE_FILTERS} path prefixes")
+    normalized = []
+    for prefix in prefixes:
+        value = _normalize_declared_path(prefix)
+        if _is_glob(value):
+            raise ValueError("Coverage path prefixes must be literal, not globs")
+        normalized.append(value)
+    return tuple(sorted(set(normalized)))
+
+
+def _in_coverage_scope(path: str, prefixes: Sequence[str], operation: _PathGlobOperation) -> bool:
+    if not prefixes:
+        return True
+    return any(_matches_selector(path, prefix, operation) for prefix in prefixes)
 
 
 def _json_pointer_token(value: str) -> str:
@@ -160,27 +219,52 @@ def declaration_coverage(
     source: str,
     snapshot: Optional[GitSourceSnapshot],
     inputs: dict,
+    component_names: Optional[Sequence[str]] = None,
+    path_prefixes: Sequence[str] = (),
+    limit: int = MAX_COVERAGE_LISTED_PATHS,
+    summary_only: bool = False,
 ) -> dict:
-    """Return deterministic coverage evidence without changing lock semantics."""
+    """Analyze the selected scope fully; bound path presentation separately.
+
+    Component selection excludes the repository-wide ownership audit. Literal
+    path prefixes narrow both component path coverage and (when enabled)
+    ownership. Config validation remains the caller's repository-wide gate.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 0 <= limit <= MAX_COVERAGE_LIMIT:
+        raise ValueError(f"Coverage limit must be between 0 and {MAX_COVERAGE_LIMIT}")
+    prefixes = _coverage_prefixes(path_prefixes)
+    components = config.get("components", {})
+    if component_names is not None:
+        if not component_names or len(component_names) > MAX_COVERAGE_FILTERS:
+            raise ValueError(f"Coverage requires 1..{MAX_COVERAGE_FILTERS} component filters")
+        unknown = set(component_names) - set(components)
+        if unknown:
+            raise ValueError("Unknown coverage component(s): " + ", ".join(sorted(unknown)))
+        selected_names = sorted(set(component_names))
+    else:
+        selected_names = sorted(components)
     all_files = _report_files(snapshot, repo_root, source)
     operation = _PathGlobOperation("Declaration coverage")
     exclusions = _normalized_coverage_exclusions(config)
-    components = config.get("components", {})
     component_reports: List[dict] = []
     complete_components: List[str] = []
-    listed_paths = 0
+    details = _CoverageDetails(0 if summary_only else limit)
     uncovered_count = 0
     excluded_count = 0
+    group_count = 0
 
     ownership_roots: Set[str] = set()
-    for component_name in sorted(components):
-        component = components[component_name]
+    for component in components.values():
         component_path = _normalize_declared_path(component["path"]).rstrip("/")
         ownership_roots.add(component_path)
         for vendored_path in component.get("vendored_copies", []):
             ownership_roots.add(_normalize_declared_path(vendored_path).rstrip("/"))
 
-        tracked = _component_paths(all_files, component_path, operation)
+    for component_name in selected_names:
+        component = components[component_name]
+        component_path = _normalize_declared_path(component["path"]).rstrip("/")
+        tracked = [path for path in _component_paths(all_files, component_path, operation)
+                   if _in_coverage_scope(path, prefixes, operation)]
         relative = [
             path[len(component_path) + 1 :] if path != component_path else ""
             for path in tracked
@@ -189,8 +273,8 @@ def declaration_coverage(
         available = sorted(_available_component_facets(component))
         for facet in available:
             if facet == "exact":
-                selected_relative = set(relative)
-                declaration = f"/components/{_json_pointer_token(component_name)}/path"
+                # Exact already includes every in-scope tracked path.
+                continue
             elif facet == "behavior":
                 selectors = component["behavior"].get("paths", [])
                 selected_relative = _expand_component_paths(
@@ -221,50 +305,36 @@ def declaration_coverage(
                 # Compatibility identity is not a path-coverage selector.
                 continue
 
+            group_count += 1
+            if group_count > MAX_COVERAGE_GROUPS:
+                raise GuardrailError("Declaration coverage exceeds its analysis group budget")
+            selected_relative = set(relative) & selected_relative
             omitted = [
                 _repo_path(component_path, path)
                 for path in relative
                 if path not in selected_relative
             ]
-            uncovered: List[str] = []
-            excluded: List[dict] = []
+            group = _coverage_group(facet=facet, declaration=declaration,
+                                    selected_files=len(selected_relative))
             for path in omitted:
                 exclusion = _coverage_exclusion(exclusions, path, facet, operation)
                 if exclusion is None:
-                    uncovered.append(path)
                     uncovered_count += 1
                 else:
-                    excluded.append(exclusion)
                     excluded_count += 1
-                listed_paths += 1
-                if listed_paths > MAX_COVERAGE_LISTED_PATHS:
-                    raise GuardrailError(
-                        "Declaration coverage report exceeds the "
-                        f"{MAX_COVERAGE_LISTED_PATHS}-path output limit; narrow "
-                        "the component or coverage selectors"
-                    )
-            if uncovered or excluded:
-                facet_reports.append(
-                    {
-                        "facet": facet,
-                        "declaration": declaration,
-                        "selected_files": len(selected_relative),
-                        "uncovered_files": uncovered,
-                        "excluded": excluded,
-                    }
-                )
+                details.record(group, path, exclusion)
+            facet_reports.append(group)
 
-        if facet_reports:
-            component_reports.append(
-                {
-                    "component": component_name,
-                    "path": component_path,
-                    "tracked_files": len(tracked),
-                    "available_facets": available,
-                    "facets": facet_reports,
-                }
-            )
-        else:
+        component_reports.append(
+            {
+                "component": component_name,
+                "path": component_path,
+                "tracked_files": len(tracked),
+                "available_facets": available,
+                "facets": facet_reports,
+            }
+        )
+        if not any(group["uncovered_count"] or group["excluded_count"] for group in facet_reports):
             complete_components.append(component_name)
 
     coverage = config.get("coverage", {})
@@ -273,46 +343,54 @@ def declaration_coverage(
         if isinstance(coverage, dict)
         else []
     )
-    source_files = sorted(
-        _selected_paths(all_files, indicators, operation) if indicators else set()
-    )
+    ownership_analyzed = component_names is None
+    source_files = sorted(path for path in (
+        _selected_paths(all_files, indicators, operation)
+        if indicators and ownership_analyzed else set()
+    ) if _in_coverage_scope(path, prefixes, operation))
     sorted_ownership_roots = sorted(ownership_roots)
     unowned_by_directory: Dict[str, dict] = {}
     for path in source_files:
         if _belongs_to_ownership_root(path, sorted_ownership_roots, operation):
             continue
         directory = posixpath.dirname(path) or "."
-        group = unowned_by_directory.setdefault(
-            directory,
-            {
-                "directory": directory,
-                "declaration": "/coverage/source_indicators",
-                "uncovered_files": [],
-                "excluded": [],
-            },
-        )
+        if directory not in unowned_by_directory:
+            group_count += 1
+            if group_count > MAX_COVERAGE_GROUPS:
+                raise GuardrailError("Declaration coverage exceeds its analysis group budget")
+            unowned_by_directory[directory] = _coverage_group(
+                directory=directory, declaration="/coverage/source_indicators",
+            )
+        group = unowned_by_directory[directory]
         exclusion = _coverage_exclusion(exclusions, path, "ownership", operation)
         if exclusion is None:
-            group["uncovered_files"].append(path)
             uncovered_count += 1
         else:
-            group["excluded"].append(exclusion)
             excluded_count += 1
-        listed_paths += 1
-        if listed_paths > MAX_COVERAGE_LISTED_PATHS:
-            raise GuardrailError(
-                "Declaration coverage report exceeds the "
-                f"{MAX_COVERAGE_LISTED_PATHS}-path output limit; narrow "
-                "coverage.source_indicators"
-            )
+        details.record(group, path, exclusion)
 
     unowned_directories = [unowned_by_directory[key] for key in sorted(unowned_by_directory)]
-    return {
+    report = {
         "schema": COVERAGE_SCHEMA,
         "complete": True,
         "ok": uncovered_count == 0,
         "issues": [],
         "inputs": inputs,
+        "scope": {
+            "filtered": component_names is not None or bool(prefixes),
+            "components": selected_names,
+            "path_prefixes": list(prefixes),
+            "ownership_analyzed": ownership_analyzed,
+        },
+        "presentation": {
+            "summary_only": summary_only,
+            "path_limit": details.limit,
+            "detail_byte_limit": MAX_COVERAGE_DETAIL_BYTES,
+            "total_paths": details.total,
+            "shown_paths": details.shown,
+            "omitted_paths": details.total - details.shown,
+            "truncated": details.total > details.shown,
+        },
         "policy": {
             "source_indicators_declaration": "/coverage/source_indicators",
             "source_indicators": list(indicators),
@@ -331,3 +409,8 @@ def declaration_coverage(
             "excluded_files": excluded_count,
         },
     }
+    # Refuse pathological metadata before any output. This is an independent
+    # work/result guardrail, not the old 1,000-path presentation abort.
+    _bounded_json_dumps(report, indent=2, sort_keys=True,
+                        max_bytes=MAX_COVERAGE_RESULT_BYTES - 1)
+    return report

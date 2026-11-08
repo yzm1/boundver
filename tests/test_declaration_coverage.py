@@ -247,7 +247,7 @@ def test_coverage_groups_selector_and_ownership_omissions_with_exclusions(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["schema"] == "boundver-declaration-coverage/v1"
+    assert report["schema"] == "boundver-declaration-coverage/v2"
     assert report["complete"] is True
     assert report["ok"] is False
     assert report["inputs"]["source"] == "head"

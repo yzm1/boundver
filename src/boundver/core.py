@@ -125,7 +125,7 @@ from ._lockfile import (
 )
 from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
-from ._coverage import declaration_coverage
+from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
 from ._derivations import (
     build_derivation_evidence,
     derivation_inputs_selecting_path,
@@ -3046,7 +3046,11 @@ def _cmd_coverage(args, repo_root: Path) -> None:
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        if args.format == "json":
+            _print_json({"schema": COVERAGE_SCHEMA, "complete": False,
+                         "ok": False, "issues": [_bounded_exception_text(exc)]})
+        else:
+            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     config_errors = validate_config(
         config,
@@ -3059,7 +3063,7 @@ def _cmd_coverage(args, repo_root: Path) -> None:
         if args.format == "json":
             _print_json(
                 {
-                    "schema": "boundver-declaration-coverage/v1",
+                    "schema": COVERAGE_SCHEMA,
                     "complete": False,
                     "ok": False,
                     "issues": config_errors,
@@ -3073,36 +3077,46 @@ def _cmd_coverage(args, repo_root: Path) -> None:
             for error in config_errors:
                 print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    provenance = _operation_input_provenance(
-        repo_root,
-        args.source,
-        snapshot,
-        config_path=config_path,
-        lock_path=repo_root / "boundary.lock.json",
-    )
-    inputs = {
-        key: provenance[key]
-        for key in ("source", "tree", "commit", "config")
-    }
     try:
+        provenance = _operation_input_provenance(
+            repo_root,
+            args.source,
+            snapshot,
+            config_path=config_path,
+            lock_path=repo_root / "boundary.lock.json",
+        )
+        inputs = {
+            key: provenance[key]
+            for key in ("source", "tree", "commit", "config")
+        }
         report = declaration_coverage(
             config,
             repo_root,
             source=args.source,
             snapshot=snapshot,
             inputs=inputs,
+            component_names=args.component,
+            path_prefixes=args.path_prefix,
+            limit=args.limit,
+            summary_only=args.summary,
         )
     except (GuardrailError, OSError, ValueError) as exc:
-        print(
-            f"ERROR: declaration coverage failed: {_bounded_exception_text(exc)}",
-            file=sys.stderr,
-        )
+        issue = f"Declaration coverage failed: {_bounded_exception_text(exc)}"
+        if args.format == "json":
+            _print_json({"schema": COVERAGE_SCHEMA, "complete": False,
+                         "ok": False, "issues": [issue]})
+        else:
+            print(f"ERROR: {issue}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
 
     if args.format == "json":
-        _print_json(report)
+        _print_json(report, max_bytes=MAX_COVERAGE_RESULT_BYTES)
     elif not args.quiet:
         print(f"Source: {args.source} | Config: {inputs['config']}")
+        if report["scope"]["filtered"]:
+            print("Scope: filtered; results do not describe the whole repository.")
+        if not report["scope"]["ownership_analyzed"]:
+            print("Ownership audit: not selected (--component audits component facets only).")
         for component in report["components"]:
             print()
             print(
@@ -3112,11 +3126,12 @@ def _cmd_coverage(args, repo_root: Path) -> None:
             for facet in component["facets"]:
                 print(
                     f"  {facet['facet']}: {facet['selected_files']} selected; "
-                    f"declaration {facet['declaration']}"
+                    f"{facet['uncovered_count']} uncovered, {facet['excluded_count']} excluded; "
+                    f"declaration {_display_path(facet['declaration'])}"
                 )
-                for path in facet["uncovered_files"][:256]:
+                for path in facet["uncovered_files"]:
                     print(f"    UNCOVERED {_display_path(path)}")
-                for exclusion in facet["excluded"][:256]:
+                for exclusion in facet["excluded"]:
                     print(
                         f"    EXCLUDED {_display_path(exclusion['path'])}: "
                         f"{_bounded_diagnostic_text(exclusion['reason'])} "
@@ -3124,22 +3139,30 @@ def _cmd_coverage(args, repo_root: Path) -> None:
                     )
                 omitted = max(
                     0,
-                    len(facet["uncovered_files"]) + len(facet["excluded"]) - 256,
+                    facet["uncovered_count"] + facet["excluded_count"]
+                    - len(facet["uncovered_files"]) - len(facet["excluded"]),
                 )
                 if omitted:
-                    print(f"    ... {omitted} more path(s); use --format json")
+                    print(f"    ... {omitted} path entry/entries omitted by presentation limits")
         for directory in report["unowned_source_directories"]:
             print()
             print(f"Unowned source directory: {_display_path(directory['directory'])}")
-            for path in directory["uncovered_files"][:256]:
+            print(f"  {directory['uncovered_count']} uncovered, {directory['excluded_count']} excluded")
+            for path in directory["uncovered_files"]:
                 print(f"    UNCOVERED {_display_path(path)}")
-            for exclusion in directory["excluded"][:256]:
+            for exclusion in directory["excluded"]:
                 print(
                     f"    EXCLUDED {_display_path(exclusion['path'])}: "
                     f"{_bounded_diagnostic_text(exclusion['reason'])} "
                     f"({exclusion['declaration']})"
                 )
         summary = report["summary"]
+        presentation = report["presentation"]
+        if presentation["truncated"]:
+            print(
+                f"Paths: {presentation['shown_paths']} shown, "
+                f"{presentation['omitted_paths']} omitted; totals include omitted entries."
+            )
         print()
         print(
             "Declaration coverage: "

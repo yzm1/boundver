@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Made declaration coverage useful on large repositories with repeatable
+  `--component` and literal `--path-prefix` filters, per-facet summary counts,
+  `--summary`, and bounded `--limit` listings. The new
+  `boundver-declaration-coverage/v2` output separates completed analysis from
+  filtered scope and truncated presentation. Strict gating counts uncovered
+  entries even when no uncovered paths fit in the listing. Real work and
+  document-size budgets still fail closed; exclusions are not required merely
+  to fit an output limit.
+
 - Added `--source head|index|working-tree` to `validate-config` and its
   `check-config` alias. The default remains working-tree. HEAD validation reads
   config, declarations, warnings and derivation receipts from its captured

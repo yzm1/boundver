@@ -174,12 +174,24 @@ comparison to the discovery payload. Baseline-aware verification adds its
 action, acknowledged issues, stale identities, and shrink delta under the
 optional `baseline` member.
 
-Declaration coverage uses `boundver-declaration-coverage/v1`. It reports
+Declaration coverage uses `boundver-declaration-coverage/v2`. It reports
 unselected component paths and unowned source-indicator paths, binds them to
 the selected config source and responsible JSON Pointer, and separates
 reasoned exclusions from uncovered paths. Coverage policy is intentionally
 absent from the semantic-config projection: this read-only advisory cannot
 change a component, slice, or lock identity.
+
+The v2 scope records selected components, literal path prefixes, and whether
+ownership was analyzed. Component filtering disables repository-wide ownership
+analysis; path-prefix filtering narrows both applicable analyses. Config
+validation is not narrowed. `complete` means completed analysis in that scope,
+not exhaustive path presentation or whole-repository coverage. Presentation
+records total/shown/omitted entries, truncation, summary mode and path/byte
+limits. Counts include every in-scope finding, while path arrays may be shorter.
+Strict exit 1 and `ok: false` depend on all uncovered findings, including omitted
+ones. Exceeding a genuine work/result budget exits 2 without partial success.
+An unchanged file omitted in two facets contributes two path entries. The v1
+and v2 array-completeness contracts are not interchangeable.
 
 `diff` is a non-mutating review surface. It accepts canonical
 `boundary-lock/v4` inputs using `boundver-semantic-config/v3`, reports metadata
