@@ -79,8 +79,10 @@ def _validate_request(value: object):
 
 def encode_request(value: dict) -> bytes:
     _validate_request(value)
+    # Preserve captured config/base-lock order. Sorting the transport would
+    # change scoped output layout and the input order seen by custom providers.
     return _bounded_json_dumps(
-        value, allow_nan=False, sort_keys=True,
+        value, allow_nan=False, sort_keys=False,
         separators=(",", ":"), max_bytes=MAX_GENERATION_REQUEST_BYTES,
     ).encode("utf-8")
 

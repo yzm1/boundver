@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -187,3 +188,29 @@ def test_profile_does_not_mistake_advisory_failure_for_completed_scan(cli_profil
         "inspect": {"first": inspected, "repeated": [inspected]},
     }}
     assert any("not a completed-scan" in message for message in module.contract_violations(result))
+
+
+@pytest.mark.parametrize("source", ["head", "index", "working-tree"])
+def test_timed_generation_matches_provider_derivation_and_scoped_fixture(cli_profile, source):
+    _, root = cli_profile
+    before = (root / "boundary.lock.json").read_bytes()
+    index_lock = root / ".git" / "index.lock"
+    if source == "head":
+        index_lock.write_bytes(b"another session owns the index")
+    try:
+        arguments = ["generate", "--source", source, "--dry-run", "--format", "json", "--quiet"]
+        ordinary = run_cli(root, *arguments)
+        assert ordinary.returncode == 0, ordinary.stderr
+        ordinary_scoped = run_cli(root, *arguments, "--components", "component-00")
+        timed = run_cli(root, *arguments, "--timeout", "60")
+        scoped = run_cli(root, *arguments, "--timeout", "60", "--components", "component-00")
+        assert timed.returncode == scoped.returncode == ordinary_scoped.returncode == 0, timed.stderr + scoped.stderr
+        assert timed.stdout == ordinary.stdout
+        assert scoped.stdout == ordinary_scoped.stdout
+        assert json.loads(scoped.stdout) == json.loads(timed.stdout)
+        assert (root / "boundary.lock.json").read_bytes() == before
+        if source == "head":
+            assert index_lock.read_bytes() == b"another session owns the index"
+    finally:
+        if source == "head":
+            index_lock.unlink()

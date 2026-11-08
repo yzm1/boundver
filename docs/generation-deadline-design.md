@@ -120,8 +120,14 @@ cleanup, abrupt controller death, full stderr pipes and expiry with blocked
 diagnostic delivery. Tests use synchronization barriers for cancellation races.
 The synthetic storage profiles are described in [Performance](performance.md).
 
+The adoption fixture also compares timed full/scoped output byte-for-byte with
+their ordinary counterparts across all source modes: six built-in provider
+families, derivation receipts, slices and version sources. HEAD runs with a held
+index lock. Full versus scoped output can retain different historical key
+layouts; transport preserves each path's configuration/base-lock ordering.
+
 This does not close issue #164 or satisfy the complete v0.17 release gate.
 Supported Python/platform CI, macOS evidence, production wheel/standalone-format
-installation checks, broader provider/scoped-generation equivalence, no-fetch
+installation checks, installed custom-provider equivalence, no-fetch
 and filesystem-safety regressions, and exact-commit review remain required.
 Native-provider residual risks must remain explicit in release acceptance.

@@ -1746,7 +1746,7 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
                 existing = None
                 if components_filter:
                     existing = load_lockfile_file(
-                        out_path, repo_root=repo_root, source=args.source,
+                        out_path, repo_root=repo_root,
                         snapshot=snapshot if args.source in {"head", "index"} else None,
                     )
                 request = encode_request({

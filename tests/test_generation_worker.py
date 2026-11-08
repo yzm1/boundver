@@ -102,6 +102,15 @@ def test_operation_identity_changes_result_binding(invocation):
         decode_result(compute_request(second, running_version=_get_version()), request_digest=hashlib.sha256(first).hexdigest())
 
 
+def test_request_transport_preserves_config_and_base_lock_key_order(invocation, tmp_path):
+    invocation["components"] = ["api"]
+    invocation["existing_lock"] = generate_lockfile(invocation["config"], tmp_path)
+    decoded = json.loads(encode_request(invocation))
+    assert list(decoded) == list(invocation)
+    assert list(decoded["config"]) == list(invocation["config"])
+    assert list(decoded["existing_lock"]) == list(invocation["existing_lock"])
+
+
 def test_scoped_worker_still_rejects_drift_in_unselected_components(invocation, tmp_path):
     invocation["existing_lock"] = generate_lockfile(invocation["config"], tmp_path)
     invocation["components"] = ["api"]
