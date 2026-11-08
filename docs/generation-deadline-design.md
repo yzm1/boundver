@@ -133,3 +133,13 @@ even when their checksums are valid. This is protocol validation, not yet a
 private transport or source-capture implementation. The request must ultimately
 include the captured source identity, complete invocation and a fresh operation
 identity. A digest is not authentication against trusted native provider code.
+
+`_generation_snapshot` supplies the snapshot portion of that request as strict
+JSON-ready values. It preserves the captured tree and optional commit, entry
+mode/type/object IDs, filemode policy, tracked membership (including intent to
+add) and sparse-checkout membership. Decoding uses the existing Git tree record
+validation and path budgets, without resolving refs or accessing the index.
+Tests cover SHA-1/SHA-256, executable/symlink/submodule entries, unusual names,
+invalid paths, duplicate entries and inconsistent membership. This codec does
+not snapshot live working-tree file contents or independently attest object
+provenance. Worker launch and the complete invocation request remain pending.
