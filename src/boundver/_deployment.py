@@ -150,7 +150,10 @@ def compare_deployment(
         if endpoint == "reference":
             _issue(result, ["Choose an existing local verified checkpoint with the required objects and paths. Obtain missing history separately; comparison never fetches or rewrites the reference."])
     try:
-        _bounded_json_dumps(result, allow_nan=False, max_bytes=MAX_DEPLOYMENT_RESULT_BYTES)
+        # Match the public JSON writer, including indentation and its newline.
+        # A compact-only check could accept rows that cannot actually be emitted.
+        _bounded_json_dumps(result, indent=2, sort_keys=True, allow_nan=False,
+                            max_bytes=max(0, MAX_DEPLOYMENT_RESULT_BYTES - 1))
     except ValueError:
         result.update(complete=False, ok=False, exit_code=2, counts=None, changes=[])
         result["presentation"].update(shown=0, omitted=0, truncated=False)

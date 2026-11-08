@@ -230,3 +230,80 @@ def test_cli_rejects_invalid_selection(repository, options):
     process = run_cli(repository, "compare-deployment", "--environment", "production",
                       "--ref", "production", *options)
     assert process.returncode == 2
+
+
+def test_reference_movement_after_capture_does_not_retarget_comparison(repository, monkeypatch):
+    from boundver import _deployment
+
+    original_capture = _deployment._capture_git_ref_snapshot
+    original_oid = subprocess.run(["git", "rev-parse", "production"], cwd=repository,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+    (repository / "svc" / "contract.txt").write_text("new current contract\n", encoding="utf-8")
+    commit_all(repository)
+    calls = []
+
+    def capture_then_move(*args, **kwargs):
+        snapshot = original_capture(*args, **kwargs)
+        calls.append(snapshot.head_oid)
+        subprocess.run(["git", "update-ref", "refs/tags/production", "HEAD"],
+                       cwd=repository, check=True, capture_output=True)
+        return snapshot
+
+    monkeypatch.setattr(_deployment, "_capture_git_ref_snapshot", capture_then_move)
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert calls == [original_oid]
+    assert result["reference"]["commit"] == original_oid
+    assert result["reference"]["verified"] and result["exit_code"] == 4
+
+
+def test_distinct_environment_references_keep_their_own_contracts(repository):
+    subprocess.run(["git", "tag", "staging"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "contract.txt").write_text("next deployment\n", encoding="utf-8")
+    commit_all(repository)
+    config = json.loads((repository / "boundary.config.json").read_text())
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "dev"], cwd=repository, check=True, capture_output=True)
+    results = {name: compare_deployment(repository, name, name) for name in ("dev", "staging", "production")}
+    for name, result in results.items():
+        validate_result(result)
+        assert result["environment"] == name and result["reference"]["verified"]
+        assert result["exit_code"] == (0 if name == "dev" else 4)
+    assert results["dev"]["reference"]["commit"] != results["production"]["reference"]["commit"]
+
+
+def test_shallow_missing_reference_objects_fail_without_fetch(repository, tmp_path):
+    original_oid = subprocess.run(["git", "rev-parse", "production"], cwd=repository,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+    (repository / "svc" / "contract.txt").write_text("later\n", encoding="utf-8")
+    commit_all(repository)
+    clone = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "--depth", "1", "--no-tags", repository.as_uri(), str(clone)],
+                   check=True, capture_output=True)
+    # Disable the remote entirely: comparison must use only already local objects.
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=clone, check=True, capture_output=True)
+    before = (clone / ".git" / "shallow").read_bytes()
+    result = compare_deployment(clone, "production", original_oid)
+    validate_result(result)
+    assert not result["complete"] and result["exit_code"] == 2
+    assert result["reference"]["commit"] is None
+    assert (clone / ".git" / "shallow").read_bytes() == before
+    assert any("never fetches" in issue for issue in result["issues"]["items"])
+
+
+def test_result_budget_accounts_for_pretty_json(repository, monkeypatch):
+    from boundver import _deployment
+
+    (repository / "svc" / "contract.txt").write_text("changed\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "production")
+    compact_bytes = len(json.dumps(result).encode("utf-8"))
+    pretty_bytes = len(json.dumps(result, indent=2, sort_keys=True).encode("utf-8")) + 1
+    assert compact_bytes < pretty_bytes
+    monkeypatch.setattr(_deployment, "MAX_DEPLOYMENT_RESULT_BYTES", compact_bytes + 1)
+    bounded = compare_deployment(repository, "production", "production")
+    validate_result(bounded)
+    assert not bounded["complete"] and bounded["exit_code"] == 2
+    assert bounded["counts"] is None and bounded["changes"] == []
+    assert any("output budget" in issue for issue in bounded["issues"]["items"])
