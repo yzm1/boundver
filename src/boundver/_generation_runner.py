@@ -20,6 +20,7 @@ from ._posix_worker import PosixJob
 from ._structured_data import strict_json_loads
 from ._utils import ConfigError, _bounded_diagnostic_text
 from ._windows_job import WindowsJob
+from ._worker_bootstrap import worker_arguments
 
 
 MAX_GENERATION_CLEANUP_SECONDS = 5
@@ -71,7 +72,7 @@ def _run_generation(data: bytes, *, control: GenerationControl, running_version:
                 _require_computing(control)
                 cleanup_confirmed = False
                 process = job.launch_python(
-                    ["-I", "-m", "boundver._generation_worker", str(directory)],
+                    worker_arguments(directory),
                     cwd=invocation["repo_root"], env=dict(os.environ),
                 )
                 while process.poll() is None:

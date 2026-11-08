@@ -92,7 +92,9 @@ def compute_request(data: bytes, *, running_version: str, diagnostic_sink=None) 
     value = strict_json_loads(data.decode("utf-8"))
     snapshot = _validate_request(value)
     if value["running_version"] != running_version:
-        raise ValueError("Worker runtime does not match controller runtime")
+        actual = _bounded_diagnostic_text(running_version, max_chars=128)
+        expected = _bounded_diagnostic_text(value["running_version"], max_chars=128)
+        raise ValueError(f"Worker runtime {actual} does not match controller runtime {expected}; refresh the installation before retrying")
     observer = GenerationDiagnostics(progress=value["progress"], timing=value["timing"], sink=diagnostic_sink)
     try:
         lock = _compute_validated_request(value, snapshot, observer, running_version)

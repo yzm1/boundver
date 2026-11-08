@@ -261,3 +261,13 @@ partial lines, replay prevention, invalid UTF-8, oversized streams and terminal
 control escaping. Blocking controller stderr/backpressure and abrupt-controller
 death remain unresolved acceptance items; closed-pipe error handling alone does
 not prove a bounded write. The public timeout option remains unavailable.
+
+Worker launch now uses a fixed isolated-Python shim that inserts only the
+controller's own runtime root (or zip archive) before executing the fixed worker
+module. The import root is derived from the running package, never repository
+config, cwd or PYTHONPATH. This fixes standalone archives that cannot be found
+through `python -m` from an unrelated directory. Directory/zip shadowing tests
+and real package-in-zip controller/worker tests pass on Windows and Linux.
+The latter exercise path-hash without the production archive's vendored-format
+matrix, so the full archive release gate remains required. Controller/worker
+version mismatches still fail closed and now identify both versions.

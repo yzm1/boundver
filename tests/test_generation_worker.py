@@ -6,6 +6,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import zipfile
 
 import pytest
 
@@ -426,4 +429,36 @@ def test_internal_timed_dispatch_forwards_worker_progress_without_corrupting_jso
     assert "Worker: Generation diagnostics: outcome=computed" in captured.err
     assert "publication=dry-run" in captured.err
     assert len(captured.err.encode("utf-8")) <= 64 * 1024
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+def test_archive_controller_launches_worker_from_same_archive(invocation, tmp_path):
+    # This is a real package-in-zip handoff test, not the full reproducible
+    # release archive gate (which also checks vendored format dependencies).
+    import boundver
+    package = Path(boundver.__file__).parent
+    archive_path = tmp_path / "runtime boundver.pyz"
+    main = (
+        "import sys\nfrom pathlib import Path\nfrom boundver import __version__\n"
+        "from boundver._generation_control import GenerationControl\n"
+        "from boundver._generation_runner import run_generation\n"
+        "from boundver._lockfile import dump_lockfile\n"
+        "lock=run_generation(Path(sys.argv[1]).read_bytes(),control=GenerationControl(20),running_version=__version__)\n"
+        "sys.stdout.write(dump_lockfile(lock))\n"
+    )
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in package.rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".json"} and "__pycache__" not in path.parts:
+                archive.write(path, "boundver/" + path.relative_to(package).as_posix())
+        archive.writestr("__main__.py", main)
+        archive.writestr(f"boundver-{_get_version()}.dist-info/METADATA", f"Metadata-Version: 2.4\nName: boundver\nVersion: {_get_version()}\n")
+    request_path = tmp_path / "request.json"
+    request_path.write_bytes(encode_request(invocation))
+    completed = subprocess.run(
+        [sys.executable, "-I", str(archive_path), str(request_path)],
+        cwd=tmp_path, capture_output=True, timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    assert json.loads(completed.stdout) == generate_lockfile(invocation["config"], tmp_path)
+    assert not completed.stderr
     assert not (tmp_path / "boundary.lock.json").exists()

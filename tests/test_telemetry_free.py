@@ -127,14 +127,30 @@ def test_posix_worker_creation_is_a_fixed_isolated_local_interpreter() -> None:
                    and any(isinstance(target, ast.Name) and target.id == "worker_command" for target in node.targets)]
     assert len(assignments) == 1
     command = assignments[0].value
-    assert isinstance(command, ast.List) and len(command.elts) == 5
+    assert isinstance(command, ast.List) and len(command.elts) == 2
     assert _qualified_name(command.elts[0]) == "sys.executable"
-    assert [node.value for node in command.elts[1:4]] == ["-I", "-m", "boundver._generation_worker"]
+    assert isinstance(command.elts[1], ast.Starred)
+    assert _qualified_name(command.elts[1].value.func) == "worker_arguments"
     options = {keyword.arg: keyword.value for keyword in call.keywords}
     assert options["start_new_session"].value is True
     assert options["close_fds"].value is True
     assert all(_qualified_name(options[name]) == "subprocess.DEVNULL" for name in ("stdin", "stdout", "stderr"))
     assert "shell" not in options
+
+
+def test_worker_bootstrap_is_fixed_local_code_not_repository_selected():
+    from boundver._worker_bootstrap import WORKER_BOOTSTRAP, worker_arguments
+    tree = ast.parse(WORKER_BOOTSTRAP)
+    assert set(_import_names(tree)) == {"runpy", "sys"}
+    assert not any(_forbidden_import(name) for name in _import_names(tree))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and _qualified_name(node.func) == "runpy.run_module"]
+    assert len(calls) == 1 and calls[0].args[0].value == "boundver._generation_worker"
+    directory = REPO_ROOT / "hypothetical-private-transfer"
+    arguments = worker_arguments(directory)
+    assert arguments[:3] == ["-I", "-c", WORKER_BOOTSTRAP]
+    assert Path(arguments[3]) == RUNTIME_ROOT.parent
+    assert arguments[4] == str(directory)
 
 
 def test_native_worker_creation_is_statically_interpreter_rooted() -> None:

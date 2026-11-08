@@ -10,6 +10,8 @@ import signal
 import subprocess
 import sys
 
+from ._worker_bootstrap import worker_arguments
+
 
 class PosixWorker:
     def __init__(self, directory: Path, *, cwd: Path, env: dict[str, str]):
@@ -17,7 +19,7 @@ class PosixWorker:
             raise OSError("POSIX worker sessions are unavailable")
         if not directory.is_absolute() or not cwd.is_absolute() or not os.path.isabs(sys.executable):
             raise ValueError("Worker interpreter and paths must be absolute")
-        worker_command = [sys.executable, "-I", "-m", "boundver._generation_worker", str(directory)]
+        worker_command = [sys.executable, *worker_arguments(directory)]
         self.process = subprocess.Popen(
             worker_command, cwd=cwd, env=dict(env),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -56,9 +58,9 @@ class PosixJob:
         self.worker = None
 
     def launch_python(self, arguments, *, cwd, env):
-        if self.worker is not None or len(arguments) != 4 or arguments[:3] != ["-I", "-m", "boundver._generation_worker"]:
+        if self.worker is not None or len(arguments) != 5 or arguments != worker_arguments(Path(arguments[-1])):
             raise ValueError("POSIX job only launches one fixed generation worker")
-        self.worker = PosixWorker(Path(arguments[3]), cwd=Path(cwd), env=env)
+        self.worker = PosixWorker(Path(arguments[-1]), cwd=Path(cwd), env=env)
         return self.worker
 
     def terminate(self):
