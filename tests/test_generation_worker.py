@@ -381,3 +381,30 @@ def test_internal_cancel_after_result_validation_cannot_enter_publication(invoca
     assert sentinel.read_bytes() == b"prior lock"
     stderr = capsys.readouterr().err
     assert "publication=not-attempted" in stderr and "outcome=cancelled" in stderr
+
+
+def test_internal_timed_dispatch_defers_custom_imports_to_worker(invocation, tmp_path, monkeypatch, capsys):
+    from boundver import core, _config
+    from boundver._cli_parser import build_parser
+    invocation["config"]["providers"] = [{
+        "module": "boundver_missing_custom_provider_fixture", "class": "Provider",
+        "name": "custom.test",
+    }]
+    (tmp_path / "boundary.config.json").write_text(json.dumps(invocation["config"]), encoding="utf-8")
+    commit_all(tmp_path)
+
+    def parent_import(*args, **kwargs):
+        pytest.fail("custom provider loading escaped into the controller")
+
+    monkeypatch.setattr(_config, "load_custom_providers", parent_import)
+    args = build_parser(version="test", epilog="").parse_args([
+        "--quiet", "generate", "--allow-custom-providers",
+    ])
+    args.timeout = 20
+    with pytest.raises(SystemExit) as error:
+        core._cmd_generate(args, tmp_path)
+    assert error.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "Generation worker failed" in stderr
+    assert "boundver_missing_custom_provider_fixture" in stderr
+    assert not (tmp_path / "boundary.lock.json").exists()

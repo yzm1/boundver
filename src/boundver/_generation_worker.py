@@ -17,7 +17,7 @@ from ._generation_snapshot import snapshot_from_value
 from ._lockfile import MAX_LOCKFILE_BYTES, dump_lockfile, generate_lockfile, generate_lockfile_for_components
 from ._lockfile_validation import is_sha256_digest
 from ._structured_data import strict_json_loads
-from ._utils import _bounded_exception_text, _bounded_json_dumps
+from ._utils import _bounded_diagnostic_text, _bounded_exception_text, _bounded_json_dumps
 
 
 MAX_GENERATION_REQUEST_BYTES = 64 * 1024 * 1024
@@ -96,7 +96,8 @@ def compute_request(data: bytes, *, running_version: str) -> bytes:
         require_slice_facets=value["strict"],
     )
     if errors:
-        raise ValueError("Worker config validation failed")
+        first = _bounded_diagnostic_text(errors[0], max_chars=512)
+        raise ValueError(f"Worker config validation failed ({len(errors)} issues): {first}")
     arguments = dict(
         source=value["source"], snapshot=snapshot, strict=value["strict"],
         allow_custom_providers=value["allow_custom_providers"],

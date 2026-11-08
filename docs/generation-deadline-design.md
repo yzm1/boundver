@@ -236,3 +236,11 @@ still no parser option: parent-side provider import/validation, streamed worker
 diagnostics, controller-death cleanup and installed/platform acceptance must be
 addressed before exposing the feature. No claim of a hard filesystem commit
 deadline is made.
+
+Timed controller preparation now uses declaration-only validation, retaining
+path/graph/schema checks without importing native providers or probing their
+runtime. The worker still performs full runtime validation. Tests on Windows
+and Linux confirm a missing custom module fails in the worker and is never
+loaded by the parent; its bounded first diagnostic is returned to the operator.
+Declaration-only validation also no longer requires registration that it
+deliberately did not perform. This does not make native providers sandboxed.

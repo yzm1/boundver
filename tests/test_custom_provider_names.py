@@ -31,6 +31,32 @@ class ImplicitProvider:
 class CustomProviderNameTests(unittest.TestCase):
     module_name = "_boundver_custom_provider_name_fixture"
 
+    def test_declaration_only_validation_does_not_require_runtime_registration(self):
+        from unittest.mock import patch
+        config = self._config(
+            [self._entry(ExplicitProvider, explicit_name=True)],
+            selected_name="custom.explicit",
+        )
+        with patch("boundver._config.load_custom_providers", side_effect=AssertionError("parent import")):
+            errors = validate_config(
+                config, self.root, source="head", allow_custom_providers=True,
+                validate_provider_runtime=False,
+            )
+        self.assertEqual(errors, [])
+
+    def test_declaration_only_validation_still_rejects_unknown_explicit_names(self):
+        from unittest.mock import patch
+        config = self._config(
+            [self._entry(ExplicitProvider, explicit_name=True)],
+            selected_name="custom.misspelled",
+        )
+        with patch("boundver._config.load_custom_providers", side_effect=AssertionError("parent import")):
+            errors = validate_config(
+                config, self.root, source="head", allow_custom_providers=True,
+                validate_provider_runtime=False,
+            )
+        self.assertTrue(any("not declared" in error for error in errors), errors)
+
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)

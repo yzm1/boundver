@@ -599,8 +599,9 @@ def validate_config(
     rules.  Its backward-compatible default permits intentional null slice
     inputs for callers that will generate with ``strict=False``.
 
-    ``validate_provider_runtime=False`` is reserved for read-only historical
-    analysis: declarations, paths, graph edges, and slices remain validated,
+    ``validate_provider_runtime=False`` supports read-only historical analysis
+    and controller preparation before contained worker validation:
+    declarations, paths, graph edges, and slices remain validated,
     but no custom provider is imported and no host dependency probe can make a
     committed endpoint depend on the review machine.
     """
@@ -1946,7 +1947,7 @@ def validate_config(
         provider_name = boundary_provider_name(boundary)
         provider = get_provider(provider_name, registry=registry)
         if provider is None:
-            if allow_custom_providers and provider_name.startswith("custom."):
+            if validate_provider_runtime and allow_custom_providers and provider_name.startswith("custom."):
                 errors.append(
                     f"Component '{name}' provider "
                     f"'{_bounded_diagnostic_text(provider_name)}' was not registered "

@@ -43,6 +43,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Declaration-only config validation no longer incorrectly requires custom
+  providers to have been runtime-registered when runtime validation is disabled.
+  Explicit provider-name cross-checks remain enforced; normal validation still
+  imports only with operator authorization and checks runtime registration.
+
 - HEAD generation no longer fingerprints the working tree and captures the
   shared index merely to print an advisory warning. Request that extra scan
   explicitly with `--inspect-working-tree`; it retains the existing bounded

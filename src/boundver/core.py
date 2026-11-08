@@ -1666,6 +1666,7 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
             config, repo_root, allow_custom_providers=allow_custom,
             source=args.source, snapshot=snapshot,
             require_slice_facets=not args.allow_partial,
+            **({"validate_provider_runtime": False} if control is not None else {}),
         )
     if config_errors:
         print(
