@@ -59,6 +59,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest import mock
+from urllib.parse import urljoin
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -148,6 +149,15 @@ def _export_module():
 #: is driven here.
 COMMAND_INVOCATIONS = {
     "verify": lambda state: ("verify", "--format", "json"),
+    "verification-scope": lambda state: ("verify", "--format", "scoped-json"),
+    "slice-explanation": lambda state: ("why", "--slice", "all", "--format", "json"),
+    "lock-changes": lambda state: (
+        "diff", "boundary.lock.json", "boundary.lock.json", "--format", "changes-json",
+    ),
+    "deployment": lambda state: (
+        "compare-deployment", "--environment", "test", "--ref", state["base"],
+        "--format", "json",
+    ),
     "status": lambda state: ("status", "--format", "json"),
     "diff": lambda state: (
         "diff",
@@ -420,6 +430,21 @@ class MachineReadablePayloadsSurviveEveryFailureStateTests(unittest.TestCase):
             (SPEC / f"cli-output.{stem}.schema.json").read_text(encoding="utf-8")
         )
 
+    @classmethod
+    def _validate(cls, payload, stem):
+        """Resolve sibling schema references locally, never over the network."""
+        from referencing import Registry, Resource
+
+        schema = cls._schema(stem)
+        resources = []
+        for path in SPEC.glob("cli-output.*.schema.json"):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            resource = Resource.from_contents(document)
+            resources.append((document["$id"], resource))
+            resources.append((urljoin(schema["$id"], path.name), resource))
+        validator = jsonschema.validators.validator_for(schema)
+        validator(schema, registry=Registry().with_resources(resources)).validate(payload)
+
     def test_the_command_table_names_every_committed_output_schema(self):
         """The enumeration, so a tenth schema cannot arrive undriven."""
         committed = {
@@ -454,7 +479,7 @@ class MachineReadablePayloadsSurviveEveryFailureStateTests(unittest.TestCase):
                 payload = json.loads(result.stdout)
                 cls.payloads[(state_name, command)] = payload
                 try:
-                    jsonschema.validate(payload, cls._schema(command))
+                    cls._validate(payload, command)
                 except jsonschema.ValidationError as error:
                     cls.violations[(state_name, command)] = str(error)
             cls.transcripts[state_name] = "".join(transcript)
@@ -464,7 +489,7 @@ class MachineReadablePayloadsSurviveEveryFailureStateTests(unittest.TestCase):
         self._drive()
         for (state_name, command), payload in sorted(self.payloads.items()):
             with self.subTest(state=state_name, command=command):
-                jsonschema.validate(payload, self._schema(command))
+                self._validate(payload, command)
         self.assertEqual(self.violations, {})
 
     def test_every_generated_state_actually_reached_its_failure(self):
@@ -496,7 +521,7 @@ class MachineReadablePayloadsSurviveEveryFailureStateTests(unittest.TestCase):
         payload = dict(self.payloads[("clean", "verify")])
         payload["surprise"] = "a key no failure path is allowed to invent"
         with self.assertRaises(jsonschema.ValidationError):
-            jsonschema.validate(payload, self._schema("verify"))
+            self._validate(payload, "verify")
 
     def test_a_review_that_cannot_hold_every_row_emits_no_payload_at_all(self):
         """`complete` is true because a partial review is never printed.
