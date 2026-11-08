@@ -96,3 +96,19 @@ writer's work. Keep stdout JSON valid and publication outcomes on stderr.
 
 This design does not close #164. Implementation, adversarial tests, platform
 evidence and an operator-facing timeout contract are still required.
+
+## Windows implementation evidence
+
+The packaged `_windows_job` helper creates an unnamed, non-inheritable job with
+kill-on-close and without breakaway permissions. Local kernel tests cover
+suspended assignment without user-code execution, descendant termination after
+parent exit, handle closure and rejected assignment. It does not yet launch or
+resume workers, and is not wired into generation.
+
+Microsoft documents [job ownership and kill-on-close behavior](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+The launch implementation must also address the crash window between suspended
+creation and assignment. Prefer creation-time job assignment where supported;
+Microsoft describes that alternative in
+[creating a process in a job object](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
+Never describe a separately created suspended process as already owned by the
+job before assignment has succeeded.
