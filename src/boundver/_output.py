@@ -36,6 +36,7 @@ from ._utils import (
 )
 from ._consumer_graph import affected_consumer_groups
 from ._version_paths import component_version_input_paths
+from ._version_changes import resolved_version_change
 from ._lockfile import MAX_LOCKFILE_BYTES, parse_lockfile_bytes
 
 
@@ -1058,6 +1059,7 @@ def why_component(
                 "source": source,
                 "lock_provenance": lock_provenance,
                 "version": result["version"],
+                "version_change": result["version_change"],
                 "drifted": has_gated_drift,
                 "observed_drift": has_observed_drift,
                 "changes": changes,
@@ -1103,6 +1105,18 @@ def why_component(
     print(f"Gated:      {', '.join(sorted(gated_facets)) or 'none'}")
     if result["version"]:
         print(f"Version:    {result['version']}")
+    version_change = result["version_change"]
+    # The module's terminal-safe print escapes once; pre-escaping these values
+    # would turn control-character diagnostics into doubled escape sequences.
+    previous_version = (
+        version_change["previous"]
+        if version_change["previous"] is not None else "unavailable"
+    )
+    current_version = (
+        version_change["current"]
+        if version_change["current"] is not None else "unavailable"
+    )
+    print(f"Versions:   {previous_version} -> {current_version} ({version_change['status']})")
 
     if not has_observed_drift:
         print()
@@ -1611,6 +1625,7 @@ def analyze_component_drift(
             else None
         ),
         "version": version,
+        "version_change": resolved_version_change(locked_comp, current_comp),
         "locked_fps": locked_fps,
         "current_fps": current_fps,
         "provider_explanation": provider_explanation,

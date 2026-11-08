@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Component `why` now reports recorded/current version values and explicit
+  changed, unchanged or unavailable status, matching slice and generation
+  reports without treating version movement as compatibility or deployment proof.
+
 - Added read-only `diff --format upgrade-json` for strict supported v3/v4
   historical record inspection. Reports separate header/config contracts,
   provider identities, component value equality and slice metadata. Equal

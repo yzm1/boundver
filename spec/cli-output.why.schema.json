@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/cli-output.why.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.why.schema.json",
   "title": "boundver why --format json output",
   "description": "A drift report, or a machine-readable error document when the requested component cannot be analyzed.",
   "type": "object",
@@ -8,7 +8,7 @@
   "oneOf": [
     {
       "required": [
-        "component", "path", "source", "lock_provenance", "version", "drifted", "observed_drift", "changes",
+        "component", "path", "source", "lock_provenance", "version", "version_change", "drifted", "observed_drift", "changes",
         "gated_facets", "gated_changes", "non_gating_changes",
         "metadata_changes", "digest_errors", "summary", "changed_files",
         "changed_files_status", "changed_files_error", "diagnostic_base_requested", "diagnostic_base", "diagnostic_base_origin",
@@ -60,6 +60,17 @@
     "source": {"type": "string", "enum": ["head", "index", "working-tree"]},
     "lock_provenance": {"type": ["string", "null"], "maxLength": 32768},
     "version": {"type": ["string", "null"]},
+    "version_change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["previous", "current", "status"],
+      "properties": {
+        "previous": {"type": ["string", "null"]},
+        "current": {"type": ["string", "null"]},
+        "status": {"enum": ["changed", "unchanged", "unavailable"]}
+      },
+      "description": "Recorded versus currently resolved versions, not deployment or semantic compatibility evidence. Missing or invalid versions have unavailable status."
+    },
     "drifted": {"type": "boolean"},
     "observed_drift": {"type": "boolean"},
     "changes": {

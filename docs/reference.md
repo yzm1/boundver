@@ -167,6 +167,18 @@ other exact `--source` forms without silently reading those additional views.
 This keeps the result bound to one snapshot while making an adjacent source
 switch visible.
 
+### Resolved version comparisons
+
+In v0.17 development, component `why --format json` includes `version_change`:
+`previous` is the version recorded in the lock, `current` is resolved from the
+selected source, and `status` is `changed`, `unchanged` or `unavailable`.
+Missing, invalid or failed version resolution is unavailable; two null values
+are not evidence of equal resolved versions. The legacy `version` field keeps
+its fallback behavior and must not be used to determine whether a version moved.
+Text output shows the comparison separately. Version movement does not prove
+compatibility, deployment, or the lock's generating source. Slice explanations
+and [generation previews](generation-previews.md) make the same distinction.
+
 ### Text and JSON presentation
 
 Human diagnostics name their selected source. Consumer edges recorded in the

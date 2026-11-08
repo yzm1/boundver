@@ -24,6 +24,14 @@ resolved version while leaving a boundary slice unchanged. A missing or invalid
 version has status `unavailable`, not `unchanged`; two nulls are not equal
 resolved versions.
 
+Component explanations expose the same distinction. For example,
+`boundver why service --format json` includes `version_change` with `previous`,
+`current` and `status` fields. The previous value comes from the stored lock;
+the current value is resolved from the selected source. The legacy `version`
+field remains for compatibility and is not a version comparison. Text output
+shows both values and their status. Neither form identifies a deployment or
+proves that two versions are semantically compatible.
+
 Exit 0 means no gated slice drift; exit 1 means gated slice drift; exit 2 means
 invalid or incomplete comparison. Gating follows the effective member policies,
 as in normal verification. `why` is an explanation, not a substitute for the
