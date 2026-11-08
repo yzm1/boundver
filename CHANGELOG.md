@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added `version_source.repo_file` for an explicit repository-root-relative
+  version manifest outside a component. Existing `file` paths remain
+  component-relative. Both use the same captured-source, tracking, regular-file,
+  bounded-parser and symlink safeguards. Changed-component reporting and
+  diagnostics include shared readers and transitive version inheritors without
+  treating external version bytes as boundary content or weakening full-lock
+  verification. Existing config and fingerprint algorithms are unchanged; using
+  the new declaration is an intentional semantic-config change.
+
 - Made declaration coverage useful on large repositories with repeatable
   `--component` and literal `--path-prefix` filters, per-facet summary counts,
   `--summary`, and bounded `--limit` listings. The new

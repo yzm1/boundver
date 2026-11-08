@@ -35,6 +35,7 @@ from ._utils import (
     boundary_provider_name,
 )
 from ._consumer_graph import affected_consumer_groups
+from ._version_paths import component_version_input_paths
 from ._lockfile import MAX_LOCKFILE_BYTES, parse_lockfile_bytes
 
 
@@ -627,6 +628,11 @@ def analyze_explain_changes(
             return {"error": f"cannot capture {source} source: {detail}"}
 
     component_path = str(comp.get("path", "")).rstrip("/")
+    version_inputs = [
+        path for path in component_version_input_paths(config, component_name)
+        if component_path not in {"", "."}
+        and path != component_path and not path.startswith(component_path + "/")
+    ]
     boundary = comp.get("boundary", {})
     boundary_paths_raw = boundary.get("paths", []) if isinstance(boundary, dict) else []
 
@@ -678,11 +684,10 @@ def analyze_explain_changes(
         changed_status = "not-run"
     elif source == "working-tree":
         try:
-            changed = _working_tree_name_status(
-                repo_root,
-                effective_base,
-                pathspec=component_path,
-            )
+            for pathspec in [component_path, *version_inputs]:
+                changed.extend(_working_tree_name_status(
+                    repo_root, effective_base, pathspec=pathspec,
+                ))
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             return {
                 "error": (
@@ -721,6 +726,7 @@ def analyze_explain_changes(
                 if component_path in {"", "."}
                 or path == component_path
                 or path.startswith(f"{component_path}/")
+                or path in version_inputs
             ]
             diff_args = []
         else:
@@ -736,7 +742,7 @@ def analyze_explain_changes(
     if diff_args:
         diff_args.append("--")
         if component_path not in {"", "."}:
-            diff_args.append(component_path)
+            diff_args.extend([component_path, *version_inputs])
         try:
             changed = _git_name_status(
                 repo_root,
@@ -768,6 +774,9 @@ def analyze_explain_changes(
             component_relative = rel
             if component_relative.startswith(component_prefix):
                 component_relative = component_relative[len(component_prefix):]
+            elif component_path not in {"", "."}:
+                # An external version input is not a component boundary file.
+                continue
             for bp in normalized_boundary_paths:
                 if _is_glob(bp):
                     if glob_operation.matches(component_relative, bp):
@@ -1485,12 +1494,18 @@ def analyze_component_drift(
     # Get changed files via git diff
     comp_path = comp_cfg.get("path", "?").rstrip("/")
     component_pathspec = "." if comp_path in {"", "."} else comp_path
+    version_inputs = [
+        path for path in component_version_input_paths(config, component_name)
+        if component_pathspec != "." and path != comp_path
+        and not path.startswith(comp_path + "/")
+    ]
+    component_pathspecs = [component_pathspec, *version_inputs]
     changed_files: List[Tuple[str, str]] = []
     changed_files_status = "not-run"
     changed_files_error: Optional[str] = None
     diagnostic_base: Optional[str] = None
     diagnostic_base_origin: Optional[str] = None
-    if changes:
+    if changes or (metadata_changes and version_inputs):
         if source == "working-tree":
             diagnostic_base = resolved_diagnostic_base or "HEAD"
             diagnostic_base_origin = (
@@ -1499,11 +1514,10 @@ def analyze_component_drift(
                 else "default for working-tree diagnostics"
             )
             try:
-                changed_files = _working_tree_name_status(
-                    repo_root,
-                    diagnostic_base,
-                    pathspec=component_pathspec,
-                )
+                for pathspec in component_pathspecs:
+                    changed_files.extend(_working_tree_name_status(
+                        repo_root, diagnostic_base, pathspec=pathspec,
+                    ))
                 changed_files_status = "ok"
             except (OSError, ValueError, subprocess.CalledProcessError) as exc:
                 changed_files = []
@@ -1523,6 +1537,7 @@ def analyze_component_drift(
                     if comp_path in {"", "."}
                     or path == comp_path
                     or path.startswith(f"{comp_path}/")
+                    or path in version_inputs
                 )
                 changed_files_status = "ok"
             else:
@@ -1556,7 +1571,7 @@ def analyze_component_drift(
                                 "--literal-pathspecs",
                                 *diff_args,
                                 "--",
-                                component_pathspec,
+                                *component_pathspecs,
                             ],
                         )
                     )
@@ -1618,7 +1633,7 @@ def analyze_component_drift(
                             "--literal-pathspecs",
                             *diff_command,
                             "--",
-                            component_pathspec,
+                            *component_pathspecs,
                         ],
                     )
                     changed_files_status = "ok"

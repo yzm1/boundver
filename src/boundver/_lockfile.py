@@ -937,13 +937,14 @@ def _compute_component_entry(
         elif version is None:
             message = "Configured version source did not produce a version"
             version_source = comp.get("version_source")
+            file_kind = "repo_file" if isinstance(version_source, dict) and "repo_file" in version_source else "file"
             if (
                 isinstance(version_source, dict)
-                and isinstance(version_source.get("file"), str)
+                and isinstance(version_source.get(file_kind), str)
                 and isinstance(version_source.get("field"), str)
             ):
                 message += (
-                    f" (file {_bounded_diagnostic_repr(version_source['file'])}, "
+                    f" ({file_kind} {_bounded_diagnostic_repr(version_source[file_kind])}, "
                     f"field {_bounded_diagnostic_repr(version_source['field'])})"
                 )
             version_errors.append(message)

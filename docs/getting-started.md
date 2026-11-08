@@ -133,6 +133,23 @@ vendored-copy, and file version-source paths use `/` separators and are relative
 to the scope documented by the schema. Empty, absolute, traversing, and
 backslash-separated declarations are rejected.
 
+For a sibling or shared version manifest outside the component, v0.17 development
+adds an explicit repository-root-relative variant:
+
+```json
+{
+  "version_source": {
+    "repo_file": "releases/payment.service-definition.json",
+    "field": "image.version"
+  }
+}
+```
+
+`file` still means component-relative. Do not use `..` to reach a sibling. The
+new variant needs a supporting Boundver version/schema; old clients reject it.
+See [version files](reference.md#repository-relative-version-files) for source
+and fingerprint semantics.
+
 v0.13 treats component `ecosystem`, component `note`, and `boundary.note` as
 presentation-only, so they can record classification, ownership, migration,
 and review rationale without rotating `config_digest`; do not use them to hide

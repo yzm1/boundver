@@ -7,7 +7,7 @@ import stat
 import subprocess
 import sys
 import threading
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +25,7 @@ from typing import (
 )
 
 from ._config_contract import git_tag_prefix_error
+from ._version_paths import version_file_repo_path
 from ._utils import (
     GuardrailError,
     SOURCE_MODE_SET,
@@ -3496,7 +3497,18 @@ def changed_components_since_ref(
     }
     components = config.get("components", {})
     matched_files: set = set()
+    changed_path_set = set(changed_files)
+    version_dependents: Dict[str, List[str]] = {}
     for cname, comp in components.items():
+        version_source = comp.get("version_source")
+        if isinstance(version_source, dict):
+            inherited = version_source.get("component")
+            if isinstance(inherited, str):
+                version_dependents.setdefault(inherited, []).append(cname)
+            version_path = version_file_repo_path(comp.get("path"), version_source)
+            if version_path is not None and version_path in changed_path_set:
+                changed.append(cname)
+                matched_files.add(version_path)
         raw_path = str(comp.get("path", "")).strip()
         cpath = _to_posix(os.path.normpath(raw_path)) if raw_path else ""
         if cpath in {"", "."}:
@@ -3516,9 +3528,16 @@ def changed_components_since_ref(
     # deleted/moved component or another config input.  Selecting everything is
     # conservative, but avoids a false-clean result when the old path is no
     # longer available to map precisely.
-    if changed_files and matched_files != set(changed_files):
+    if changed_files and matched_files != changed_path_set:
         return sorted(components)
-    return sorted(set(changed) | tag_versioned)
+    selected = set(changed) | tag_versioned
+    pending = deque(sorted(selected))
+    while pending:
+        for dependent in version_dependents.get(pending.popleft(), []):
+            if dependent not in selected:
+                selected.add(dependent)
+                pending.append(dependent)
+    return sorted(selected)
 
 
 def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[str]:

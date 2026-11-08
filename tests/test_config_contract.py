@@ -23,6 +23,7 @@ from boundver._config_contract import (
     ROOT_FIELDS,
     SLICE_FIELDS,
     VERSION_FILE_FIELDS,
+    VERSION_REPO_FILE_FIELDS,
     VERSION_COMPONENT_FIELDS,
     VERSION_CONSTANT_FIELDS,
     VERSION_TAG_FIELDS,
@@ -114,6 +115,7 @@ class ConfigContractParityTests(unittest.TestCase):
             {frozenset(case["properties"]) for case in object_cases},
             {
                 VERSION_FILE_FIELDS,
+                VERSION_REPO_FILE_FIELDS,
                 VERSION_TAG_FIELDS,
                 VERSION_COMPONENT_FIELDS,
                 VERSION_CONSTANT_FIELDS,

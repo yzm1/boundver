@@ -188,7 +188,59 @@ Duplicate object keys, aliases, non-finite numbers, oversized integer or
 floating-point tokens, and format-specific ambiguous values remain
 fail-closed.
 
+## Repository-relative version files
+
+The v0.17 development variant `version_source.repo_file` reads a version from
+a sibling or shared manifest anywhere inside the same repository:
+
+```json
+{
+  "path": "bi-jobs/processor",
+  "version_source": {
+    "repo_file": "bi-jobs/processor.service-definition.json",
+    "field": "image.version"
+  },
+  "boundary": {"provider": "leaf", "paths": []}
+}
+```
+
+`file` remains relative to the component; `repo_file` is always relative to the
+repository root, even when the config lives in another directory. Choose one
+version-source variant only. No traversal, globs, absolute paths, backslashes,
+or drive/ADS colons are permitted. Both file forms use the same strict JSON,
+TOML or YAML reader, and the selected version must be text. YAML still requires
+the optional parser; no repository code or generator is executed.
+
+HEAD reads the committed file, index reads its staged version, and working-tree
+reads tracked disk bytes under the existing tracking policy. Symlinks and
+ancestor reparse points cannot supply version bytes through the source accessor.
+Missing, untracked or unparseable required versions fail closed rather than
+falling back to a different source, constant or Git tag.
+
+The declaration participates in semantic-config identity. Existing `file`
+declarations keep their meaning and digest algorithms; adopting `repo_file`
+is an intentional config change requiring a supporting tool/schema and reviewed
+lock regeneration. Older clients reject the new variant. It does not require
+adding `..` support or changing the v4 lock format.
+
+An external version file contributes the resolved version and compatibility
+identity, **not** implicit component exact/behavior/boundary coverage. If the
+manifest is itself a published contract, declare that surface separately.
+`--changed-from` includes its readers, any input-owning component, and transitive
+version inheritors, while still verifying full lock integrity. Version
+inheritance does not invent consumer edges. `why` and `explain` can list the
+currently declared external version input without labeling it a boundary edit
+or treating a version bump as deployment evidence.
+
+For a migration from duplicated Git tags, first compare the file's version to
+the intended tag, change the declaration in a reviewed commit, and inspect the
+generated lock. Boundver does not create or delete release tags for you.
+
 ## Declaration coverage
+
+Before auditing selectors, note that an external version source is not
+automatically a boundary or behavior input; see
+[repository-relative version files](#repository-relative-version-files).
 
 `boundver coverage` audits declarations without reading or writing the lock.
 It reports two kinds of omission:
