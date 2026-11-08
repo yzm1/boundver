@@ -120,6 +120,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Refreshed vulnerable automation-tool pins and their wheel-hash evidence,
+  including pip's vendored certificate bundle. Hook tooling in the CI profile
+  requires Python 3.11+; the CLI, Action and core tests retain Python 3.10.
+
 - Timeout workers use the controller's runtime-version resolver, so source
   checkouts without distribution metadata no longer reject their own worker
   as a different runtime. Genuine runtime mismatches remain fatal.

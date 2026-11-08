@@ -200,6 +200,29 @@ def test_release_profile_installs_exhaustive_test_runtime():
     assert {"hypothesis", "sortedcontainers"} <= release_requirements
 
 
+def test_legacy_core_runtime_excludes_the_entire_modern_hook_tool_stack():
+    from packaging.markers import Marker
+
+    locker = _load_locker()
+    _, profiles = locker.load_manifest()
+    stack = {"filelock", "pre-commit", "python-discovery", "virtualenv"}
+    requirements = {item.canonical_name: item for item in profiles["ci"].requirements}
+    for name in stack:
+        marker = requirements[name].marker
+        assert marker == "python_version >= '3.11'"
+        assert not Marker(marker).evaluate({"python_version": "3.10"})
+        assert Marker(marker).evaluate({"python_version": "3.11"})
+        assert Marker(marker).evaluate({"python_version": "3.12"})
+    assert not stack & {item.canonical_name for item in profiles["action"].requirements}
+    action_pip = next(item.version for item in profiles["action"].requirements
+                      if item.canonical_name == "pip")
+    docs_pip = next(item.version for item in profiles["docs"].requirements
+                    if item.canonical_name == "pip")
+    assert docs_pip == action_pip
+    with pytest.raises(locker.LockError, match="unsupported marker"):
+        locker._parse_requirement("example==1.0; python_version >= '3.12'", "test")
+
+
 def test_lock_generation_rejects_active_pypi_advisories():
     locker = _load_locker()
     requirement = locker.Requirement("example", "1.0")

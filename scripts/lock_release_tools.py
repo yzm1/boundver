@@ -47,6 +47,7 @@ REQUIREMENT_RE = re.compile(
 )
 ALLOWED_MARKERS = {
     "python_version < '3.11'",
+    "python_version >= '3.11'",
     "sys_platform == 'linux'",
     "sys_platform == 'win32'",
 }

@@ -369,6 +369,14 @@ Apple silicon, but not macOS Intel, so do not use an Intel Mac as the release
 build host. The release-profile installer rejects Python older than 3.12
 before contacting the package index.
 
+The CI profile installs its pre-commit/virtualenv stack only on Python 3.11+:
+the patched filelock dependency requires that interpreter floor. This marker
+also covers python-discovery, which depends on filelock. Python 3.10 still
+runs the core suite and public Action; the existing Python 3.12 installation
+job exercises all public hooks. Do not restore a vulnerable older filelock to
+make pre-commit available in the legacy core-test environment. This tooling
+split does not change the CLI's supported Python versions.
+
 Use Python 3.12 or newer to maintain the locks:
 
 ```bash
