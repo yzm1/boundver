@@ -159,16 +159,27 @@ def fixture_inventory(root: Path) -> dict:
     """Record tracked volume after measurement, outside the operation timings."""
     result = dict.fromkeys(("tracked_files", "tracked_bytes", "inside_component_files",
                             "inside_component_bytes", "outside_component_files", "outside_component_bytes"), 0)
-    for row in runtime._run(root, "ls-tree", "-r", "-l", "-z", "HEAD").split("\0"):
-        if not row:
-            continue
-        metadata, path = row.split("\t", 1)
-        size = int(metadata.split()[-1])
-        scope = "inside_component" if path.startswith("components/") else "outside_component"
-        result["tracked_files"] += 1
-        result["tracked_bytes"] += size
-        result[scope + "_files"] += 1
-        result[scope + "_bytes"] += size
+    # Retain runtime._run's output cap. A recursive whole-tree listing can
+    # exceed it at the supported fixture scale; each generated directory fits.
+    pending = [("HEAD", "")]
+    while pending:
+        tree, prefix = pending.pop()
+        for row in runtime._run(root, "ls-tree", "-l", "-z", tree).split("\0"):
+            if not row:
+                continue
+            metadata, name = row.split("\t", 1)
+            _mode, kind, oid, size = metadata.split()
+            path = prefix + name
+            if kind == "tree":
+                pending.append((oid, path + "/"))
+                continue
+            if kind != "blob":
+                raise RuntimeError("Unexpected non-file object in synthetic fixture inventory")
+            scope = "inside_component" if path.startswith("components/") else "outside_component"
+            result["tracked_files"] += 1
+            result["tracked_bytes"] += int(size)
+            result[scope + "_files"] += 1
+            result[scope + "_bytes"] += int(size)
     return result
 
 

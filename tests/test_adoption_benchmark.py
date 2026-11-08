@@ -79,6 +79,23 @@ def test_payload_budget_includes_headers(adoption, count, payload):
     adoption[0].validate_payload_volume(count, payload)
 
 
+def test_inventory_keeps_git_output_bounded_by_subtree(adoption, monkeypatch):
+    module, root = adoption
+    original = module.runtime._run
+    calls = []
+
+    def bounded_tree(*arguments):
+        if "ls-tree" in arguments:
+            assert "-r" not in arguments
+            calls.append(arguments)
+        return original(*arguments)
+
+    monkeypatch.setattr(module.runtime, "_run", bounded_tree)
+    inventory = module.fixture_inventory(root)
+    assert inventory["tracked_files"] > 58
+    assert len(calls) > 58
+
+
 def test_owned_payload_changes_exact_only_and_keeps_reference_verifiable(adoption, tmp_path):
     module = adoption[0]
     roots = [tmp_path / "plain", tmp_path / "owned"]
