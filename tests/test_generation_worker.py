@@ -237,3 +237,35 @@ def test_expired_controller_does_not_launch(invocation, monkeypatch):
     monkeypatch.setattr(WindowsJob, "launch_python", lambda *a, **k: pytest.fail("expired launch"))
     with pytest.raises(ConfigError, match="expired"):
         runner.run_windows_generation(encode_request(invocation), control=control, running_version=_get_version())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX session launcher")
+def test_posix_session_runs_real_worker_and_reaps_it(invocation, tmp_path):
+    from boundver._posix_worker import PosixWorker
+    data = encode_request(invocation)
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        write_transfer(directory, "request.json", data)
+        process = PosixWorker(directory, cwd=tmp_path, env=dict(os.environ))
+        try:
+            assert process.wait(20) == 0
+            assert (directory / "result.bin").read_bytes() == compute_request(data, running_version=_get_version())
+        finally:
+            process.terminate_group()
+            process.wait(5)
+        assert not process.group_exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX session launcher")
+def test_posix_session_does_not_inherit_controller_session(invocation, tmp_path):
+    from boundver._posix_worker import PosixWorker
+    # A missing request fails safely; session creation must precede user code.
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        process = PosixWorker(Path(name), cwd=tmp_path, env=dict(os.environ))
+        try:
+            assert os.getsid(process.pid) == process.pid
+            assert os.getpgid(process.pid) == process.pid
+        finally:
+            process.terminate_group()
+            process.wait(5)
+        assert not process.group_exists()

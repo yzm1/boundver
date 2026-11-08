@@ -192,3 +192,18 @@ cleanup. Tests stop a real worker immediately after launch with controlled
 clock/cancellation events, check it is reaped, and reject an already-expired
 controller before launch. POSIX containment, installed-target checks, diagnostic
 forwarding and CLI integration remain required.
+
+`_posix_worker` now launches only the fixed isolated Python worker command in
+a new session, with closed inherited descriptors and standard streams directed
+to the null device. Targeted group termination and leader reaping have a local
+Ubuntu smoke check. The full POSIX worker-equivalence tests are present but
+still require a Linux test environment with dependencies; Windows runs skip
+them. This helper is not yet connected to the controller.
+
+The POSIX process group is not a Windows Job Object equivalent: trusted native
+code can deliberately create another session and escape it. Such uncertainty
+must remain explicit in the final acceptance and operator contract. Do not
+claim complete descendant cleanup from leader exit alone, and do not silently
+delete transfer storage if ownership/cleanup cannot be confirmed. Python's
+[subprocess documentation](https://docs.python.org/3/library/subprocess.html)
+specifies that session creation happens before worker execution.

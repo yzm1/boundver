@@ -116,6 +116,27 @@ def test_runtime_has_no_outbound_network_or_telemetry_imports() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_posix_worker_creation_is_a_fixed_isolated_local_interpreter() -> None:
+    tree = ast.parse((RUNTIME_ROOT / "_posix_worker.py").read_text(encoding="utf-8"))
+    launches = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                and _qualified_name(node.func) == "subprocess.Popen"]
+    assert len(launches) == 1
+    call = launches[0]
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "worker_command"
+    assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "worker_command" for target in node.targets)]
+    assert len(assignments) == 1
+    command = assignments[0].value
+    assert isinstance(command, ast.List) and len(command.elts) == 5
+    assert _qualified_name(command.elts[0]) == "sys.executable"
+    assert [node.value for node in command.elts[1:4]] == ["-I", "-m", "boundver._generation_worker"]
+    options = {keyword.arg: keyword.value for keyword in call.keywords}
+    assert options["start_new_session"].value is True
+    assert options["close_fds"].value is True
+    assert all(_qualified_name(options[name]) == "subprocess.DEVNULL" for name in ("stdin", "stdout", "stderr"))
+    assert "shell" not in options
+
+
 def test_native_worker_creation_is_statically_interpreter_rooted() -> None:
     calls = []
     for path in sorted(RUNTIME_ROOT.glob("*.py")):
@@ -144,6 +165,10 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
                     or name.startswith("os.exec")
                     or name.startswith("os.spawn")
                 ):
+                    if path.name == "_posix_worker.py" and name == "subprocess.Popen":
+                        # A separate exact-shape test pins this local Python
+                        # worker exception; the Git launch policy stays intact.
+                        continue
                     process_calls.append((path, node))
             elif isinstance(node, ast.Assign) and any(
                 isinstance(target, ast.Name) and target.id == "command"
