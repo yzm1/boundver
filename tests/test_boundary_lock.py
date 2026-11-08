@@ -1873,7 +1873,7 @@ class BoundaryLockTests(unittest.TestCase):
             }
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
             commit_all(root, "add config")
-            res = self._run_cli(root, "explain", "svc")
+            res = self._run_cli(root, "explain", "svc", "--base-ref", "HEAD")
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertIn("svc", res.stdout)
 

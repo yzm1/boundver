@@ -642,11 +642,11 @@ class RootAndCurrentCommitFallbackTests(unittest.TestCase):
         self.assertEqual(payload["changed_files_status"], "not-run")
         self.assertEqual(payload["changed_files"], [])
 
-    def test_the_root_branch_lists_the_changed_file_in_explain_too(self):
-        """The premise for the current-commit pin: explain can list a file."""
+    def test_explain_lists_changes_against_an_explicit_root_commit(self):
         with self._squeezed():
             result = run_cli_in_process(
-                self.scene.root, "explain", "svc", "--source", "head"
+                self.scene.root, "explain", "svc", "--source", "head",
+                "--base-ref", self.root_commit,
             )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Changed files (1):", result.stdout)
@@ -707,9 +707,9 @@ class RootAndCurrentCommitFallbackTests(unittest.TestCase):
             )
         self.assertEqual(payload["changed_files_status"], "not-run")
         self.assertEqual(payload["changed_files"], [])
-        self.assertEqual(explain.returncode, 0)
+        self.assertEqual(explain.returncode, 2)
         self.assertNotIn(NO_CHANGES_LINE, explain.stdout)
-        self.assertIn("only available fallback base is the current commit", explain.stdout)
+        self.assertIn("Lock source provenance is unavailable", explain.stderr)
         self.assertEqual(why_text.returncode, 1)
         self.assertIn("Status: DRIFTED", why_text.stdout)
         self.assertIn(
@@ -863,11 +863,14 @@ class ShallowCheckoutBaseTests(unittest.TestCase):
             self.clone, "why", "svc", "--source", "head", "--format", "json"
         )
         explain = run_cli(self.clone, "explain", "svc", "--source", "head")
-        self.assertEqual(explain.returncode, 0)
+        self.assertEqual(explain.returncode, 2)
         self.assertNotIn(NO_CHANGES_LINE, explain.stdout)
         self.assertIn("unavailable", why.stdout.lower())
-        self.assertIn("shallow", explain.stdout.lower())
-        self.assertIn("fetch complete history", explain.stdout.lower())
+        self.assertIn("Lock source provenance is unavailable", explain.stderr)
+        explicit = run_cli(self.clone, "explain", "svc", "--base-ref", "HEAD~1")
+        self.assertEqual(explicit.returncode, 2)
+        self.assertIn("shallow", explicit.stderr.lower())
+        self.assertIn("fetch complete history", explicit.stderr.lower())
 
 
 # ---------------------------------------------------------------------------

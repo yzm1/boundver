@@ -101,15 +101,15 @@ def test_head_verify_names_the_snapshot_backed_lock(tmp_path: Path) -> None:
     assert ":boundary.lock.json" in text_result.stdout
 
 
-def test_explain_and_why_use_lock_history_and_effective_facets(
+def test_explain_and_why_use_explicit_source_comparisons_and_effective_facets(
     tmp_path: Path,
 ) -> None:
     _single_component_repo(tmp_path)
     (tmp_path / "svc" / "impl.py").write_text("VALUE = 2\n", encoding="utf-8")
     commit_all(tmp_path, "implementation drift")
     # A later rewrite of the same lock entry models a partial update for an
-    # unrelated component. Repository-wide lock mtime/history is now too new;
-    # diagnostics must follow this component's unchanged entry farther back.
+    # unrelated component. The operator selects the old checkpoint explicitly;
+    # lock mtime/history must not become a claim about the generating source.
     lockfile = json.loads((tmp_path / "boundary.lock.json").read_text())
     (tmp_path / "boundary.lock.json").write_text(
         json.dumps(lockfile, indent=4) + "\n",
@@ -119,13 +119,13 @@ def test_explain_and_why_use_lock_history_and_effective_facets(
     (tmp_path / "unrelated.txt").write_text("later\n", encoding="utf-8")
     commit_all(tmp_path, "unrelated latest commit")
 
-    explained = _run(tmp_path, "explain", "svc", "--source", "head")
+    explained = _run(tmp_path, "explain", "svc", "--source", "head", "--base-ref", "HEAD~3")
     assert explained.returncode == 0, explained.stderr
     assert "svc/impl.py" in explained.stdout
-    assert "commit that introduced the current lock entry for svc" in explained.stdout
+    assert "explicit --base-ref" in explained.stdout
     assert "Gated facets: boundary" in explained.stdout
 
-    why_text = _run(tmp_path, "why", "svc", "--source", "head")
+    why_text = _run(tmp_path, "why", "svc", "--source", "head", "--base-ref", "HEAD~3")
     assert why_text.returncode == 0, why_text.stderr
     assert "Status: UP TO DATE -- no gated drift detected" in why_text.stdout
     assert "Non-gating drift observed" in why_text.stdout
@@ -141,6 +141,7 @@ def test_explain_and_why_use_lock_history_and_effective_facets(
         "head",
         "--format",
         "json",
+        "--base-ref", "HEAD~3",
     )
     assert why_json.returncode == 0, why_json.stderr
     payload = json.loads(why_json.stdout)
@@ -151,9 +152,7 @@ def test_explain_and_why_use_lock_history_and_effective_facets(
     assert payload["non_gating_changes"] == ["exact"]
     assert payload["changed_files_status"] == "ok"
     assert payload["changed_files"] == [{"path": "svc/impl.py", "status": "M"}]
-    assert "introduced the current lock entry for svc" in payload[
-        "diagnostic_base_origin"
-    ]
+    assert payload["diagnostic_base_origin"] == "explicit --base-ref"
 
     status = _run(tmp_path, "status", "--source", "head", "--format", "json")
     assert status.returncode == 0, status.stderr

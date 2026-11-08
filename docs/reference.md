@@ -157,10 +157,10 @@ Empty, whitespace-only, missing and ambiguous refs are usage errors.
 convenience, not as lock-source provenance. Verification still recomputes
 fingerprints from the selected source independently of file diagnostics.
 
-The legacy `explain` default still uses bounded lock-history heuristics in this
-development branch. Its inferred base is advisory only, never generating-source
-evidence. Replacing that inference is part of the remaining v0.17 work; use an
-explicit `--base-ref` for an intentional comparison.
+`explain --source head` requires an explicit `--base-ref` and exits 2 without
+one: it has no file comparison to perform without a chosen old source. It does
+not infer one from lock history or substitute a root-commit fallback. Fetching
+more history alone does not prove where the lock was generated.
 
 When `explain` finds no changes in the selected source, text output names the
 other exact `--source` forms without silently reading those additional views.

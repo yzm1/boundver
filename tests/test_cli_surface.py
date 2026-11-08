@@ -199,13 +199,15 @@ class WhyViewAgreementTests(unittest.TestCase):
             scene.file("svc/impl.txt", "one\n")
             scene.commit()
             _lock(scene, "lock")
+            comparison_base = scene.head()
             if drift:
                 scene.append_line("svc/impl.txt", "two\n")
                 scene.append_line("svc/api/v1.yaml", "change\n")
                 scene.commit("edit")
-            text = run_cli(scene.root, "why", "svc", "--source", "head")
+            text = run_cli(scene.root, "why", "svc", "--source", "head", "--base-ref", comparison_base)
             document = run_cli(
-                scene.root, "why", "svc", "--source", "head", "--format", "json"
+                scene.root, "why", "svc", "--source", "head", "--format", "json",
+                "--base-ref", comparison_base,
             )
             return text, json.loads(document.stdout), document.returncode
 

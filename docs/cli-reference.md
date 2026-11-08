@@ -422,8 +422,8 @@ usage: boundver explain [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_RE
 | `-h`, `--help` | — | — | show this help message and exit |
 | `component` | `COMPONENT` | required | Component name from config |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
-| `--lock` | `LOCK` | `boundary.lock.json` | Lockfile path used to infer the default diagnostic base |
-| `--base-ref` | `BASE_REF` | — | Git ref to resolve to an immutable commit and diff against (default: commit that introduced the component's current lock entry for source=head; HEAD otherwise) |
+| `--lock` | `LOCK` | `boundary.lock.json` | Lockfile path; not proof of its generating source |
+| `--base-ref` | `BASE_REF` | — | Git ref to resolve to an immutable commit and diff against (required for source=head; defaults to HEAD for index/working-tree). This comparison is not lock-source provenance |
 | `--source` | `{head,index,working-tree}` | `head` | Source to diff against base-ref (default: head) |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 

@@ -183,7 +183,11 @@ def _resolve_lock_history_base(
     component_name: Optional[str] = None,
     locked_component: Optional[dict] = None,
 ) -> Tuple[Optional[str], str]:
-    """Resolve a diagnostic base without persisting commit-specific lock data."""
+    """Legacy lock-storage history lookup, not generating-source provenance.
+
+    Retained for read-only history inspection. CLI file attribution must not
+    treat this heuristic as evidence of the source that produced a lock.
+    """
     if source != "head":
         return "HEAD", "default for staged or working-tree diagnostics"
     target = snapshot.head_oid if snapshot is not None else None
@@ -581,6 +585,16 @@ def print_status(lockfile: dict, *, source: Optional[str] = None) -> None:
         print(f"    {sname} [{mode}] ({count} components) = {fp}")
 
 
+def _diagnostic_ref_failure(repo_root: Path, exc: ValueError) -> str:
+    detail = _bounded_exception_text(exc)
+    try:
+        if _git_repository_is_shallow(repo_root):
+            detail += " Git history is shallow; fetch complete history separately before retrying."
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        pass  # Preserve the original error if the diagnostic probe also fails.
+    return detail
+
+
 def analyze_explain_changes(
     config: dict,
     repo_root: Path,
@@ -620,6 +634,12 @@ def analyze_explain_changes(
     if not comp:
         known = sorted(config.get("components", {}).keys())
         return {"error": f"unknown component '{component_name}'", "known": known}
+    if source == "head" and base_ref is None:
+        return {"error": (
+            "Lock source provenance is unavailable. Pass --base-ref REF for an "
+            "explicit source comparison; a lock-containing commit does not "
+            "prove the generating source."
+        )}
     if source in {"head", "index"} and snapshot is None:
         try:
             snapshot = _capture_git_source_snapshot(repo_root, source)
@@ -638,21 +658,8 @@ def analyze_explain_changes(
 
     auto_base = base_ref is None
     if auto_base:
-        locked_component = None
-        if isinstance(lockfile, dict):
-            raw_components = lockfile.get("components", {})
-            if isinstance(raw_components, dict):
-                candidate = raw_components.get(component_name)
-                if isinstance(candidate, dict):
-                    locked_component = candidate
-        effective_base, base_origin = _resolve_lock_history_base(
-            repo_root,
-            source,
-            snapshot,
-            lock_path,
-            component_name=component_name,
-            locked_component=locked_component,
-        )
+        effective_base = "HEAD"
+        base_origin = "default for staged or working-tree diagnostics"
     else:
         try:
             effective_base = _resolve_git_commit(
@@ -661,28 +668,15 @@ def analyze_explain_changes(
                 label="diagnostic base",
             )
         except ValueError as exc:
-            return {"error": _bounded_exception_text(exc)}
+            return {"error": _diagnostic_ref_failure(repo_root, exc)}
         base_origin = "explicit --base-ref"
     if effective_base is None:
         return {"error": "cannot determine a committed diagnostic base"}
-    root_commit_target: Optional[str] = None
-    current_commit_fallback = (
-        source == "head"
-        and base_origin.startswith("current commit fallback")
-        and effective_base
-        == (snapshot.head_oid if snapshot is not None else effective_base)
-    )
-    if source == "head" and base_origin.startswith("root commit fallback"):
-        root_commit_target = snapshot.head_oid if snapshot is not None else "HEAD"
-
     # Choose diff target based on source. Never ask Git to compare worktree
     # contents: repository clean/process filters are executable commands.
     changed: List[Tuple[str, str]] = []
     changed_status = "ok"
-    if current_commit_fallback:
-        diff_args = []
-        changed_status = "not-run"
-    elif source == "working-tree":
+    if source == "working-tree":
         try:
             for pathspec in [component_path, *version_inputs]:
                 changed.extend(_working_tree_name_status(
@@ -696,23 +690,9 @@ def analyze_explain_changes(
                 )
             }
         diff_args = []
-    elif root_commit_target is not None:
-        diff_args = [
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "--name-status",
-            "-r",
-            "-z",
-            root_commit_target,
-        ]
     else:
         diff_args = ["diff", "--name-status", "-z"]
-    if current_commit_fallback:
-        pass
-    elif source == "working-tree":
-        pass
-    elif root_commit_target is not None:
+    if source == "working-tree":
         pass
     elif source == "index" and snapshot is not None:
         if effective_base == "HEAD" and snapshot.head_oid is not None:
@@ -860,17 +840,6 @@ def explain_component_changes(
     gated_facets = _effective_component_facets(config, component_name)
     print(f"Gated facets: {', '.join(sorted(gated_facets)) or 'none'}")
 
-    if not changed and result.get("changed_status") == "not-run":
-        print()
-        print(
-            "Changed-file diagnostics were not run because the only available "
-            "fallback base is the current commit."
-        )
-        print(
-            "  Fetch complete history or pass --base-ref with an older commit."
-        )
-        return 0
-
     if not changed:
         print()
         print("No tracked file changes detected for this component path.")
@@ -895,7 +864,7 @@ def explain_component_changes(
         else:
             print(
                 "  Inspect committed state: "
-                "`boundver explain COMPONENT --source head`."
+                "`boundver explain COMPONENT --source head --base-ref REF`."
             )
             print(
                 "  Inspect staged state: "
@@ -1334,7 +1303,7 @@ def analyze_component_drift(
                 label="diagnostic base",
             )
         except ValueError as exc:
-            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+            print(f"ERROR: {_diagnostic_ref_failure(repo_root, exc)}", file=sys.stderr)
             return None
 
     from ._diff import _summarize_change

@@ -1070,16 +1070,12 @@ class ExplicitBaseRefDisclosureTests(unittest.TestCase):
                 f"Requested base: moving -> {resolved}",
             )
 
-    def test_explain_does_disclose_a_commit_when_it_infers_the_base(self):
-        """The premise for the absence above: the disclosure line is capable of
-        carrying a commit id, and does when nothing was requested."""
+    def test_explain_does_not_invent_a_base_when_none_was_requested(self):
         with _explain_repository() as scene:
             result = run_cli(scene.root, "explain", "svc")
-            line = _line(result.stdout, "Base ref:")
-            self.assertIsNotNone(COMMIT_OID.search(line), line)
-            self.assertIn(
-                "(commit that introduced the current lock entry for svc)", line
-            )
+            self.assertEqual(result.returncode, 2)
+            self.assertNotIn("Base ref:", result.stdout)
+            self.assertIn("Lock source provenance is unavailable", result.stderr)
 
     def test_moving_the_branch_changes_both_the_answer_and_disclosure(self):
         with _explain_repository() as scene:

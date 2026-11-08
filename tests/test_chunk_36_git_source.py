@@ -1021,13 +1021,13 @@ class BaseRefNormalizationTests(unittest.TestCase):
         self.assertIn("invalid diagnostic base ref", result.stderr)
 
     def test_explain_maps_the_same_three_forms_the_same_way(self):
-        """The text command agrees: omission infers; explicit blanks refuse."""
+        """Omission lacks provenance; explicit blanks are invalid refs."""
         with _drift_scene() as scene:
             absent = run_cli(scene.root, "explain", "svc")
             empty = run_cli(scene.root, "explain", "svc", "--base-ref", "")
             blank = run_cli(scene.root, "explain", "svc", "--base-ref", " ")
-        self.assertEqual(absent.returncode, 0, absent.stderr)
-        self.assertIn(f"({self.INFERRED_ORIGIN})", absent.stdout)
+        self.assertEqual(absent.returncode, USAGE, absent.stderr)
+        self.assertIn("Lock source provenance is unavailable", absent.stderr)
         self.assertEqual(empty.returncode, USAGE)
         self.assertEqual(empty.stdout, "")
         self.assertIn("ERROR: invalid base ref: ''", empty.stderr)

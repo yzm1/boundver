@@ -1062,7 +1062,7 @@ TRUST_COMMANDS: Dict[str, Tuple[Tuple[str, ...], int, bool, int]] = {
     "validate-config": (("validate-config",), 0, False, 1),
     "check-config": (("check-config",), 0, False, 1),
     "status": (("status",), 0, True, 1),
-    "explain": (("explain", "svc"), 0, False, 1),
+    "explain": (("explain", "svc", "--base-ref", "<target>"), 0, False, 1),
     "why": (("why", "svc"), 2, True, 1),
     "review": (("review", "--base", "<base>", "--target", "<target>"), 2, True, 1),
 }

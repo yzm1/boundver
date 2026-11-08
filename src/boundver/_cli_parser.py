@@ -526,15 +526,15 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     ex.add_argument(
         "--lock",
         default="boundary.lock.json",
-        help="Lockfile path used to infer the default diagnostic base",
+        help="Lockfile path; not proof of its generating source",
     )
     ex.add_argument(
         "--base-ref",
         default=None,
         help=(
             "Git ref to resolve to an immutable commit and diff against "
-            "(default: commit that introduced the "
-            "component's current lock entry for source=head; HEAD otherwise)"
+            "(required for source=head; defaults to HEAD for index/working-tree). "
+            "This comparison is not lock-source provenance"
         ),
     )
     ex.add_argument(

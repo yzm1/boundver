@@ -56,3 +56,25 @@ def test_default_text_explains_missing_source_evidence(copied_lock):
     assert result.returncode == 1
     assert "Lock source provenance is unavailable" in result.stdout
     assert "Supply --base-ref" in result.stdout
+
+
+def test_explain_requires_explicit_head_base_instead_of_inferred_history(copied_lock):
+    result = run_cli(copied_lock, "explain", "svc")
+    assert result.returncode == 2
+    assert "Lock source provenance is unavailable" in result.stderr
+    assert "--base-ref" in result.stderr
+    explicit = run_cli(copied_lock, "explain", "svc", "--base-ref", "explicit-old")
+    assert explicit.returncode == 0, explicit.stderr
+    assert "svc/contract.txt" in explicit.stdout
+
+
+def test_reverted_bytes_do_not_become_changed_files_from_intervening_commits(copied_lock):
+    contract = copied_lock / "svc" / "contract.txt"
+    contract.write_text("another intermediate change\n", encoding="utf-8")
+    commit_all(copied_lock)
+    contract.write_text("original\n", encoding="utf-8")
+    commit_all(copied_lock)
+    result = run_cli(copied_lock, "explain", "svc", "--base-ref", "explicit-old")
+    assert result.returncode == 0, result.stderr
+    assert "No tracked file changes detected" in result.stdout
+    assert "Changed files (" not in result.stdout

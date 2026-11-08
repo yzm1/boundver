@@ -92,7 +92,10 @@ def test_explain_source_is_per_invocation_across_divergent_views(
     assert working_verify.returncode == 4, working_verify.stderr
     assert "Source: working-tree | Inputs:" in working_verify.stdout
 
-    default_explain = _run(tmp_path, "explain", "api")
+    missing_base = _run(tmp_path, "explain", "api")
+    assert missing_base.returncode == 2
+    assert "--base-ref" in missing_base.stderr
+    default_explain = _run(tmp_path, "explain", "api", "--base-ref", "HEAD")
     assert default_explain.returncode == 0, default_explain.stderr
     assert "Source: head" in default_explain.stdout
     assert "No tracked file changes" in default_explain.stdout

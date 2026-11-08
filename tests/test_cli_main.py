@@ -2365,7 +2365,7 @@ class MainExplainTests(unittest.TestCase):
             cfg = {"project": "p", "components": {"svc": {"path": "svc", "boundary": {"provider": "implicit"}}}, "slices": {}}
             (root / "boundary.config.json").write_text(json.dumps(cfg) + "\n")
             commit_all(root, "add config")
-            code, out, _ = _run_main("explain", "svc", repo_root=root)
+            code, out, _ = _run_main("explain", "svc", "--base-ref", "HEAD", repo_root=root)
             self.assertEqual(code, 0)
             self.assertIn("svc", out)
 

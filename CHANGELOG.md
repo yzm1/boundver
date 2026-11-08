@@ -65,6 +65,8 @@ All notable changes to this project are documented here. The format follows
   that introduced a lock entry. That commit is not proof of the generating
   source. Fingerprint drift remains available; pass `--base-ref` explicitly
   for a source comparison. This does not attest lock provenance or deployment.
+  `explain --source head` likewise requires an explicit `--base-ref`; without
+  one it exits 2 rather than guessing an old source from lock history.
 
 - Declaration-only config validation no longer incorrectly requires custom
   providers to have been runtime-registered when runtime validation is disabled.
