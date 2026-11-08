@@ -46,7 +46,8 @@ def add_unowned_files(root: Path, count: int, payload_bytes: int = 4096) -> None
 def measure(root: Path, mode: str) -> dict:
     if mode not in {"default", "quiet", "counterfactual-no-advisory", "inspect"}:
         raise ValueError("Unknown CLI profile mode")
-    metrics = {"advisory_calls": 0, "working_tree_reads": 0,
+    metrics = {"advisory_calls": 0, "advisory_completed": False, "advisory_failure_type": None,
+               "working_tree_reads": 0,
                "working_tree_bytes": 0, "unowned_working_tree_reads": 0,
                "unowned_working_tree_bytes": 0, "phases": []}
     original_advisory = core.dirty_component_paths
@@ -57,7 +58,12 @@ def measure(root: Path, mode: str) -> dict:
         metrics["advisory_calls"] += 1
         if mode == "counterfactual-no-advisory":
             return []
-        value, phase = runtime._measure("working_tree_advisory", lambda: original_advisory(*args, **kwargs))
+        try:
+            value, phase = runtime._measure("working_tree_advisory", lambda: original_advisory(*args, **kwargs))
+        except BaseException as exc:
+            metrics["advisory_failure_type"] = type(exc).__name__
+            raise
+        metrics["advisory_completed"] = True
         metrics["phases"].append(phase)
         return value
 
@@ -158,6 +164,10 @@ def contract_violations(result: dict) -> list[str]:
         violations.append("A generation mode failed")
     if len(digests) != 1 or None in digests:
         violations.append("Generation modes did not compute identical lock bytes")
+    if "inspect" in results:
+        for row in [results["inspect"]["first"], *results["inspect"]["repeated"]]:
+            if row.get("advisory_completed") is not True:
+                violations.append("Explicit inspection was not confirmed complete; its elapsed time is not a completed-scan measurement")
     return violations
 
 

@@ -166,3 +166,24 @@ def test_profile_cli_uses_requested_scratch_storage_and_cleans_only_its_fixture(
     assert module.main() == 0
     assert seen and not seen[0].exists() and tmp_path.exists()
     assert "performance_contract" in capsys.readouterr().out
+
+
+def test_profile_does_not_mistake_advisory_failure_for_completed_scan(cli_profile, monkeypatch):
+    from boundver._utils import GuardrailError
+    module, root = cli_profile
+
+    def failed_advisory(*args, **kwargs):
+        raise GuardrailError("injected scan guardrail")
+
+    monkeypatch.setattr(core, "dirty_component_paths", failed_advisory)
+    inspected = module.measure(root, "inspect")
+    assert inspected["exit_code"] == 0  # Advisory failure does not invalidate the lock.
+    assert inspected["advisory_completed"] is False
+    assert inspected["advisory_failure_type"] == "GuardrailError"
+    ordinary = module.measure(root, "default")
+    result = {"components": 6, "results": {
+        "default": {"first": ordinary, "repeated": [ordinary], "median_wall_seconds": 1.0},
+        "quiet": {"first": ordinary, "repeated": [ordinary], "median_wall_seconds": 1.0},
+        "inspect": {"first": inspected, "repeated": [inspected]},
+    }}
+    assert any("not a completed-scan" in message for message in module.contract_violations(result))

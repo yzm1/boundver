@@ -106,6 +106,21 @@ it is not a reconstruction of any adopter's repository. Run comparisons
 sequentially and record other workloads; first invocation does not mean a
 flushed physical disk cache.
 
+An exploratory Linux/Python 3.14 run with this larger outside-file workload
+measured default HEAD generation at 0.42s on Linux-local storage and 9.96s on a
+Windows-backed mount. Default generation read no working-tree content in either
+case. Explicit inspection took 1.75s locally; on the mount its first/repeated
+calls took 68.96s/319.89s. The mounted repeat read fewer files than the local
+scan, and that report did not record advisory completion, so it is **not**
+evidence of a completed 319-second scan. All modes produced identical lock
+bytes. These were single-repeat, instrumented development runs with other local
+work active, not controlled latency promises or proof of an adopter's cause.
+
+New reports record `advisory_completed` and `advisory_failure_type`. The profile
+contract refuses to count an unconfirmed inspection as a completed-scan timing,
+even if generation exits successfully after an advisory warning. Old inspection
+reports without completion metadata cannot satisfy that check.
+
 Before the change, a local Windows/Python 3.14 run measured default generation
 at a repeated median of 6.334s versus 3.492s quiet. The warning scan added 24 Git
 processes and 1,337 working-tree reads, including 525 outside declared roots.
