@@ -321,6 +321,9 @@ Its unfiltered amd64 scan reports 56 HIGH package/CVE rows across 17 distinct
 IDs, zero CRITICAL rows and zero rows with a vendor fix. Neither zlib finding
 remains in that report, and neither is exempted. These results use the same
 pinned Trivy image as CI, with a database downloaded on 2026-11-08.
+The separate no-exceptions `--ignore-unfixed --exit-code 1` scan of the same
+newer amd64 archive also passed. The primary exception-aware scan is not
+cleared by that result: its no-fix findings and expired policy still block it.
 
 Seven newly reported no-fix IDs are not covered by the historical policy:
 Expat CVE-2026-113351, CVE-2026-115506, CVE-2026-117610, CVE-2026-118370;
