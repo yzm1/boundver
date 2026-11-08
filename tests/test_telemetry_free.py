@@ -134,6 +134,8 @@ def test_posix_worker_creation_is_a_fixed_isolated_local_interpreter() -> None:
     options = {keyword.arg: keyword.value for keyword in call.keywords}
     assert options["start_new_session"].value is True
     assert options["close_fds"].value is True
+    assert isinstance(options["pass_fds"], ast.Tuple) and len(options["pass_fds"].elts) == 1
+    assert options["pass_fds"].elts[0].id == "reader"
     assert all(_qualified_name(options[name]) == "subprocess.DEVNULL" for name in ("stdin", "stdout", "stderr"))
     assert "shell" not in options
 
@@ -151,6 +153,16 @@ def test_worker_bootstrap_is_fixed_local_code_not_repository_selected():
     assert arguments[:3] == ["-I", "-c", WORKER_BOOTSTRAP]
     assert Path(arguments[3]) == RUNTIME_ROOT.parent
     assert arguments[4] == str(directory)
+
+
+def test_posix_lifeline_bootstrap_has_only_local_imports_and_targets_own_group():
+    from boundver._worker_bootstrap import POSIX_WORKER_BOOTSTRAP
+    tree = ast.parse(POSIX_WORKER_BOOTSTRAP)
+    assert set(_import_names(tree)) == {"os", "signal", "stat", "sys", "threading", "runpy"}
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and _qualified_name(node.func) == "os.killpg"]
+    assert len(calls) == 1
+    assert _qualified_name(calls[0].args[0].func) == "os.getpid"
 
 
 def test_native_worker_creation_is_statically_interpreter_rooted() -> None:

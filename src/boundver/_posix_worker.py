@@ -19,18 +19,32 @@ class PosixWorker:
             raise OSError("POSIX worker sessions are unavailable")
         if not directory.is_absolute() or not cwd.is_absolute() or not os.path.isabs(sys.executable):
             raise ValueError("Worker interpreter and paths must be absolute")
-        worker_command = [sys.executable, *worker_arguments(directory)]
-        self.process = subprocess.Popen(
-            worker_command, cwd=cwd, env=dict(env),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            close_fds=True, start_new_session=True,
-        )
+        reader, writer = os.pipe()
+        self._lifeline_writer = writer
+        try:
+            worker_command = [sys.executable, *worker_arguments(directory, lifeline_fd=reader)]
+            self.process = subprocess.Popen(
+                worker_command, cwd=cwd, env=dict(env),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                close_fds=True, start_new_session=True, pass_fds=(reader,),
+            )
+        except BaseException:
+            self._close_lifeline()
+            raise
+        finally:
+            os.close(reader)
         self.pid = self.process.pid
+
+    def _close_lifeline(self):
+        if self._lifeline_writer is not None:
+            os.close(self._lifeline_writer)
+            self._lifeline_writer = None
 
     def poll(self):
         return self.process.poll()
 
     def terminate_group(self):
+        self._close_lifeline()
         try:
             os.killpg(self.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -49,6 +63,7 @@ class PosixWorker:
     def close(self):
         if self.poll() is None:
             raise OSError("Cannot close an unreaped POSIX worker")
+        self._close_lifeline()
 
 
 class PosixJob:

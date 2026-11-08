@@ -271,3 +271,30 @@ and real package-in-zip controller/worker tests pass on Windows and Linux.
 The latter exercise path-hash without the production archive's vendored-format
 matrix, so the full archive release gate remains required. Controller/worker
 version mismatches still fail closed and now identify both versions.
+
+POSIX workers now inherit only the read end of a dedicated parent-lifetime
+pipe. The controller keeps the non-inherited write end; its death produces EOF.
+A fixed startup watchdog begins before importing Boundver and signals only its
+own session-leading process group. Launch failures close both descriptors;
+normal teardown closes the lifetime writer as well. Tests abruptly kill a real
+Linux controller and verify its worker and normal descendant stop executing.
+The test distinguishes stopped zombies awaiting init's reap from running work.
+Windows tests abruptly kill a controller and wait on retained kernel handles
+for both descendants, proving kill-on-job-close rather than just Python cleanup.
+
+This is not complete containment of arbitrary trusted native code. Deliberately
+detached descendants remain outside a POSIX group, and an extension monopolizing
+the worker's interpreter can delay its Python watchdog. The live controller can
+still signal the group without relying on worker Python execution. Abrupt death
+can leave the bounded private transfer directory for later manual cleanup; it
+cannot grant the worker lock-publication authority. Blocking controller output
+and the native-provider residual-risk contract still need release acceptance.
+
+Private request/result IPC no longer requests disk durability via `fsync`.
+It is flushed and closed before consumption, then checked for complete length,
+digest and structure; it is never deployment evidence or the lock destination.
+The atomic lock writer's file/directory durability steps are unchanged. A
+regression test pins that separation. Two exploratory Windows runs expired
+before worker launch under the previous private-IPC sync path; focused suites
+subsequently passed on Windows and Linux (56 passed, six platform skips each).
+The exact contribution of disk sync versus host contention was not isolated.

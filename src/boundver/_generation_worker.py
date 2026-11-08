@@ -161,7 +161,9 @@ def write_transfer(directory: Path, name: str, data: bytes) -> None:
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(data)
         stream.flush()
-        os.fsync(stream.fileno())
+        # Private IPC is consumed only after close and validated by length and
+        # digest. It is not a durable lock publication; forcing a disk sync here
+        # adds unrelated filesystem latency before a worker can even start.
 
 
 def run_transfer(directory: Path, *, running_version: str) -> int:

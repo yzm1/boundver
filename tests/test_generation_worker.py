@@ -149,6 +149,19 @@ def test_transfer_rejects_arbitrary_paths_and_does_not_overwrite_requests():
         assert (directory / "request.json").read_bytes() == b"first"
 
 
+def test_private_transfer_does_not_request_durable_lock_publication(monkeypatch):
+    import boundver._generation_worker as worker
+
+    def unexpected_sync(*args):
+        pytest.fail("private IPC must not force a durable disk sync")
+
+    monkeypatch.setattr(worker.os, "fsync", unexpected_sync)
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        write_transfer(directory, "request.json", b"complete transfer")
+        assert (directory / "request.json").read_bytes() == b"complete transfer"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows contained launcher")
 def test_contained_interpreter_executes_real_worker_module(invocation, tmp_path):
     from boundver._windows_job import WindowsJob
