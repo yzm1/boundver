@@ -157,6 +157,9 @@ Diagnostics are limited to 256 progress lines, 32 distinct phase timings,
 rows and lines. Labels are truncated and escaped for safe terminal display.
 These options do not send data anywhere or impose an execution deadline.
 
+The pending deadline implementation has a separate
+[publication and process-cleanup contract](generation-deadline-design.md).
+
 The summary distinguishes a dry run, a confirmed write, and publication not
 attempted. If a write is interrupted or raises before its outcome can be
 confirmed, it reports `attempted-outcome-unconfirmed`: inspect the destination
