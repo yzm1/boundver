@@ -169,3 +169,71 @@ def test_contained_interpreter_executes_real_worker_module(invocation, tmp_path)
                 process.wait(5)
                 process.close()
     assert not (tmp_path / "boundary.lock.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows contained controller")
+def test_controller_validates_result_and_cleans_transfer_before_publication(invocation, tmp_path, monkeypatch):
+    from boundver import _generation_runner as runner
+    from boundver._generation_control import GenerationControl, GenerationState
+    created = []
+    original = runner.tempfile.mkdtemp
+
+    def capture_directory(*args, **kwargs):
+        name = original(*args, **kwargs)
+        created.append(Path(name))
+        return name
+
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", capture_directory)
+    control = GenerationControl(20)
+    result = runner.run_windows_generation(encode_request(invocation), control=control, running_version=_get_version())
+    assert result == generate_lockfile(invocation["config"], tmp_path)
+    assert control.state is GenerationState.READY
+    assert created and not any(path.exists() for path in created)
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows contained controller")
+@pytest.mark.parametrize("stop", ["expire", "cancel"])
+def test_controller_reaps_real_worker_when_stopped_immediately_after_launch(invocation, monkeypatch, stop):
+    from boundver import _generation_runner as runner
+    from boundver._generation_control import GenerationControl, GenerationState
+    from boundver._windows_job import WindowsJob, WindowsJobProcess
+    from boundver._utils import ConfigError
+    now = [0.0]
+    control = GenerationControl(1, clock=lambda: now[0])
+    launch = WindowsJob.launch_python
+    close = WindowsJobProcess.close
+    reaped = []
+
+    def stop_after_launch(job, *args, **kwargs):
+        process = launch(job, *args, **kwargs)
+        if stop == "expire":
+            now[0] = 2.0
+        else:
+            control.cancel()
+        return process
+
+    def record_reap(process):
+        reaped.append(process.poll() is not None)
+        close(process)
+
+    monkeypatch.setattr(WindowsJob, "launch_python", stop_after_launch)
+    monkeypatch.setattr(WindowsJobProcess, "close", record_reap)
+    with pytest.raises(ConfigError, match="did not publish"):
+        runner.run_windows_generation(encode_request(invocation), control=control, running_version=_get_version())
+    assert reaped == [True]
+    assert control.state is (GenerationState.EXPIRED if stop == "expire" else GenerationState.CANCELLED)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows contained controller")
+def test_expired_controller_does_not_launch(invocation, monkeypatch):
+    from boundver import _generation_runner as runner
+    from boundver._generation_control import GenerationControl
+    from boundver._windows_job import WindowsJob
+    from boundver._utils import ConfigError
+    now = [0.0]
+    control = GenerationControl(1, clock=lambda: now[0])
+    now[0] = 1.0
+    monkeypatch.setattr(WindowsJob, "launch_python", lambda *a, **k: pytest.fail("expired launch"))
+    with pytest.raises(ConfigError, match="expired"):
+        runner.run_windows_generation(encode_request(invocation), control=control, running_version=_get_version())

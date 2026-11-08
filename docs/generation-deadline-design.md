@@ -179,3 +179,16 @@ is not a shared-directory security primitive: trusted native provider code
 retains the same user's filesystem capabilities. The controller's bounded wait,
 cross-platform cleanup, diagnostic forwarding and public CLI option remain
 pending.
+
+`_generation_runner.run_windows_generation` now owns the Windows controller
+loop: private transfer creation, contained launch, deadline/cancellation checks,
+bounded termination/reap, result verification and READY admission. It never
+opens a lock destination. It terminates descendants even after a successful
+worker exit and confirms both zero active job processes and signalled worker
+exit before reading the result. Cleanup has a separate five-second bound;
+uncertain cleanup retains transfer data rather than deleting files that may
+still be in use. The transfer directory identity is checked before recursive
+cleanup. Tests stop a real worker immediately after launch with controlled
+clock/cancellation events, check it is reaped, and reject an already-expired
+controller before launch. POSIX containment, installed-target checks, diagnostic
+forwarding and CLI integration remain required.
