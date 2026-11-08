@@ -126,6 +126,7 @@ from ._lockfile import (
 from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
+from ._generation_diagnostics import GenerationDiagnostics
 from ._derivations import (
     build_derivation_evidence,
     derivation_inputs_selecting_path,
@@ -1609,14 +1610,32 @@ def _cmd_review(args, repo_root: Path) -> None:
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
+    diagnostics = GenerationDiagnostics(
+        progress=getattr(args, "progress", False), timing=getattr(args, "timing", False),
+    )
+    try:
+        _cmd_generate_observed(args, repo_root, diagnostics)
+    except KeyboardInterrupt:
+        diagnostics.finish("cancelled")
+        raise
+    except BaseException:
+        diagnostics.finish("failed")
+        raise
+    else:
+        diagnostics.finish("success")
+
+
+def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnostics) -> None:
     inspect_working_tree = getattr(args, "inspect_working_tree", False)
     if inspect_working_tree and args.source != "head":
         print("ERROR: --inspect-working-tree requires --source head", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
-        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+        with diagnostics.phase("capture-source"):
+            snapshot = _capture_operation_snapshot(repo_root, args.source)
+        with diagnostics.phase("load-config"):
+            config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+            config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -1626,14 +1645,12 @@ def _cmd_generate(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
-    config_errors = validate_config(
-        config,
-        repo_root,
-        allow_custom_providers=allow_custom,
-        source=args.source,
-        snapshot=snapshot,
-        require_slice_facets=not args.allow_partial,
-    )
+    with diagnostics.phase("validate-config"):
+        config_errors = validate_config(
+            config, repo_root, allow_custom_providers=allow_custom,
+            source=args.source, snapshot=snapshot,
+            require_slice_facets=not args.allow_partial,
+        )
     if config_errors:
         print(
             f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr
@@ -1658,7 +1675,8 @@ def _cmd_generate(args, repo_root: Path) -> None:
     if inspect_working_tree:
         comp_paths = [c.get("path", "") for c in config.get("components", {}).values()]
         try:
-            dirty = dirty_component_paths(repo_root, comp_paths)
+            with diagnostics.phase("working-tree-inspection"):
+                dirty = dirty_component_paths(repo_root, comp_paths)
         except (OSError, ValueError) as exc:
             # This check is advisory: generation still reads the immutable
             # captured HEAD tree. A malformed or oversized status listing must
@@ -1694,27 +1712,21 @@ def _cmd_generate(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        if components_filter:
-            lockfile = generate_lockfile_for_components(
-                config,
-                repo_root,
-                selected_components=components_filter,
-                out_path=out_path,
-                source=args.source,
-                strict=(not args.allow_partial),
-                allow_custom_providers=allow_custom,
-                snapshot=snapshot,
-                running_version=_get_version(),
-            )
-        else:
-            lockfile = generate_lockfile(
-                config,
-                repo_root,
-                source=args.source,
-                strict=(not args.allow_partial),
-                allow_custom_providers=allow_custom,
-                snapshot=snapshot,
-            )
+        observer_args = {"observer": diagnostics} if diagnostics.enabled else {}
+        with diagnostics.phase("compute-lock"):
+            if components_filter:
+                lockfile = generate_lockfile_for_components(
+                    config, repo_root, selected_components=components_filter,
+                    out_path=out_path, source=args.source,
+                    strict=(not args.allow_partial), allow_custom_providers=allow_custom,
+                    snapshot=snapshot, running_version=_get_version(), **observer_args,
+                )
+            else:
+                lockfile = generate_lockfile(
+                    config, repo_root, source=args.source,
+                    strict=(not args.allow_partial), allow_custom_providers=allow_custom,
+                    snapshot=snapshot, **observer_args,
+                )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         print(
@@ -1724,12 +1736,16 @@ def _cmd_generate(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     if args.dry_run:
+        diagnostics.publication = "dry-run"
         _log(
             f"Dry run: lockfile not written ({out_path})",
             quiet=(args.quiet or args.format == "json"),
         )
     else:
-        _write_lockfile_atomic(out_path, lockfile)
+        diagnostics.publication = "attempted-outcome-unconfirmed"
+        with diagnostics.phase("publish"):
+            _write_lockfile_atomic(out_path, lockfile)
+        diagnostics.publication = "written"
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
     if args.verbose and not args.quiet and args.format != "json":
         print(f"Generation source={args.source} strict={not args.allow_partial}")

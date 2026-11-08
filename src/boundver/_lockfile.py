@@ -4,6 +4,7 @@ import json
 import os
 import posixpath
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -16,6 +17,7 @@ from ._consumer_graph import (
 )
 from ._structured_data import strict_json_loads
 from ._derivations import verify_derivations
+from ._generation_diagnostics import GenerationDiagnostics
 
 from ._git import (
     _GitBlobSession,
@@ -442,6 +444,7 @@ def generate_lockfile(
     allow_custom_providers: bool = False,
     snapshot: Optional[GitSourceSnapshot] = None,
     components_filter: Optional[Set[str]] = None,
+    observer: Optional[GenerationDiagnostics] = None,
 ) -> dict:
     """Generate a lockfile from config + repo state.
 
@@ -522,32 +525,28 @@ def generate_lockfile(
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
     generation_errors = BoundedDiagnosticList()
     with accessor:
-        freshness_issues = verify_derivations(config, accessor)
+        phase = observer.phase if observer is not None else lambda _: nullcontext()
+        with phase("derivations"):
+            freshness_issues = verify_derivations(config, accessor)
         if freshness_issues:
             raise ConfigError(
                 "Generated-artifact freshness failed:\n"
                 + "\n".join(freshness_issues)
             )
-        accessor.prime_latest_tags(tag_prefixes)
-        resolved_versions = _resolve_component_versions(
-            components_config,
-            repo_root,
-            accessor,
-            required=set(components_to_compute),
-        )
+        with phase("versions"):
+            accessor.prime_latest_tags(tag_prefixes)
+            resolved_versions = _resolve_component_versions(
+                components_config, repo_root, accessor,
+                required=set(components_to_compute),
+            )
 
         # --- Components ---
         for name, comp in components_to_compute.items():
-            component_entry = _compute_component_entry(
-                name,
-                comp,
-                repo_root,
-                source,
-                defaults,
-                accessor,
-                registry,
-                version_result=resolved_versions.get(name),
-            )
+            with observer.component(name) if observer is not None else nullcontext():
+                component_entry = _compute_component_entry(
+                    name, comp, repo_root, source, defaults, accessor, registry,
+                    version_result=resolved_versions.get(name),
+                )
             lockfile["components"][name] = component_entry
             generation_errors.extend(
                 _generation_errors({"components": {name: component_entry}})
@@ -1285,6 +1284,7 @@ def generate_lockfile_for_components(
     snapshot: Optional[GitSourceSnapshot] = None,
     existing_lockfile: Optional[dict] = None,
     running_version: Optional[str] = None,
+    observer: Optional[GenerationDiagnostics] = None,
 ) -> dict:
     """Generate/update lockfile only for selected components and impacted slices."""
     source = _normalize_source(source)
@@ -1371,6 +1371,7 @@ def generate_lockfile_for_components(
         config, repo_root, source=source, strict=strict,
         allow_custom_providers=allow_custom_providers,
         snapshot=snapshot,
+        **({"observer": observer} if observer is not None else {}),
     )
     for name in set(components_cfg) - set(selected):
         if merged.get("components", {}).get(name) != current_lock["components"][name]:

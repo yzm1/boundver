@@ -137,6 +137,31 @@ it can change during an operation and can name executable clean filters. The
 wider wall ceilings remain stable on shared runners while still catching
 severe extraction or I/O regressions.
 
+## Generation diagnostics (v0.17 development)
+
+To see where generation spends time without changing its inputs:
+
+```sh
+boundver generate --source head --dry-run --progress --timing
+```
+
+`--progress` reports phase and component starts. `--timing` reports elapsed
+phase and component times. Both write only to stderr, including with `--quiet`
+or `--format json`; neither changes lock identities. Timing starts after CLI
+argument parsing and repository discovery. Nested phase times overlap, so do
+not add them together. Scoped generation still recomputes the complete lock
+for integrity checks and reports those components too.
+
+Diagnostics are limited to 256 progress lines, 32 distinct phase timings,
+128 component timing rows and 64 KiB overall. The final summary records omitted
+rows and lines. Labels are truncated and escaped for safe terminal display.
+These options do not send data anywhere or impose an execution deadline.
+
+The summary distinguishes a dry run, a confirmed write, and publication not
+attempted. If a write is interrupted or raises before its outcome can be
+confirmed, it reports `attempted-outcome-unconfirmed`: inspect the destination
+before retrying. Cancellation is not proof that the destination was unchanged.
+
 ## Optimization baseline
 
 The 2026-08-31 pre-change profile on Windows 11 / Python 3.14 started 86 Git

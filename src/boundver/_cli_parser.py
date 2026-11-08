@@ -86,6 +86,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         "--inspect-working-tree", action="store_true",
         help="With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs",
     )
+    gen.add_argument("--progress", action="store_true", help="Print bounded generation progress to stderr")
+    gen.add_argument("--timing", action="store_true", help="Print bounded local phase/component timings to stderr")
     ver = sub.add_parser(
         "verify",
         help="Check lockfile matches current repo state",

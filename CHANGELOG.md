@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added opt-in `generate --progress` and `--timing` diagnostics on stderr,
+  with bounded phase/component reporting and explicit publication outcomes.
+  JSON stdout and persisted lock identities are unchanged. These diagnostics
+  do not enforce an execution deadline.
+
 - Added `version_source.repo_file` for an explicit repository-root-relative
   version manifest outside a component. Existing `file` paths remain
   component-relative. Both use the same captured-source, tracking, regular-file,
