@@ -196,6 +196,9 @@ class SourceViewIntegrityTests(unittest.TestCase):
             "current_fps": {"exact": "b" * 64},
             "changed_files": [("M", "svc/main.py")],
             "version": None,
+            "version_change": {
+                "previous": None, "current": None, "status": "unavailable",
+            },
             "provider_explanation": "",
         }
         config = {

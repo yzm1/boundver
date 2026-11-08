@@ -439,10 +439,7 @@ usage: boundver explain [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_RE
 ## `boundver why`
 
 ```text
-usage: boundver why [-h] [--limit LIMIT] [--summary] [--config CONFIG] [--lock LOCK]
-                    [--base-ref BASE_REF] [--source {head,index,working-tree}]
-                    [--format {json,text}] [--transitive] [--allow-custom-providers]
-                    (--slice SLICE | component)
+usage: boundver why [options] (component | --slice SLICE)
 ```
 
 Compare current fingerprints against the lockfile and explain what changed.

@@ -557,6 +557,10 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
 
     why = sub.add_parser(
         "why",
+        # Older argparse versions misrender a group mixing an optional
+        # positional with an option. Keep the required target explicit and
+        # portable; the argument table still documents every option.
+        usage="%(prog)s [options] (component | --slice SLICE)",
         help="Explain component or slice drift",
         description=(
             "Compare current fingerprints against the lockfile and explain what changed.\n\n"
