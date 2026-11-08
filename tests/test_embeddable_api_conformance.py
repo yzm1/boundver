@@ -2187,13 +2187,17 @@ class ObservationsOutParameterTests(unittest.TestCase):
                 )
                 result = run_cli(scene.root, "verify", "--format", "json", *argv)
                 with self.subTest(invocation=label):
-                    if not result.stdout.strip():
-                        # The CLI refuses an unknown selector before it renders
-                        # anything, so there is no payload to compare against.
+                    if seen.exception is not None:
+                        # The API raises for invalid selectors. The CLI may
+                        # additionally render a structured failure payload.
                         self.assertIsInstance(seen.exception, boundver.ConfigError)
                         self.assertEqual(list(observations), [])
                         self.assertEqual(result.returncode, 2)
                         self.assertIn("ERROR: unknown", result.stderr)
+                        if result.stdout.strip():
+                            payload = json.loads(result.stdout)
+                            self.assertFalse(payload["ok"])
+                            self.assertEqual(payload["observations"], [])
                         continue
                     self.assertIsNone(seen.exception, seen)
                     judged += 1

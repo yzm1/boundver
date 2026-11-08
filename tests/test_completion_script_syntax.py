@@ -129,7 +129,12 @@ class FormatChoiceTests(unittest.TestCase):
             _completions._COMMAND_OPTION_CHOICES.items()
             if option == "--format"
         }
-        self.assertEqual(overrides, {"review": ("json", "text", "plan")})
+        self.assertEqual(overrides, {
+            "review": ("json", "text", "plan"),
+            "generate": ("json", "text", "changes-json"),
+            "diff": ("json", "text", "changes-json", "upgrade-json"),
+            "verify": ("json", "text", "scoped-json"),
+        })
         self.assertEqual(
             _completions._OPTION_CHOICES["--format"], ("json", "text")
         )
