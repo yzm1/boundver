@@ -120,6 +120,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Timeout workers use the controller's runtime-version resolver, so source
+  checkouts without distribution metadata no longer reject their own worker
+  as a different runtime. Genuine runtime mismatches remain fatal.
+
 - Lock publication refuses destinations that alias declared version inputs,
   including repository-root files outside component roots. Direct, timed,
   scoped and API generation cannot overwrite a shared version manifest;

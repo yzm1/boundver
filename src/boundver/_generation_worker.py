@@ -198,8 +198,8 @@ def run_transfer(directory: Path, *, running_version: str) -> int:
 
 
 if __name__ == "__main__":
-    from . import __version__
+    from .core import _get_version
 
     if len(sys.argv) != 2:
         raise SystemExit(2)
-    raise SystemExit(run_transfer(Path(sys.argv[1]), running_version=__version__))
+    raise SystemExit(run_transfer(Path(sys.argv[1]), running_version=_get_version()))

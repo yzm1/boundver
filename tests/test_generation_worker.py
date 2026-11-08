@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import subprocess
@@ -91,6 +92,55 @@ def test_invalid_invocation_rejected_before_computation(invocation, field, value
 def test_runtime_mismatch_fails_before_computation(invocation):
     with pytest.raises(ValueError, match="runtime"):
         compute_request(encode_request(invocation), running_version="different")
+
+
+def test_timed_source_checkout_without_distribution_metadata_matches_direct_generation(
+    invocation, tmp_path, tmp_path_factory,
+):
+    runtime = tmp_path_factory.mktemp("source-only-runtime")
+    source = runtime / "source"
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "src/boundver", source / "boundver",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    environment = runtime / "venv"
+    subprocess.run(
+        [sys.executable, "-I", "-m", "venv", "--without-pip", str(environment)],
+        check=True, capture_output=True, timeout=60,
+    )
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    probe = subprocess.run(
+        [str(python), "-I", "-c",
+         "import sys,json; sys.path.insert(0,sys.argv[1]); "
+         "from boundver import __version__; from boundver.core import _get_version; "
+         "print(json.dumps([__version__,_get_version()]))", str(source)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert probe.returncode == 0, probe.stderr
+    assert json.loads(probe.stdout) == ["0.0.0+local", "unknown"]
+    bootstrap = (
+        "import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); "
+        "runpy.run_module('boundver',run_name='__main__')"
+    )
+    command = [str(python), "-I", "-c", bootstrap, str(source),
+               "generate", "--dry-run", "--format", "json", "--quiet"]
+    index_before = subprocess.run(
+        ["git", "ls-files", "--stage", "-z"], cwd=tmp_path,
+        check=True, capture_output=True,
+    ).stdout
+    direct = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    timed = subprocess.run(
+        [*command, "--timeout", "30"], cwd=tmp_path,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert timed.returncode == 0, timed.stderr
+    assert json.loads(timed.stdout) == json.loads(direct.stdout)
+    assert not (tmp_path / "boundary.lock.json").exists()
+    assert subprocess.run(
+        ["git", "ls-files", "--stage", "-z"], cwd=tmp_path,
+        check=True, capture_output=True,
+    ).stdout == index_before
 
 
 def test_operation_identity_changes_result_binding(invocation):
