@@ -116,3 +116,20 @@ Microsoft describes that alternative in
 [creating a process in a job object](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
 Never describe a separately created suspended process as already owned by the
 job before assignment has succeeded.
+
+## Result protocol implementation evidence
+
+`_generation_protocol` encodes a bounded length-prefixed JSON header followed
+by the existing bounded lock JSON. It accepts no destination path or executable
+serialization. The header has a 1 KiB ceiling and exactly four fields: protocol
+schema, controller request digest, payload digest and payload byte length.
+Decoding requires exact lengths, strict JSON, the expected request digest, a
+matching payload checksum and current lock structure validation. Lock storage
+limits are unchanged.
+
+Tests reject malformed/truncated headers, duplicate keys, trailing payload,
+corruption, unknown fields, request mismatches and structurally invalid locks
+even when their checksums are valid. This is protocol validation, not yet a
+private transport or source-capture implementation. The request must ultimately
+include the captured source identity, complete invocation and a fresh operation
+identity. A digest is not authentication against trusted native provider code.
