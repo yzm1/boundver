@@ -13,6 +13,7 @@ import sys
 from ._bounded_io import read_bounded_file
 from ._config import MAX_CONFIG_BYTES, dump_config, validate_config
 from ._generation_protocol import MAX_GENERATION_RESULT_HEADER_BYTES, encode_result
+from ._generation_diagnostics import GenerationDiagnostics
 from ._generation_snapshot import snapshot_from_value
 from ._lockfile import MAX_LOCKFILE_BYTES, dump_lockfile, generate_lockfile, generate_lockfile_for_components
 from ._lockfile_validation import is_sha256_digest
@@ -29,6 +30,7 @@ def _validate_request(value: object):
     if not isinstance(value, dict) or set(value) != {
         "schema", "operation_id", "repo_root", "config", "source", "snapshot",
         "strict", "allow_custom_providers", "components", "existing_lock", "running_version",
+        "progress", "timing",
     }:
         raise ValueError("Invalid generation request fields")
     if value["schema"] != REQUEST_SCHEMA or not is_sha256_digest(value["operation_id"]):
@@ -38,6 +40,8 @@ def _validate_request(value: object):
         raise ValueError("Generation repository must be an absolute path")
     if type(value["strict"]) is not bool or type(value["allow_custom_providers"]) is not bool:
         raise ValueError("Generation policies must be booleans")
+    if type(value["progress"]) is not bool or type(value["timing"]) is not bool:
+        raise ValueError("Generation reporting flags must be booleans")
     version = value["running_version"]
     if not isinstance(version, str) or not 0 < len(version) <= 256 or not version.isascii():
         raise ValueError("Invalid generation runtime version")
@@ -81,7 +85,7 @@ def encode_request(value: dict) -> bytes:
     ).encode("utf-8")
 
 
-def compute_request(data: bytes, *, running_version: str) -> bytes:
+def compute_request(data: bytes, *, running_version: str, diagnostic_sink=None) -> bytes:
     """Return a bound result; never write a lock or read a destination file."""
     if not isinstance(data, bytes) or len(data) > MAX_GENERATION_REQUEST_BYTES:
         raise ValueError("Generation request exceeds its byte limit")
@@ -89,18 +93,33 @@ def compute_request(data: bytes, *, running_version: str) -> bytes:
     snapshot = _validate_request(value)
     if value["running_version"] != running_version:
         raise ValueError("Worker runtime does not match controller runtime")
+    observer = GenerationDiagnostics(progress=value["progress"], timing=value["timing"], sink=diagnostic_sink)
+    try:
+        lock = _compute_validated_request(value, snapshot, observer, running_version)
+        result = encode_result(lock, request_digest=hashlib.sha256(data).hexdigest())
+    except BaseException:
+        observer.finish("failed")
+        raise
+    else:
+        observer.finish("computed")
+        return result
+
+
+def _compute_validated_request(value, snapshot, observer, running_version):
     root = Path(value["repo_root"])
-    errors = validate_config(
-        value["config"], root, source=value["source"], snapshot=snapshot,
-        allow_custom_providers=value["allow_custom_providers"],
-        require_slice_facets=value["strict"],
-    )
+    with observer.phase("validate-config"):
+        errors = validate_config(
+            value["config"], root, source=value["source"], snapshot=snapshot,
+            allow_custom_providers=value["allow_custom_providers"],
+            require_slice_facets=value["strict"],
+        )
     if errors:
         first = _bounded_diagnostic_text(errors[0], max_chars=512)
         raise ValueError(f"Worker config validation failed ({len(errors)} issues): {first}")
     arguments = dict(
         source=value["source"], snapshot=snapshot, strict=value["strict"],
         allow_custom_providers=value["allow_custom_providers"],
+        **({"observer": observer} if observer.enabled else {}),
     )
     if value["components"] is None:
         lock = generate_lockfile(value["config"], root, **arguments)
@@ -110,7 +129,7 @@ def compute_request(data: bytes, *, running_version: str) -> bytes:
             existing_lockfile=value["existing_lock"], running_version=running_version,
             out_path=root / "boundary.lock.json", **arguments,
         )
-    return encode_result(lock, request_digest=hashlib.sha256(data).hexdigest())
+    return lock
 
 
 def _private_directory(directory: Path) -> None:
@@ -151,7 +170,13 @@ def run_transfer(directory: Path, *, running_version: str) -> int:
             directory / "request.json", MAX_GENERATION_REQUEST_BYTES,
             trusted_root=directory, path_label="generation worker request",
         )
-        result = compute_request(request, running_version=running_version)
+        descriptor = os.open(directory / "diagnostics.log", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            def emit(body):
+                stream.write(body)
+                stream.flush()
+
+            result = compute_request(request, running_version=running_version, diagnostic_sink=emit)
         write_transfer(directory, "result.bin", result)
     except Exception as exc:
         # No traceback or arbitrary source contents on inherited output handles.

@@ -1745,8 +1745,9 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
                     "strict": not args.allow_partial, "allow_custom_providers": allow_custom,
                     "components": components_filter or None, "existing_lock": existing,
                     "running_version": _get_version(),
+                    "progress": diagnostics.progress, "timing": diagnostics.timing,
                 })
-                lockfile = run_generation(request, control=control, running_version=_get_version())
+                lockfile = run_generation(request, control=control, running_version=_get_version(), diagnostics=diagnostics)
             elif components_filter:
                 lockfile = generate_lockfile_for_components(
                     config, repo_root, selected_components=components_filter,

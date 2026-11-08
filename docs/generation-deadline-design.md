@@ -244,3 +244,20 @@ and Linux confirm a missing custom module fails in the worker and is never
 loaded by the parent; its bounded first diagnostic is returned to the operator.
 Declaration-only validation also no longer requires registration that it
 deliberately did not perform. This does not make native providers sandboxed.
+
+The internal timed path now carries strict progress/timing flags in its bound
+request. Worker diagnostics use an exclusive private log and the same bounded
+observer as ordinary generation. The controller polls complete UTF-8 lines,
+validates a stable bounded read, verifies previously seen bytes were not
+rewritten, escapes text again, and prefixes it `Worker:` before bounded stderr
+rendering. Concurrent appends may defer a read until the next poll; a final
+drain follows confirmed cleanup. Invalid, oversized, truncated or replaced logs
+are omitted with a diagnostic, not interpreted as result or publication data.
+Worker component counts/timings describe worker computation; the controller's
+phase counts describe its own preparation and publication, not their sum.
+
+Windows and Linux tests cover real-worker forwarding without JSON corruption,
+partial lines, replay prevention, invalid UTF-8, oversized streams and terminal
+control escaping. Blocking controller stderr/backpressure and abrupt-controller
+death remain unresolved acceptance items; closed-pipe error handling alone does
+not prove a bounded write. The public timeout option remains unavailable.

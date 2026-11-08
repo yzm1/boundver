@@ -3,9 +3,11 @@
 from contextlib import contextmanager
 import sys
 import time
-from typing import Iterator
+from pathlib import Path
+from typing import Callable, Iterator, Optional
 
 from ._utils import _safe_display_text
+from ._bounded_io import FileSizeLimitError, read_bounded_file
 
 MAX_GENERATION_COMPONENT_ROWS = 128
 MAX_GENERATION_PHASE_ROWS = 32
@@ -17,7 +19,8 @@ MAX_GENERATION_DIAGNOSTIC_BYTES = 64 * 1024
 class GenerationDiagnostics:
     """Bound both streaming progress and retained timing rows independently."""
 
-    def __init__(self, *, progress: bool = False, timing: bool = False):
+    def __init__(self, *, progress: bool = False, timing: bool = False,
+                 sink: Optional[Callable[[str], None]] = None):
         self.progress = progress
         self.timing = timing
         self.enabled = progress or timing
@@ -32,6 +35,7 @@ class GenerationDiagnostics:
         self.bytes = 0
         self.publication = "not-attempted"
         self.stream_failed = False
+        self.sink = sink
 
     @staticmethod
     def label(value: str) -> str:
@@ -50,8 +54,11 @@ class GenerationDiagnostics:
             self.omitted += 1
             return False
         try:
-            sys.stderr.write(body)
-            sys.stderr.flush()
+            if self.sink is None:
+                sys.stderr.write(body)
+                sys.stderr.flush()
+            else:
+                self.sink(body)
         except (OSError, ValueError, TypeError):
             # Optional reporting must not turn an already-published success
             # into a failure simply because a diagnostic pipe closed.
@@ -118,3 +125,54 @@ class GenerationDiagnostics:
             f"omitted_phase_timings={self.omitted_phases}; omitted_lines={self.omitted}",
             final=True,
         )
+
+
+class WorkerDiagnosticReader:
+    """Best-effort bounded streaming text; never a publication instruction."""
+
+    def __init__(self, directory: Path, observer: Optional[GenerationDiagnostics]):
+        self.directory = directory
+        self.observer = observer
+        self.prefix = b""
+        self.stopped = False
+        self.last_poll = float("-inf")
+
+    def _omit(self, reason: str):
+        self.stopped = True
+        self.observer.emit("Worker diagnostics omitted: " + reason)
+
+    def poll(self, *, final: bool = False):
+        if self.stopped or self.observer is None or not self.observer.enabled:
+            return
+        now = time.monotonic()
+        if not final and now - self.last_poll < 0.1:
+            return
+        self.last_poll = now
+        try:
+            data = read_bounded_file(
+                self.directory / "diagnostics.log", MAX_GENERATION_DIAGNOSTIC_BYTES,
+                trusted_root=self.directory, path_label="worker diagnostics",
+            )
+        except FileSizeLimitError:
+            self._omit("byte limit exceeded")
+            return
+        except (OSError, ValueError):
+            # An append can race the stable-file reader. Retry during compute;
+            # after worker cleanup, instability is a diagnostic failure only.
+            if final:
+                self._omit("unavailable or unstable stream")
+            return
+        if not data.startswith(self.prefix):
+            self._omit("stream changed or was truncated")
+            return
+        end = data.rfind(b"\n") + 1
+        try:
+            lines = data[len(self.prefix):end].decode("utf-8").split("\n")
+        except UnicodeDecodeError:
+            self._omit("invalid UTF-8")
+            return
+        for line in lines[:-1]:
+            self.observer.emit("Worker: " + _safe_display_text(line))
+        self.prefix = data[:end]
+        if final and end != len(data):
+            self._omit("incomplete final line")

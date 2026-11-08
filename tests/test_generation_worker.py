@@ -36,6 +36,7 @@ def invocation(tmp_path):
         "snapshot": snapshot_to_value(_capture_git_source_snapshot(tmp_path, "head")),
         "strict": True, "allow_custom_providers": False, "components": None,
         "existing_lock": None, "running_version": _get_version(),
+        "progress": False, "timing": False,
     }
 
 
@@ -407,4 +408,22 @@ def test_internal_timed_dispatch_defers_custom_imports_to_worker(invocation, tmp
     stderr = capsys.readouterr().err
     assert "Generation worker failed" in stderr
     assert "boundver_missing_custom_provider_fixture" in stderr
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+def test_internal_timed_dispatch_forwards_worker_progress_without_corrupting_json(invocation, tmp_path, capsys):
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    args = build_parser(version="test", epilog="").parse_args([
+        "--quiet", "generate", "--progress", "--timing", "--dry-run", "--format", "json",
+    ])
+    args.timeout = 20
+    core._cmd_generate(args, tmp_path)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == generate_lockfile(invocation["config"], tmp_path)
+    assert "Worker: Generation: component api started" in captured.err
+    assert "Worker: Timing component api:" in captured.err
+    assert "Worker: Generation diagnostics: outcome=computed" in captured.err
+    assert "publication=dry-run" in captured.err
+    assert len(captured.err.encode("utf-8")) <= 64 * 1024
     assert not (tmp_path / "boundary.lock.json").exists()

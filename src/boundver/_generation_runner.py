@@ -9,6 +9,7 @@ import time
 
 from ._bounded_io import read_bounded_file
 from ._generation_control import GenerationControl, GenerationState
+from ._generation_diagnostics import WorkerDiagnosticReader
 from ._generation_protocol import MAX_GENERATION_RESULT_HEADER_BYTES, decode_result
 from ._generation_worker import (
     MAX_GENERATION_ERROR_BYTES, MAX_GENERATION_REQUEST_BYTES,
@@ -30,7 +31,7 @@ def _require_computing(control: GenerationControl) -> None:
         raise ConfigError(f"Generation did not publish: {state.value}")
 
 
-def run_windows_generation(data: bytes, *, control: GenerationControl, running_version: str) -> dict:
+def run_windows_generation(data: bytes, *, control: GenerationControl, running_version: str, diagnostics=None) -> dict:
     """Return a validated lock only after all owned Windows work has stopped.
 
     The caller creates control before source capture, and must use its publish
@@ -38,18 +39,18 @@ def run_windows_generation(data: bytes, *, control: GenerationControl, running_v
     """
     if os.name != "nt":
         raise ConfigError("Windows generation containment is unavailable")
-    return _run_generation(data, control=control, running_version=running_version, job_factory=WindowsJob)
+    return _run_generation(data, control=control, running_version=running_version, job_factory=WindowsJob, diagnostics=diagnostics)
 
 
-def run_generation(data: bytes, *, control: GenerationControl, running_version: str) -> dict:
+def run_generation(data: bytes, *, control: GenerationControl, running_version: str, diagnostics=None) -> dict:
     if os.name == "nt":
-        return run_windows_generation(data, control=control, running_version=running_version)
+        return run_windows_generation(data, control=control, running_version=running_version, diagnostics=diagnostics)
     if os.name != "posix":
         raise ConfigError("Generation process containment is unavailable")
-    return _run_generation(data, control=control, running_version=running_version, job_factory=PosixJob)
+    return _run_generation(data, control=control, running_version=running_version, job_factory=PosixJob, diagnostics=diagnostics)
 
 
-def _run_generation(data: bytes, *, control: GenerationControl, running_version: str, job_factory) -> dict:
+def _run_generation(data: bytes, *, control: GenerationControl, running_version: str, job_factory, diagnostics=None) -> dict:
     _require_computing(control)
     if not isinstance(data, bytes) or len(data) > MAX_GENERATION_REQUEST_BYTES:
         raise ConfigError("Invalid generation request size")
@@ -60,6 +61,7 @@ def _run_generation(data: bytes, *, control: GenerationControl, running_version:
     _require_computing(control)
     directory = Path(tempfile.mkdtemp(prefix="boundver-generation-"))
     identity = directory.stat()
+    reporting = WorkerDiagnosticReader(directory, diagnostics)
     cleanup_confirmed = True
     try:
         write_transfer(directory, "request.json", data)
@@ -74,6 +76,7 @@ def _run_generation(data: bytes, *, control: GenerationControl, running_version:
                 )
                 while process.poll() is None:
                     _require_computing(control)
+                    reporting.poll()
                     time.sleep(0.01)
                 status = process.poll()
             except KeyboardInterrupt:
@@ -93,6 +96,7 @@ def _run_generation(data: bytes, *, control: GenerationControl, running_version:
                             raise ConfigError(f"Generation cleanup unconfirmed; transfer retained at {directory}")
                         time.sleep(0.01)
                     cleanup_confirmed = True
+                    reporting.poll(final=True)
                 finally:
                     if process is not None:
                         process.close()

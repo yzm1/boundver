@@ -12,6 +12,7 @@ from boundver._generation_diagnostics import (
     GenerationDiagnostics, MAX_GENERATION_COMPONENT_ROWS,
     MAX_GENERATION_DIAGNOSTIC_BYTES, MAX_GENERATION_PHASE_ROWS,
     MAX_GENERATION_PROGRESS_LINES,
+    WorkerDiagnosticReader,
 )
 from boundver._utils import ConfigError
 from tests._parity import run_cli, run_cli_in_process
@@ -159,3 +160,59 @@ def test_disabled_observer_is_silent_and_retains_no_rows(monkeypatch):
         pass
     observer.finish("success")
     assert observer.phases == {} and observer.components == []
+
+
+def test_worker_stream_forwards_complete_lines_once_and_escapes_them(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"first\npartial")
+        reader.poll(final=True)
+    assert "Worker: first" in output.getvalue()
+    assert "Worker: partial" not in output.getvalue()
+    assert "incomplete final line" in output.getvalue()
+
+
+def test_worker_stream_append_does_not_duplicate_prior_lines(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"first\npartial")
+        reader.poll()
+        path.write_bytes(b"first\npartial completed\n::error::bad\x1b[31m\n")
+        reader.poll(final=True)
+    text = output.getvalue()
+    assert text.count("Worker: first") == 1
+    assert "Worker: partial completed" in text
+    assert "\x1b" not in text and "\\x1b" in text
+    assert not any(line.startswith("::") for line in text.splitlines())
+
+
+@pytest.mark.parametrize("contents,expected", [
+    (b"x" * (MAX_GENERATION_DIAGNOSTIC_BYTES + 1), "byte limit"),
+    (b"\xff\n", "invalid UTF-8"),
+], ids=["oversized-stream", "invalid-utf8"])
+def test_invalid_worker_diagnostics_are_omitted_not_executed(tmp_path, contents, expected):
+    output = io.StringIO()
+    (tmp_path / "diagnostics.log").write_bytes(contents)
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        reader.poll(final=True)
+    assert reader.stopped
+    assert expected in output.getvalue()
+    assert len(output.getvalue().encode()) <= MAX_GENERATION_DIAGNOSTIC_BYTES
+
+
+def test_replaced_worker_stream_is_not_replayed(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"original\n")
+        reader.poll()
+        path.write_bytes(b"replacement\n")
+        reader.poll(final=True)
+    assert reader.stopped
+    assert "Worker: replacement" not in output.getvalue()
