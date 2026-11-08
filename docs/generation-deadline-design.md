@@ -162,3 +162,20 @@ capture and computation, preserve a sentinel destination and confirm scoped
 generation still checks unselected-component integrity. The implementation is
 currently a computation function; private transport, contained invocation,
 diagnostic forwarding and the CLI timeout are not yet connected.
+
+The worker module now also has a private-directory entry point. A controller
+must create that directory outside the repository; requests/results/errors use
+fixed filenames and exclusive 0600 creation. Request reads use the shared
+bounded regular-file reader, and result/error writes have separate ceilings.
+An error returns exit 2 rather than publishing a partial lock or emitting an
+unbounded traceback. File presence alone never authorizes publication: the
+controller must confirm worker exit/cleanup and validate the result envelope.
+
+A Windows integration test launches `python -I -m boundver._generation_worker`
+inside a creation-time assigned job, using a controller-private temporary
+directory, and compares its result with direct computation. Other tests cover
+malformed transfer input, fixed-name restrictions and overwrite refusal. This
+is not a shared-directory security primitive: trusted native provider code
+retains the same user's filesystem capabilities. The controller's bounded wait,
+cross-platform cleanup, diagnostic forwarding and public CLI option remain
+pending.

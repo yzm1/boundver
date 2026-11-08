@@ -7,17 +7,21 @@ not a sandbox or an authorization boundary against such providers.
 import hashlib
 import os
 from pathlib import Path
+import stat
+import sys
 
+from ._bounded_io import read_bounded_file
 from ._config import MAX_CONFIG_BYTES, dump_config, validate_config
-from ._generation_protocol import encode_result
+from ._generation_protocol import MAX_GENERATION_RESULT_HEADER_BYTES, encode_result
 from ._generation_snapshot import snapshot_from_value
-from ._lockfile import dump_lockfile, generate_lockfile, generate_lockfile_for_components
+from ._lockfile import MAX_LOCKFILE_BYTES, dump_lockfile, generate_lockfile, generate_lockfile_for_components
 from ._lockfile_validation import is_sha256_digest
 from ._structured_data import strict_json_loads
-from ._utils import _bounded_json_dumps
+from ._utils import _bounded_exception_text, _bounded_json_dumps
 
 
 MAX_GENERATION_REQUEST_BYTES = 64 * 1024 * 1024
+MAX_GENERATION_ERROR_BYTES = 8192
 REQUEST_SCHEMA = "boundver-generation-request/v1"
 
 
@@ -106,3 +110,64 @@ def compute_request(data: bytes, *, running_version: str) -> bytes:
             out_path=root / "boundary.lock.json", **arguments,
         )
     return encode_result(lock, request_digest=hashlib.sha256(data).hexdigest())
+
+
+def _private_directory(directory: Path) -> None:
+    if not directory.is_absolute():
+        raise ValueError("Worker transfer directory must be absolute")
+    identity = directory.lstat()
+    if not stat.S_ISDIR(identity.st_mode) or getattr(identity, "st_file_attributes", 0) & 0x400:
+        raise ValueError("Worker transfer directory must be a plain directory")
+
+
+def write_transfer(directory: Path, name: str, data: bytes) -> None:
+    """Create a fixed-name file exclusively inside controller-private storage.
+
+    The controller must create the private directory outside the repository.
+    This is not a shared/untrusted-directory writer or a publication primitive.
+    """
+    limits = {
+        "request.json": MAX_GENERATION_REQUEST_BYTES,
+        "result.bin": 4 + MAX_GENERATION_RESULT_HEADER_BYTES + MAX_LOCKFILE_BYTES,
+        "error.json": MAX_GENERATION_ERROR_BYTES,
+    }
+    if name not in limits or not isinstance(data, bytes) or len(data) > limits[name]:
+        raise ValueError("Invalid or oversized worker transfer")
+    _private_directory(directory)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(directory / name, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def run_transfer(directory: Path, *, running_version: str) -> int:
+    """Consume one private request and return success only after result close."""
+    _private_directory(directory)
+    try:
+        request = read_bounded_file(
+            directory / "request.json", MAX_GENERATION_REQUEST_BYTES,
+            trusted_root=directory, path_label="generation worker request",
+        )
+        result = compute_request(request, running_version=running_version)
+        write_transfer(directory, "result.bin", result)
+    except Exception as exc:
+        # No traceback or arbitrary source contents on inherited output handles.
+        # Error transport is bounded independently from the successful payload.
+        message = _bounded_exception_text(exc, max_chars=1024)
+        error = _bounded_json_dumps({"error": message}, max_bytes=MAX_GENERATION_ERROR_BYTES, allow_nan=False).encode("utf-8")
+        try:
+            write_transfer(directory, "error.json", error)
+        except (OSError, ValueError):
+            pass
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    from . import __version__
+
+    if len(sys.argv) != 2:
+        raise SystemExit(2)
+    raise SystemExit(run_transfer(Path(sys.argv[1]), running_version=__version__))

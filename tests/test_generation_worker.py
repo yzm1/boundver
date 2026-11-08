@@ -3,12 +3,15 @@
 import copy
 import hashlib
 import json
+import os
+from pathlib import Path
+import tempfile
 
 import pytest
 
 from boundver._generation_protocol import decode_result
 from boundver._generation_snapshot import snapshot_to_value
-from boundver._generation_worker import REQUEST_SCHEMA, compute_request, encode_request
+from boundver._generation_worker import REQUEST_SCHEMA, compute_request, encode_request, run_transfer, write_transfer
 from boundver._git import _capture_git_source_snapshot
 from boundver._lockfile import generate_lockfile
 from boundver.core import _capture_operation_snapshot, _get_version
@@ -102,4 +105,67 @@ def test_scoped_worker_still_rejects_drift_in_unselected_components(invocation, 
     invocation["snapshot"] = snapshot_to_value(_capture_git_source_snapshot(tmp_path, "head"))
     with pytest.raises(ValueError):
         compute_request(encode_request(invocation), running_version=_get_version())
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+def test_private_transfer_computes_without_touching_repository_output(invocation, tmp_path):
+    data = encode_request(invocation)
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        write_transfer(directory, "request.json", data)
+        assert run_transfer(directory, running_version=_get_version()) == 0
+        result = (directory / "result.bin").read_bytes()
+        assert result == compute_request(data, running_version=_get_version())
+        assert not (directory / "error.json").exists()
+        with pytest.raises(FileExistsError):
+            write_transfer(directory, "result.bin", b"overwrite")
+        assert (directory / "result.bin").read_bytes() == result
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+@pytest.mark.parametrize("data", [b'{"incomplete":true}', b'{"schema":1,"schema":2}', b"\xff"])
+def test_malformed_transfer_has_bounded_error_and_no_result(data):
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        write_transfer(directory, "request.json", data)
+        assert run_transfer(directory, running_version=_get_version()) == 2
+        assert not (directory / "result.bin").exists()
+        error = (directory / "error.json").read_bytes()
+        assert len(error) <= 8192 and isinstance(json.loads(error)["error"], str)
+
+
+def test_transfer_rejects_arbitrary_paths_and_does_not_overwrite_requests():
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        with pytest.raises(ValueError):
+            write_transfer(directory, "../outside", b"data")
+        write_transfer(directory, "request.json", b"first")
+        with pytest.raises(FileExistsError):
+            write_transfer(directory, "request.json", b"second")
+        assert (directory / "request.json").read_bytes() == b"first"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows contained launcher")
+def test_contained_interpreter_executes_real_worker_module(invocation, tmp_path):
+    from boundver._windows_job import WindowsJob
+    data = encode_request(invocation)
+    with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
+        directory = Path(name)
+        write_transfer(directory, "request.json", data)
+        with WindowsJob() as job:
+            process = job.launch_python(
+                ["-I", "-m", "boundver._generation_worker", str(directory)],
+                cwd=str(tmp_path), env=dict(os.environ),
+            )
+            try:
+                status = process.wait(20)
+                detail = (directory / "error.json").read_text() if (directory / "error.json").exists() else "no worker error"
+                assert status == 0, detail
+                assert job.active_processes == 0
+                result = (directory / "result.bin").read_bytes()
+                assert result == compute_request(data, running_version=_get_version())
+            finally:
+                job.terminate()
+                process.wait(5)
+                process.close()
     assert not (tmp_path / "boundary.lock.json").exists()
