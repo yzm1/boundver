@@ -19,6 +19,7 @@ from boundver._git import _capture_git_source_snapshot
 from boundver._lockfile import generate_lockfile
 from boundver.core import _capture_operation_snapshot, _get_version
 from tests._repo_fixtures import commit_all, init_git_repo
+from tests._parity import run_cli
 
 
 @pytest.fixture
@@ -539,3 +540,34 @@ def test_blocked_diagnostics_do_not_prevent_expiry_and_real_worker_cleanup(invoc
         for output in outputs:
             output.thread.join(5)
             assert not output.thread.is_alive()
+
+
+@pytest.mark.parametrize("source", ["head", "index", "working-tree"])
+def test_public_timeout_cli_preserves_ordinary_json_and_dry_run(invocation, tmp_path, source):
+    options = ["generate", "--source", source, "--dry-run", "--format", "json", "--quiet"]
+    ordinary = run_cli(tmp_path, *options)
+    timed = run_cli(tmp_path, *options, "--timeout", "60", "--progress", "--timing")
+    assert ordinary.returncode == timed.returncode == 0, timed.stderr
+    assert timed.stdout == ordinary.stdout
+    assert "Worker: Timing component api:" in timed.stderr
+    assert "publication=dry-run" in timed.stderr
+    assert not (tmp_path / "boundary.lock.json").exists()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf", "not-a-number"])
+def test_public_timeout_rejects_invalid_values_before_repository_access(tmp_path, value):
+    result = run_cli(tmp_path, "generate", f"--timeout={value}")
+    assert result.returncode == 2
+    assert "finite positive number" in result.stderr
+    assert not result.stdout
+    assert not list(tmp_path.iterdir())
+
+
+def test_public_timeout_expiry_preserves_prior_lock(invocation, tmp_path):
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    result = run_cli(tmp_path, "generate", "--timeout", "0.000000001", "--timing", "--quiet")
+    assert result.returncode == 2
+    assert "outcome=expired" in result.stderr
+    assert not result.stdout
+    assert sentinel.read_bytes() == b"prior lock"

@@ -1669,6 +1669,9 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
+    if control is not None and allow_custom and config.get("providers"):
+        detail = " Detached POSIX children are outside the owned process group." if os.name == "posix" else ""
+        print("WARNING: Custom providers remain trusted Python; --timeout is not a sandbox." + detail, file=sys.stderr)
     with diagnostics.phase("validate-config"):
         config_errors = validate_config(
             config, repo_root, allow_custom_providers=allow_custom,

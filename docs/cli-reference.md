@@ -54,7 +54,7 @@ Detect declared component, behavior, boundary, and compatibility drift
 usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,index,working-tree}]
                          [--allow-partial] [--dry-run] [--components COMPONENTS]
                          [--format {json,text}] [--allow-custom-providers]
-                         [--inspect-working-tree] [--progress] [--timing]
+                         [--inspect-working-tree] [--progress] [--timing] [--timeout SECONDS]
 ```
 
 | Argument | Value | Default | Description |
@@ -71,6 +71,7 @@ usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,inde
 | `--inspect-working-tree` | — | `false` | With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs |
 | `--progress` | — | `false` | Print bounded generation progress to stderr |
 | `--timing` | — | `false` | Print bounded local phase/component timings to stderr |
+| `--timeout` | `SECONDS` | — | Computation deadline from source capture; expiry exits 2 before publication. Atomic commit and final output are not hard wall-time bounded; native providers are not sandboxed |
 
 ```text
 Examples:

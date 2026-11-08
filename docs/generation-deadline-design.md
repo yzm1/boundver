@@ -1,320 +1,127 @@
-# Generation deadlines: implementation contract
+# Generation deadlines
 
-Status: design for v0.17 issue #164; not an available CLI option.
+Status: implemented on the v0.17 development branch. Release acceptance is
+still pending; this page does not announce a published version.
 
-## Required behavior
+```sh
+boundver generate --source head --timeout 120 --progress --timing --dry-run
+```
 
-A generation deadline must stop computation, clean up owned subprocesses and
-prevent a cancelled computation from publishing later. Returning early from a
-thread or checking the clock only between components does not meet this contract.
-Provider execution, Git reads, serialization and output backpressure can all
-block between such checks.
+Omit `--dry-run` to publish the generated lock. Without `--timeout`, generation
+keeps its existing execution and output path.
 
-The existing Git command timer kills one Git process. It does not provide an
-operation-wide deadline or contain arbitrary children of a custom provider.
-Native custom providers remain trusted Python code, not sandboxed code. Process
-containment for cancellation must not be described as a security sandbox.
+## What the deadline covers
 
-## Separate computation from publication
+The budget starts before source capture, after argument parsing and repository
+discovery. It includes controller preparation, worker startup, validation,
+fingerprinting, serialization and result transfer. Expiry exits with code 2
+without admitting the result to controller-managed publication.
 
-Use an owned worker for captured-source computation. Only the controller may
-publish to the requested destination. The worker must never receive authority
-through the protocol to choose an output path or replace the destination.
+Git preparation uses the remaining operation budget rather than restarting a
+fresh command allowance for every Git call. Other controller-side parsing and
+serialization remain bounded operations, not asynchronously interruptible
+Python code: expiry is checked before their results can be used or published.
 
-The controller owns a private, bounded result channel. Treat its contents as
-untrusted: validate the result envelope, lock structure, size, completion and
-source binding before publication. No pickle or executable deserialization.
-Do not reconstruct a successful lock from partial worker output. Preserve
-selected-component full-integrity checks and all existing source guardrails.
+This is not a hard command-wall-time limit. Atomic commit, stalled filesystem
+operations and final stdout/error rendering can take longer. A blocked consumer
+cannot keep a supervised worker computing through the diagnostic-output path.
+Worker cleanup has a separate five-second polling budget; diagnostic delivery
+has a separate one-second drain allowance.
 
-The worker must use the source captured for this operation, not recapture a
-potentially different HEAD/index after launch. Working-tree input remains a
-live source with existing descriptor checks; do not call it an immutable
-filesystem snapshot. Do not silently stage files to construct worker inputs.
+## Sources and computation
 
-Start the deadline before source capture. Include startup, capture, validation,
-computation, serialization and transfer in the computation budget. Establish
-containment before the worker can execute: a suspended launch with assignment
-to a kill-on-close Job Object on Windows, and an isolated owned process group
-on POSIX. If containment cannot be established, fail before launching useful
-work rather than silently weakening cleanup guarantees. Package the required
-helpers with the CLI; installed distributions cannot depend on repo scripts.
+HEAD and index requests carry the controller's captured snapshot. The worker
+does not resolve those moving refs again. Object IDs, file modes, tracked paths
+and sparse-checkout membership survive the handoff. Working-tree inputs remain
+live, with tracking captured by the existing accessors; this is not an immutable
+filesystem snapshot or a promise of unchanged index membership across passes.
 
-On cancellation or expiry, close publication eligibility first, terminate the
-owned execution group, reap the worker, and close bounded transport readers.
-Give cleanup its own documented bound. Never wait indefinitely for inherited
-stdout/stderr handles. Do not kill unrelated processes or use process-name
-matching. A worker that exits successfully just after expiry is still ineligible
-to publish. A controller failure must not leave an independently publishing
-worker behind.
+The controller validates declarations without importing custom providers. The
+worker performs full runtime validation and computation. Scoped generation
+still checks unselected-component integrity. `--allow-partial` retains its
+existing meaning. No files are staged to construct worker inputs.
 
-## Publication is a commit boundary
+Only the controller's publication step chooses and writes the destination.
+The worker protocol has no output-destination field. Workers start from the
+controller's own installed package or archive, not cwd or PYTHONPATH. Runtime
+version mismatches fail closed and identify both versions.
 
-Use the existing hardened atomic writer, including descriptor fencing,
-regular-file checks, temporary-file cleanup and competitor preservation.
-Do not replace it with a shell move or weaken compare-and-swap behavior.
+## Processes and trust
 
-Cancellation and publication eligibility must be serialized. Immediately before
-entering the commit boundary, reject cancellation, an expired deadline, invalid
-results or incomplete cleanup. Once admitted, complete the short atomic
-publication transaction without allowing an asynchronous timeout to tear it
-apart. This is a computation deadline, not a hard bound on a stalled filesystem
-operation during commit. Document this distinction in help and diagnostics.
+Windows creates the worker inside a non-inheritable, kill-on-close Job Object
+without breakaway permissions. Cleanup confirms both job membership is empty
+and the worker process has signalled exit. Microsoft documents
+[job ownership](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+and [creation-time assignment](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
 
-The truthful outcomes are:
+POSIX creates an owned session/process group before worker execution. A
+parent-lifetime pipe starts a watchdog before Boundver imports; EOF after
+controller death stops that group. Python documents the ordering of
+[`start_new_session`](https://docs.python.org/3/library/subprocess.html).
 
-| Outcome | Destination guarantee |
+Neither path is a security sandbox. Custom providers remain explicitly trusted
+Python with the same user's filesystem and network capabilities. Their side
+effects cannot be rolled back. Deliberately detached POSIX children are outside
+the owned group. A native extension monopolizing the worker's interpreter can
+delay its Python parent-death watchdog; the live controller can still signal
+the group independently. Timed custom-provider use prints a warning.
+
+## Publication outcomes
+
+Cancellation and commit admission share one guarded state transition. A late
+successful worker cannot reopen an expired or cancelled operation. After
+admission, the existing hardened atomic writer completes its transaction;
+asynchronous timeout does not tear apart a replacement or its recovery steps.
+
+| Outcome | Controller-managed destination guarantee |
 | --- | --- |
-| Cancelled/expired before commit admission | This operation did not replace the destination. |
-| Commit confirmed | Generated bytes were published; later writers may still change them. |
-| Commit interrupted or failed with uncertain outcome | Publication is unconfirmed; inspect the destination before retrying. |
+| Cancelled or expired before admission | This operation did not replace the destination. |
+| Commit confirmed | Generated bytes were published; another writer can change them later. |
+| Commit interrupted or outcome uncertain | Inspect the destination before retrying. |
 
-An unrelated writer may change the destination in any of these cases. Do not
-promise global byte equality while another session is editing it. Do not roll
-back after commit by blindly restoring old bytes: that could destroy a later
-writer's work. Keep stdout JSON valid and publication outcomes on stderr.
+Never restore old bytes blindly after commit: that could overwrite another
+session's work. The diagnostic publication values are `not-attempted`,
+`dry-run`, `written` and `attempted-outcome-unconfirmed`.
 
-## Required tests before enabling the option
+## Transfer and diagnostic bounds
 
-- Exercise blocked Git, blocked built-in computation, an explicit trusted custom
-  provider with a child process, worker startup failure and controller shutdown.
-- Exercise deadline/cancellation before capture, during validation/computation,
-  during serialization/transfer, after worker success and before commit admission.
-- Synchronize races with explicit barriers, not sleeps alone. Confirm a late
-  successful worker cannot replace the destination after timeout returns.
-- Verify worker and child termination, descriptor closure, bounded reader joins,
-  temporary-file cleanup and preservation of an existing destination.
-- Race cancellation against commit admission and test uncertain post-replacement
-  failures without overwriting a competing writer during recovery.
-- Reject malformed, oversized, truncated and source-mismatched worker envelopes.
-- Compare canonical lock bytes with ordinary generation for all source modes,
-  partial/scoped generation and provider trust settings.
-- Run installed wheel/zipapp tests as well as repository tests. Exercise Windows,
-  Linux and macOS containment; unsupported containment must fail closed.
-- Keep no-fetch, filter/fsmonitor isolation, path/symlink fences, offline behavior
-  and existing work budgets intact. Do not dispatch paid CI for benchmarks.
+Requests use strict JSON and a 64 MiB transfer ceiling. Results use a bounded
+length-prefixed JSON header (1 KiB) followed by the existing bounded lock JSON.
+Decoding checks exact length, request identity, payload checksum and current
+lock structure. These checks are not authentication against trusted native
+code. Config, lock, tree and path budgets remain separately enforced; escaped
+snapshot metadata may hit the transfer limit first.
 
-This design does not close #164. Implementation, adversarial tests, platform
-evidence and an operator-facing timeout contract are still required.
+Private transfer files use fixed names and exclusive 0600 creation outside the
+checkout. They are flushed and closed, not disk-synced deployment evidence.
+The atomic lock writer's durability steps are unchanged. Failed or uncertain
+cleanup retains private transfer storage rather than deleting files still in
+use. Abrupt controller death can also leave bounded private storage for manual
+cleanup; it cannot grant the worker publication authority.
 
-## Windows implementation evidence
+Worker progress/timing is bounded, escaped again by the controller, and prefixed
+`Worker:` on stderr. Component counts belong to worker computation; controller
+phase counts are separate, not additive. Malformed or rewritten diagnostic logs
+are omitted, never treated as result instructions.
 
-The packaged `_windows_job` helper creates an unnamed, non-inheritable job with
-kill-on-close and without breakaway permissions. Local kernel tests cover
-suspended assignment without user-code execution, descendant termination after
-parent exit, handle closure and rejected assignment. `launch_python` now uses
-creation-time job assignment and a fixed absolute interpreter, without a shell
-or inherited standard handles. Tests cover Unicode environment values, quoted
-arguments and worker/descendant termination. The controller must confirm both
-zero active job processes and the worker process's signalled exit: these are
-separate kernel observations. The helper is not yet wired into generation.
+Timed stderr retains at most 128 queued records and accepts at most 64 KiB,
+including 2 KiB reserved for one terminal outcome and 512 bytes for a truncation
+notice. The terminal outcome may precede queued progress at shutdown. A stalled
+consumer can retain one daemon writer and descriptor until it unblocks or the
+CLI exits, but does not hold supervision. Diagnostics are best-effort: an
+unread pipe cannot receive an outcome. Machine-readable stdout is never sent
+through this lossy queue.
 
-Microsoft documents [job ownership and kill-on-close behavior](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
-The launch implementation must also address the crash window between suspended
-creation and assignment. Prefer creation-time job assignment where supported;
-Microsoft describes that alternative in
-[creating a process in a job object](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812).
-Never describe a separately created suspended process as already owned by the
-job before assignment has succeeded.
+## Evidence and remaining release gates
 
-## Result protocol implementation evidence
+Local Windows/Linux tests cover source equivalence, guarded commit races,
+malformed envelopes, runtime mismatch, package-in-zip handoff, ordinary child
+cleanup, abrupt controller death, full stderr pipes and expiry with blocked
+diagnostic delivery. Tests use synchronization barriers for cancellation races.
+The synthetic storage profiles are described in [Performance](performance.md).
 
-`_generation_protocol` encodes a bounded length-prefixed JSON header followed
-by the existing bounded lock JSON. It accepts no destination path or executable
-serialization. The header has a 1 KiB ceiling and exactly four fields: protocol
-schema, controller request digest, payload digest and payload byte length.
-Decoding requires exact lengths, strict JSON, the expected request digest, a
-matching payload checksum and current lock structure validation. Lock storage
-limits are unchanged.
-
-Tests reject malformed/truncated headers, duplicate keys, trailing payload,
-corruption, unknown fields, request mismatches and structurally invalid locks
-even when their checksums are valid. This is protocol validation, not yet a
-private transport or source-capture implementation. The request must ultimately
-include the captured source identity, complete invocation and a fresh operation
-identity. A digest is not authentication against trusted native provider code.
-
-`_generation_snapshot` supplies the snapshot portion of that request as strict
-JSON-ready values. It preserves the captured tree and optional commit, entry
-mode/type/object IDs, filemode policy, tracked membership (including intent to
-add) and sparse-checkout membership. Decoding uses the existing Git tree record
-validation and path budgets, without resolving refs or accessing the index.
-Tests cover SHA-1/SHA-256, executable/symlink/submodule entries, unusual names,
-invalid paths, duplicate entries and inconsistent membership. This codec does
-not snapshot live working-tree file contents or independently attest object
-provenance. Worker launch and the complete invocation request remain pending.
-
-`_generation_worker` now validates a complete computation invocation and returns
-the result envelope without publishing. Its request includes a fresh-operation
-identity supplied by the controller, runtime version, repository, config,
-source, captured HEAD/index snapshot, strict/custom-provider policy and optional
-component selection with an explicit base lock. Unknown fields (including an
-output destination) are rejected. Requests have a 64 MiB transfer ceiling;
-config and lock limits remain separately enforced. Large escaped snapshot
-metadata may hit this transfer ceiling before the underlying Git path budgets.
-
-Working-tree requests explicitly have no immutable snapshot, matching ordinary
-generation: tracking is captured by its existing accessors and file bytes stay
-live. This does not promise frozen index membership across the separate
-validation and computation passes. HEAD/index workers do not recapture refs.
-Tests compare all three modes with direct generation, advance HEAD between
-capture and computation, preserve a sentinel destination and confirm scoped
-generation still checks unselected-component integrity. The implementation is
-currently a computation function; private transport, contained invocation,
-diagnostic forwarding and the CLI timeout are not yet connected.
-
-The worker module now also has a private-directory entry point. A controller
-must create that directory outside the repository; requests/results/errors use
-fixed filenames and exclusive 0600 creation. Request reads use the shared
-bounded regular-file reader, and result/error writes have separate ceilings.
-An error returns exit 2 rather than publishing a partial lock or emitting an
-unbounded traceback. File presence alone never authorizes publication: the
-controller must confirm worker exit/cleanup and validate the result envelope.
-
-A Windows integration test launches `python -I -m boundver._generation_worker`
-inside a creation-time assigned job, using a controller-private temporary
-directory, and compares its result with direct computation. Other tests cover
-malformed transfer input, fixed-name restrictions and overwrite refusal. This
-is not a shared-directory security primitive: trusted native provider code
-retains the same user's filesystem capabilities. The controller's bounded wait,
-cross-platform cleanup, diagnostic forwarding and public CLI option remain
-pending.
-
-`_generation_runner.run_windows_generation` now owns the Windows controller
-loop: private transfer creation, contained launch, deadline/cancellation checks,
-bounded termination/reap, result verification and READY admission. It never
-opens a lock destination. It terminates descendants even after a successful
-worker exit and confirms both zero active job processes and signalled worker
-exit before reading the result. Cleanup has a separate five-second bound;
-uncertain cleanup retains transfer data rather than deleting files that may
-still be in use. The transfer directory identity is checked before recursive
-cleanup. Tests stop a real worker immediately after launch with controlled
-clock/cancellation events, check it is reaped, and reject an already-expired
-controller before launch. POSIX containment, installed-target checks, diagnostic
-forwarding and CLI integration remain required.
-
-`_posix_worker` now launches only the fixed isolated Python worker command in
-a new session, with closed inherited descriptors and standard streams directed
-to the null device. Targeted group termination and leader reaping have a local
-Ubuntu smoke check. The full POSIX worker-equivalence tests are present but
-still require a Linux test environment with dependencies; Windows runs skip
-them. This helper is not yet connected to the controller.
-
-The POSIX process group is not a Windows Job Object equivalent: trusted native
-code can deliberately create another session and escape it. Such uncertainty
-must remain explicit in the final acceptance and operator contract. Do not
-claim complete descendant cleanup from leader exit alone, and do not silently
-delete transfer storage if ownership/cleanup cannot be confirmed. Python's
-[subprocess documentation](https://docs.python.org/3/library/subprocess.html)
-specifies that session creation happens before worker execution.
-
-The shared controller now selects the Windows job or POSIX session adapter.
-POSIX cleanup polls/reaps the leader before checking group existence, avoiding
-a zombie leader keeping its own group visible indefinitely. A local disposable
-Ubuntu/Python 3.14 environment passed 96 worker/control/protocol/snapshot/offline
-tests (five Windows-only skips); the corresponding Windows checks passed 38
-tests (four POSIX-only skips) and 268 subtests. These are local development
-checks, not the supported-platform release matrix. POSIX deliberately detached
-descendants, abrupt controller death, diagnostic forwarding and CLI integration
-still require explicit treatment before the feature is release-ready.
-
-`git_operation_deadline` supplies a context-local absolute monotonic deadline
-for controller preparation. It refuses expired Git commands before launch and
-caps every existing Git-process timer by the remaining operation budget,
-including processes created just as the deadline expires. Nested scopes cannot
-extend an outer deadline; exception exit restores the previous scope. Tests
-cover timer capping, boundary expiry, context restoration and thread isolation.
-The controller exposes its immutable deadline for this purpose. Public generate
-dispatch has not yet enabled this scope or exposed the timeout option.
-
-Generation dispatch now has an internal, unadvertised timeout path joining the
-controller, Git-preparation scope, captured request and atomic publication
-admission. Direct dispatch tests on Windows and Linux cover all source modes,
-JSON dry runs, expiry, successful publication and cancellation after result
-validation but before commit. The ordinary path remains unchanged. There is
-still no parser option: parent-side provider import/validation, streamed worker
-diagnostics, controller-death cleanup and installed/platform acceptance must be
-addressed before exposing the feature. No claim of a hard filesystem commit
-deadline is made.
-
-Timed controller preparation now uses declaration-only validation, retaining
-path/graph/schema checks without importing native providers or probing their
-runtime. The worker still performs full runtime validation. Tests on Windows
-and Linux confirm a missing custom module fails in the worker and is never
-loaded by the parent; its bounded first diagnostic is returned to the operator.
-Declaration-only validation also no longer requires registration that it
-deliberately did not perform. This does not make native providers sandboxed.
-
-The internal timed path now carries strict progress/timing flags in its bound
-request. Worker diagnostics use an exclusive private log and the same bounded
-observer as ordinary generation. The controller polls complete UTF-8 lines,
-validates a stable bounded read, verifies previously seen bytes were not
-rewritten, escapes text again, and prefixes it `Worker:` before bounded stderr
-rendering. Concurrent appends may defer a read until the next poll; a final
-drain follows confirmed cleanup. Invalid, oversized, truncated or replaced logs
-are omitted with a diagnostic, not interpreted as result or publication data.
-Worker component counts/timings describe worker computation; the controller's
-phase counts describe its own preparation and publication, not their sum.
-
-Windows and Linux tests cover real-worker forwarding without JSON corruption,
-partial lines, replay prevention, invalid UTF-8, oversized streams and terminal
-control escaping. Blocking controller stderr/backpressure and abrupt-controller
-death remain unresolved acceptance items; closed-pipe error handling alone does
-not prove a bounded write. The public timeout option remains unavailable.
-
-Worker launch now uses a fixed isolated-Python shim that inserts only the
-controller's own runtime root (or zip archive) before executing the fixed worker
-module. The import root is derived from the running package, never repository
-config, cwd or PYTHONPATH. This fixes standalone archives that cannot be found
-through `python -m` from an unrelated directory. Directory/zip shadowing tests
-and real package-in-zip controller/worker tests pass on Windows and Linux.
-The latter exercise path-hash without the production archive's vendored-format
-matrix, so the full archive release gate remains required. Controller/worker
-version mismatches still fail closed and now identify both versions.
-
-POSIX workers now inherit only the read end of a dedicated parent-lifetime
-pipe. The controller keeps the non-inherited write end; its death produces EOF.
-A fixed startup watchdog begins before importing Boundver and signals only its
-own session-leading process group. Launch failures close both descriptors;
-normal teardown closes the lifetime writer as well. Tests abruptly kill a real
-Linux controller and verify its worker and normal descendant stop executing.
-The test distinguishes stopped zombies awaiting init's reap from running work.
-Windows tests abruptly kill a controller and wait on retained kernel handles
-for both descendants, proving kill-on-job-close rather than just Python cleanup.
-
-This is not complete containment of arbitrary trusted native code. Deliberately
-detached descendants remain outside a POSIX group, and an extension monopolizing
-the worker's interpreter can delay its Python watchdog. The live controller can
-still signal the group without relying on worker Python execution. Abrupt death
-can leave the bounded private transfer directory for later manual cleanup; it
-cannot grant the worker lock-publication authority. Blocking controller output
-and the native-provider residual-risk contract still need release acceptance.
-
-Private request/result IPC no longer requests disk durability via `fsync`.
-It is flushed and closed before consumption, then checked for complete length,
-digest and structure; it is never deployment evidence or the lock destination.
-The atomic lock writer's file/directory durability steps are unchanged. A
-regression test pins that separation. Two exploratory Windows runs expired
-before worker launch under the previous private-IPC sync path; focused suites
-subsequently passed on Windows and Linux (56 passed, six platform skips each).
-The exact contribution of disk sync versus host contention was not isolated.
-
-Timed dispatch now sends stderr through a bounded asynchronous diagnostic
-writer. Producers never wait for the consumer; queued records are capped at 128
-and accepted output at 64 KiB, including reserved space for one 2 KiB terminal
-outcome and a 512-byte truncation notice. The terminal outcome is prioritized
-at shutdown and may precede pending progress rows. Drain waits at most one
-second. A stalled consumer can retain one daemon writer/descriptor until it
-unblocks or the CLI exits; it does not hold operation supervision. Descriptor
-delivery uses a duplicate raw fd, avoiding Python stderr-buffer locks during
-interpreter shutdown. Ordinary, untimed generation keeps its existing output.
-
-Tests cover blocked custom sinks, bounded records/bytes, reserved publication
-status, real full pipes, and subprocess exit while stderr is deliberately not
-consumed. Windows and Linux integration tests expire a real worker while its
-diagnostic consumer is blocked and confirm reap plus prior-lock preservation.
-Diagnostics remain best-effort: a consumer that never reads cannot receive an
-outcome. JSON stdout is never routed through this lossy queue. Post-computation
-stdout/error rendering and atomic filesystem commit latency are not hard
-command-wall-time guarantees. Public flag/help and the native-provider
-residual-risk contract still require completion and review.
+This does not close issue #164 or satisfy the complete v0.17 release gate.
+Supported Python/platform CI, macOS evidence, production wheel/standalone-format
+installation checks, broader provider/scoped-generation equivalence, no-fetch
+and filesystem-safety regressions, and exact-commit review remain required.
+Native-provider residual risks must remain explicit in release acceptance.

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added opt-in `generate --timeout SECONDS` for a computation deadline before
+  controller-managed publication. It supervises an owned worker, validates the
+  result and rejects late publication. Commit/output latency is not hard
+  wall-time bounded; native custom providers remain trusted, not sandboxed.
+
 - Added opt-in `generate --progress` and `--timing` diagnostics on stderr,
   with bounded phase/component reporting and explicit publication outcomes.
   JSON stdout and persisted lock identities are unchanged. These diagnostics

@@ -191,10 +191,12 @@ for integrity checks and reports those components too.
 Diagnostics are limited to 256 progress lines, 32 distinct phase timings,
 128 component timing rows and 64 KiB overall. The final summary records omitted
 rows and lines. Labels are truncated and escaped for safe terminal display.
-These options do not send data anywhere or impose an execution deadline.
+These options do not send data anywhere or impose an execution deadline by
+themselves. Add `--timeout SECONDS` to bound computation before publication.
+Atomic commit and final output are not hard wall-time bounded.
 
-The pending deadline implementation has a separate
-[publication and process-cleanup contract](generation-deadline-design.md).
+See the [publication and process-cleanup contract](generation-deadline-design.md)
+for timeout behavior, cleanup allowances and native-provider limitations.
 
 The summary distinguishes a dry run, a confirmed write, and publication not
 attempted. If a write is interrupted or raises before its outcome can be

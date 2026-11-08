@@ -1,6 +1,7 @@
 """Argument-parser construction for the public boundver CLI."""
 
 import argparse
+import math
 import sys
 
 from ._output import _display_text
@@ -13,6 +14,16 @@ class _TerminalSafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {_display_text(message)}\n")
+
+
+def _positive_timeout(value: str) -> float:
+    try:
+        seconds = float(value)
+    except (ValueError, OverflowError):
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number")
+    return seconds
 
 
 def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
@@ -88,6 +99,10 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     gen.add_argument("--progress", action="store_true", help="Print bounded generation progress to stderr")
     gen.add_argument("--timing", action="store_true", help="Print bounded local phase/component timings to stderr")
+    gen.add_argument(
+        "--timeout", type=_positive_timeout, metavar="SECONDS",
+        help="Computation deadline from source capture; expiry exits 2 before publication. Atomic commit and final output are not hard wall-time bounded; native providers are not sandboxed",
+    )
     ver = sub.add_parser(
         "verify",
         help="Check lockfile matches current repo state",
