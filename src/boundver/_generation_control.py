@@ -44,6 +44,11 @@ class GenerationControl:
                 self._state = GenerationState.EXPIRED
 
     @property
+    def monotonic_deadline(self) -> float:
+        """Immutable deadline for local Git preparation using the same clock."""
+        return self._deadline
+
+    @property
     def state(self) -> GenerationState:
         with self._lock:
             self._expire_locked()

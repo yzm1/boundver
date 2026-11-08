@@ -1,13 +1,17 @@
 """Git helper primitives for boundver."""
 
 import hashlib
+import math
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import threading
+import time
 from collections import Counter, deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -140,8 +144,31 @@ _OFFLINE_GIT_SUBCOMMANDS = frozenset(
 _OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
 
 
+_OPERATION_GIT_DEADLINE: ContextVar[Optional[float]] = ContextVar("boundver_git_deadline", default=None)
+
+
+@contextmanager
+def git_operation_deadline(deadline: float):
+    """Apply an absolute monotonic deadline to Git calls in this context.
+
+    No repository state is changed. Nested scopes cannot extend an outer
+    deadline, and leaving the scope restores the previous deadline.
+    """
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+        raise ValueError("Git operation deadline must be finite")
+    previous = _OPERATION_GIT_DEADLINE.get()
+    token = _OPERATION_GIT_DEADLINE.set(min(previous, deadline) if previous is not None else deadline)
+    try:
+        yield
+    finally:
+        _OPERATION_GIT_DEADLINE.reset(token)
+
+
 def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
     """Build a Git argv only for a statically approved local subcommand."""
+    operation_deadline = _OPERATION_GIT_DEADLINE.get()
+    if operation_deadline is not None and time.monotonic() >= operation_deadline:
+        raise GuardrailError("Git operation deadline expired before command launch")
     command_index = 0
     while command_index < len(args):
         argument = args[command_index]
@@ -408,6 +435,9 @@ class _GitProcessDeadline:
     ) -> None:
         self.process = process
         self.seconds = MAX_GIT_COMMAND_SECONDS if seconds is None else seconds
+        operation_deadline = _OPERATION_GIT_DEADLINE.get()
+        if operation_deadline is not None:
+            self.seconds = min(self.seconds, max(0.0, operation_deadline - time.monotonic()))
         self.expired = threading.Event()
         self.timer = threading.Timer(self.seconds, self._expire)
         self.timer.daemon = True

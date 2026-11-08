@@ -217,3 +217,12 @@ tests (four POSIX-only skips) and 268 subtests. These are local development
 checks, not the supported-platform release matrix. POSIX deliberately detached
 descendants, abrupt controller death, diagnostic forwarding and CLI integration
 still require explicit treatment before the feature is release-ready.
+
+`git_operation_deadline` supplies a context-local absolute monotonic deadline
+for controller preparation. It refuses expired Git commands before launch and
+caps every existing Git-process timer by the remaining operation budget,
+including processes created just as the deadline expires. Nested scopes cannot
+extend an outer deadline; exception exit restores the previous scope. Tests
+cover timer capping, boundary expiry, context restoration and thread isolation.
+The controller exposes its immutable deadline for this purpose. Public generate
+dispatch has not yet enabled this scope or exposed the timeout option.
