@@ -1,7 +1,7 @@
 # Deployment-reference comparison: v0.17 contract
 
-Planned command; not implemented yet. This contract precedes implementation
-of [issue #166](https://github.com/yzm1/boundver/issues/166).
+Development backend and output schema are under test; the CLI is not exposed
+yet. This contract guides [issue #166](https://github.com/yzm1/boundver/issues/166).
 
 Compare current contracts with one explicitly supplied local reference. Do not
 deploy, contact an environment, move a ref or write a lock. The environment
@@ -109,5 +109,7 @@ Distinct dev/staging/production refs; ref movement after capture; content revert
 dirty/deleted working files and held index locks under HEAD; malformed or stale
 reference locks; graph/config drift; unsupported v3 digests; unavailable local
 objects and shallow history; provider authorization; all source modes; hidden
-drift under summary/row limits; and preservation of refs, index, config and lock.
+drift under summary/row limits; and preservation of refs, index entries, config
+and lock. Explicit index capture may update Git's cache-tree metadata; HEAD
+comparison must not require an index write or disturb a held index lock.
 Tests must not dispatch hosted CI to build performance fixtures.

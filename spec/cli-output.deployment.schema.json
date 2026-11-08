@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.deployment.schema.json",
+  "title": "Boundver deployment-reference comparison v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "environment", "evidence", "current", "reference", "current_lock_verification", "complete", "ok", "exit_code", "facets", "counts", "changes", "presentation", "issues"],
+  "properties": {
+    "schema": {"const": "boundver-deployment-comparison/v1"},
+    "environment": {"type": "string", "minLength": 1, "maxLength": 128},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "attested"],
+      "properties": {"kind": {"const": "operator-asserted-local-ref"}, "attested": {"const": false}}
+    },
+    "current": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "commit", "tree", "config", "config_digest"],
+      "properties": {
+        "mode": {"enum": ["head", "index", "working-tree"]},
+        "commit": {"$ref": "#/$defs/oid"}, "tree": {"$ref": "#/$defs/oid"},
+        "config": {"type": ["string", "null"]}, "config_digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ref", "commit", "tree", "config", "lock", "lock_schema", "config_contract", "verified"],
+      "properties": {
+        "ref": {"type": "string"}, "commit": {"$ref": "#/$defs/oid"}, "tree": {"$ref": "#/$defs/oid"},
+        "config": {"type": ["string", "null"]}, "lock": {"type": "string"},
+        "lock_schema": {"type": ["string", "null"]}, "config_contract": {"type": ["string", "null"]},
+        "verified": {"type": "boolean"}
+      }
+    },
+    "current_lock_verification": {"const": "not-performed"},
+    "complete": {"type": "boolean"}, "ok": {"type": "boolean"},
+    "exit_code": {"type": "integer", "minimum": 0, "maximum": 5},
+    "facets": {"type": "array", "items": {"$ref": "#/$defs/facet"}, "minItems": 1, "maxItems": 4, "uniqueItems": true},
+    "counts": {
+      "oneOf": [{"type": "null"}, {
+        "type": "object", "additionalProperties": false,
+        "required": ["components", "changed", "unchanged", "facets"],
+        "properties": {
+          "components": {"$ref": "#/$defs/count"}, "changed": {"$ref": "#/$defs/count"}, "unchanged": {"$ref": "#/$defs/count"},
+          "facets": {
+            "type": "object", "additionalProperties": false, "required": ["exact", "behavior", "boundary", "compat"],
+            "properties": {"exact": {"$ref": "#/$defs/count"}, "behavior": {"$ref": "#/$defs/count"}, "boundary": {"$ref": "#/$defs/count"}, "compat": {"$ref": "#/$defs/count"}}
+          }
+        }
+      }]
+    },
+    "changes": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["component", "facets", "before", "after"],
+        "properties": {
+          "component": {"type": "string", "minLength": 1},
+          "facets": {"type": "array", "items": {"$ref": "#/$defs/facet"}, "minItems": 1, "maxItems": 4, "uniqueItems": true},
+          "before": {"$ref": "#/$defs/fingerprints"}, "after": {"$ref": "#/$defs/fingerprints"}
+        }
+      }
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false, "required": ["limit", "shown", "omitted", "truncated"],
+      "properties": {"limit": {"type": "integer", "minimum": 0, "maximum": 10000}, "shown": {"$ref": "#/$defs/count"}, "omitted": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"}}
+    },
+    "issues": {
+      "type": "object", "additionalProperties": false, "required": ["items", "omitted", "truncated"],
+      "properties": {"items": {"type": "array", "maxItems": 100, "items": {"type": "string", "maxLength": 1024}}, "omitted": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"}}
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"complete": {"const": false}}}, "then": {"properties": {"exit_code": {"const": 2}, "ok": {"const": false}, "counts": {"type": "null"}}}},
+    {"if": {"properties": {"ok": {"const": true}}}, "then": {"properties": {"complete": {"const": true}, "exit_code": {"const": 0}}}},
+    {"if": {"properties": {"exit_code": {"const": 0}}}, "then": {"properties": {"ok": {"const": true}, "complete": {"const": true}}}},
+    {"if": {"properties": {"complete": {"const": true}}}, "then": {"properties": {
+      "counts": {"type": "object"}, "exit_code": {"enum": [0, 1, 3, 4, 5]},
+      "current": {"properties": {"config": {"type": "string"}, "config_digest": {"type": "string"}}},
+      "reference": {"properties": {"verified": {"const": true}, "commit": {"type": "string"}, "tree": {"type": "string"}, "config": {"type": "string"}, "lock_schema": {"const": "boundary-lock/v4"}, "config_contract": {"const": "boundver-semantic-config/v3"}}}
+    }}}
+  ],
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "facet": {"enum": ["exact", "behavior", "boundary", "compat"]},
+    "oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "fingerprints": {
+      "type": "object", "additionalProperties": false, "required": ["exact", "behavior", "boundary", "compat"],
+      "properties": {"exact": {"$ref": "#/$defs/digest"}, "behavior": {"$ref": "#/$defs/digest"}, "boundary": {"$ref": "#/$defs/digest"}, "compat": {"$ref": "#/$defs/digest"}}
+    }
+  }
+}
