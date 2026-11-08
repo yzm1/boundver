@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added read-only `diff --format upgrade-json` for strict supported v3/v4
+  historical record inspection. Reports separate header/config contracts,
+  provider identities, component value equality and slice metadata. Equal
+  values across incompatible contracts remain incomparable, not migrated or
+  verified. Normal verification and migration still refuse old digest contracts.
+
 - Added read-only `generate --dry-run --format changes-json` and
   `diff --format changes-json` reports for component/facet differences, explicit
   version status and slice changes. Summary/row limits preserve counts;

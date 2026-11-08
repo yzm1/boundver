@@ -763,42 +763,42 @@ SCHEMA_REFUSALS = {
         _without("schema"),
         _without("schema"),
         "lockfiles use unsupported schema None (supported schemas: "
-        "'boundary-lock/v3', 'boundary-lock/v4'); regenerate both lockfiles "
-        "with a supported Boundver version before diffing",
+        "'boundary-lock/v3', 'boundary-lock/v4'); use --format upgrade-json "
+        "for supported v3/v4 inspection; do not rewrite historical locks",
     ),
     "both schemas a list": (
         _bare_lock(schema=["boundary-lock/v3"]),
         _bare_lock(schema=["boundary-lock/v3"]),
         "lockfiles use unsupported schema ['boundary-lock/v3'] (supported "
-        "schemas: 'boundary-lock/v3', 'boundary-lock/v4'); regenerate both "
-        "lockfiles with a supported Boundver version before diffing",
+        "schemas: 'boundary-lock/v3', 'boundary-lock/v4'); use --format upgrade-json "
+        "for supported v3/v4 inspection; do not rewrite historical locks",
     ),
     "both schemas an int": (
         _bare_lock(schema=3),
         _bare_lock(schema=3),
         "lockfiles use unsupported schema 3 (supported schemas: "
-        "'boundary-lock/v3', 'boundary-lock/v4'); regenerate both lockfiles "
-        "with a supported Boundver version before diffing",
+        "'boundary-lock/v3', 'boundary-lock/v4'); use --format upgrade-json "
+        "for supported v3/v4 inspection; do not rewrite historical locks",
     ),
     "both v2": (
         _bare_lock(schema="boundary-lock/v2"),
         _bare_lock(schema="boundary-lock/v2"),
         "lockfiles use unsupported schema 'boundary-lock/v2' (supported "
-        "schemas: 'boundary-lock/v3', 'boundary-lock/v4'); regenerate both "
-        "lockfiles with a supported Boundver version before diffing",
+        "schemas: 'boundary-lock/v3', 'boundary-lock/v4'); use --format upgrade-json "
+        "for supported v3/v4 inspection; do not rewrite historical locks",
     ),
     "one absent, one current": (
         _without("schema"),
         _bare_lock(),
         "lockfiles use incompatible schemas (old=None, new='boundary-lock/v4'); "
-        "regenerate both lockfiles with the same Boundver version before diffing",
+        "use --format upgrade-json for supported v3/v4 inspection; do not rewrite historical locks",
     ),
     "v1 against v4": (
         _bare_lock(schema="boundary-lock/v1"),
         _bare_lock(),
         "lockfiles use incompatible schemas (old='boundary-lock/v1', "
-        "new='boundary-lock/v4'); regenerate both lockfiles with the same "
-        "Boundver version before diffing",
+        "new='boundary-lock/v4'); use --format upgrade-json "
+        "for supported v3/v4 inspection; do not rewrite historical locks",
     ),
 }
 

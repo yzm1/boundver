@@ -57,6 +57,7 @@ nav:
       - Scoped verification: scoped-verification.md
       - Slice explanations: slice-explanations.md
       - Generation previews: generation-previews.md
+      - Historical lock inspection: historical-lock-inspection.md
       - Lockfile merges: LOCKFILE_MERGE.md
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md

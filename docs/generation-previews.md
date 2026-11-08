@@ -38,16 +38,20 @@ records, not freshly computed repository contracts.
 ## Changed versus incomparable
 
 Equal supported digest contracts and declarations allow ordinary value
-comparison. Declaration, provider-runtime or unavailable-computation changes
-make affected common records `incomparable`. Raw differences remain visible,
+comparison. Declaration or provider-runtime changes make affected common
+records `incomparable`; recorded computation errors make otherwise comparable
+records `unavailable`. Raw differences remain visible,
 but are not classified as ordinary contract drift. Changing declarations
 conservatively invalidates comparability for all common component records.
 
 Counts separate added/removed records, comparable changed/unchanged records,
-incomparable records and raw differences between common records. Slice record
+incomparable/unavailable records and raw differences between common records. Slice record
 changes can include metadata changes; they are not automatically breaking API
 changes. Unsupported historical contracts fail closed; they are not upgraded
 or accepted by this format.
+
+Use [historical lock inspection](historical-lock-inspection.md) and
+`diff --format upgrade-json` for explicitly read-only v3/v4 comparisons.
 
 Exit 0 means the report completed, including any reported incomparable records;
 exit 2 means invalid input or incomplete reporting. The report explicitly says

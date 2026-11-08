@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/boundary.lock.schema.json",
+  "schema": "boundary-lock/v4",
+  "config_contract": "boundver-semantic-config/v3",
+  "config_digest": "bf67b611ba2ea5963b57875dc692d9b1fdf88f3167baa5adac1777ad47749daf",
+  "project": "boundver",
+  "components": {
+    "boundver": {
+      "version": null,
+      "path": "src/boundver",
+      "boundary_provider": "python-exports",
+      "boundary_provider_version": "3",
+      "boundary_status": "ok",
+      "consumers": [],
+      "external_consumers": [],
+      "fingerprints": {
+        "exact": "8bcbb086fc2f81ea65a78ba9f1cda7d5d8d0241f97ffa32d226c8407698b0286",
+        "behavior": null,
+        "boundary": "18edb9277ea395b110a4b858001a6fa00547b14613011f2f59164cef194920e3",
+        "compat": null
+      },
+      "semver": {"compat_family": null, "api_surface": null, "exact_version": null}
+    },
+    "spec": {
+      "version": null,
+      "path": "spec",
+      "boundary_provider": "json-file",
+      "boundary_provider_version": "3",
+      "boundary_status": "ok",
+      "consumers": ["boundver"],
+      "external_consumers": [],
+      "fingerprints": {
+        "exact": "331f822f160479c09c8a908a7f52c300c2a37e74bae98626c1f6e321c1fc0955",
+        "behavior": null,
+        "boundary": "2a8965d48f7efee5785e8bde0dd45ce137a3323e739ec2bc34b6532cb7cadeed",
+        "compat": null
+      },
+      "semver": {"compat_family": null, "api_surface": null, "exact_version": null}
+    }
+  },
+  "slices": {
+    "cli-api": {
+      "description": "CLI interface and public API surface",
+      "mode": "boundary",
+      "components": ["boundver"],
+      "fingerprint": "c8fa49c87d4789df71fb2f1ae76f6e7c7d92cab4081d096daf1e3810ec2b47a9",
+      "component_digests": {"boundver": "18edb9277ea395b110a4b858001a6fa00547b14613011f2f59164cef194920e3"}
+    },
+    "spec": {
+      "description": "Spec documents and schemas",
+      "mode": "exact",
+      "components": ["spec"],
+      "fingerprint": "88582d5e730b62a14c09c77e93e19598b7d4cf491dd1ab1bb87dc18570d1f249",
+      "component_digests": {"spec": "331f822f160479c09c8a908a7f52c300c2a37e74bae98626c1f6e321c1fc0955"}
+    },
+    "all": {
+      "description": "Full implementation fingerprint",
+      "mode": "exact",
+      "components": ["boundver", "spec"],
+      "fingerprint": "1f574b2cd527359a86e77f61f5c381bbd291be06d428a8d759929b604786dba6",
+      "component_digests": {
+        "boundver": "8bcbb086fc2f81ea65a78ba9f1cda7d5d8d0241f97ffa32d226c8407698b0286",
+        "spec": "331f822f160479c09c8a908a7f52c300c2a37e74bae98626c1f6e321c1fc0955"
+      }
+    }
+  }
+}

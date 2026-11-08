@@ -296,11 +296,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     dif.add_argument("old", help="Old lockfile")
     dif.add_argument("new", help="New lockfile")
     dif.add_argument(
-        "--format", choices=["json", "text", "changes-json"], default="text",
-        help="Output format; changes-json adds bounded component/version reporting for current contracts",
+        "--format", choices=["json", "text", "changes-json", "upgrade-json"], default="text",
+        help="Output format; upgrade-json inspects supported v3/v4 contracts read-only, without migration",
     )
-    dif.add_argument("--limit", type=int, default=1000, help="Change-report rows, 0..10000; changes-json only")
-    dif.add_argument("--summary", action="store_true", help="Change-report counts without rows; changes-json only")
+    dif.add_argument("--limit", type=int, default=1000, help="Change-report rows, 0..10000; changes-json/upgrade-json only")
+    dif.add_argument("--summary", action="store_true", help="Change-report counts without rows; changes-json/upgrade-json only")
 
     # slice
     sl = sub.add_parser("slice", help="Show fingerprint for a specific slice")

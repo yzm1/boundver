@@ -1553,11 +1553,11 @@ def _cmd_migrate_lock(args) -> None:
 
 
 def _cmd_diff(args) -> None:
-    if args.format == "changes-json":
+    if args.format in {"changes-json", "upgrade-json"}:
         if not 0 <= args.limit <= 10_000:
             raise ConfigError("Change report limit must be 0..10000")
     elif getattr(args, "summary", False) or getattr(args, "limit", 1000) != 1000:
-        raise ConfigError("--summary and --limit require --format changes-json")
+        raise ConfigError("--summary and --limit require --format changes-json or upgrade-json")
     for label, fpath in (("old", args.old), ("new", args.new)):
         if not Path(fpath).exists():
             print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
@@ -1565,7 +1565,8 @@ def _cmd_diff(args) -> None:
     try:
         old = _load_lockfile(Path(args.old))
         new = _load_lockfile(Path(args.new))
-        require_compatible_lockfile_schemas(old, new)
+        if args.format != "upgrade-json":
+            require_compatible_lockfile_schemas(old, new)
         _require_diffable_lockfile(old)
         _require_diffable_lockfile(new)
     except LockfileError as exc:
@@ -1574,12 +1575,13 @@ def _cmd_diff(args) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
-    if args.format == "changes-json":
+    if args.format in {"changes-json", "upgrade-json"}:
         result = lock_change_report(
             old, new, operation="lock-diff",
             source={"mode": "lockfiles", "commit": None, "tree": None,
                     "lock": str(args.new), "previous_lock": str(args.old)},
             limit=0 if args.summary else args.limit,
+            historical=args.format == "upgrade-json",
         )
         _print_json(result, max_bytes=MAX_CHANGE_REPORT_BYTES)
         if result["exit_code"]:

@@ -4,7 +4,6 @@ import copy
 import json
 import os
 from pathlib import Path
-from functools import lru_cache
 
 import pytest
 
@@ -12,6 +11,7 @@ from boundver._change_report import lock_change_report
 from boundver._lockfile import dump_lockfile, generate_lockfile
 from tests._parity import run_cli, run_cli_in_process
 from tests._scenarios import Scenario
+from tests._schema_validation import assert_output_schema
 
 
 @pytest.fixture
@@ -48,27 +48,8 @@ def report(previous, current, limit=1000):
     return result
 
 
-@lru_cache
-def validator():
-    try:
-        import jsonschema
-    except ImportError:
-        return None
-    schema = json.loads(
-        (
-            Path(__file__).resolve().parents[1]
-            / "spec"
-            / "cli-output.lock-changes.schema.json"
-        ).read_text()
-    )
-    jsonschema.Draft202012Validator.check_schema(schema)
-    return jsonschema.Draft202012Validator(schema)
-
-
 def validate_result(result):
-    engine = validator()
-    if engine is not None:
-        engine.validate(result)
+    assert_output_schema("cli-output.lock-changes.schema.json", result)
 
 
 def test_equal_contracts_have_explicit_unchanged_version_status(repository):

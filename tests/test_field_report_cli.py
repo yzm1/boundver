@@ -72,7 +72,7 @@ class CrossSchemaDiffTests(unittest.TestCase):
         lock["config_digest"] = digest
         return lock
 
-    def test_cross_schema_diff_reports_one_regeneration_diagnostic(self):
+    def test_cross_schema_diff_reports_one_read_only_inspection_diagnostic(self):
         """Refuse a v2-against-v3 diff once, naming both of its schemas.
 
         A message that names only the old schema tells the user their lockfiles
@@ -92,7 +92,8 @@ class CrossSchemaDiffTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(err.count("ERROR:"), 1)
         self.assertIn("incompatible schemas", err)
-        self.assertIn("regenerate both", err)
+        self.assertIn("--format upgrade-json", err)
+        self.assertIn("do not rewrite historical locks", err)
         self.assertNotIn("malformed", err)
         # The single diagnostic has to name both endpoints. The premise test
         # below establishes that matching both of these substrings really does

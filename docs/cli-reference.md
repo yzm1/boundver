@@ -179,7 +179,9 @@ Examples:
 ## `boundver diff`
 
 ```text
-usage: boundver diff [-h] [--format {json,text,changes-json}] [--limit LIMIT] [--summary] old new
+usage: boundver diff [-h] [--format {json,text,changes-json,upgrade-json}] [--limit LIMIT]
+                     [--summary]
+                     old new
 ```
 
 | Argument | Value | Default | Description |
@@ -187,9 +189,9 @@ usage: boundver diff [-h] [--format {json,text,changes-json}] [--limit LIMIT] [-
 | `-h`, `--help` | — | — | show this help message and exit |
 | `old` | `OLD` | required | Old lockfile |
 | `new` | `NEW` | required | New lockfile |
-| `--format` | `{json,text,changes-json}` | `text` | Output format; changes-json adds bounded component/version reporting for current contracts |
-| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json only |
-| `--summary` | — | `false` | Change-report counts without rows; changes-json only |
+| `--format` | `{json,text,changes-json,upgrade-json}` | `text` | Output format; upgrade-json inspects supported v3/v4 contracts read-only, without migration |
+| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json/upgrade-json only |
+| `--summary` | — | `false` | Change-report counts without rows; changes-json/upgrade-json only |
 
 <a id="slice"></a>
 
