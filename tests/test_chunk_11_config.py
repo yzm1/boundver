@@ -162,6 +162,7 @@ from boundver._utils import (
 
 from tests._parity import run_cli, run_cli_in_process
 from tests._scenarios import SOURCE_MODES, Scenario
+from tests._schema_validation import assert_output_schema
 
 PROFILE = settings(
     max_examples=30,
@@ -1593,14 +1594,29 @@ class EmbeddableApiAgreementTests(unittest.TestCase):
         with Scenario() as scene:
             _two_component_repository(scene)
             _corpus_clean(scene)
+            lock_before = (scene.root / "boundary.lock.json").read_bytes()
             cli = run_cli(
                 scene.root, "verify", "--format", "json", "--components", "nonexistent"
             )
+            api_stdout, api_stderr = io.StringIO(), io.StringIO()
             with _inside(scene.root):
-                with self.assertRaises(ConfigError) as raised:
+                with (
+                    contextlib.redirect_stdout(api_stdout),
+                    contextlib.redirect_stderr(api_stderr),
+                    self.assertRaises(ConfigError) as raised,
+                ):
                     boundver.verify(components=["nonexistent"])
+            self.assertEqual((scene.root / "boundary.lock.json").read_bytes(), lock_before)
         self.assertEqual(cli.returncode, 2)
-        self.assertEqual(cli.stdout, "")
+        payload = json.loads(cli.stdout)
+        assert_output_schema("cli-output.verify.schema.json", payload)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["updated"])
+        self.assertEqual(payload["components_filter"], ["nonexistent"])
+        self.assertEqual(payload["changed_components"], [])
+        self.assertEqual(payload["issues"], [str(raised.exception)])
+        self.assertEqual(api_stdout.getvalue(), "")
+        self.assertEqual(api_stderr.getvalue(), "")
         self.assertIn("unknown --components entries: nonexistent", cli.stderr)
         self.assertEqual(
             str(raised.exception),
@@ -1635,8 +1651,9 @@ class EmbeddableApiAgreementTests(unittest.TestCase):
         an absence too. Here the identical nesting - `_inside`, then both
         redirections - is wrapped around `core.main()`, the product's own
         printing path: `verify --format json` fills the stdout buffer with the
-        document it prints, and the same command with an unknown component fills
-        the stderr buffer instead. Each buffer is shown to fill on its own, so
+        document it prints, and the same command with an unknown component also
+        fills stderr while retaining structured failure JSON. Both buffers are
+        demonstrably observable, so
         an API call that wrote to either one would have been caught.
         """
         rows = {
@@ -1670,7 +1687,11 @@ class EmbeddableApiAgreementTests(unittest.TestCase):
         self.assertEqual(stderr_text, "")
 
         code, stdout_text, stderr_text = captured["a command that prints a usage error"]
-        self.assertEqual(stdout_text, "")
+        payload = json.loads(stdout_text)
+        assert_output_schema("cli-output.verify.schema.json", payload)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["updated"])
+        self.assertEqual(payload["issues"], ["Unknown verification component(s): nonexistent"])
         self.assertEqual(
             stderr_text, "ERROR: unknown --components entries: nonexistent\n"
         )
