@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Added read-only `compare-deployment --environment NAME --ref LOCAL_REF`,
+  with text/JSON output, summary counts and bounded component listings. It
+  requires a reconciled reference lock and compatible declarations, computes
+  current contracts without refreshing a lock, and never fetches or moves refs.
+  Environment labels are operator assertions, not deployment attestations;
+  current-lock integrity still requires a separate `verify` command.
+
 - Added opt-in `generate --timeout SECONDS` for a computation deadline before
   controller-managed publication. It supervises an owned worker, validates the
   result and rejects late publication. Commit/output latency is not hard

@@ -24,6 +24,7 @@ _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "add": "Add a component",
     "remove": "Remove a component",
     "status": "Show status and drift",
+    "compare-deployment": "Compare against an asserted local deployment reference",
     "coverage": "Report declaration coverage gaps",
     "record-derivation": "Record generated-artifact freshness",
     "explain": "Explain changed files",
@@ -90,6 +91,11 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--component", "--path-prefix", "--limit", "--summary",
         "--source", "--format", "--strict",
     ),
+    "compare-deployment": (
+        "-h", "--help", "--environment", "--ref", "--config",
+        "--reference-config", "--reference-lock", "--source", "--facets",
+        "--limit", "--summary", "--format", "--allow-custom-providers",
+    ),
     "record-derivation": ("-h", "--help", "--config", "--source"),
     "explain": (
         "-h", "--help", "--config", "--lock", "--base-ref", "--source",
@@ -116,6 +122,10 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--quiet": "Reduce output",
     "--verbose": "Extra diagnostics",
     "--config": "Config file",
+    "--environment": "Asserted environment label",
+    "--ref": "Explicit local deployment Git ref",
+    "--reference-config": "Reference config file",
+    "--reference-lock": "Reference lockfile",
     "--out": "Lockfile output",
     "--source": "Snapshot source",
     "--allow-partial": "Allow intentional null slice facet inputs",
@@ -123,8 +133,8 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--components": "Comma-separated component names",
     "--component": "One coverage component (repeatable)",
     "--path-prefix": "Literal coverage path prefix (repeatable)",
-    "--limit": "Maximum displayed coverage path entries",
-    "--summary": "Coverage counts without path listings",
+    "--limit": "Maximum displayed detail entries",
+    "--summary": "Counts without detail listings",
     "--format": "Output format",
     "--summary-file": "Bounded Markdown plan summary",
     "--allow-custom-providers": "Allow external provider modules",
@@ -161,6 +171,10 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
 # option -> (argument label, zsh completion action).  An empty action still
 # marks the option as taking a value.  Fish uses the same table to add -r.
 _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
+    "--environment": ("environment", ""),
+    "--ref": ("Git ref", ""),
+    "--reference-config": ("file", "_files"),
+    "--reference-lock": ("file", "_files"),
     "--config": ("file", "_files"),
     "--out": ("file", "_files"),
     "--source": ("source", f"({_SOURCE_CHOICES})"),
@@ -198,6 +212,7 @@ _COMMAND_OPTION_CHOICES: Dict[Tuple[str, str], Tuple[str, ...]] = {
 }
 
 _FILE_OPTIONS = (
+    "--reference-config", "--reference-lock",
     "--config", "--lock", "--out", "--baseline", "--write-baseline",
     "--update-baseline", "--boundary-path", "--summary-file",
 )

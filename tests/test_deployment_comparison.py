@@ -182,3 +182,51 @@ def test_reverted_contract_matches_reference_despite_intervening_change(reposito
     validate_result(result)
     assert result["complete"] and result["ok"], result["issues"]
     assert result["current"]["commit"] != result["reference"]["commit"]
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_cli_json_reports_drift_and_exit_without_writes(repository, summary):
+    from tests._parity import run_cli
+
+    lock = repository / "boundary.lock.json"
+    original = lock.read_bytes()
+    (repository / "svc" / "contract.txt").write_text("changed\n", encoding="utf-8")
+    commit_all(repository)
+    options = ["--summary"] if summary else []
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "production", "--format", "json", *options)
+    assert process.returncode == 4, process.stderr
+    result = json.loads(process.stdout)
+    validate_result(result)
+    assert result["complete"] and result["counts"]["changed"] == 1
+    assert len(result["changes"]) == (0 if summary else 1)
+    assert lock.read_bytes() == original
+
+
+def test_cli_missing_reference_returns_incomplete_json(repository):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "absent", "--format", "json")
+    assert process.returncode == 2
+    result = json.loads(process.stdout)
+    validate_result(result)
+    assert not result["complete"] and result["counts"] is None
+
+
+def test_cli_text_disclaims_attestation_and_current_lock_verification(repository):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production", "--ref", "production")
+    assert process.returncode == 0, process.stderr
+    assert "not attested" in process.stdout
+    assert "run boundver verify separately" in process.stdout
+
+
+@pytest.mark.parametrize("options", [["--limit", "-1", "--summary"], ["--facets", "unknown"]])
+def test_cli_rejects_invalid_selection(repository, options):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "production", *options)
+    assert process.returncode == 2

@@ -437,6 +437,25 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
+    deployment = sub.add_parser(
+        "compare-deployment",
+        help="Compare contracts against an explicit local deployment reference",
+        description=("Read-only comparison; an environment/ref is an operator assertion, "
+                     "not deployment attestation. Run verify separately for current-lock integrity. "
+                     "Never fetches, moves refs or writes locks."),
+    )
+    deployment.add_argument("--environment", required=True, help="Operator-supplied environment label")
+    deployment.add_argument("--ref", required=True, help="Explicit local deployment Git ref")
+    deployment.add_argument("--config", default="boundary.config.json")
+    deployment.add_argument("--reference-config", default=None, help="Reference config path (defaults to --config)")
+    deployment.add_argument("--reference-lock", default="boundary.lock.json")
+    deployment.add_argument("--source", choices=SOURCE_MODES, default="head")
+    deployment.add_argument("--facets", default=None, help="Comma-separated gating facets; defaults to current config policy")
+    deployment.add_argument("--limit", type=int, default=1000, help="Displayed changed components, 0..10000; hidden drift still gates")
+    deployment.add_argument("--summary", action="store_true", help="Report counts without component rows")
+    deployment.add_argument("--format", choices=["json", "text"], default="text")
+    deployment.add_argument("--allow-custom-providers", action="store_true", help="Allow trusted native Python providers; not a sandbox")
+
     coverage = sub.add_parser(
         "coverage",
         help="Find tracked files missing from declarations",

@@ -22,6 +22,7 @@ configuration examples, and exit-code semantics, use the
 | [`boundver add`](#add) | Add a component to the config |
 | [`boundver remove`](#remove) | Remove a component from the config |
 | [`boundver status`](#status) | Show lockfile summary and warnings |
+| [`boundver compare-deployment`](#compare-deployment) | Compare contracts against an explicit local deployment reference |
 | [`boundver coverage`](#coverage) | Find tracked files missing from declarations |
 | [`boundver record-derivation`](#record-derivation) | Record generated-artifact freshness after a trusted generator runs |
 | [`boundver explain`](#explain) | Explain changed files for a component |
@@ -34,7 +35,7 @@ configuration examples, and exit-code semantics, use the
 
 ```text
 usage: boundver [-h] [--version] [--quiet | --verbose]
-                {generate,verify,review,diff,slice,validate-config,check-config,init,add,remove,status,coverage,record-derivation,explain,why,discover,migrate-lock,completions} ...
+                {generate,verify,review,diff,slice,validate-config,check-config,init,add,remove,status,compare-deployment,coverage,record-derivation,explain,why,discover,migrate-lock,completions} ...
 ```
 
 Detect declared component, behavior, boundary, and compatibility drift
@@ -325,6 +326,36 @@ Examples:
   boundver status --format json
   boundver status --strict  # exit non-zero on drift (for CI)
 ```
+
+<a id="compare-deployment"></a>
+
+## `boundver compare-deployment`
+
+```text
+usage: boundver compare-deployment [-h] --environment ENVIRONMENT --ref REF [--config CONFIG]
+                                   [--reference-config REFERENCE_CONFIG]
+                                   [--reference-lock REFERENCE_LOCK]
+                                   [--source {head,index,working-tree}] [--facets FACETS]
+                                   [--limit LIMIT] [--summary] [--format {json,text}]
+                                   [--allow-custom-providers]
+```
+
+Read-only comparison; an environment/ref is an operator assertion, not deployment attestation. Run verify separately for current-lock integrity. Never fetches, moves refs or writes locks.
+
+| Argument | Value | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` | — | — | show this help message and exit |
+| `--environment` | `ENVIRONMENT` | required | Operator-supplied environment label |
+| `--ref` | `REF` | required | Explicit local deployment Git ref |
+| `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--reference-config` | `REFERENCE_CONFIG` | — | Reference config path (defaults to --config) |
+| `--reference-lock` | `REFERENCE_LOCK` | `boundary.lock.json` | — |
+| `--source` | `{head,index,working-tree}` | `head` | — |
+| `--facets` | `FACETS` | — | Comma-separated gating facets; defaults to current config policy |
+| `--limit` | `LIMIT` | `1000` | Displayed changed components, 0..10000; hidden drift still gates |
+| `--summary` | — | `false` | Report counts without component rows |
+| `--format` | `{json,text}` | `text` | — |
+| `--allow-custom-providers` | — | `false` | Allow trusted native Python providers; not a sandbox |
 
 <a id="coverage"></a>
 

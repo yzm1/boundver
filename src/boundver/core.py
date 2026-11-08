@@ -127,6 +127,7 @@ from ._lockfile import (
 from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
+from ._deployment import MAX_DEPLOYMENT_RESULT_BYTES, compare_deployment
 from ._generation_diagnostics import GenerationDiagnostics
 from ._bounded_output import BoundedDiagnosticOutput
 from ._generation_control import GenerationControl, GenerationState
@@ -3119,6 +3120,41 @@ def _cmd_status(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
 
 
+def _cmd_compare_deployment(args, repo_root: Path) -> None:
+    # Validate the presentation limit even when --summary overrides row display.
+    if not 0 <= args.limit <= 10_000:
+        raise ConfigError("Deployment presentation limit must be 0..10000")
+    result = compare_deployment(
+        repo_root, args.environment, args.ref, source=args.source,
+        config_hint=args.config, reference_config_hint=args.reference_config,
+        reference_lock_hint=args.reference_lock,
+        facets=parse_review_facets(args.facets),
+        limit=0 if args.summary else args.limit,
+        allow_custom_providers=args.allow_custom_providers,
+    )
+    if args.format == "json":
+        _print_json(result, max_bytes=MAX_DEPLOYMENT_RESULT_BYTES)
+    else:
+        print(f"Environment: {_display_path(result['environment'])} (operator assertion; not attested)")
+        reference = result["reference"]
+        print(f"Reference: {_display_path(reference['ref'])} at {reference['commit'] or 'unresolved'}")
+        print("Current-lock verification: not performed; run boundver verify separately.")
+        if result["complete"]:
+            counts = result["counts"]
+            print(f"Components: {counts['changed']} changed, {counts['unchanged']} unchanged")
+            for row in result["changes"]:
+                print(f"  {_display_path(row['component'])}: {', '.join(row['facets'])}")
+            if result["presentation"]["omitted"]:
+                print(f"  {result['presentation']['omitted']} changed component row(s) omitted; gating is unchanged.")
+        else:
+            print("Comparison incomplete; no deployment conclusion.")
+        for issue in result["issues"]["items"]:
+            print(f"ERROR: {_display_path(issue)}")
+        if result["issues"]["truncated"]:
+            print("Diagnostics truncated.")
+    sys.exit(result["exit_code"])
+
+
 def _cmd_coverage(args, repo_root: Path) -> None:
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
@@ -3539,6 +3575,7 @@ def main():
         "discover": _cmd_discover,
         "status": _cmd_status,
         "coverage": _cmd_coverage,
+        "compare-deployment": _cmd_compare_deployment,
         "record-derivation": _cmd_record_derivation,
         "explain": _cmd_explain,
         "why": _cmd_why,

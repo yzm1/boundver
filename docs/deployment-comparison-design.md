@@ -1,7 +1,8 @@
 # Deployment-reference comparison: v0.17 contract
 
-Development backend and output schema are under test; the CLI is not exposed
-yet. This contract guides [issue #166](https://github.com/yzm1/boundver/issues/166).
+Development CLI, backend and output schema are under test. They are not in a
+published release. This contract guides
+[issue #166](https://github.com/yzm1/boundver/issues/166).
 
 Compare current contracts with one explicitly supplied local reference. Do not
 deploy, contact an environment, move a ref or write a lock. The environment
