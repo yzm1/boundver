@@ -30,7 +30,7 @@ Requires: Git and Python 3.10+.
 
 import os
 import secrets
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stderr
 import stat
 import subprocess
 import sys
@@ -128,6 +128,7 @@ from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
 from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
 from ._generation_diagnostics import GenerationDiagnostics
+from ._bounded_output import BoundedDiagnosticOutput
 from ._generation_control import GenerationControl, GenerationState
 from ._generation_runner import run_generation
 from ._generation_snapshot import snapshot_to_value
@@ -1616,11 +1617,18 @@ def _cmd_review(args, repo_root: Path) -> None:
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        return _cmd_generate_reporting(args, repo_root)
+    control = GenerationControl(timeout)
+    with BoundedDiagnosticOutput(sys.stderr) as output, redirect_stderr(output):
+        return _cmd_generate_reporting(args, repo_root, control=control)
+
+
+def _cmd_generate_reporting(args, repo_root: Path, control: Optional[GenerationControl] = None) -> None:
     diagnostics = GenerationDiagnostics(
         progress=getattr(args, "progress", False), timing=getattr(args, "timing", False),
     )
-    timeout = getattr(args, "timeout", None)
-    control = GenerationControl(timeout) if timeout is not None else None
     try:
         with git_operation_deadline(control.monotonic_deadline) if control is not None else nullcontext():
             if control is None:

@@ -298,3 +298,23 @@ regression test pins that separation. Two exploratory Windows runs expired
 before worker launch under the previous private-IPC sync path; focused suites
 subsequently passed on Windows and Linux (56 passed, six platform skips each).
 The exact contribution of disk sync versus host contention was not isolated.
+
+Timed dispatch now sends stderr through a bounded asynchronous diagnostic
+writer. Producers never wait for the consumer; queued records are capped at 128
+and accepted output at 64 KiB, including reserved space for one 2 KiB terminal
+outcome and a 512-byte truncation notice. The terminal outcome is prioritized
+at shutdown and may precede pending progress rows. Drain waits at most one
+second. A stalled consumer can retain one daemon writer/descriptor until it
+unblocks or the CLI exits; it does not hold operation supervision. Descriptor
+delivery uses a duplicate raw fd, avoiding Python stderr-buffer locks during
+interpreter shutdown. Ordinary, untimed generation keeps its existing output.
+
+Tests cover blocked custom sinks, bounded records/bytes, reserved publication
+status, real full pipes, and subprocess exit while stderr is deliberately not
+consumed. Windows and Linux integration tests expire a real worker while its
+diagnostic consumer is blocked and confirm reap plus prior-lock preservation.
+Diagnostics remain best-effort: a consumer that never reads cannot receive an
+outcome. JSON stdout is never routed through this lossy queue. Post-computation
+stdout/error rendering and atomic filesystem commit latency are not hard
+command-wall-time guarantees. Public flag/help and the native-provider
+residual-risk contract still require completion and review.

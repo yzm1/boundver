@@ -475,3 +475,67 @@ def test_archive_controller_launches_worker_from_same_archive(invocation, tmp_pa
     assert json.loads(completed.stdout) == generate_lockfile(invocation["config"], tmp_path)
     assert not completed.stderr
     assert not (tmp_path / "boundary.lock.json").exists()
+
+
+def test_blocked_diagnostics_do_not_prevent_expiry_and_real_worker_cleanup(invocation, tmp_path, monkeypatch):
+    import threading
+    import time
+    from boundver import core
+    from boundver._cli_parser import build_parser
+    from boundver._generation_control import GenerationControl, GenerationState
+    from boundver._posix_worker import PosixJob, PosixWorker
+    from boundver._windows_job import WindowsJob, WindowsJobProcess
+    entered, release = threading.Event(), threading.Event()
+
+    class BlockedStream:
+        def write(self, value):
+            entered.set()
+            release.wait()
+
+        def flush(self):
+            pass
+
+    now = [time.monotonic()]
+    control = GenerationControl(60, clock=lambda: now[0])
+    monkeypatch.setattr(core, "GenerationControl", lambda seconds: control)
+    monkeypatch.setattr(sys, "stderr", BlockedStream())
+    job_type, process_type = (WindowsJob, WindowsJobProcess) if os.name == "nt" else (PosixJob, PosixWorker)
+    launch, close = job_type.launch_python, process_type.close
+    reaped, outputs = [], []
+    original_output = core.BoundedDiagnosticOutput
+
+    def capture_output(stream):
+        output = original_output(stream)
+        outputs.append(output)
+        return output
+
+    def expire_after_launch(job, *args, **kwargs):
+        process = launch(job, *args, **kwargs)
+        now[0] += 61
+        return process
+
+    def record_reap(process):
+        reaped.append(process.poll() is not None)
+        close(process)
+
+    monkeypatch.setattr(core, "BoundedDiagnosticOutput", capture_output)
+    monkeypatch.setattr(job_type, "launch_python", expire_after_launch)
+    monkeypatch.setattr(process_type, "close", record_reap)
+    args = build_parser(version="test", epilog="").parse_args(["--quiet", "generate", "--progress", "--timing"])
+    args.timeout = 60
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    try:
+        with pytest.raises(SystemExit) as error:
+            core._cmd_generate(args, tmp_path)
+        assert error.value.code == 2
+        assert entered.is_set() and not release.is_set()
+        assert reaped == [True]
+        assert control.state is GenerationState.EXPIRED
+        assert sentinel.read_bytes() == b"prior lock"
+        assert outputs[0].thread.is_alive()  # Only diagnostic delivery is stalled.
+    finally:
+        release.set()
+        for output in outputs:
+            output.thread.join(5)
+            assert not output.thread.is_alive()

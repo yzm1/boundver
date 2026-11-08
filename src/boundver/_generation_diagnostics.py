@@ -55,7 +55,8 @@ class GenerationDiagnostics:
             return False
         try:
             if self.sink is None:
-                sys.stderr.write(body)
+                final_writer = getattr(sys.stderr, "write_final", None) if final else None
+                (final_writer or sys.stderr.write)(body)
                 sys.stderr.flush()
             else:
                 self.sink(body)

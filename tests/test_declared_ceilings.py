@@ -36,6 +36,11 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "boundver"
 
 #: (module, constant name, reviewed value). One row per declared ceiling.
 DECLARED_CEILINGS = (
+    ("boundver._bounded_output", "MAX_DIAGNOSTIC_OUTPUT_BYTES", 65_536),
+    ("boundver._bounded_output", "MAX_DIAGNOSTIC_OUTPUT_RECORDS", 128),
+    ("boundver._bounded_output", "MAX_DIAGNOSTIC_DRAIN_SECONDS", 1),
+    ("boundver._bounded_output", "MAX_DIAGNOSTIC_NOTICE_BYTES", 512),
+    ("boundver._bounded_output", "MAX_DIAGNOSTIC_FINAL_BYTES", 2_048),
     ("boundver._baseline", "MAX_BASELINE_BYTES", 2_097_152),
     ("boundver._baseline", "MAX_BASELINE_TEXT", 4_096),
     ("boundver._baseline", "MAX_BASELINE_VIOLATIONS", 10_000),
