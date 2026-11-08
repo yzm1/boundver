@@ -26,6 +26,27 @@ Rename each affected key, update matching `consumers`, slice `components`, and
 `external_consumers` labels do not need renaming. `validate-config` reports the
 specific incompatible spelling and the migration targets.
 
+## Planned v0.17 upgrade (development)
+
+The development branch retains `boundary-lock/v4` with
+`boundver-semantic-config/v3`. Upgrading from v0.16 does not itself require
+regenerating a lock when the declarations, provider contracts and selected
+source are unchanged. Do not regenerate a deployment baseline merely to make
+an upgrade check pass: that would record the selected source, not prove it was
+deployed. Run `verify` against the intended source and investigate any refusal.
+
+New declarations, including `version_source.repo_file`, are configuration
+changes and require their own review; this compatibility statement does not
+make an edited configuration agree with an old lock.
+
+Machine-output consumers must account for declaration coverage's v2 report
+contract. For committed-source `explain`, supply `--base-ref` explicitly;
+lock-storage history is not evidence of the source that generated a lock.
+Read-only `diff --format upgrade-json` can inspect supported historical v3/v4
+records, but does not migrate them or make old digest contracts verifiable.
+
+These are development contracts, not an announcement that v0.17 is released.
+
 ## Interpret a 0.12 lock regeneration
 
 This subsection documents released v0.12 migration semantics; it does not make
