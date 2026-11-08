@@ -1998,7 +1998,13 @@ def validate_config(
     return list(errors)
 
 
-def config_warnings(config: dict, repo_root: Path) -> List[str]:
+def config_warnings(
+    config: dict,
+    repo_root: Path,
+    *,
+    source: str = "working-tree",
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> List[str]:
     warnings = BoundedDiagnosticList()
     if not isinstance(config, dict):
         return list(warnings)
@@ -2035,7 +2041,8 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
                 repo_root,
                 component_path,
                 boundary_paths,
-                source="working-tree",
+                source=source,
+                snapshot=snapshot,
                 _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
@@ -2051,7 +2058,8 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
                 repo_root,
                 component_path,
                 behavior_paths,
-                source="working-tree",
+                source=source,
+                snapshot=snapshot,
                 _glob_operation=glob_operation,
             )
         except GuardrailError as exc:

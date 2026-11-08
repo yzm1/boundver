@@ -295,6 +295,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     vc.add_argument("--config", default="boundary.config.json")
     vc.add_argument(
+        "--source", choices=["head", "index", "working-tree"],
+        default="working-tree",
+        help="Snapshot to validate (default: working-tree); head does not capture the index",
+    )
+    vc.add_argument(
         "--allow-partial",
         action="store_true",
         help="Allow intentional null facet inputs in slices",
@@ -306,6 +311,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     cc = sub.add_parser("check-config", help="Alias for validate-config")
     cc.add_argument("--config", default="boundary.config.json")
+    cc.add_argument(
+        "--source", choices=["head", "index", "working-tree"],
+        default="working-tree",
+        help="Snapshot to validate (default: working-tree); head does not capture the index",
+    )
     cc.add_argument(
         "--allow-partial",
         action="store_true",

@@ -135,9 +135,9 @@ def _provider_declaration(index: int) -> Tuple[dict, List[str]]:
     return {"provider": "leaf", "paths": []}, []
 
 
-def _write_fixture(root: Path) -> dict:
+def _write_fixture(root: Path, component_count: int = COMPONENT_COUNT) -> dict:
     components: Dict[str, dict] = {}
-    for index in range(COMPONENT_COUNT):
+    for index in range(component_count):
         name = f"component-{index:02d}"
         component = root / "components" / name
         component.mkdir(parents=True)
@@ -177,7 +177,7 @@ def _write_fixture(root: Path) -> dict:
         )
 
         boundary, boundary_paths = _provider_declaration(index)
-        consumers = [f"component-{index + 1:02d}"] if index + 1 < COMPONENT_COUNT else []
+        consumers = [f"component-{index + 1:02d}"] if index + 1 < component_count else []
         facets = ["exact"]
         if boundary_paths:
             facets.extend(["behavior", "boundary"])
@@ -219,11 +219,11 @@ def _write_fixture(root: Path) -> dict:
     return config
 
 
-def create_fixture(root: Path) -> None:
+def create_fixture(root: Path, component_count: int = COMPONENT_COUNT) -> None:
     _init_repository(root)
     _run(root, "config", "user.email", "benchmark@example.invalid")
     _run(root, "config", "user.name", "Boundver Benchmark")
-    config = _write_fixture(root)
+    config = _write_fixture(root, component_count)
     _run(root, "add", "--all")
     snapshot = _capture_git_source_snapshot(root, "index")
     errors = validate_config(config, root, source="index", snapshot=snapshot)

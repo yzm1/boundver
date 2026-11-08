@@ -67,11 +67,11 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "diff": ("-h", "--help", "--format"),
     "slice": ("-h", "--help", "--lock", "--format"),
     "validate-config": (
-        "-h", "--help", "--config", "--allow-partial",
+        "-h", "--help", "--config", "--source", "--allow-partial",
         "--allow-custom-providers",
     ),
     "check-config": (
-        "-h", "--help", "--config", "--allow-partial",
+        "-h", "--help", "--config", "--source", "--allow-partial",
         "--allow-custom-providers",
     ),
     "init": ("-h", "--help", "--out", "--force", "--discover"),

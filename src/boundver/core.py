@@ -2611,13 +2611,14 @@ def _cmd_slice(args, repo_root: Path) -> None:
 
 
 def _cmd_validate_config(args, repo_root: Path) -> None:
-    config_path = find_config_file(repo_root, args.config)
-    if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
+    source = getattr(args, "source", "working-tree")
     try:
-        config = load_config_file(config_path, repo_root=repo_root)
-    except ValueError as exc:
+        snapshot = _capture_operation_snapshot(repo_root, source)
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        if snapshot is None and not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
@@ -2625,11 +2626,13 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         config,
         repo_root,
         allow_custom_providers=allow_custom,
+        source=source,
+        snapshot=snapshot,
         require_slice_facets=not args.allow_partial,
     )
     if not errors and config.get("derivations"):
         try:
-            with _SourceAccessor(repo_root, "working-tree") as accessor:
+            with _SourceAccessor(repo_root, source, snapshot=snapshot) as accessor:
                 errors.extend(verify_derivations(config, accessor))
         except (ConfigError, GuardrailError, OSError, ValueError) as exc:
             errors.append(
@@ -2641,7 +2644,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         for err in errors:
             print(f"  - {err}")
         sys.exit(EXIT_USAGE)
-    warnings = config_warnings(config, repo_root)
+    warnings = config_warnings(config, repo_root, source=source, snapshot=snapshot)
     if warnings:
         print(_yellow(f"CONFIG WARNINGS ({len(warnings)}):"))
         for warning in warnings:

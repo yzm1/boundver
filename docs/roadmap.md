@@ -7,13 +7,21 @@ guarantee. The changelog records what actually shipped.
 
 ## Near-term direction
 
-- **v0.16 — declaration integrity and assurance.** Generated-artifact freshness,
-  compatibility identities shared across components, declaration-coverage
-  reporting, clearer source diagnostics, and tiered testing obligations.
-- **v0.17 — isolated semantic providers.** A reviewed provider ABI and sandbox
-  come before parsers for language-specific surfaces. This work remains
-  decoupled from v0.16 and does not weaken the explicit trust boundary around
-  current Python custom providers.
+- **v0.17 — practical monorepo operation.** Measured generation performance,
+  scalable coverage, deployment-reference comparisons, safe reviewed-drift
+  design, clearer scoped/slice/version diagnostics, repository-relative version
+  files, shared-checkout safety, and historical upgrade inspection. The
+  [release plan](https://github.com/yzm1/boundver/issues/174) defines the required
+  work, conditional design gates, test obligations and release acceptance.
+- **v0.18–v0.19 — follow-on operations and review evidence.** Provisional scope
+  includes caching after profiling, doctor, computed-target review, explicit
+  embedded-input design, portable review bundles and advisory routing/graph
+  analysis. These are not v0.17 release requirements.
+- **v0.20 — isolated semantic providers.** Deferred until independent proposal
+  acceptance and security gates pass. A reviewed protocol and sandbox precede
+  first-party language bundles. Catalog graduation is provisional v0.21 work,
+  conditional on delivery and field evidence. Neither milestone is a date or
+  permission to bypass review or the current Python-provider trust boundary.
 
 ## How scope changes
 

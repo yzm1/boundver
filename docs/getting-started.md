@@ -194,6 +194,11 @@ per-component policy to combine heterogeneous component types in one config.
 boundver validate-config
 ```
 
+This defaults to tracked files on disk. To validate only the committed snapshot
+in CI or a shared checkout, use `boundver validate-config --source head`; it
+does not capture or write the shared index. Keep source choices explicit across
+validation and generation. See [source modes](reference.md#source-modes).
+
 Fix every error and review every warning. Validation rejects unknown fields even
 without the optional schema engine, checks path safety and component roots, and
 validates providers, versions, consumers, vendored paths, and slices. It

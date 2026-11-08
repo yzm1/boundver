@@ -8,8 +8,10 @@ Command syntax and options are generated from the live parser in the
 
 ## Source modes
 
-Every command that accepts `--source` defaults to `head`: committed state, not
-your unstaged edits.
+Most inspection commands and `generate` default to `head`: committed state, not
+your unstaged edits. Exceptions are `validate-config` (and `check-config`) and
+`record-derivation`, which preserve their `working-tree` default. Pass the source
+explicitly in scripts; see the [CLI reference](cli-reference.md) for each command.
 
 | Source | Path set and content | Use it for |
 |---|---|---|
@@ -53,6 +55,26 @@ Six rules follow from that model:
    newer; full repositories retain the Git 2.32 baseline. Submodules remain opaque Gitlinks:
    a changed checked-out Gitlink is visible, while dirty/untracked content and
    local filter configuration inside the submodule are not traversed.
+
+### Shared checkouts
+
+`validate-config --source head` validates the committed config, paths, version
+files, warnings and derivation receipts without capturing the index or writing
+`index.lock`. Uncommitted changes and a lock held by another session do not
+change its result. `generate --source head` likewise reads committed inputs;
+it does not require a clean checkout, but **writes its output on disk**. Do not
+let multiple sessions regenerate the same output concurrently.
+
+The index source is different: capturing a coherent index uses `git write-tree`
+and can contend with another index writer. It refuses an unavailable or
+conflicted index rather than falling back to HEAD. The default working-tree
+validation also captures tracked index state; use explicit HEAD validation
+when another session owns the index. Never stage another session's changes
+merely to make a validation or regeneration command succeed.
+
+Source selection is not deployment evidence. HEAD can include committed but
+undeployed changes; a successful generation records those selected inputs,
+not a claim that they were deployed.
 
 A complete staged refresh therefore looks like this:
 

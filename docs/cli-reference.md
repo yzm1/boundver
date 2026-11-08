@@ -200,14 +200,15 @@ usage: boundver slice [-h] [--lock LOCK] [--format {json,text}] name
 ## `boundver validate-config`
 
 ```text
-usage: boundver validate-config [-h] [--config CONFIG] [--allow-partial]
-                                [--allow-custom-providers]
+usage: boundver validate-config [-h] [--config CONFIG] [--source {head,index,working-tree}]
+                                [--allow-partial] [--allow-custom-providers]
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--source` | `{head,index,working-tree}` | `working-tree` | Snapshot to validate (default: working-tree); head does not capture the index |
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
@@ -222,13 +223,15 @@ Examples:
 ## `boundver check-config`
 
 ```text
-usage: boundver check-config [-h] [--config CONFIG] [--allow-partial] [--allow-custom-providers]
+usage: boundver check-config [-h] [--config CONFIG] [--source {head,index,working-tree}]
+                             [--allow-partial] [--allow-custom-providers]
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--source` | `{head,index,working-tree}` | `working-tree` | Snapshot to validate (default: working-tree); head does not capture the index |
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 

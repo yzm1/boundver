@@ -39,6 +39,37 @@ physical cold-disk measurement.
 
 ## Enforced CI target
 
+### Larger adoption profile (local)
+
+For v0.17 investigation, run:
+
+```bash
+python -I scripts/benchmark_adoption.py --runs 3 --components 58 --output adoption.json
+```
+
+This synthetic fixture adds file, tag, inherited and constant versions, ten
+generated-artifact receipts with a shared source, consumer chains, and slices.
+It measures validation, verification and generation separately, with first
+and repeated runs, median/range/standard deviation, phase CPU/wall timings,
+Git process counts and generation/verification source-read attribution.
+Use `--components 116` to examine growth; the permitted range is 6 through 232.
+
+The profile uses the in-process APIs. It does not include CLI startup or
+atomic lock publication, and does not flush OS caches. It is not an adopter
+benchmark or a new enforced CI latency promise. Validation uses the explicit
+HEAD source; the CLI's compatibility default remains working-tree. Compare
+equivalent source modes and record the host and fixture with any results.
+
+The initial local Windows/Python 3.14 58-component run (three repetitions)
+measured generation median 1.350 seconds (range 1.349-1.379), verification
+1.405 seconds (1.386-1.437), and HEAD validation 0.446 seconds (0.445-0.452).
+Generation started 38 Git processes; verification started 40. This fixture
+does **not** reproduce the adopter's 90-315 second generation timings. More
+representative file counts, tag/history topology, selectors and host/container
+I/O need investigation before an optimization or numerical budget is justified.
+
+### Existing verification contract
+
 The Linux/Python 3.12 CI job runs:
 
 ```bash

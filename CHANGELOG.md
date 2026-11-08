@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added `--source head|index|working-tree` to `validate-config` and its
+  `check-config` alias. The default remains working-tree. HEAD validation reads
+  config, declarations, warnings and derivation receipts from its captured
+  commit without writing the shared index, even when another session holds
+  `index.lock` or the checkout has unrelated dirty files.
+- Added a local 58-component adoption profiling fixture covering separate
+  validation, verification and generation, shared derivation inputs, version
+  inheritance and tags. Synthetic measurements do not reproduce or claim to
+  resolve reported downstream generation latency.
+
 ## [0.16.0] - 2026-10-07
 
 ### Upgrade contract
