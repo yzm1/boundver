@@ -2244,7 +2244,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1790985600"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 2)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2458,7 +2458,7 @@ print(json.dumps(payload, separators=(",", ":")))
             "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20261003T000000Z", dockerfile)
+        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", dockerfile)
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
             dockerfile,
@@ -2474,7 +2474,7 @@ print(json.dumps(payload, separators=(",", ":")))
                 dockerfile,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20261003T000000Z"})
+        self.assertEqual(snapshot_stamps, {"20261108T120000Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -2903,11 +2903,13 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertGreaterEqual(len(identifiers), 1)
         recovery_exceptions = {
-            "CVE-2026-77214": ["pkg:deb/debian/libexpat1"],
             "CVE-2026-88647": ["pkg:deb/debian/libgnutls30t64"],
             "CVE-2026-88648": ["pkg:deb/debian/libgnutls30t64"],
         }
         by_id = {entry["id"]: entry for entry in exceptions}
+        # The development snapshot installs Debian's fixed Expat package;
+        # the historical v0.16 recovery exception must not survive that update.
+        self.assertNotIn("CVE-2026-77214", by_id)
         for identifier, purls in recovery_exceptions.items():
             with self.subTest(recovery_exception=identifier):
                 self.assertEqual(by_id[identifier]["purls"], purls)

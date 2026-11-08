@@ -1,4 +1,7 @@
 # Temporary, fail-closed exceptions for the pinned Debian 13 runtime image.
+# The remaining entries below are expired historical assessments, not v0.17
+# acceptance. Do not renew them without current scans and owner risk acceptance.
+# The v0.17 snapshot fixes CVE-2026-77214; its obsolete exception was removed.
 #
 # Trivy reported no fixed Debian package for these IDs on 2026-10-04 after the
 # image upgraded every inherited package from the immutable 2026-10-03
@@ -13,11 +16,6 @@
 # These cover only the built-in, local-only CLI, not arbitrary custom providers
 # or other commands run in the image; see docs/RELEASING.md for the assessment.
 vulnerabilities:
-  - id: CVE-2026-77214
-    purls:
-      - pkg:deb/debian/libexpat1
-    expired_at: 2026-10-18
-    statement: The built-in CLI and its allowed local Git operations do not parse XML or call XML_ParseBuffer; no Debian trixie fix is available.
   - id: CVE-2026-88647
     purls:
       - pkg:deb/debian/libgnutls30t64

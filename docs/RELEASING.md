@@ -295,6 +295,52 @@ immutable tag, published packages, and retained OCI bytes untouched. The
 exception-aware and independent fixable-finding scans still run for both
 architectures; any new finding or available vendor fix blocks publication.
 
+### v0.17 container refresh (in progress)
+
+The development Dockerfile now selects the immutable Debian and Debian-security
+snapshot `20261108T120000Z`, retaining the pinned Python base and Git version.
+On 2026-11-08, an initial amd64 package-index probe against `20261107T000000Z` selected
+Git `1:2.47.3-0+deb13u1` and Expat `2.9.0-1~deb13u1`. Debian now lists that Expat
+version as fixed for [CVE-2026-77214](https://security-tracker.debian.org/tracker/CVE-2026-77214).
+The October assessment above is historical, not current release acceptance.
+
+That initial amd64 development image built successfully and its installed-package
+query confirmed Expat `2.9.0-1~deb13u1`, GnuTLS `3.8.9-3+deb13u4`, curl
+`8.14.1-2+deb13u7`, OpenSSL `3.5.7-1~deb13u3`, and PCRE2 `10.46-1~deb13u3`.
+The obsolete CVE-2026-77214 exception has been removed. A network-disabled,
+read-only smoke check ran as the non-root `boundver` user. These are development
+checks, not exact-release artifact acceptance; the project version is still
+0.16.0 on this branch.
+
+An unfiltered HIGH/CRITICAL Trivy scan of that image found fixable zlib findings
+[CVE-2026-76844](https://security-tracker.debian.org/tracker/CVE-2026-76844) and
+[CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091).
+The newer `20261108T120000Z` snapshot installs Debian's fixed zlib
+`1:1.3.dfsg+really1.3.1-1+deb13u1`, confirmed by an installed-package query.
+Its unfiltered amd64 scan reports 56 HIGH package/CVE rows across 17 distinct
+IDs, zero CRITICAL rows and zero rows with a vendor fix. Neither zlib finding
+remains in that report, and neither is exempted. These results use the same
+pinned Trivy image as CI, with a database downloaded on 2026-11-08.
+
+Seven newly reported no-fix IDs are not covered by the historical policy:
+Expat CVE-2026-113351, CVE-2026-115506, CVE-2026-117610, CVE-2026-118370;
+SQLite CVE-2026-119373, CVE-2026-119374, CVE-2026-119379. Debian's trackers
+for [Expat](https://security-tracker.debian.org/tracker/source-package/expat)
+and [SQLite](https://security-tracker.debian.org/tracker/source-package/sqlite3)
+must be checked again before acceptance. No-fix findings are not a passing
+primary scan or permission to add exceptions. No new exception is added here.
+
+Both architecture scans, reassessment of every remaining exception, and owner
+acceptance of any remaining residual risk are still required by issue #175.
+Local arm64 building failed with `exec format error` (also reproduced by running
+the pinned arm64 base's shell), so this host has not provided arm64 evidence.
+Remaining exceptions keep their expired dates; this refresh alone does not make
+the container publishable. Debian continues to list
+[CVE-2026-88647](https://security-tracker.debian.org/tracker/CVE-2026-88647) and
+[CVE-2026-88648](https://security-tracker.debian.org/tracker/CVE-2026-88648) as
+unfixed, with upstream disputing their security classification. That does not
+by itself authorize a new exception.
+
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with
 member-count and byte limits, rejects links and unexpected paths, verifies every
