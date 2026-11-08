@@ -85,6 +85,27 @@ suppresses only the advisory warning helper, never validation or fingerprinting.
 The explicit inspection mode runs that helper normally. Host, repeat variance,
 Git commands, working-tree reads/bytes and computed lock hashes are recorded.
 
+To investigate slow mounted storage, run the same synthetic workload separately
+on each filesystem. `--fixture-parent` creates and removes a new temporary
+repository under an existing scratch directory; never point it at an adopter's
+checkout. For example:
+
+```bash
+python -I scripts/benchmark_generation_cli.py --outside-files 4000 \
+  --outside-payload-bytes 24576 --fixture-parent /path/to/scratch \
+  --storage-label mounted-scratch --runs 3 --include-inspect \
+  --output mounted-profile.json
+```
+
+The storage label is supplied by the operator, not detected. Reports include
+the outside-file payload size (each file also has a short identifying header).
+Fixture creation permits up to 8,000 outside files and 64 KiB payload per file,
+with a conservative 256 MiB aggregate outside-file budget. Defaults are unchanged.
+This varies I/O volume and placement, not the provider/version/dependency shape;
+it is not a reconstruction of any adopter's repository. Run comparisons
+sequentially and record other workloads; first invocation does not mean a
+flushed physical disk cache.
+
 Before the change, a local Windows/Python 3.14 run measured default generation
 at a repeated median of 6.334s versus 3.492s quiet. The warning scan added 24 Git
 processes and 1,337 working-tree reads, including 525 outside declared roots.

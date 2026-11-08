@@ -28,14 +28,16 @@ from boundver import core, _hashing  # noqa: E402
 runtime = adoption.runtime
 
 
-def add_unowned_files(root: Path, count: int) -> None:
+def add_unowned_files(root: Path, count: int, payload_bytes: int = 4096) -> None:
+    if not 0 <= count <= 8000 or not 0 <= payload_bytes <= 65536 or count * (payload_bytes + 32) > 256 * 1024 * 1024:
+        raise ValueError("Outside-file fixture exceeds its count, file-size or 256 MiB budget")
     if count == 0:
         return
     directory = root / "unowned-fixture"
     directory.mkdir()
     for index in range(count):
         (directory / f"file-{index:04d}.dat").write_bytes(
-            f"file {index}\n".encode("ascii") + b"x" * 4096,
+            f"file {index}\n".encode("ascii") + b"x" * payload_bytes,
         )
     runtime._run(root, "add", "--all")
     runtime._run(root, "commit", "-m", "tracked files outside declared components")
@@ -104,9 +106,10 @@ def measure(root: Path, mode: str) -> dict:
             "stderr_bytes": len(stderr.getvalue().encode("utf-8"))}
 
 
-def profile(root: Path, count: int, outside: int, runs: int, inspect: bool) -> dict:
+def profile(root: Path, count: int, outside: int, runs: int, inspect: bool,
+            outside_payload_bytes: int = 4096, storage_label: str = "unspecified") -> dict:
     adoption.create_fixture(root, count)
-    add_unowned_files(root, outside)
+    add_unowned_files(root, outside, outside_payload_bytes)
     modes = ["default", "quiet", "counterfactual-no-advisory"] + (["inspect"] if inspect else [])
     results = {}
     for mode in modes:
@@ -124,6 +127,8 @@ def profile(root: Path, count: int, outside: int, runs: int, inspect: bool) -> d
                          "min_wall_seconds": min(wall), "max_wall_seconds": max(wall),
                          "population_stdev_wall_seconds": statistics.pstdev(wall)}
     return {"schema_version": 1, "components": count, "outside_files": outside,
+            "outside_payload_bytes_per_file": outside_payload_bytes,
+            "storage_label": storage_label,
             "host": {"platform": platform.platform(), "python": platform.python_version(),
                      "git": runtime._run(root, "--version")},
             "synthetic": True, "counterfactual_disables_only_advisory": True,
@@ -160,15 +165,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--components", type=int, default=58)
     parser.add_argument("--outside-files", type=int, default=512)
+    parser.add_argument("--outside-payload-bytes", type=int, default=4096)
+    parser.add_argument("--fixture-parent", type=Path,
+                        help="Existing scratch directory on the filesystem to measure; never a real checkout")
+    parser.add_argument("--storage-label", default="unspecified",
+                        help="Operator-supplied storage label, not automatic filesystem detection")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--include-inspect", action="store_true")
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not 6 <= args.components <= 232 or not 0 <= args.outside_files <= 4000 or not 1 <= args.runs <= 20:
-        parser.error("Components 6..232, outside files 0..4000, runs 1..20 required")
-    with tempfile.TemporaryDirectory(prefix="boundver-cli-profile-") as directory:
-        result = profile(Path(directory), args.components, args.outside_files, args.runs, args.include_inspect)
+    if not 6 <= args.components <= 232 or not 0 <= args.outside_files <= 8000 or not 1 <= args.runs <= 20:
+        parser.error("Components 6..232, outside files 0..8000, runs 1..20 required")
+    if not 0 <= args.outside_payload_bytes <= 65536 or args.outside_files * (args.outside_payload_bytes + 32) > 256 * 1024 * 1024:
+        parser.error("Outside payload must be 0..65536 bytes per file, within 256 MiB total")
+    if args.fixture_parent is not None and not args.fixture_parent.is_dir():
+        parser.error("Fixture parent must be an existing scratch directory")
+    if not 0 < len(args.storage_label) <= 64 or not all(32 <= ord(char) <= 126 for char in args.storage_label):
+        parser.error("Storage label must be 1..64 printable ASCII characters")
+    with tempfile.TemporaryDirectory(prefix="boundver-cli-profile-", dir=args.fixture_parent) as directory:
+        result = profile(Path(directory), args.components, args.outside_files, args.runs, args.include_inspect,
+                         args.outside_payload_bytes, args.storage_label)
     violations = contract_violations(result)
     result["performance_contract"] = {
         "enforced": args.enforce, "passed": not violations, "violations": violations,

@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -125,3 +126,43 @@ def test_measured_contract_rejects_each_work_or_output_regression(cli_profile):
         modified = copy.deepcopy(result)
         mutate(modified["results"]["default"])
         assert module.contract_violations(modified)
+
+
+def test_outside_file_payload_is_configurable_and_bounded(cli_profile, tmp_path, monkeypatch):
+    module, _ = cli_profile
+    calls = []
+    monkeypatch.setattr(module.runtime, "_run", lambda *args: calls.append(args))
+    module.add_unowned_files(tmp_path, 2, 16384)
+    files = sorted((tmp_path / "unowned-fixture").iterdir())
+    assert len(files) == 2
+    assert all(file.stat().st_size == 16384 + len(f"file {index}\n") for index, file in enumerate(files))
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("count,size", [(8001, 1), (1, 65537), (1, -1), (8000, 65536)])
+def test_outside_fixture_budget_fails_before_creating_files(cli_profile, tmp_path, count, size):
+    module, _ = cli_profile
+    with pytest.raises(ValueError, match="budget"):
+        module.add_unowned_files(tmp_path, count, size)
+    assert not list(tmp_path.iterdir())
+
+
+def test_profile_cli_uses_requested_scratch_storage_and_cleans_only_its_fixture(cli_profile, tmp_path, monkeypatch, capsys):
+    module, _ = cli_profile
+    seen = []
+
+    def fake_profile(root, count, outside, runs, inspect, payload, storage):
+        assert root.parent == tmp_path
+        assert root.is_dir()
+        seen.append(root)
+        assert (count, outside, runs, inspect, payload, storage) == (6, 32, 1, False, 8192, "test-storage")
+        return {"components": 6, "results": {"quiet": {"median_wall_seconds": 1.0}}}
+
+    monkeypatch.setattr(module, "profile", fake_profile)
+    monkeypatch.setattr(module, "contract_violations", lambda result: [])
+    monkeypatch.setattr(sys, "argv", ["profile", "--fixture-parent", str(tmp_path), "--components", "6",
+                                     "--outside-files", "32", "--runs", "1", "--outside-payload-bytes", "8192",
+                                     "--storage-label", "test-storage"])
+    assert module.main() == 0
+    assert seen and not seen[0].exists() and tmp_path.exists()
+    assert "performance_contract" in capsys.readouterr().out
