@@ -24,8 +24,12 @@ Environment labels are trimmed nonempty text of at most 128 characters, without
 terminal control characters; they are metadata, not account identifiers.
 
 `--facets` uses the existing facet names and current configuration's verify
-policy. `--format text|json` defaults to text. `--limit 0..10000` defaults to
-1000 displayed changed-component rows; `--summary` suppresses those rows.
+policy: an explicit selection overrides component policies; otherwise each
+component override wins over defaults. Slice gates follow the same member-policy
+rule as verification: selecting its mode for any member gates a changed aggregate,
+even when the member whose bytes moved does not itself select that facet.
+`--format text|json` defaults to text. `--limit 0..10000` defaults to
+1000 displayed changed rows across components and slices; `--summary` suppresses them.
 Presentation limits never reduce analysis or gating. Custom-provider imports
 still require explicit `--allow-custom-providers`; no new trust authorization
 is inferred from either endpoint's config.
@@ -89,11 +93,17 @@ JSON schema identity: `boundver-deployment-comparison/v1`. Required fields:
   config selector, and reference ref/lock selector and digest-contract identities.
 - `current_lock_verification="not-performed"`.
 - `complete`, `ok`, `exit_code`, selected `facets`, aggregate `counts`, bounded
-  `changes`, `presentation` and bounded endpoint `issues`.
+  component `changes`, `slice_changes`, `presentation` and bounded endpoint `issues`.
+- `facet_policy` describes effective component and slice gates after current
+  configuration validation; it is null before that point or on output-budget
+  refusal, when policy details are discarded with the rows. Without an explicit
+  selection, `facets` is their union, not a replacement for per-subject gating.
 
 `ok` means a complete comparison with no selected-facet drift, not deployment
 attestation or a clean current lock. Counts cover all analyzed components and
 facets; presentation reports shown/omitted rows and truncation independently.
+Slice counts are separate from component counts. Component rows are sorted first,
+then slice rows, sharing one presentation limit; hiding a slice cannot hide its gate.
 On failure, unresolved provenance remains null rather than being invented.
 The serialized result is capped at 4 MiB; `--summary` can omit detail rows
 without omitting counts or gating. Endpoint issue previews are capped at 100

@@ -3255,11 +3255,19 @@ def _cmd_compare_deployment(args, repo_root: Path) -> None:
         print("Current-lock verification: not performed; run boundver verify separately.")
         if result["complete"]:
             counts = result["counts"]
+            outcome = "selected gates passed" if result["ok"] else f"gated drift (exit {result['exit_code']})"
+            print(f"Comparison complete: {outcome}; not deployment attestation.")
             print(f"Components: {counts['changed']} changed, {counts['unchanged']} unchanged")
             for row in result["changes"]:
-                print(f"  {_display_path(row['component'])}: {', '.join(row['facets'])}")
+                gating = sorted(set(row["facets"]) & set(result["facet_policy"]["components"][row["component"]]))
+                gate_detail = f"gating: {', '.join(gating)}" if gating else "non-gating"
+                print(f"  {_display_path(row['component'])}: {', '.join(row['facets'])} ({gate_detail})")
+            if counts["slices"]:
+                print(f"Slices: {counts['changed_slices']} changed, {counts['unchanged_slices']} unchanged")
+            for row in result["slice_changes"]:
+                print(f"  slice {_display_path(row['slice'])}: {row['mode']} ({'gating' if row['gated'] else 'non-gating'})")
             if result["presentation"]["omitted"]:
-                print(f"  {result['presentation']['omitted']} changed component row(s) omitted; gating is unchanged.")
+                print(f"  {result['presentation']['omitted']} changed row(s) omitted; gating is unchanged.")
         else:
             print("Comparison incomplete; no deployment conclusion.")
         for issue in result["issues"]["items"]:

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Deployment comparison follows component facet overrides and aggregate slice
+  gates, even when affected rows are hidden by presentation limits. Reports
+  expose effective policies and separate slice changes; unavailable selected
+  facets fail closed instead of treating null digests as agreement.
+
 - Component `why` now reports recorded/current version values and explicit
   changed, unchanged or unavailable status, matching slice and generation
   reports without treating version movement as compatibility or deployment proof.

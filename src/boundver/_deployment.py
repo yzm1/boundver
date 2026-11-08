@@ -5,6 +5,7 @@ import subprocess
 
 from ._config import find_config_file, load_config_file, validate_config
 from ._git import _capture_git_ref_snapshot, _capture_git_source_snapshot
+from ._facet_policy import facet_policy_payload
 from ._lockfile import (
     LOCKFILE_SCHEMA, SEMANTIC_CONFIG_VERSION, _generation_errors,
     _lockfile_schema_issues, _lockfile_structure_issues,
@@ -75,7 +76,7 @@ def compare_deployment(
                       "lock": reference_lock_hint, "lock_schema": None, "config_contract": None, "verified": False},
         "current_lock_verification": "not-performed", "complete": False, "ok": False,
         "exit_code": 2, "facets": [facet for facet in FACETS if facets is None or facet in facets],
-        "counts": None, "changes": [],
+        "counts": None, "changes": [], "slice_changes": [], "facet_policy": None,
         "presentation": {"limit": limit, "shown": 0, "omitted": 0, "truncated": False},
         "issues": {"items": [], "omitted": 0, "truncated": False},
     }
@@ -122,30 +123,58 @@ def compare_deployment(
         if problems:
             _issue(result, ["Current declarations are invalid", *problems])
             return result
-        selected = facets if facets is not None else config.get("defaults", {}).get("verify_facets", list(FACETS))
-        result["facets"] = [facet for facet in FACETS if facet in (selected or FACETS)]
+        policy = facet_policy_payload(config, list(dict.fromkeys(facets)) if facets is not None else None)
+        result["facet_policy"] = policy
+        selected = set().union(*map(set, policy["components"].values()))
+        selected.update(row["mode"] for row in policy["slices"].values() if row["gated"])
+        result["facets"] = [facet for facet in FACETS if facet in selected]
         result["current"]["config_digest"] = semantic_config_digest(config)
         if semantic_config_digest(old_config) != result["current"]["config_digest"]:
             raise ConfigError("Semantic config/graph differs from the reference; declaration reconciliation is unsupported in v1. Review the declarations separately; no integrity acknowledgement is applied.")
         new_lock = generate_lockfile(config, repo_root, source=source, snapshot=current, allow_custom_providers=allow_custom_providers)
-        counts = {"components": len(config["components"]), "changed": 0, "unchanged": 0, "facets": dict.fromkeys(FACETS, 0)}
+        counts = {"components": len(config["components"]), "changed": 0, "unchanged": 0,
+                  "facets": dict.fromkeys(FACETS, 0), "slices": len(policy["slices"]),
+                  "changed_slices": 0, "unchanged_slices": 0}
         exit_code = 0
         codes = {"exact": 1, "behavior": 3, "boundary": 4, "compat": 5}
         for name in sorted(config["components"]):
             before = old_lock["components"][name]["fingerprints"]
             after = new_lock["components"][name]["fingerprints"]
+            for facet in policy["components"][name]:
+                if before[facet] is None or after[facet] is None:
+                    raise ConfigError(f"UNAVAILABLE FACET {name}.{facet}: selected comparison requires usable digests at both endpoints")
             changed = [facet for facet in FACETS if before[facet] != after[facet]]
             counts["changed" if changed else "unchanged"] += 1
             for facet in changed:
                 counts["facets"][facet] += 1
-                if facet in result["facets"]:
+                if facet in policy["components"][name]:
                     exit_code = max(exit_code, codes[facet])
             if changed and len(result["changes"]) < limit:
                 result["changes"].append({"component": name, "facets": changed, "before": before, "after": after})
-        shown = len(result["changes"])
+        for name, slice_policy in sorted(policy["slices"].items()):
+            if slice_policy["gated"] and any(
+                digest is None
+                for lock in (old_lock, new_lock)
+                for digest in lock["slices"][name]["component_digests"].values()
+            ):
+                raise ConfigError(f"UNAVAILABLE FACET slice {name}.{slice_policy['mode']}: selected comparison requires usable member digests at both endpoints")
+            before = old_lock["slices"][name]["fingerprint"]
+            after = new_lock["slices"][name]["fingerprint"]
+            if before == after:
+                counts["unchanged_slices"] += 1
+                continue
+            counts["changed_slices"] += 1
+            if slice_policy["gated"]:
+                exit_code = max(exit_code, codes[slice_policy["mode"]])
+            if len(result["changes"]) + len(result["slice_changes"]) < limit:
+                result["slice_changes"].append({"slice": name, **slice_policy, "before": before, "after": after})
+        shown = len(result["changes"]) + len(result["slice_changes"])
+        changed_rows = counts["changed"] + counts["changed_slices"]
         result.update(complete=True, ok=exit_code == 0, exit_code=exit_code, counts=counts)
-        result["presentation"].update(shown=shown, omitted=counts["changed"] - shown, truncated=shown < counts["changed"])
+        result["presentation"].update(shown=shown, omitted=changed_rows - shown, truncated=shown < changed_rows)
     except (BoundverError, ValueError, OSError, subprocess.CalledProcessError) as exc:
+        result["changes"].clear()
+        result["slice_changes"].clear()
         _issue(result, [f"{endpoint} endpoint: {_bounded_exception_text(exc, max_chars=MAX_DEPLOYMENT_ISSUE_CHARS)}"])
         if endpoint == "reference":
             _issue(result, ["Choose an existing local verified checkpoint with the required objects and paths. Obtain missing history separately; comparison never fetches or rewrites the reference."])
@@ -155,7 +184,9 @@ def compare_deployment(
         _bounded_json_dumps(result, indent=2, sort_keys=True, allow_nan=False,
                             max_bytes=max(0, MAX_DEPLOYMENT_RESULT_BYTES - 1))
     except ValueError:
-        result.update(complete=False, ok=False, exit_code=2, counts=None, changes=[])
+        # A large effective-policy map can itself exhaust the output budget;
+        # clearing rows alone would leave an error result that still cannot print.
+        result.update(complete=False, ok=False, exit_code=2, counts=None, changes=[], slice_changes=[], facet_policy=None)
         result["presentation"].update(shown=0, omitted=0, truncated=False)
         _issue(result, ["Result exceeds its output budget; use --summary or a lower --limit."])
     return result

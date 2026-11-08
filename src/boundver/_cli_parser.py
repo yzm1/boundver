@@ -458,8 +458,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     deployment.add_argument("--reference-lock", default="boundary.lock.json")
     deployment.add_argument("--source", choices=SOURCE_MODES, default="head")
     deployment.add_argument("--facets", default=None, help="Comma-separated gating facets; defaults to current config policy")
-    deployment.add_argument("--limit", type=int, default=1000, help="Displayed changed components, 0..10000; hidden drift still gates")
-    deployment.add_argument("--summary", action="store_true", help="Report counts without component rows")
+    deployment.add_argument("--limit", type=int, default=1000, help="Displayed component and slice changes, 0..10000; hidden drift still gates")
+    deployment.add_argument("--summary", action="store_true", help="Report counts without component or slice rows")
     deployment.add_argument("--format", choices=["json", "text"], default="text")
     deployment.add_argument("--allow-custom-providers", action="store_true", help="Allow trusted native Python providers; not a sandbox")
 

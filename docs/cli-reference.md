@@ -359,8 +359,8 @@ Read-only comparison; an environment/ref is an operator assertion, not deploymen
 | `--reference-lock` | `REFERENCE_LOCK` | `boundary.lock.json` | — |
 | `--source` | `{head,index,working-tree}` | `head` | — |
 | `--facets` | `FACETS` | — | Comma-separated gating facets; defaults to current config policy |
-| `--limit` | `LIMIT` | `1000` | Displayed changed components, 0..10000; hidden drift still gates |
-| `--summary` | — | `false` | Report counts without component rows |
+| `--limit` | `LIMIT` | `1000` | Displayed component and slice changes, 0..10000; hidden drift still gates |
+| `--summary` | — | `false` | Report counts without component or slice rows |
 | `--format` | `{json,text}` | `text` | — |
 | `--allow-custom-providers` | — | `false` | Allow trusted native Python providers; not a sandbox |
 

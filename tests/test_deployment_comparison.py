@@ -37,6 +37,84 @@ def validate_result(result):
     jsonschema.Draft202012Validator(json.loads(path.read_text())).validate(result)
 
 
+@pytest.mark.parametrize("default,override,facets,expected", [
+    (["boundary"], ["exact"], None, 1),
+    (["exact"], ["boundary"], None, 0),
+    (["boundary"], ["exact"], ["boundary"], 0),
+    (["exact"], ["boundary"], ["exact"], 1),
+])
+def test_component_policy_overrides_defaults_but_not_explicit_facets(repository, default, override, facets, expected):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = default
+    config["components"]["svc"]["verify_facets"] = override
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "policy-checkpoint"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "internal.txt").write_text("implementation only\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "policy-checkpoint", facets=facets, limit=0)
+    assert result["complete"], result["issues"]
+    validate_result(result)
+    assert result["counts"]["facets"]["exact"] == 1
+    assert result["exit_code"] == expected
+
+
+@pytest.mark.parametrize("limit", [0, 1, 2])
+@pytest.mark.parametrize("member_gates,facets,expected", [
+    (True, None, 4), (False, None, 0),
+    (True, ["compat"], 0), (False, ["boundary"], 4),
+])
+def test_slice_gate_cannot_be_hidden_by_component_policy_or_row_limit(repository, member_gates, facets, expected, limit):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = ["compat"]
+    config["components"]["svc"]["verify_facets"] = ["compat"]
+    config["components"]["client"] = {
+        "path": "client", "version_source": {"constant": "1.0.0"},
+        "boundary": {"provider": "path-hash", "paths": ["api.txt"]},
+        "verify_facets": ["boundary"] if member_gates else ["compat"],
+    }
+    config["slices"] = {"aggregate": {"mode": "boundary", "components": ["svc", "client"]}}
+    (repository / "client").mkdir()
+    (repository / "client" / "api.txt").write_text("unchanged\n", encoding="utf-8")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    lock_path = repository / "boundary.lock.json"
+    lock_path.write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "slice-checkpoint"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "contract.txt").write_text("changed boundary\n", encoding="utf-8")
+    commit_all(repository)
+    before = lock_path.read_bytes()
+    result = compare_deployment(repository, "production", "slice-checkpoint", facets=facets, limit=limit)
+    validate_result(result)
+    assert result["complete"] and result["exit_code"] == expected, result["issues"]
+    assert result["ok"] is (expected == 0)
+    assert result["counts"]["slices"] == result["counts"]["changed_slices"] == 1
+    assert result["counts"]["unchanged_slices"] == 0
+    assert result["presentation"] == {"limit": limit, "shown": limit, "omitted": 2 - limit, "truncated": limit < 2}
+    assert len(result["changes"]) == min(limit, 1)
+    assert len(result["slice_changes"]) == max(0, limit - 1)
+    assert result["facet_policy"]["slices"]["aggregate"]["gated"] is (expected == 4)
+    assert lock_path.read_bytes() == before
+    if limit == 2:
+        row = result["slice_changes"][0]
+        assert row["slice"] == "aggregate" and row["before"] != row["after"]
+        assert row["gated"] is (expected == 4)
+        if member_gates and facets is None:
+            from tests._parity import run_cli
+
+            text = run_cli(repository, "compare-deployment", "--environment", "production",
+                           "--ref", "slice-checkpoint", "--limit", "2")
+            assert text.returncode == 4, text.stderr
+            assert "Comparison complete: gated drift (exit 4)" in text.stdout
+            assert "svc: exact, boundary (non-gating)" in text.stdout
+            assert "slice aggregate: boundary (gating)" in text.stdout
+
+
 def test_matching_reference_is_not_deployment_or_current_lock_attestation(repository):
     result = compare_deployment(repository, "production", "production")
     validate_result(result)
@@ -45,7 +123,38 @@ def test_matching_reference_is_not_deployment_or_current_lock_attestation(reposi
     assert not result["evidence"]["attested"]
     assert result["current_lock_verification"] == "not-performed"
     assert result["counts"] == {"components": 1, "changed": 0, "unchanged": 1,
-                               "facets": {"exact": 0, "behavior": 0, "boundary": 0, "compat": 0}}
+                               "facets": {"exact": 0, "behavior": 0, "boundary": 0, "compat": 0},
+                               "slices": 0, "changed_slices": 0, "unchanged_slices": 0}
+
+
+@pytest.mark.parametrize("with_prior_changes", [False, True])
+def test_explicit_unavailable_facet_is_not_two_equal_nulls(repository, with_prior_changes):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = ["boundary"]
+    config["components"]["svc"]["version_source"] = None
+    if with_prior_changes:
+        config["components"]["aaa"] = {
+            "path": "aaa", "version_source": {"constant": "1.0.0"},
+            "boundary": {"provider": "path-hash", "paths": ["contract.txt"]},
+        }
+        (repository / "aaa").mkdir()
+        (repository / "aaa" / "contract.txt").write_text("original\n", encoding="utf-8")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "unversioned-checkpoint"], cwd=repository, check=True, capture_output=True)
+    if with_prior_changes:
+        (repository / "aaa" / "contract.txt").write_text("changed\n", encoding="utf-8")
+        commit_all(repository)
+    result = compare_deployment(repository, "production", "unversioned-checkpoint",
+                                facets=["exact", "compat"] if with_prior_changes else ["compat"])
+    validate_result(result)
+    assert not result["complete"] and result["exit_code"] == 2
+    assert result["counts"] is None and result["changes"] == result["slice_changes"] == []
+    assert result["presentation"]["shown"] == result["presentation"]["omitted"] == 0
+    assert any("UNAVAILABLE FACET svc.compat" in issue for issue in result["issues"]["items"])
 
 
 @pytest.mark.parametrize("limit", [0, 1])
@@ -306,4 +415,6 @@ def test_result_budget_accounts_for_pretty_json(repository, monkeypatch):
     validate_result(bounded)
     assert not bounded["complete"] and bounded["exit_code"] == 2
     assert bounded["counts"] is None and bounded["changes"] == []
+    assert bounded["facet_policy"] is None and bounded["slice_changes"] == []
+    assert len(json.dumps(bounded, indent=2, sort_keys=True).encode("utf-8")) + 1 <= compact_bytes + 1
     assert any("output budget" in issue for issue in bounded["issues"]["items"])
