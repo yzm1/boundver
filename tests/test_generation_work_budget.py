@@ -148,22 +148,27 @@ def test_outside_fixture_budget_fails_before_creating_files(cli_profile, tmp_pat
     assert not list(tmp_path.iterdir())
 
 
-def test_profile_cli_uses_requested_scratch_storage_and_cleans_only_its_fixture(cli_profile, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("owned_count,owned_bytes", [(0, 4096), (12, 256)])
+def test_profile_cli_uses_requested_scratch_storage_and_cleans_only_its_fixture(cli_profile, tmp_path, monkeypatch, capsys, owned_count, owned_bytes):
     module, _ = cli_profile
     seen = []
 
-    def fake_profile(root, count, outside, runs, inspect, payload, storage):
+    def fake_profile(root, count, outside, runs, inspect, payload, storage, *, owned_files, owned_payload_bytes):
         assert root.parent == tmp_path
         assert root.is_dir()
         seen.append(root)
         assert (count, outside, runs, inspect, payload, storage) == (6, 32, 1, False, 8192, "test-storage")
+        assert (owned_files, owned_payload_bytes) == (owned_count, owned_bytes)
         return {"components": 6, "results": {"quiet": {"median_wall_seconds": 1.0}}}
 
     monkeypatch.setattr(module, "profile", fake_profile)
     monkeypatch.setattr(module, "contract_violations", lambda result: [])
-    monkeypatch.setattr(sys, "argv", ["profile", "--fixture-parent", str(tmp_path), "--components", "6",
+    arguments = ["profile", "--fixture-parent", str(tmp_path), "--components", "6",
                                      "--outside-files", "32", "--runs", "1", "--outside-payload-bytes", "8192",
-                                     "--storage-label", "test-storage"])
+                                     "--storage-label", "test-storage"]
+    if owned_count:
+        arguments.extend(["--owned-files", str(owned_count), "--owned-payload-bytes", str(owned_bytes)])
+    monkeypatch.setattr(sys, "argv", arguments)
     assert module.main() == 0
     assert seen and not seen[0].exists() and tmp_path.exists()
     assert "performance_contract" in capsys.readouterr().out

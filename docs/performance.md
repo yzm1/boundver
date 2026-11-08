@@ -106,6 +106,30 @@ it is not a reconstruction of any adopter's repository. Run comparisons
 sequentially and record other workloads; first invocation does not mean a
 flushed physical disk cache.
 
+To include substantial data inside component roots, both adoption and CLI
+profiles accept `--owned-files` and `--owned-payload-bytes`. The default is zero
+extra owned files. Files are spread across the synthetic components and affect
+their exact fingerprints; they do not enlarge provider inputs or alter version
+sources and derivations. Owned payload uses deterministic SHAKE-256 bytes,
+exercising Git blob I/O and hashing with high-entropy content. For example:
+
+```bash
+python -I scripts/benchmark_adoption.py --components 58 --owned-files 4000 \
+  --owned-payload-bytes 24576 --runs 3 --output owned-api-profile.json
+python -I scripts/benchmark_generation_cli.py --components 58 --owned-files 4000 \
+  --owned-payload-bytes 24576 --outside-files 4000 --outside-payload-bytes 24576 \
+  --runs 3 --enforce --output owned-cli-profile.json
+```
+
+Reports include actual tracked file counts and bytes inside/outside component
+roots, collected after the timed operations. Each extra-file group permits
+0..8000 files, 0..65536 payload bytes per file, and at most 256 MiB including
+headers. To examine growth, use 116 components and 8000 files in each group.
+This doubles the extra workload without changing the correctness or work-count
+budgets. These are local synthetic I/O profiles, not reproductions of an
+adopter's nested roots, large schema parsing, file-size distribution or storage.
+The API profile still measures validation, verification and generation separately.
+
 An exploratory Linux/Python 3.14 run with this larger outside-file workload
 measured default HEAD generation at 0.42s on Linux-local storage and 9.96s on a
 Windows-backed mount. Default generation read no working-tree content in either

@@ -29,8 +29,7 @@ runtime = adoption.runtime
 
 
 def add_unowned_files(root: Path, count: int, payload_bytes: int = 4096) -> None:
-    if not 0 <= count <= 8000 or not 0 <= payload_bytes <= 65536 or count * (payload_bytes + 32) > 256 * 1024 * 1024:
-        raise ValueError("Outside-file fixture exceeds its count, file-size or 256 MiB budget")
+    adoption.validate_payload_volume(count, payload_bytes)
     if count == 0:
         return
     directory = root / "unowned-fixture"
@@ -113,8 +112,10 @@ def measure(root: Path, mode: str) -> dict:
 
 
 def profile(root: Path, count: int, outside: int, runs: int, inspect: bool,
-            outside_payload_bytes: int = 4096, storage_label: str = "unspecified") -> dict:
-    adoption.create_fixture(root, count)
+            outside_payload_bytes: int = 4096, storage_label: str = "unspecified", *,
+            owned_files: int = 0, owned_payload_bytes: int = 4096) -> dict:
+    adoption.validate_payload_volume(outside, outside_payload_bytes)
+    adoption.create_fixture(root, count, owned_files=owned_files, owned_payload_bytes=owned_payload_bytes)
     add_unowned_files(root, outside, outside_payload_bytes)
     modes = ["default", "quiet", "counterfactual-no-advisory"] + (["inspect"] if inspect else [])
     results = {}
@@ -133,6 +134,9 @@ def profile(root: Path, count: int, outside: int, runs: int, inspect: bool,
                          "min_wall_seconds": min(wall), "max_wall_seconds": max(wall),
                          "population_stdev_wall_seconds": statistics.pstdev(wall)}
     return {"schema_version": 1, "components": count, "outside_files": outside,
+            "owned_extra_files": owned_files, "owned_payload_bytes_per_file": owned_payload_bytes,
+            "owned_payload_kind": "deterministic-shake256-bytes",
+            "fixture_inventory": adoption.fixture_inventory(root),
             "outside_payload_bytes_per_file": outside_payload_bytes,
             "storage_label": storage_label,
             "host": {"platform": platform.platform(), "python": platform.python_version(),
@@ -176,6 +180,8 @@ def main() -> int:
     parser.add_argument("--components", type=int, default=58)
     parser.add_argument("--outside-files", type=int, default=512)
     parser.add_argument("--outside-payload-bytes", type=int, default=4096)
+    parser.add_argument("--owned-files", type=int, default=0)
+    parser.add_argument("--owned-payload-bytes", type=int, default=4096)
     parser.add_argument("--fixture-parent", type=Path,
                         help="Existing scratch directory on the filesystem to measure; never a real checkout")
     parser.add_argument("--storage-label", default="unspecified",
@@ -187,15 +193,19 @@ def main() -> int:
     args = parser.parse_args()
     if not 6 <= args.components <= 232 or not 0 <= args.outside_files <= 8000 or not 1 <= args.runs <= 20:
         parser.error("Components 6..232, outside files 0..8000, runs 1..20 required")
-    if not 0 <= args.outside_payload_bytes <= 65536 or args.outside_files * (args.outside_payload_bytes + 32) > 256 * 1024 * 1024:
-        parser.error("Outside payload must be 0..65536 bytes per file, within 256 MiB total")
+    try:
+        adoption.validate_payload_volume(args.outside_files, args.outside_payload_bytes)
+        adoption.validate_payload_volume(args.owned_files, args.owned_payload_bytes)
+    except ValueError as error:
+        parser.error(str(error))
     if args.fixture_parent is not None and not args.fixture_parent.is_dir():
         parser.error("Fixture parent must be an existing scratch directory")
     if not 0 < len(args.storage_label) <= 64 or not all(32 <= ord(char) <= 126 for char in args.storage_label):
         parser.error("Storage label must be 1..64 printable ASCII characters")
     with tempfile.TemporaryDirectory(prefix="boundver-cli-profile-", dir=args.fixture_parent) as directory:
         result = profile(Path(directory), args.components, args.outside_files, args.runs, args.include_inspect,
-                         args.outside_payload_bytes, args.storage_label)
+                         args.outside_payload_bytes, args.storage_label,
+                         owned_files=args.owned_files, owned_payload_bytes=args.owned_payload_bytes)
     violations = contract_violations(result)
     result["performance_contract"] = {
         "enforced": args.enforce, "passed": not violations, "violations": violations,
