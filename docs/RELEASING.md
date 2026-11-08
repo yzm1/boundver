@@ -297,8 +297,10 @@ architectures; any new finding or available vendor fix blocks publication.
 
 ### v0.17 container refresh (in progress)
 
-The development Dockerfile now selects the immutable Debian and Debian-security
-snapshot `20261108T120000Z`, retaining the pinned Python base and Git version.
+The development Dockerfile selects the immutable Debian and Debian-security
+snapshot `20261108T120000Z` and a digest-pinned Python 3.12.16 multi-platform
+base. The Git version remains pinned. Builder dependencies come from the same
+hash-locked Action profile as the downloaded wheelhouse, without duplicate pins.
 On 2026-11-08, an initial amd64 package-index probe against `20261107T000000Z` selected
 Git `1:2.47.3-0+deb13u1` and Expat `2.9.0-1~deb13u1`. Debian now lists that Expat
 version as fixed for [CVE-2026-77214](https://security-tracker.debian.org/tracker/CVE-2026-77214).
@@ -321,6 +323,8 @@ Its unfiltered amd64 scan reports 56 HIGH package/CVE rows across 17 distinct
 IDs, zero CRITICAL rows and zero rows with a vendor fix. Neither zlib finding
 remains in that report, and neither is exempted. These results use the same
 pinned Trivy image as CI, with a database downloaded on 2026-11-08.
+Those scans used the earlier Python 3.12.14 base; they are not scans of the
+updated Python 3.12.16 candidate.
 The separate no-exceptions `--ignore-unfixed --exit-code 1` scan of the same
 newer amd64 archive also passed. The primary exception-aware scan is not
 cleared by that result: its no-fix findings and expired policy still block it.
@@ -330,15 +334,24 @@ Expat CVE-2026-113351, CVE-2026-115506, CVE-2026-117610, CVE-2026-118370;
 SQLite CVE-2026-119373, CVE-2026-119374, CVE-2026-119379. Debian's trackers
 for [Expat](https://security-tracker.debian.org/tracker/source-package/expat)
 and [SQLite](https://security-tracker.debian.org/tracker/source-package/sqlite3)
-must be checked again before acceptance. No-fix findings are not a passing
+must be checked again before updating policy. No-fix findings are not a passing
 primary scan or permission to add exceptions. No new exception is added here.
 
-Both architecture scans, reassessment of every remaining exception, and owner
-acceptance of any remaining residual risk are still required by issue #175.
-Local arm64 building failed with `exec format error` (also reproduced by running
-the pinned arm64 base's shell), so this host has not provided arm64 evidence.
-Remaining exceptions keep their expired dates; this refresh alone does not make
-the container publishable. Debian continues to list
+On 2026-11-08 the maintainer conditionally accepted the assessed 17 no-fix HIGH
+CVEs through 2026-11-22, only for the built-in CLI running non-root with no
+network or capabilities, excluding custom providers and overridden entrypoints.
+The decision remains subject to independent review and successful exact-image
+scans on both architectures. It does not accept new findings, waive a vendor
+fix or authorize publication. The assessed report's SHA-256 is
+`bcc7ec8552a74f3a692d0e6a0f530c404518de170127ffe1089f46d4d772436d`.
+
+Both architecture scans and reassessment of every remaining exception are still
+required by issue #175. The earlier arm64 build and a fresh direct-runtime
+probe returned `exec format error`; a separate BuildKit arm64 probe failed the
+same way. Neither a base-image pull nor a build probe is security-scan evidence.
+Remaining exceptions keep their expired dates until updated scans are checked
+against the accepted scope; this refresh alone does not make the container
+publishable. Debian continues to list
 [CVE-2026-88647](https://security-tracker.debian.org/tracker/CVE-2026-88647) and
 [CVE-2026-88648](https://security-tracker.debian.org/tracker/CVE-2026-88648) as
 unfixed, with upstream disputing their security classification. That does not

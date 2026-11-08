@@ -2454,17 +2454,17 @@ print(json.dumps(payload, separators=(",", ":")))
             encoding="utf-8"
         )
         base = (
-            "python:3.12.14-slim-trixie@"
-            "sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998"
+            "python:3.12.16-slim-trixie@"
+            "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
         self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", dockerfile)
         self.assertIn(
-            "# http://snapshot.debian.org/archive/debian/20260824T000000Z",
+            "# http://snapshot.debian.org/archive/debian/20261104T212339Z",
             dockerfile,
         )
         self.assertIn(
-            "# http://snapshot.debian.org/archive/debian-security/20260824T000000Z",
+            "# http://snapshot.debian.org/archive/debian-security/20261104T212339Z",
             dockerfile,
         )
         snapshot_stamps = set(

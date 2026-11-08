@@ -223,6 +223,18 @@ def test_legacy_core_runtime_excludes_the_entire_modern_hook_tool_stack():
         locker._parse_requirement("example==1.0; python_version >= '3.12'", "test")
 
 
+def test_container_builder_uses_the_reviewed_action_profile_not_duplicate_pins():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert dockerfile.count("--requirement /locks/action.lock") == 3
+    assert "setuptools==" not in dockerfile
+    assert "wheel==" not in dockerfile
+    builder = dockerfile.split(" AS builder", 1)[1].split("\nFROM ", 1)[0]
+    install = builder.split("&& python -I -m pip install", 1)[1]
+    assert "--require-hashes" in install
+    assert "--only-binary=:all:" in install
+    assert "--no-index" in install
+
+
 def test_lock_generation_rejects_active_pypi_advisories():
     locker = _load_locker()
     requirement = locker.Requirement("example", "1.0")
