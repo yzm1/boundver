@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import subprocess
 import sys
+import time
 import zipfile
 
 import pytest
@@ -225,6 +226,7 @@ def test_private_transfer_does_not_request_durable_lock_publication(monkeypatch)
 @pytest.mark.skipif(os.name != "nt", reason="Windows contained launcher")
 def test_contained_interpreter_executes_real_worker_module(invocation, tmp_path):
     from boundver._windows_job import WindowsJob
+    from boundver._generation_runner import MAX_GENERATION_CLEANUP_SECONDS
     data = encode_request(invocation)
     with tempfile.TemporaryDirectory(prefix="bv-worker-test-") as name:
         directory = Path(name)
@@ -238,6 +240,12 @@ def test_contained_interpreter_executes_real_worker_module(invocation, tmp_path)
                 status = process.wait(20)
                 detail = (directory / "error.json").read_text() if (directory / "error.json").exists() else "no worker error"
                 assert status == 0, detail
+                # Process signalling can precede job accounting by one tick,
+                # especially through the Windows virtualenv redirector. Keep
+                # the same bounded empty-job requirement as the controller.
+                deadline = time.monotonic() + MAX_GENERATION_CLEANUP_SECONDS
+                while job.active_processes and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 assert job.active_processes == 0
                 result = (directory / "result.bin").read_bytes()
                 assert result == compute_request(data, running_version=_get_version())
