@@ -130,6 +130,43 @@ budgets. These are local synthetic I/O profiles, not reproductions of an
 adopter's nested roots, large schema parsing, file-size distribution or storage.
 The API profile still measures validation, verification and generation separately.
 
+#### Owned-volume results (2026-11-08)
+
+The commands above were run sequentially from development commit
+`4c013029adb582120fb4febd834db688035be014`, using Python 3.10.22 and Git 2.39.5
+in a local Linux container limited to two CPUs and 3 GiB RAM. Fixtures lived on
+container-local storage, not a Windows-mounted checkout. Each operation had a
+first invocation and three measured repeats; no OS caches were flushed and
+other host workloads were not controlled.
+
+The CLI fixtures contained 8,825 tracked files / 196.9 MB and 17,646 files /
+393.7 MB respectively (decimal MB). API fixtures omitted the extra outside
+files and contained approximately 98.4 MB / 196.8 MB inside component roots.
+The larger case doubled components and both extra-file groups.
+
+| Operation | 58 components: median / SD (s) | 116 components: median / SD (s) | Git starts, 58 → 116 |
+| --- | --- | --- | --- |
+| API validation | 0.129 / 0.002 | 0.381 / 0.019 | 10 → 10 |
+| API verification | 0.725 / 0.035 | 1.305 / 0.147 | 40 → 70 |
+| API generation | 0.742 / 0.084 | 1.588 / 0.027 | 38 → 68 |
+| Default CLI generation | 0.704 / 0.096 | 1.551 / 0.039 | 44 → 74 |
+| Quiet CLI generation | 0.706 / 0.011 | 1.609 / 0.035 | 44 → 74 |
+
+SD is the population standard deviation of the three repeats, not a confidence
+interval. Raw local reports also retain ranges, first-run values and phase data.
+Both CLI profiles passed the existing per-invocation contract: no working-tree
+content reads, no index capture, identical lock bytes across modes, and at most
+48 / 78 Git starts. The relative default-versus-quiet timing budget also passed.
+
+The local growth acceptance budget is: after doubling this fixture's components
+and extra-file counts on the same host/runtime, each API operation's repeated
+median and default CLI generation's median must remain at most
+`3 * baseline median + 0.25 seconds`. All four checks passed. This complements
+the structural work-count bounds; it is not a timeout or latency promise for
+arbitrary repositories. Re-run both sizes before accepting a performance change.
+These results do not explain the adopter's reported latency or replace acceptance
+on their storage and provider inputs.
+
 An exploratory Linux/Python 3.14 run with this larger outside-file workload
 measured default HEAD generation at 0.42s on Linux-local storage and 9.96s on a
 Windows-backed mount. Default generation read no working-tree content in either
