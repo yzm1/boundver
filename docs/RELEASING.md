@@ -297,6 +297,14 @@ architectures; any new finding or available vendor fix blocks publication.
 
 ### v0.17 container refresh (in progress)
 
+The isolated policy-review branch proposes replacing the expired historical
+entries with exactly the assessed 17 CVE IDs and 56 Debian package/CVE pairs,
+expiring 2026-11-22. This is a draft for independent acceptance, not permission
+to merge, publish or treat vulnerable packages as patched. The main development
+candidate retains its old policy until this proposal passes review. Both final
+release-image scans and the separate no-exceptions fixable-finding gates remain
+mandatory even if the proposal is accepted.
+
 The development Dockerfile selects the immutable Debian and Debian-security
 snapshot `20261108T120000Z` and a digest-pinned Python 3.12.16 multi-platform
 base. The Git version remains pinned. Builder dependencies come from the same
