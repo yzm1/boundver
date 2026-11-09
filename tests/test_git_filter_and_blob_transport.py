@@ -167,6 +167,19 @@ class FilterOverrideCompletenessTests(unittest.TestCase):
             with mock.patch.object(git, "_git_run", no_match):
                 self.assertEqual(self._overrides(scene), ())
 
+    def test_query_guardrail_retains_its_diagnostic_and_identity(self):
+        for message in (
+            "Git operation deadline expired before command launch",
+            "Git command exceeds the 1-second wall-clock limit",
+            "Git output exceeds its byte limit",
+        ):
+            with self.subTest(message=message), _repository() as scene:
+                refusal = GuardrailError(message)
+                with mock.patch.object(git, "_git_run", side_effect=refusal):
+                    with self.assertRaises(GuardrailError) as raised:
+                        self._overrides(scene)
+                self.assertIs(raised.exception, refusal)
+
     def test_exit_one_with_output_still_raises(self):
         def noisy(*args, **kwargs):
             raise subprocess.CalledProcessError(

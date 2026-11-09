@@ -906,6 +906,10 @@ def _repository_filter_config_overrides(
             environment=environment,
             deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
         )
+    except GuardrailError:
+        # GuardrailError is also a ValueError. Preserve the bounded query's
+        # timeout/output diagnostic rather than disguising it as bad config.
+        raise
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 1 and not exc.output and not exc.stderr:
             return ()
