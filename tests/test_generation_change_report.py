@@ -193,6 +193,34 @@ def test_bootstrap_preview_does_not_create_output(repository):
     assert json.loads(result.stdout)["counts"]["added"] == 1
 
 
+@pytest.mark.parametrize("source", ["working-tree", "head", "index"])
+@pytest.mark.parametrize("timed", [False, True])
+@pytest.mark.parametrize("prefix", ["", "existing/"])
+def test_bootstrap_preview_accepts_missing_output_directories_without_creating_them(
+    repository, source, timed, prefix,
+):
+    scene, _ = repository
+    if prefix:
+        (scene.root / "existing").mkdir()
+    previous_bytes = (scene.root / "boundary.lock.json").read_bytes()
+    index_bytes = (scene.root / ".git" / "index").read_bytes()
+    relative = prefix + "new-dir/nested/new.lock.json"
+    arguments = ["generate", "--source", source, "--dry-run", "--format",
+                 "changes-json", "--out", relative]
+    if timed:
+        arguments.extend(["--timeout", "30"])
+    result = run_cli(scene.root, *arguments)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    validate_result(payload)
+    assert payload["complete"] and payload["publication"] == "not-written"
+    assert not payload["comparison"]["previous_present"]
+    assert payload["counts"]["added"] == 1
+    assert not (scene.root / (prefix + "new-dir")).exists()
+    assert (scene.root / "boundary.lock.json").read_bytes() == previous_bytes
+    assert (scene.root / ".git" / "index").read_bytes() == index_bytes
+
+
 def test_existing_json_dry_run_still_returns_a_lock_not_a_report(repository):
     scene, _ = repository
     result = run_cli(scene.root, "generate", "--dry-run", "--format", "json")
@@ -200,8 +228,9 @@ def test_existing_json_dry_run_still_returns_a_lock_not_a_report(repository):
     assert json.loads(result.stdout)["schema"] == "boundary-lock/v4"
 
 
+@pytest.mark.parametrize("suffix", ["saved.lock.json", "new-dir/nested/new.lock.json"])
 def test_working_tree_preview_rejects_symlink_ancestors_before_reading_old_lock(
-    repository, tmp_path, monkeypatch
+    repository, tmp_path, monkeypatch, suffix,
 ):
     from boundver import core
 
@@ -231,11 +260,77 @@ def test_working_tree_preview_rejects_symlink_ancestors_before_reading_old_lock(
         "--format",
         "changes-json",
         "--out",
-        "alias/saved.lock.json",
+        "alias/" + suffix,
     )
     assert result.returncode == 2
     assert calls == []
     assert external.read_text(encoding="utf-8") == dump_lockfile(previous)
+    assert not (outside / "new-dir").exists()
+
+
+@pytest.mark.parametrize("change", ["prefix-replaced", "missing-ancestor-created"])
+def test_bootstrap_preview_refuses_ancestor_changes_without_reading_a_new_lock(
+    repository, monkeypatch, change,
+):
+    from boundver import core
+
+    scene, _ = repository
+    existing = scene.root / "existing"
+    existing.mkdir()
+    original = core._capture_working_tree_ancestors
+    reads = []
+
+    def capture(*args, **kwargs):
+        identities = original(*args, **kwargs)
+        if change == "prefix-replaced":
+            existing.rename(scene.root / "preserved-existing")
+            existing.mkdir()
+        else:
+            (existing / "new-dir").mkdir()
+        return identities
+
+    def read(*args, **kwargs):
+        reads.append(args[0])
+        raise AssertionError("Bootstrap must not read through a missing ancestor")
+
+    monkeypatch.setattr(core, "_capture_working_tree_ancestors", capture)
+    monkeypatch.setattr(core, "load_lockfile_file", read)
+    result = run_cli_in_process(
+        scene.root, "generate", "--source", "working-tree", "--dry-run",
+        "--format", "changes-json", "--out", "existing/new-dir/nested/new.lock.json",
+    )
+    assert result.returncode == 2, result.stdout
+    assert reads == []
+    assert not (existing / "new-dir/nested/new.lock.json").exists()
+
+
+def test_bootstrap_preview_rejects_reparse_prefix_before_reading_missing_lock(
+    repository, monkeypatch,
+):
+    from boundver import core, _hashing
+
+    scene, _ = repository
+    existing = scene.root / "existing"
+    existing.mkdir()
+    identity = existing.lstat()
+    reads = []
+    monkeypatch.setattr(
+        _hashing, "_is_windows_reparse_point",
+        lambda value: (value.st_dev, value.st_ino) == (identity.st_dev, identity.st_ino),
+    )
+
+    def read(*args, **kwargs):
+        reads.append(args[0])
+        raise AssertionError("Reparse prefix must be refused before a lock read")
+
+    monkeypatch.setattr(core, "load_lockfile_file", read)
+    result = run_cli_in_process(
+        scene.root, "generate", "--source", "working-tree", "--dry-run",
+        "--format", "changes-json", "--out", "existing/new-dir/nested/new.lock.json",
+    )
+    assert result.returncode == 2, result.stdout
+    assert reads == []
+    assert not (existing / "new-dir").exists()
 
 
 def test_change_report_budget_matches_pretty_printed_output(repository, monkeypatch):

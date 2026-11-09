@@ -1759,17 +1759,42 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
         sys.exit(EXIT_USAGE)
     preview_previous = None
     if preview:
+        # A read-only bootstrap can name a directory that has never existed.
+        # Capture the existing plain prefix, and never read through a missing
+        # ancestor if another process creates/replaces it during this window.
+        preview_missing_ancestor = None
+        if snapshot is None:
+            parent = out_path.parent
+            while parent != repo_root:
+                try:
+                    parent.lstat()
+                except FileNotFoundError:
+                    preview_missing_ancestor = parent
+                    parent = parent.parent
+                else:
+                    break
         preview_ancestors = (
-            _capture_working_tree_ancestors(repo_root, out_path, out_path.relative_to(repo_root).as_posix())
+            _capture_working_tree_ancestors(
+                repo_root, preview_missing_ancestor or out_path,
+                out_path.relative_to(repo_root).as_posix(),
+            )
             if snapshot is None else None
         )
-        try:
-            preview_previous = load_lockfile_file(out_path, repo_root=repo_root, snapshot=snapshot)
-        except FileNotFoundError:
-            if snapshot is None and out_path.is_symlink():
-                raise ConfigError("Previous lock is a symlink, not an absent checkpoint")
+        if preview_missing_ancestor is None:
+            try:
+                preview_previous = load_lockfile_file(out_path, repo_root=repo_root, snapshot=snapshot)
+            except FileNotFoundError:
+                if snapshot is None and out_path.is_symlink():
+                    raise ConfigError("Previous lock is a symlink, not an absent checkpoint")
         if preview_ancestors is not None:
             _verify_working_tree_ancestors(preview_ancestors, out_path.relative_to(repo_root).as_posix())
+            if preview_missing_ancestor is not None:
+                try:
+                    preview_missing_ancestor.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ConfigError("Previous lock ancestor changed during bootstrap preview")
     # HEAD generation must not implicitly fingerprint a second source merely
     # to warn about it. The explicit diagnostic retains its bounded safe scan.
     if inspect_working_tree:
