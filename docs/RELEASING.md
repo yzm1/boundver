@@ -359,8 +359,22 @@ SHA-256 is
 This is amd64 development evidence, not ARM validation, independent approval
 or final release-image acceptance; it does not renew the exception policy.
 
-Both architecture scans and reassessment of every remaining exception are still
-required by issue #175. The earlier arm64 build and a fresh direct-runtime
+On 2026-11-09, the authorized single-job native ARM audit
+[42577206773](https://github.com/yzm1/boundver/actions/runs/42577206773)
+built source `59b510feffe890814e46f306b293b925f241efdd` on `ubuntu-24.04-arm`.
+Native architecture and source checks, non-root offline smoke, and the independent
+no-exceptions fixable-finding gate passed. The unfiltered ARM report contains
+the same 56 package/CVE pairs as the amd64 assessment, all HIGH, with no
+additional IDs. Its archive SHA-256 is
+`b5e63dfc9204915c81ded2ca8c4c4183d48119e9ddaed5ef78c99927534acc7e`;
+the unfiltered report SHA-256 is
+`4efc9465d5980c0d40bf414b52c6a81a6a6909e9a3a5bb12a8fcdb1f8e616147`.
+The scanner database was updated at `2026-11-09T00:56:17.155719746Z`.
+This diagnostic run published reports only, not an image or release. Neither
+development scan replaces final exact-release-image verification. Explicit
+independent residual-risk review and policy reassessment remain required.
+
+The earlier local arm64 build and a fresh direct-runtime
 probe returned `exec format error`; a separate BuildKit arm64 probe failed the
 same way. Neither a base-image pull nor a build probe is security-scan evidence.
 Remaining exceptions keep their expired dates until updated scans are checked
