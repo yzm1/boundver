@@ -121,7 +121,10 @@ docs/RELEASING.md
     (package / "boundary.config.schema.json").write_text(
         config_schema, encoding="utf-8"
     )
-    (package / "core.py").write_text(config_schema_url + "\n", encoding="utf-8")
+    (package / "core.py").write_text(
+        '# Config identity comes from the packaged schema, not a URL literal.\n',
+        encoding="utf-8",
+    )
     (package / "_lockfile.py").write_text(
         lock_schema_url + "\n", encoding="utf-8"
     )

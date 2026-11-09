@@ -951,8 +951,9 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                         f"{path.relative_to(repo)} {field} must be {expected!r}"
                     )
 
+    # Config initialization obtains its identity from the packaged schema,
+    # already checked above. Do not require a second, unused URL literal.
     required_source_urls = {
-        "src/boundver/core.py": expected_config_schema,
         "src/boundver/_lockfile.py": expected_lock_schema,
     }
     for relative, expected in required_source_urls.items():

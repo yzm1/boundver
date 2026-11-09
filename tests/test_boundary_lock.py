@@ -747,6 +747,11 @@ class BoundaryLockTests(unittest.TestCase):
             self.assertEqual(res1.returncode, 0, res1.stderr)
             cfg = json.loads((root / "boundary.config.json").read_text())
             self.assertIn("$schema", cfg)
+            packaged_schema = json.loads(
+                (Path(__file__).resolve().parents[1] / "src" / "boundver"
+                 / "boundary.config.schema.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(cfg["$schema"], packaged_schema["$id"])
             self.assertEqual(cfg["components"]["example-component"]["boundary"]["provider"], "implicit")
 
             res2 = self._run_cli(root, "init")
