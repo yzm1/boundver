@@ -2902,23 +2902,120 @@ print(json.dumps(payload, separators=(",", ":")))
         identifiers = [entry["id"] for entry in exceptions]
         self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertGreaterEqual(len(identifiers), 1)
-        recovery_exceptions = {
-            "CVE-2026-88647": ["pkg:deb/debian/libgnutls30t64"],
-            "CVE-2026-88648": ["pkg:deb/debian/libgnutls30t64"],
+        assessed_ids = {
+            "CVE-2025-69720", "CVE-2026-16742", "CVE-2026-54369",
+            "CVE-2026-76642", "CVE-2026-78408", "CVE-2026-78409",
+            "CVE-2026-78410", "CVE-2026-12064", "CVE-2026-8458",
+            "CVE-2026-9538", "CVE-2026-113351", "CVE-2026-115506",
+            "CVE-2026-117610", "CVE-2026-118370", "CVE-2026-119373",
+            "CVE-2026-119374", "CVE-2026-119379",
         }
         by_id = {entry["id"]: entry for entry in exceptions}
         # The development snapshot installs Debian's fixed Expat package;
         # the historical v0.16 recovery exception must not survive that update.
         self.assertNotIn("CVE-2026-77214", by_id)
-        for identifier, purls in recovery_exceptions.items():
-            with self.subTest(recovery_exception=identifier):
-                self.assertEqual(by_id[identifier]["purls"], purls)
-                self.assertEqual(
-                    by_id[identifier]["expired_at"], datetime.date(2026, 10, 18)
-                )
+        self.assertEqual(set(by_id), assessed_ids)
+        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 56)
+        assessed_packages = {
+            "CVE-2025-69720": [
+                "pkg:deb/debian/libncursesw6",
+                "pkg:deb/debian/libtinfo6",
+                "pkg:deb/debian/ncurses-base",
+                "pkg:deb/debian/ncurses-bin"
+            ],
+            "CVE-2026-113351": [
+                "pkg:deb/debian/libexpat1"
+            ],
+            "CVE-2026-115506": [
+                "pkg:deb/debian/libexpat1"
+            ],
+            "CVE-2026-117610": [
+                "pkg:deb/debian/libexpat1"
+            ],
+            "CVE-2026-118370": [
+                "pkg:deb/debian/libexpat1"
+            ],
+            "CVE-2026-119373": [
+                "pkg:deb/debian/libsqlite3-0"
+            ],
+            "CVE-2026-119374": [
+                "pkg:deb/debian/libsqlite3-0"
+            ],
+            "CVE-2026-119379": [
+                "pkg:deb/debian/libsqlite3-0"
+            ],
+            "CVE-2026-12064": [
+                "pkg:deb/debian/libcurl3t64-gnutls"
+            ],
+            "CVE-2026-16742": [
+                "pkg:deb/debian/libsystemd0",
+                "pkg:deb/debian/libudev1"
+            ],
+            "CVE-2026-54369": [
+                "pkg:deb/debian/libacl1"
+            ],
+            "CVE-2026-76642": [
+                "pkg:deb/debian/bsdutils",
+                "pkg:deb/debian/libblkid1",
+                "pkg:deb/debian/liblastlog2-2",
+                "pkg:deb/debian/libmount1",
+                "pkg:deb/debian/libsmartcols1",
+                "pkg:deb/debian/libuuid1",
+                "pkg:deb/debian/login",
+                "pkg:deb/debian/mount",
+                "pkg:deb/debian/util-linux"
+            ],
+            "CVE-2026-78408": [
+                "pkg:deb/debian/bsdutils",
+                "pkg:deb/debian/libblkid1",
+                "pkg:deb/debian/liblastlog2-2",
+                "pkg:deb/debian/libmount1",
+                "pkg:deb/debian/libsmartcols1",
+                "pkg:deb/debian/libuuid1",
+                "pkg:deb/debian/login",
+                "pkg:deb/debian/mount",
+                "pkg:deb/debian/util-linux"
+            ],
+            "CVE-2026-78409": [
+                "pkg:deb/debian/bsdutils",
+                "pkg:deb/debian/libblkid1",
+                "pkg:deb/debian/liblastlog2-2",
+                "pkg:deb/debian/libmount1",
+                "pkg:deb/debian/libsmartcols1",
+                "pkg:deb/debian/libuuid1",
+                "pkg:deb/debian/login",
+                "pkg:deb/debian/mount",
+                "pkg:deb/debian/util-linux"
+            ],
+            "CVE-2026-78410": [
+                "pkg:deb/debian/bsdutils",
+                "pkg:deb/debian/libblkid1",
+                "pkg:deb/debian/liblastlog2-2",
+                "pkg:deb/debian/libmount1",
+                "pkg:deb/debian/libsmartcols1",
+                "pkg:deb/debian/libuuid1",
+                "pkg:deb/debian/login",
+                "pkg:deb/debian/mount",
+                "pkg:deb/debian/util-linux"
+            ],
+            "CVE-2026-8458": [
+                "pkg:deb/debian/libcurl3t64-gnutls"
+            ],
+            "CVE-2026-9538": [
+                "pkg:deb/debian/libperl5.40",
+                "pkg:deb/debian/perl",
+                "pkg:deb/debian/perl-base",
+                "pkg:deb/debian/perl-modules-5.40"
+            ]
+        }
+        self.assertEqual(
+            {identifier: sorted(entry["purls"]) for identifier, entry in by_id.items()},
+            assessed_packages,
+        )
         for entry in exceptions:
             self.assertRegex(entry["id"], r"^CVE-[0-9]{4}-[0-9]+$")
             self.assertIs(type(entry["expired_at"]), datetime.date)
+            self.assertEqual(entry["expired_at"], datetime.date(2026, 11, 22))
             self.assertTrue(entry["statement"].strip())
             self.assertGreaterEqual(len(entry["purls"]), 1)
             self.assertEqual(len(entry["purls"]), len(set(entry["purls"])))

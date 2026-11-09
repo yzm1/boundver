@@ -234,7 +234,7 @@
     }
   ],
   "release_gates": {
-    "v0.17.0": {
+    "v0.20.0": {
       "repository": "yzm1/boundver",
       "repository_id": 1226008327,
       "repository_owner_id": 22440724,
@@ -253,8 +253,8 @@
       "maximum_review_age_days": 14,
       "security_review_required": true,
       "product_review_required": true,
-      "security_review_marker": "semantic-provider-v0.17-release-review/v1",
-      "product_review_marker": "semantic-provider-v0.17-product-review/v1",
+      "security_review_marker": "semantic-provider-v0.20-release-review/v1",
+      "product_review_marker": "semantic-provider-v0.20-product-review/v1",
       "reviewer_independence_attestation": "Independent-reviewer: confirmed",
       "required_attestations": [
         "Full-source-bug-scan: passed",

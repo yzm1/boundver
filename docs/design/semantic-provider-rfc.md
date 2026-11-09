@@ -20,7 +20,7 @@ and not permission to implement them.
   different product reviewer approve the exact proposal commit.
 
 This proposal does not block v0.15, which contains no semantic-provider
-implementation. The first planned semantic-provider release is v0.17.0.
+implementation. The first planned semantic-provider release is v0.20.0.
 
 The rest of this document defines the detailed architecture and acceptance
 conditions. Most Boundver users do not need to read it; start with the
@@ -1281,7 +1281,7 @@ Each Python/TypeScript provider additionally requires:
 This proposal does not govern or block v0.15.0: that release contains no
 semantic-provider implementation and continues through Boundver's ordinary
 exact-candidate release controls. The first planned semantic-provider release
-is v0.17.0. Before that promotion, the entire then-current source, tests,
+is v0.20.0. Before that promotion, the entire then-current source, tests,
 scripts, workflows, Action, container, schemas, docs, packaging, and release
 automation must receive fresh bug, issue, and security scans. Every finding
 must be triaged, release blockers closed, and the exact candidate rerun through
@@ -1298,7 +1298,7 @@ latest decisive review from each designated reviewer must still be an approval.
 The security review body must contain exactly these non-empty lines, in order:
 
 ```text
-semantic-provider-v0.17-release-review/v1
+semantic-provider-v0.20-release-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Full-source-bug-scan: passed
@@ -1313,7 +1313,7 @@ Verdict: approved
 The product review body must contain exactly:
 
 ```text
-semantic-provider-v0.17-product-review/v1
+semantic-provider-v0.20-product-review/v1
 Reviewed-commit: <release PR head SHA>
 Independent-reviewer: confirmed
 Verdict: approved

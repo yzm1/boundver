@@ -13,7 +13,7 @@ files, credentials, network, or execution authority.
 
 The design is internally reviewed but not independently accepted. No semantic-
 provider implementation is authorized. v0.15 is separate and contains no such
-implementation; the first planned semantic-provider release is v0.17.0.
+implementation; the first planned semantic-provider release is v0.20.0.
 
 Users looking for the product overview should read the [executive
 summary](../executive-summary.md).
@@ -685,7 +685,7 @@ the documented prohibition could be bypassed by the ordinary release path.
 
 **Disposition:** closed by SPC-034, SPC-040, and SPC-043. The manifest now
 declares only immutable release-review requirements. The authoritative auditor
-accepts the designated v0.17.0 tag and release SHA externally, requires local
+accepts the designated v0.20.0 tag and release SHA externally, requires local
 `HEAD` and the GitHub release record to match, and proves a separate merged
 release PR's reviewed head tree equals the release commit tree. Two fresh, role-marked
 approvals from the distinct external humans in the pinned gist roster,
