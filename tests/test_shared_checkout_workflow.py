@@ -145,11 +145,14 @@ def test_expired_relock_leaves_placeholder_and_staged_entries_intact(conflicted)
     result = run_cli(
         scene.root, "generate", "--source", "index", "--timeout", "0.000000001"
     )
-    assert result.returncode == 2
+    diagnostic = result.stdout + result.stderr
+    assert result.returncode == 2, diagnostic
+    # Expiry can be observed before Git starts or by its owned watchdog;
+    # both are enforced time limits, not arbitrary generation failures.
     assert any(
-        term in (result.stdout + result.stderr).lower()
-        for term in ("deadline", "expired", "timeout")
-    )
+        term in diagnostic.lower()
+        for term in ("deadline", "expired", "timeout", "wall-clock limit")
+    ), diagnostic
     assert (scene.root / "boundary.lock.json").read_bytes() == before
     assert scene.git("ls-files", "--stage", "-z") == entries
 
