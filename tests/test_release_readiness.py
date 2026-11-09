@@ -316,6 +316,29 @@ def test_generated_site_is_not_a_release_source_surface(tmp_path: Path) -> None:
                    for path in release_readiness._release_files(tmp_path))
 
 
+@pytest.mark.parametrize("relative,ref,accepted", [
+    ("examples/range-review/fixture/boundary.config.json", "v0.16.0", True),
+    ("examples/range-review/fixture/boundary.config.json", TAG, False),
+    ("examples/range-review/fixture/boundary.config.json", "main", False),
+    ("examples/range-review/fixture/other.config.json", "v0.16.0", False),
+    ("examples/current/boundary.config.json", "v0.16.0", False),
+])
+def test_only_the_named_historical_config_retains_its_frozen_schema_pin(
+    tmp_path: Path, relative: str, ref: str, accepted: bool,
+) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "$schema": f"https://raw.githubusercontent.com/yzm1/boundver/{ref}/boundary.config.schema.json",
+    }), encoding="utf-8")
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    if accepted:
+        assert errors == []
+    else:
+        assert any("schema URL uses" in error for error in errors), errors
+
+
 def test_readiness_rejects_stale_new_public_schema_ids(tmp_path: Path) -> None:
     _write_minimal_project(tmp_path, _changelog())
     schema_path = tmp_path / "spec" / "verify-baseline.schema.json"

@@ -49,6 +49,9 @@ TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
 CANONICAL_LOCK_SCHEMA_REF = "v0.16.0"
+HISTORICAL_CONFIG_SCHEMA_REFS = {
+    "examples/range-review/fixture/boundary.config.json": "v0.16.0",
+}
 RAW_SCHEMA_RE = re.compile(
     r"https://raw\.githubusercontent\.com/yzm1/boundver/"
     r"(?P<ref>[^/\s\"'<>]+)/(?P<path>[^\s\"'<>]*schema\.json)"
@@ -800,6 +803,10 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                 if match.group("path") == "spec/boundary.lock.schema.json"
                 else tag
             )
+            if match.group("path") == "boundary.config.schema.json":
+                expected_ref = HISTORICAL_CONFIG_SCHEMA_REFS.get(
+                    path.relative_to(repo).as_posix(), expected_ref,
+                )
             # These unchanged output contracts embed their original canonical
             # identity. A release-pinned schema $id is still checked below.
             canonical_output_identity = (
