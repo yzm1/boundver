@@ -10,13 +10,13 @@ from typing import Any, Callable, Optional, Tuple
 
 from ._config_contract import git_tag_prefix_error
 from ._structured_data import StrictJSONError, strict_json_loads
+from ._version_paths import version_file_repo_path
 from ._utils import (
     GuardrailError,
     MAX_JSON_NUMBER_CHARACTERS,
     MAX_TOML_INTEGER_DIGITS as MAX_TOML_INTEGER_DIGITS,
     _bounded_yaml_int,
     _bounded_yaml_compose_node,
-    _normalize_declared_path,
     _read_bounded_path_bytes,
     _toml_preparse_issues,
 )
@@ -168,7 +168,8 @@ def extract_version(
         if git_latest_tag_fn is None:
             return None
         return git_latest_tag_fn(repo_root, prefix)
-    file_rel = version_source.get("file")
+    file_kind = "repo_file" if "repo_file" in version_source else "file"
+    file_rel = version_source.get(file_kind)
     field_path = version_source.get("field")
     if (
         type(file_rel) is not str
@@ -177,35 +178,17 @@ def extract_version(
         or not field_path
     ):
         return None
-    try:
-        file_rel = _normalize_declared_path(file_rel)
-    except ValueError:
+    repo_rel = version_file_repo_path(component_path, version_source)
+    if repo_rel is None:
         return None
-    # A colon in a filename is an NTFS alternate-data-stream selector. Refuse
-    # it on every host so the same declaration cannot read different bytes on
-    # Windows and POSIX.
-    if ":" in file_rel:
-        return None
-    if component_path in {"", "."}:
-        component_prefix = ""
-    else:
-        try:
-            component_prefix = _normalize_declared_path(component_path)
-        except ValueError:
-            return None
-        if ":" in component_prefix:
-            return None
-    repo_rel = (
-        file_rel if not component_prefix else f"{component_prefix}/{file_rel}"
-    )
     if read_file_fn is not None:
         try:
             raw = read_file_fn(repo_rel)
         except (OSError, subprocess.CalledProcessError, GuardrailError):
             return None
-        return _extract_field_from_bytes(raw, file_rel, field_path)
+        return _extract_field_from_bytes(raw, repo_rel, field_path)
     # Fallback: read from disk
-    full_path = repo_root / component_prefix / file_rel
+    full_path = repo_root / repo_rel
     # Verify resolved path stays within repository
     try:
         full_path.resolve().relative_to(repo_root.resolve())
@@ -216,7 +199,7 @@ def extract_version(
     raw = _read_version_file_bytes(full_path, repo_rel)
     if raw is None:
         return None
-    return _extract_field_from_bytes(raw, file_rel, field_path)
+    return _extract_field_from_bytes(raw, repo_rel, field_path)
 
 
 def _extract_field_from_bytes(raw: bytes, file_rel: str, field_path: str) -> Optional[str]:

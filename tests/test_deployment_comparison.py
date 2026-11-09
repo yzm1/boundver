@@ -1,0 +1,420 @@
+"""A deployment label is an assertion, not an attestation or integrity waiver."""
+
+import json
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from boundver._deployment import compare_deployment
+from boundver._lockfile import dump_lockfile, generate_lockfile
+from tests._repo_fixtures import commit_all, init_git_repo
+
+
+@pytest.fixture
+def repository(tmp_path):
+    init_git_repo(tmp_path)
+    (tmp_path / "svc").mkdir()
+    (tmp_path / "svc" / "contract.txt").write_text("original\n", encoding="utf-8")
+    config = {"project": "deployment", "defaults": {"verify_facets": ["boundary", "compat"]},
+              "components": {"svc": {"path": "svc", "version_source": {"constant": "1.0.0"},
+                                     "boundary": {"provider": "path-hash", "paths": ["contract.txt"]}}}}
+    (tmp_path / "boundary.config.json").write_text(json.dumps(config), encoding="utf-8")
+    commit_all(tmp_path)
+    lock = generate_lockfile(config, tmp_path)
+    (tmp_path / "boundary.lock.json").write_text(dump_lockfile(lock), encoding="utf-8")
+    commit_all(tmp_path)
+    subprocess.run(["git", "tag", "production"], cwd=tmp_path, check=True, capture_output=True)
+    return tmp_path
+
+
+def validate_result(result):
+    try:
+        import jsonschema
+    except ImportError:
+        return  # Functional assertions still run without the optional engine.
+    path = Path(__file__).resolve().parents[1] / "spec" / "cli-output.deployment.schema.json"
+    jsonschema.Draft202012Validator(json.loads(path.read_text())).validate(result)
+
+
+@pytest.mark.parametrize("default,override,facets,expected", [
+    (["boundary"], ["exact"], None, 1),
+    (["exact"], ["boundary"], None, 0),
+    (["boundary"], ["exact"], ["boundary"], 0),
+    (["exact"], ["boundary"], ["exact"], 1),
+])
+def test_component_policy_overrides_defaults_but_not_explicit_facets(repository, default, override, facets, expected):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = default
+    config["components"]["svc"]["verify_facets"] = override
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "policy-checkpoint"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "internal.txt").write_text("implementation only\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "policy-checkpoint", facets=facets, limit=0)
+    assert result["complete"], result["issues"]
+    validate_result(result)
+    assert result["counts"]["facets"]["exact"] == 1
+    assert result["exit_code"] == expected
+
+
+@pytest.mark.parametrize("limit", [0, 1, 2])
+@pytest.mark.parametrize("member_gates,facets,expected", [
+    (True, None, 4), (False, None, 0),
+    (True, ["compat"], 0), (False, ["boundary"], 4),
+])
+def test_slice_gate_cannot_be_hidden_by_component_policy_or_row_limit(repository, member_gates, facets, expected, limit):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = ["compat"]
+    config["components"]["svc"]["verify_facets"] = ["compat"]
+    config["components"]["client"] = {
+        "path": "client", "version_source": {"constant": "1.0.0"},
+        "boundary": {"provider": "path-hash", "paths": ["api.txt"]},
+        "verify_facets": ["boundary"] if member_gates else ["compat"],
+    }
+    config["slices"] = {"aggregate": {"mode": "boundary", "components": ["svc", "client"]}}
+    (repository / "client").mkdir()
+    (repository / "client" / "api.txt").write_text("unchanged\n", encoding="utf-8")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    lock_path = repository / "boundary.lock.json"
+    lock_path.write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "slice-checkpoint"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "contract.txt").write_text("changed boundary\n", encoding="utf-8")
+    commit_all(repository)
+    before = lock_path.read_bytes()
+    result = compare_deployment(repository, "production", "slice-checkpoint", facets=facets, limit=limit)
+    validate_result(result)
+    assert result["complete"] and result["exit_code"] == expected, result["issues"]
+    assert result["ok"] is (expected == 0)
+    assert result["counts"]["slices"] == result["counts"]["changed_slices"] == 1
+    assert result["counts"]["unchanged_slices"] == 0
+    assert result["presentation"] == {"limit": limit, "shown": limit, "omitted": 2 - limit, "truncated": limit < 2}
+    assert len(result["changes"]) == min(limit, 1)
+    assert len(result["slice_changes"]) == max(0, limit - 1)
+    assert result["facet_policy"]["slices"]["aggregate"]["gated"] is (expected == 4)
+    assert lock_path.read_bytes() == before
+    if limit == 2:
+        row = result["slice_changes"][0]
+        assert row["slice"] == "aggregate" and row["before"] != row["after"]
+        assert row["gated"] is (expected == 4)
+        if member_gates and facets is None:
+            from tests._parity import run_cli
+
+            text = run_cli(repository, "compare-deployment", "--environment", "production",
+                           "--ref", "slice-checkpoint", "--limit", "2")
+            assert text.returncode == 4, text.stderr
+            assert "Comparison complete: gated drift (exit 4)" in text.stdout
+            assert "svc: exact, boundary (non-gating)" in text.stdout
+            assert "slice aggregate: boundary (gating)" in text.stdout
+
+
+def test_matching_reference_is_not_deployment_or_current_lock_attestation(repository):
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert result["complete"] and result["ok"] and result["exit_code"] == 0, result["issues"]
+    assert result["reference"]["verified"]
+    assert not result["evidence"]["attested"]
+    assert result["current_lock_verification"] == "not-performed"
+    assert result["counts"] == {"components": 1, "changed": 0, "unchanged": 1,
+                               "facets": {"exact": 0, "behavior": 0, "boundary": 0, "compat": 0},
+                               "slices": 0, "changed_slices": 0, "unchanged_slices": 0}
+
+
+@pytest.mark.parametrize("with_prior_changes", [False, True])
+def test_explicit_unavailable_facet_is_not_two_equal_nulls(repository, with_prior_changes):
+    config_path = repository / "boundary.config.json"
+    config = json.loads(config_path.read_text())
+    config["defaults"]["verify_facets"] = ["boundary"]
+    config["components"]["svc"]["version_source"] = None
+    if with_prior_changes:
+        config["components"]["aaa"] = {
+            "path": "aaa", "version_source": {"constant": "1.0.0"},
+            "boundary": {"provider": "path-hash", "paths": ["contract.txt"]},
+        }
+        (repository / "aaa").mkdir()
+        (repository / "aaa" / "contract.txt").write_text("original\n", encoding="utf-8")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "unversioned-checkpoint"], cwd=repository, check=True, capture_output=True)
+    if with_prior_changes:
+        (repository / "aaa" / "contract.txt").write_text("changed\n", encoding="utf-8")
+        commit_all(repository)
+    result = compare_deployment(repository, "production", "unversioned-checkpoint",
+                                facets=["exact", "compat"] if with_prior_changes else ["compat"])
+    validate_result(result)
+    assert not result["complete"] and result["exit_code"] == 2
+    assert result["counts"] is None and result["changes"] == result["slice_changes"] == []
+    assert result["presentation"]["shown"] == result["presentation"]["omitted"] == 0
+    assert any("UNAVAILABLE FACET svc.compat" in issue for issue in result["issues"]["items"])
+
+
+@pytest.mark.parametrize("limit", [0, 1])
+def test_stale_current_lock_does_not_hide_drift_even_with_no_rows(repository, limit):
+    before = (repository / "boundary.lock.json").read_bytes()
+    (repository / "svc" / "contract.txt").write_text("changed\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "production", limit=limit)
+    validate_result(result)
+    assert result["complete"] and not result["ok"] and result["exit_code"] == 4
+    assert result["counts"]["facets"]["boundary"] == 1
+    assert result["presentation"]["omitted"] == 1 - limit
+    assert len(result["changes"]) == limit
+    assert (repository / "boundary.lock.json").read_bytes() == before
+
+
+def test_missing_ref_is_incomplete_without_inventing_source_identity(repository):
+    result = compare_deployment(repository, "staging", "NO-SUCH-REF")
+    validate_result(result)
+    assert not result["complete"] and result["exit_code"] == 2
+    assert result["reference"]["commit"] is None
+    assert result["counts"] is None
+    assert result["issues"]["items"]
+
+
+def test_graph_change_is_not_acknowledged_by_matching_boundary_bytes(repository):
+    path = repository / "boundary.config.json"
+    config = json.loads(path.read_text())
+    config["components"]["svc"]["external_consumers"] = ["external-app"]
+    path.write_text(json.dumps(config), encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert result["reference"]["verified"]
+    assert not result["complete"] and result["exit_code"] == 2
+    assert any("reconciliation" in issue for issue in result["issues"]["items"]), result["issues"]
+
+
+def test_head_comparison_ignores_dirty_files_and_held_index_lock(repository):
+    contract = repository / "svc" / "contract.txt"
+    contract.unlink()
+    index_lock = repository / ".git" / "index.lock"
+    index_lock.write_bytes(b"another session")
+    try:
+        result = compare_deployment(repository, "production", "production", source="head")
+        validate_result(result)
+        assert result["complete"] and result["ok"]
+        assert index_lock.read_bytes() == b"another session"
+        assert not contract.exists()
+    finally:
+        index_lock.unlink()
+
+
+def test_unreconciled_reference_cannot_be_hidden_by_comparison_facets(repository):
+    (repository / "svc" / "contract.txt").write_text("unreconciled\n", encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "unreconciled"], cwd=repository, check=True, capture_output=True)
+    result = compare_deployment(repository, "production", "unreconciled", facets=["compat"])
+    validate_result(result)
+    assert not result["reference"]["verified"]
+    assert not result["complete"] and result["exit_code"] == 2
+    assert any("verified reconciled checkpoint" in item for item in result["issues"]["items"])
+
+
+def test_unsupported_reference_digest_schema_is_not_relabelled(repository):
+    path = repository / "boundary.lock.json"
+    lock = json.loads(path.read_text())
+    lock["schema"] = "boundary-lock/v3"
+    path.write_text(json.dumps(lock), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "old-contract"], cwd=repository, check=True, capture_output=True)
+    before = path.read_bytes()
+    result = compare_deployment(repository, "production", "old-contract")
+    validate_result(result)
+    assert result["reference"]["lock_schema"] == "boundary-lock/v3"
+    assert not result["complete"] and result["exit_code"] == 2
+    assert "Unsupported reference digest contract" in result["issues"]["items"][0]
+    assert path.read_bytes() == before
+
+
+def test_comparison_success_does_not_replace_separate_current_lock_gate(repository):
+    from tests._parity import run_cli
+    (repository / "boundary.lock.json").write_text("not a lock", encoding="utf-8")
+    commit_all(repository)
+    assert run_cli(repository, "verify", "--source", "head", "--quiet").returncode == 2
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert result["complete"] and result["ok"]
+    assert result["current_lock_verification"] == "not-performed"
+
+
+def test_explicit_empty_reference_selector_is_not_defaulted(repository):
+    from boundver._utils import ConfigError
+
+    with pytest.raises(ConfigError, match="relative file path"):
+        compare_deployment(repository, "production", "production", reference_config_hint="")
+
+
+def test_issue_expansion_reports_truncation():
+    from boundver._deployment import MAX_DEPLOYMENT_ISSUE_CHARS, _issue
+
+    result = {"issues": {"items": [], "omitted": 0, "truncated": False}}
+    _issue(result, ["\ud800" * 200])
+    assert result["issues"]["truncated"]
+    assert len(result["issues"]["items"][0]) <= MAX_DEPLOYMENT_ISSUE_CHARS
+
+
+@pytest.mark.parametrize("source", ["index", "working-tree"])
+def test_explicit_source_compares_changes_without_publishing(repository, source):
+    contract = repository / "svc" / "contract.txt"
+    lock = repository / "boundary.lock.json"
+    original_lock = lock.read_bytes()
+    contract.write_text("staged change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "svc/contract.txt"], cwd=repository, check=True, capture_output=True)
+    staged = subprocess.run(["git", "ls-files", "--stage", "-z"], cwd=repository, check=True, capture_output=True).stdout
+    if source == "index":
+        contract.write_text("original\n", encoding="utf-8")
+    result = compare_deployment(repository, "production", "production", source=source)
+    validate_result(result)
+    assert result["complete"] and result["exit_code"] == 4, result["issues"]
+    assert result["current"]["mode"] == source
+    assert (result["current"]["tree"] is None) == (source == "working-tree")
+    assert lock.read_bytes() == original_lock
+    assert subprocess.run(["git", "ls-files", "--stage", "-z"], cwd=repository, check=True, capture_output=True).stdout == staged
+
+
+def test_reverted_contract_matches_reference_despite_intervening_change(repository):
+    contract = repository / "svc" / "contract.txt"
+    contract.write_text("intermediate change\n", encoding="utf-8")
+    commit_all(repository)
+    contract.write_text("original\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert result["complete"] and result["ok"], result["issues"]
+    assert result["current"]["commit"] != result["reference"]["commit"]
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_cli_json_reports_drift_and_exit_without_writes(repository, summary):
+    from tests._parity import run_cli
+
+    lock = repository / "boundary.lock.json"
+    original = lock.read_bytes()
+    (repository / "svc" / "contract.txt").write_text("changed\n", encoding="utf-8")
+    commit_all(repository)
+    options = ["--summary"] if summary else []
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "production", "--format", "json", *options)
+    assert process.returncode == 4, process.stderr
+    result = json.loads(process.stdout)
+    validate_result(result)
+    assert result["complete"] and result["counts"]["changed"] == 1
+    assert len(result["changes"]) == (0 if summary else 1)
+    assert lock.read_bytes() == original
+
+
+def test_cli_missing_reference_returns_incomplete_json(repository):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "absent", "--format", "json")
+    assert process.returncode == 2
+    result = json.loads(process.stdout)
+    validate_result(result)
+    assert not result["complete"] and result["counts"] is None
+
+
+def test_cli_text_disclaims_attestation_and_current_lock_verification(repository):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production", "--ref", "production")
+    assert process.returncode == 0, process.stderr
+    assert "not attested" in process.stdout
+    assert "run boundver verify separately" in process.stdout
+
+
+@pytest.mark.parametrize("options", [["--limit", "-1", "--summary"], ["--facets", "unknown"]])
+def test_cli_rejects_invalid_selection(repository, options):
+    from tests._parity import run_cli
+
+    process = run_cli(repository, "compare-deployment", "--environment", "production",
+                      "--ref", "production", *options)
+    assert process.returncode == 2
+
+
+def test_reference_movement_after_capture_does_not_retarget_comparison(repository, monkeypatch):
+    from boundver import _deployment
+
+    original_capture = _deployment._capture_git_ref_snapshot
+    original_oid = subprocess.run(["git", "rev-parse", "production"], cwd=repository,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+    (repository / "svc" / "contract.txt").write_text("new current contract\n", encoding="utf-8")
+    commit_all(repository)
+    calls = []
+
+    def capture_then_move(*args, **kwargs):
+        snapshot = original_capture(*args, **kwargs)
+        calls.append(snapshot.head_oid)
+        subprocess.run(["git", "update-ref", "refs/tags/production", "HEAD"],
+                       cwd=repository, check=True, capture_output=True)
+        return snapshot
+
+    monkeypatch.setattr(_deployment, "_capture_git_ref_snapshot", capture_then_move)
+    result = compare_deployment(repository, "production", "production")
+    validate_result(result)
+    assert calls == [original_oid]
+    assert result["reference"]["commit"] == original_oid
+    assert result["reference"]["verified"] and result["exit_code"] == 4
+
+
+def test_distinct_environment_references_keep_their_own_contracts(repository):
+    subprocess.run(["git", "tag", "staging"], cwd=repository, check=True, capture_output=True)
+    (repository / "svc" / "contract.txt").write_text("next deployment\n", encoding="utf-8")
+    commit_all(repository)
+    config = json.loads((repository / "boundary.config.json").read_text())
+    (repository / "boundary.lock.json").write_text(dump_lockfile(generate_lockfile(config, repository)), encoding="utf-8")
+    commit_all(repository)
+    subprocess.run(["git", "tag", "dev"], cwd=repository, check=True, capture_output=True)
+    results = {name: compare_deployment(repository, name, name) for name in ("dev", "staging", "production")}
+    for name, result in results.items():
+        validate_result(result)
+        assert result["environment"] == name and result["reference"]["verified"]
+        assert result["exit_code"] == (0 if name == "dev" else 4)
+    assert results["dev"]["reference"]["commit"] != results["production"]["reference"]["commit"]
+
+
+def test_shallow_missing_reference_objects_fail_without_fetch(repository, tmp_path):
+    original_oid = subprocess.run(["git", "rev-parse", "production"], cwd=repository,
+                                  check=True, capture_output=True, text=True).stdout.strip()
+    (repository / "svc" / "contract.txt").write_text("later\n", encoding="utf-8")
+    commit_all(repository)
+    clone = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "--depth", "1", "--no-tags", repository.as_uri(), str(clone)],
+                   check=True, capture_output=True)
+    # Disable the remote entirely: comparison must use only already local objects.
+    subprocess.run(["git", "remote", "remove", "origin"], cwd=clone, check=True, capture_output=True)
+    before = (clone / ".git" / "shallow").read_bytes()
+    result = compare_deployment(clone, "production", original_oid)
+    validate_result(result)
+    assert not result["complete"] and result["exit_code"] == 2
+    assert result["reference"]["commit"] is None
+    assert (clone / ".git" / "shallow").read_bytes() == before
+    assert any("never fetches" in issue for issue in result["issues"]["items"])
+
+
+def test_result_budget_accounts_for_pretty_json(repository, monkeypatch):
+    from boundver import _deployment
+
+    (repository / "svc" / "contract.txt").write_text("changed\n", encoding="utf-8")
+    commit_all(repository)
+    result = compare_deployment(repository, "production", "production")
+    compact_bytes = len(json.dumps(result).encode("utf-8"))
+    pretty_bytes = len(json.dumps(result, indent=2, sort_keys=True).encode("utf-8")) + 1
+    assert compact_bytes < pretty_bytes
+    monkeypatch.setattr(_deployment, "MAX_DEPLOYMENT_RESULT_BYTES", compact_bytes + 1)
+    bounded = compare_deployment(repository, "production", "production")
+    validate_result(bounded)
+    assert not bounded["complete"] and bounded["exit_code"] == 2
+    assert bounded["counts"] is None and bounded["changes"] == []
+    assert bounded["facet_policy"] is None and bounded["slice_changes"] == []
+    assert len(json.dumps(bounded, indent=2, sort_keys=True).encode("utf-8")) + 1 <= compact_bytes + 1
+    assert any("output budget" in issue for issue in bounded["issues"]["items"])

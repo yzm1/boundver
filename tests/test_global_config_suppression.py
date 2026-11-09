@@ -36,11 +36,11 @@ win; removing the trace2 pins alone leaks none either, because the file naming
 the sinks is unreadable; only both together produce the three files, and
 ``test_two_faults_are_needed_before_a_trace_file_appears`` runs all four
 environments and requires exactly that. The hook and filter markers are blunter
-still: none of the fourteen allowlisted subcommands asks Git to filter a file
-or refresh the index, so the markers stay absent even with the redirect gone,
-which ``test_no_allowlisted_subcommand_leaks_what_git_status_leaks`` shows by
-running the weakened environment through boundver's own subcommands and then
-through ``git status``, which alone fires the clean filter. The load-bearing
+still: allowlisting alone is not a filter-execution boundary. Some Git versions
+run a clean filter during ``write-tree`` when the global redirect is removed.
+The reachability test contrasts that deliberately weakened probe with the
+complete hardened call, which must leave every marker absent. ``git status``
+provides the positive control on every supported test host. The load-bearing
 single-fault detectors are the environment table and the read-back in
 ``ProcessLocalReadBackTests``, and they are named as such.
 
@@ -111,7 +111,7 @@ COMMANDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("verify-json", ("verify", "--source", "working-tree", "--format", "json")),
     ("status-head", ("status",)),
     ("status-working-tree", ("status", "--source", "working-tree")),
-    ("explain", ("explain", "svc")),
+    ("explain", ("explain", "svc", "--base-ref", "HEAD")),
     ("review", ("review", "HEAD~1..HEAD")),
     ("review-json", ("review", "HEAD~1..HEAD", "--format", "json")),
     ("validate-config", ("validate-config",)),
@@ -764,10 +764,11 @@ class GlobalConfigSuppressionTests(CacheDisciplineMixin, unittest.TestCase):
     the suppression makes `test_the_hostile_arm_left_no_marker_or_trace_file`
     fail: a trace file needs the global config readable *and* the trace2 pins
     gone, and `test_two_faults_are_needed_before_a_trace_file_appears` runs all
-    four environments to show it rather than leaving it as a claim. The marker
-    half is blunter again, because no allowlisted subcommand asks Git to filter
-    a file, which is why the class's own positive control expects three trace
-    files and no marker at all. The single-fault detectors for this obligation
+    four environments to show it rather than leaving it as a claim. This class's
+    trace-only positive control uses rev-parse; it does not prove that every
+    allowlisted command is intrinsically unable to execute a filter. The
+    separate planted-command tests check full hardening, including write-tree.
+    The single-fault detectors for this obligation
     are `ProcessLocalReadBackTests.test_the_hostile_settings_do_not_survive_
     into_a_boundver_git_process` and
     `test_the_environment_pins_every_channel_the_suppression_relies_on`; those
@@ -943,18 +944,11 @@ class PlantedExecutableTests(CacheDisciplineMixin, unittest.TestCase):
     """OBL-GIT-SOURCE-154: the allowlist and the suppression together launch nothing.
 
     The name of the test below says "together" because that is what the
-    measurement supports. Two mechanisms hold the marker files absent, and this
-    class measures their joint outcome rather than either one. Suppressing the
-    global config stops Git resolving the driver at all; independently, the
-    subcommand allowlist means boundver never issues a command that would ask
-    Git to filter a file, update a ref or refresh the index, and every offline
-    argv additionally carries `-c core.fsmonitor=false`, which outranks
-    configuration from any scope. Removing the suppression alone therefore
-    still leaves every marker absent, and
-    `test_no_allowlisted_subcommand_leaks_what_git_status_leaks` measures that
-    directly instead of asserting it: under an environment with the global
-    redirect deleted, none of the allowlisted subcommands writes a marker while
-    `git status`, which boundver cannot issue, writes one immediately.
+    measurement supports. The complete wrapper suppresses global executable
+    configuration, neutralizes repository filter drivers, and pins fsmonitor.
+    Its subcommand allowlist is not sufficient by itself: a deliberately
+    weakened global environment can run a clean filter through `write-tree`
+    on some Git versions. The controls below distinguish the two claims.
     """
 
     def test_the_allowlist_and_the_suppression_together_run_none_of_the_planted_commands(
@@ -1000,24 +994,12 @@ class PlantedExecutableTests(CacheDisciplineMixin, unittest.TestCase):
                 self.assertIn("trace2-event.json", noisy)
                 self.assertNotEqual(noisy_status, "")
 
-    def test_no_allowlisted_subcommand_leaks_what_git_status_leaks(self):
-        """Which mechanism is carrying the absent markers, measured on one home.
+    def test_full_hardening_not_the_allowlist_alone_blocks_planted_commands(self):
+        """A weakened `write-tree` may filter; the actual wrapper never may.
 
-        Every command here runs under the same environment with the single
-        most load-bearing pin, `GIT_CONFIG_GLOBAL`, deleted, so the hostile
-        `~/.gitconfig` is live and its filter driver resolvable. The
-        subcommands boundver is allowed to issue still leave the marker
-        directory empty; `git status`, which is not in the allowlist, fires the
-        planted clean filter. So the absence of a marker in the arm above is
-        evidence about boundver's command set, and it is the trace files -
-        which `rev-parse` alone can write - that carry evidence about the
-        config suppression.
-
-        Both arms run against a tree carrying one modified filtered file. That
-        is what makes the contrast fair rather than a race: every allowlisted
-        probe reads the index or an object and never working-tree content, so
-        dirtying a file cannot make one of them fire, while status now has to
-        read that content to answer and therefore has to run the filter.
+        Keep a same-length, stat-dirty file for a reliable plain-status positive
+        control. Git versions differ in whether write-tree reads that file;
+        neither result excuses any side effect from the full hardened call.
         """
         with tempfile.TemporaryDirectory() as name:
             hostile = HostileHome(Path(name) / "home-hostile")
@@ -1077,6 +1059,14 @@ class PlantedExecutableTests(CacheDisciplineMixin, unittest.TestCase):
                                 env=weakened,
                             )
                             self.assertEqual(result.returncode, 0, result.stderr)
+                            effects = hostile.side_effects()
+                            if arguments == ("write-tree",):
+                                self.assertIn(effects, ([], ["markers/filter-clean"]))
+                            else:
+                                self.assertEqual(effects, [])
+                            hostile.clear_side_effects()
+                            hardened = git._git_run(scene.root, list(arguments))
+                            self.assertEqual(hardened.returncode, 0, hardened.stderr)
                             self.assertEqual(hostile.side_effects(), [])
                     hostile.clear_side_effects()
                     outside = subprocess.run(

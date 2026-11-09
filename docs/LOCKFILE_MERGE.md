@@ -1,99 +1,81 @@
-# Lockfile merge strategy
+# Merge source first, then regenerate the lock
 
-`boundary.lock.json` is generated from the repository's source and configuration. When branches change components concurrently, regenerate the complete lockfile from the real merged tree instead of combining fingerprint JSON by hand.
+Use an isolated merge checkout, or stop other writers while preparing the
+merge. Never combine fingerprint JSON by hand. Do not use a merge driver or an
+automatic post-merge writer: neither proves that the selected source is the
+reviewed final merge result.
 
-## Why not use a merge driver?
+## Resolve a real lock conflict
 
-A Git merge driver runs while Git is still constructing the merge. It receives individual conflict stages, not a guaranteed materialization of the final source tree, and it may run on a machine without the expected boundver version. Regenerating there can bless fingerprints from the wrong snapshot.
-
-Keep the lockfile as ordinary text in `.gitattributes`. Perform regeneration only after the source and `boundary.config.json` represent the intended merged result.
-
-## Resolve a lockfile conflict
-
-From the repository root:
-
-```bash
-# 1. Resolve source and configuration conflicts first.
-git status --short
-
-# 2. Regenerate the whole lock from the materialized merged tree.
-boundver validate-config
-boundver generate --source working-tree
-
-# 3. Check the exact same snapshot and inspect the generated diff.
-boundver verify \
-  --source working-tree \
-  --facets exact
-git diff -- boundary.lock.json
-
-# 4. Mark the generated file resolved, then finish the merge.
-git add boundary.config.json boundary.lock.json
-git status --short
-git commit
-```
-
-Only add `boundary.config.json` in step 4 if the merge actually changed it. Add every resolved source file separately as usual.
-
-After the merge commit exists, verify the committed snapshot:
-
-```bash
-boundver verify --source head --facets exact
-```
-
-The source pairing matters: use `working-tree` before the merge commit, then `head` after it. `head` during conflict resolution still names the pre-merge commit and cannot represent both branches.
-
-## Clean merge but stale lockfile
-
-Git may merge the JSON without a textual conflict even though the combined source requires a different aggregate or slice fingerprint. Run the same regeneration after every merge that touches components, configuration, or the lockfile:
-
-```bash
-boundver generate --source working-tree
-boundver verify \
-  --source working-tree \
-  --facets exact
-git diff --exit-code -- boundary.lock.json || {
-  echo "Review and commit the regenerated boundary.lock.json"
-}
-```
-
-## Optional post-merge hook
-
-A local post-merge hook runs after Git has materialized the merged tree. It can regenerate and leave any required lockfile update visible for review:
+1. Inspect `git status --short`. Resolve and review source/config conflicts;
+   review auto-merged files too. Stage each resolved source/config file by its
+   explicit path. Do not stage other sessions' changes.
+2. Inspect the generated lock conflict. Choose one branch's generated lock as a
+   **temporary placeholder**, not an accepted merged contract. The example below
+   chooses HEAD's version. Preserve uncommitted manual notes before this step:
+   it overwrites the lock's conflict work file. Both committed branch versions
+   remain available in Git.
 
 ```sh
-#!/bin/sh
-# .git/hooks/post-merge
-set -eu
-
-if command -v boundver >/dev/null 2>&1 && test -f boundary.config.json; then
-  boundver generate --source working-tree
-  boundver verify \
-    --source working-tree \
-    --facets exact
-
-  if ! git diff --quiet -- boundary.lock.json; then
-    echo "boundver regenerated boundary.lock.json; review and commit it."
-  fi
-fi
+git restore --source=HEAD --worktree -- boundary.lock.json
+git add -- boundary.lock.json
+git diff --name-only --diff-filter=U
 ```
 
-Make the hook executable:
+The last command must print nothing. Even a lock-only unmerged index prevents
+coherent index capture. `working-tree` also needs tracked membership from the
+index, so switching to it does not bypass this condition.
 
-```bash
-chmod +x .git/hooks/post-merge
+3. With all intended merged inputs staged, regenerate the **whole** lock from
+   that index. Do not use `--components` for merge reconciliation.
+
+```sh
+boundver validate-config --source index
+boundver generate --source index --out boundary.lock.json
+git diff -- boundary.lock.json
+git add -- boundary.lock.json
+boundver verify --source index
+git diff --cached --check
+git diff --cached
 ```
 
-Hooks are local and are not cloned with the repository. Treat this as a convenience, not enforcement. The authoritative safeguard is a CI job that runs:
+Generation writes the candidate to disk; it does not stage it. Verification
+before the second `git add` would still read the placeholder. Inspect component,
+consumer and slice changes before accepting the final staged result.
 
-```bash
+4. Commit only after review and successful index verification, then verify the
+   committed merge snapshot:
+
+```sh
+git commit
 boundver verify --source head
 ```
 
-## Rules of thumb
+HEAD before that commit is still the pre-merge branch. It is useful for checking
+the committed state, not for claiming the proposed merge was evaluated.
 
-- Resolve configuration and source before regenerating the lockfile.
-- Regenerate the full lockfile; a partial refresh is inappropriate for a merge.
-- Never hand-edit fingerprint values.
-- Review affected-consumer and slice changes in the generated diff; use
-  `verify --transitive` when the configured graph should drive wider checks.
-- Keep CI on `head` so it verifies exactly what the pull request commits.
+## A clean textual merge can still need relocking
+
+If Git merged the JSON without a conflict, review/stage the intended source and
+config, then use the same full index regeneration and verification sequence.
+Textual success does not prove that aggregate or slice fingerprints describe
+the combined source.
+
+## Failure and concurrency limits
+
+Before commit admission, unresolved merge stages, index-lock contention,
+source/provider failures and expired computation deadlines refuse publication.
+Expiry after admission does not roll back a completed atomic replacement.
+Tests exercise real Git
+source/lock conflicts, an auto-merged second component, a shared slice, manual
+placeholder preparation and verification before/after the merge commit.
+
+The existing guarded atomic writer is sufficient; no wrapper is needed. Atomic
+publication is not a transaction spanning Git staging, validation, generation
+and commit. Do not coordinate concurrent writers by generating into the same
+destination. If a failure reports an unconfirmed publication outcome, inspect
+the destination before retrying; see [generation deadlines](generation-deadline-design.md).
+
+CI should remain read-only with `boundver verify --source head`. Use
+[shared-checkout source guidance](shared-checkouts.md) to choose the intended
+view explicitly. Neither a new lock nor a merge commit proves deployment.

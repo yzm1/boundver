@@ -144,7 +144,7 @@ def _unborn_repo_with_staged_index(root: Path) -> dict:
 
 
 class SourceViewIntegrityTests(unittest.TestCase):
-    def test_explain_head_on_root_commit_lists_added_component_files(self):
+    def test_explain_head_on_root_commit_does_not_invent_a_previous_source(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             init_git_repo(root, user_name="Source View Test")
@@ -173,8 +173,12 @@ class SourceViewIntegrityTests(unittest.TestCase):
                 config, root, "svc", source="head", snapshot=snapshot
             )
 
-            self.assertIsNone(result["error"])
-            self.assertEqual(result["changed"], [("A", "svc/main.py")])
+            self.assertIn("Lock source provenance is unavailable", result["error"])
+            explicit = analyze_explain_changes(
+                config, root, "svc", base_ref="HEAD", source="head", snapshot=snapshot,
+            )
+            self.assertIsNone(explicit["error"])
+            self.assertEqual(explicit["changed"], [])
 
     def test_human_path_rendering_escapes_controls_and_non_ascii(self):
         self.assertEqual(
@@ -192,6 +196,9 @@ class SourceViewIntegrityTests(unittest.TestCase):
             "current_fps": {"exact": "b" * 64},
             "changed_files": [("M", "svc/main.py")],
             "version": None,
+            "version_change": {
+                "previous": None, "current": None, "status": "unavailable",
+            },
             "provider_explanation": "",
         }
         config = {
@@ -235,7 +242,7 @@ class SourceViewIntegrityTests(unittest.TestCase):
                 wraps=_capture_git_source_snapshot,
             ) as capture:
                 rc, stdout, stderr = _run_cli(
-                    root, "explain", "svc", "--source", "head"
+                    root, "explain", "svc", "--source", "head", "--base-ref", "HEAD~1"
                 )
             self.assertEqual(rc, 0, stderr)
             self.assertIn("svc/main.py", stdout)

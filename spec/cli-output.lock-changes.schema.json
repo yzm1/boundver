@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.lock-changes.schema.json",
+  "title": "Boundver read-only lock changes v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema", "operation", "publication", "current_lock_verification", "complete", "exit_code", "source", "locked_source", "comparison", "changed_headers", "counts", "components", "slices", "presentation", "issues"],
+  "properties": {
+    "schema": {"const": "boundver-lock-changes/v1"},
+    "operation": {"enum": ["generate-preview", "lock-diff"]}, "publication": {"const": "not-written"},
+    "current_lock_verification": {"const": "not-performed"},
+    "complete": {"type": "boolean"}, "exit_code": {"enum": [0, 2]},
+    "source": {
+      "type": "object", "additionalProperties": false, "required": ["mode", "commit", "tree", "lock"],
+      "properties": {"mode": {"enum": ["head", "index", "working-tree", "lockfiles"]}, "commit": {"$ref": "#/$defs/oid"}, "tree": {"$ref": "#/$defs/oid"}, "lock": {"type": "string"}, "previous_lock": {"type": "string"}, "components_filter": {"type": "array", "items": {"type": "string"}}}
+    },
+    "locked_source": {
+      "type": "object", "additionalProperties": false, "required": ["status", "commit"],
+      "properties": {"status": {"const": "unavailable"}, "commit": {"const": null}}
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false, "required": ["previous_present", "contract_compatible", "declarations_match", "historical", "previous_contract", "current_contract"],
+      "properties": {"previous_present": {"type": "boolean"}, "contract_compatible": {"type": ["boolean", "null"]}, "declarations_match": {"type": ["boolean", "null"]}, "historical": {"type": "boolean"}, "previous_contract": {"$ref": "#/$defs/contract"}, "current_contract": {"$ref": "#/$defs/contract"}}
+    },
+    "changed_headers": {"type": "array", "uniqueItems": true, "items": {"enum": ["$schema", "schema", "config_contract", "config_digest", "project"]}},
+    "counts": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["components", "added", "removed", "changed", "unchanged", "incomparable", "unavailable", "observed_common_changes", "version_changes", "unavailable_versions", "slices", "changed_slices", "incomparable_slices", "unavailable_slices", "equal_component_values", "different_component_values"],
+      "properties": {
+        "components": {"$ref": "#/$defs/count"}, "added": {"$ref": "#/$defs/count"}, "removed": {"$ref": "#/$defs/count"},
+        "changed": {"$ref": "#/$defs/count"}, "unchanged": {"$ref": "#/$defs/count"}, "incomparable": {"$ref": "#/$defs/count"},
+        "unavailable": {"$ref": "#/$defs/count"}, "unavailable_versions": {"$ref": "#/$defs/count"}, "incomparable_slices": {"$ref": "#/$defs/count"}, "unavailable_slices": {"$ref": "#/$defs/count"},
+        "observed_common_changes": {"$ref": "#/$defs/count"}, "version_changes": {"$ref": "#/$defs/count"},
+        "slices": {"$ref": "#/$defs/count"}, "changed_slices": {"$ref": "#/$defs/count"}, "equal_component_values": {"$ref": "#/$defs/count"}, "different_component_values": {"$ref": "#/$defs/count"}
+      }
+    },
+    "components": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["component", "status", "comparable", "reason", "facets", "metadata_fields", "version", "values_equal", "provider_contract"],
+        "allOf": [
+          {"if": {"properties": {"comparable": {"const": true}}}, "then": {"properties": {"reason": {"const": null}, "status": {"enum": ["changed", "unchanged"]}, "values_equal": {"type": "boolean"}}}},
+          {"if": {"properties": {"comparable": {"const": false}}}, "then": {"properties": {"reason": {"type": "string", "minLength": 1}, "status": {"enum": ["added", "removed", "incomparable", "unavailable"]}}}}
+        ],
+        "properties": {
+          "component": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"},
+          "comparable": {"type": "boolean"}, "reason": {"type": ["string", "null"]},
+          "values_equal": {"type": ["boolean", "null"]},
+          "provider_contract": {
+            "type": "object", "additionalProperties": false, "required": ["previous", "current"],
+            "properties": {"previous": {"$ref": "#/$defs/provider"}, "current": {"$ref": "#/$defs/provider"}}
+          },
+          "facets": {
+            "type": "object", "additionalProperties": false,
+            "properties": {"exact": {"$ref": "#/$defs/delta"}, "behavior": {"$ref": "#/$defs/delta"}, "boundary": {"$ref": "#/$defs/delta"}, "compat": {"$ref": "#/$defs/delta"}}
+          },
+          "metadata_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+          "version": {
+            "type": "object", "additionalProperties": false, "required": ["previous", "current", "status"],
+            "properties": {"previous": {"type": ["string", "null"]}, "current": {"type": ["string", "null"]}, "status": {"enum": ["changed", "unchanged", "unavailable"]}}
+          }
+        }
+      }
+    },
+    "slices": {
+      "type": "array", "maxItems": 10000,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["slice", "status", "previous", "current", "values_equal", "previous_mode", "current_mode", "metadata_fields"],
+        "properties": {"slice": {"type": "string", "minLength": 1}, "status": {"$ref": "#/$defs/status"}, "previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"}, "values_equal": {"type": ["boolean", "null"]}, "previous_mode": {"type": ["string", "null"]}, "current_mode": {"type": ["string", "null"]}, "metadata_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}}
+      }
+    },
+    "presentation": {
+      "type": "object", "additionalProperties": false, "required": ["limit", "shown", "omitted", "truncated"],
+      "properties": {"limit": {"type": "integer", "minimum": 0, "maximum": 10000}, "shown": {"$ref": "#/$defs/count"}, "omitted": {"$ref": "#/$defs/count"}, "truncated": {"type": "boolean"}}
+    },
+    "issues": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 4096}}
+  },
+  "allOf": [
+    {"if": {"properties": {"comparison": {"properties": {"historical": {"const": true}}}}}, "then": {"properties": {"operation": {"const": "lock-diff"}, "comparison": {"properties": {"previous_present": {"const": true}}}}}},
+    {"if": {"properties": {"comparison": {"properties": {"contract_compatible": {"const": false}}}}}, "then": {"properties": {"comparison": {"properties": {"declarations_match": {"const": null}}}, "components": {"items": {"properties": {"comparable": {"const": false}}}}}}},
+    {"if": {"properties": {"complete": {"const": false}}}, "then": {"properties": {"exit_code": {"const": 2}, "counts": {"const": null}, "components": {"maxItems": 0}, "slices": {"maxItems": 0}, "issues": {"minItems": 1}}}},
+    {"if": {"properties": {"complete": {"const": true}}}, "then": {"properties": {"exit_code": {"const": 0}, "counts": {"type": "object"}, "issues": {"maxItems": 0}}}}
+  ],
+  "$defs": {
+    "contract": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["schema", "config_contract", "config_digest", "project"],
+      "properties": {"schema": {"enum": ["boundary-lock/v3", "boundary-lock/v4"]}, "config_contract": {"enum": ["boundver-semantic-config/v1", "boundver-semantic-config/v2", "boundver-semantic-config/v3"]}, "config_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "project": {"type": "string", "minLength": 1}}
+    },
+    "provider": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["boundary_provider", "boundary_provider_version"],
+      "properties": {"boundary_provider": {"type": ["string", "null"]}, "boundary_provider_version": {"type": ["string", "null"]}}
+    },
+    "count": {"type": "integer", "minimum": 0},
+    "status": {"enum": ["added", "removed", "changed", "unchanged", "incomparable", "unavailable"]},
+    "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "oid": {"type": ["string", "null"], "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},
+    "delta": {"type": "object", "additionalProperties": false, "required": ["previous", "current"], "properties": {"previous": {"$ref": "#/$defs/digest"}, "current": {"$ref": "#/$defs/digest"}}}
+  }
+}

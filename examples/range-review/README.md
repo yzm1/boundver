@@ -13,3 +13,9 @@ The script changes one application implementation, one behavioral default,
 and one canonical OpenAPI boundary. It asserts current drift before lock
 reconciliation and historical range evidence after reconciliation. Nothing is
 written back to this directory.
+
+The fixture's config schema URL stays pinned to `v0.16.0`. It is part of the
+documented Git commit identities, not a current-release example to repin.
+The demo still uses the installed tool's packaged schema and normal integrity
+checks. An intentional fixture change must update and re-verify its captured
+identities and case study together.

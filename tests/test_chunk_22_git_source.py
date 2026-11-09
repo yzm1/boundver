@@ -203,6 +203,10 @@ def _subcommand_names() -> List[str]:
 CLI_INVOCATIONS: Dict[str, Tuple[str, ...]] = {
     "generate": ("generate",),
     "verify": ("verify", "--source", "working-tree"),
+    "compare-deployment": (
+        "compare-deployment", "--environment", "test", "--ref", "HEAD~1",
+        "--source", "working-tree",
+    ),
     "review": ("review", "HEAD~1..HEAD"),
     "status": ("status", "--source", "working-tree"),
     "validate-config": ("validate-config",),
@@ -314,7 +318,7 @@ class WorkflowCommandForgeryTests(unittest.TestCase):
         )
         self.assertEqual(
             carrying,
-            ["explain", "generate", "remove", "review", "slice", "status",
+            ["compare-deployment", "coverage", "explain", "generate", "remove", "review", "slice", "status",
              "verify", "why"],
         )
 

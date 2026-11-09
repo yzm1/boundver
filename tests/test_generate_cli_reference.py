@@ -30,6 +30,13 @@ def test_generated_cli_reference_has_no_trailing_whitespace() -> None:
     )
 
 
+def test_why_usage_states_the_required_exclusive_target_portably() -> None:
+    rendered = generator.render()
+    assert "usage: boundver why [options] (component | --slice SLICE)" in rendered
+    assert "| `--slice` |" in rendered
+    assert "| `--base-ref` |" in rendered
+
+
 def test_usage_normalization_folds_only_an_orphan_ellipsis() -> None:
     class Parser:
         prog = "boundver"

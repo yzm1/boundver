@@ -200,6 +200,54 @@ def test_release_profile_installs_exhaustive_test_runtime():
     assert {"hypothesis", "sortedcontainers"} <= release_requirements
 
 
+def test_legacy_core_runtime_excludes_the_entire_modern_hook_tool_stack():
+    from packaging.markers import Marker
+
+    locker = _load_locker()
+    _, profiles = locker.load_manifest()
+    stack = {"filelock", "pre-commit", "python-discovery", "virtualenv"}
+    requirements = {item.canonical_name: item for item in profiles["ci"].requirements}
+    for name in stack:
+        marker = requirements[name].marker
+        assert marker == "python_version >= '3.11'"
+        assert not Marker(marker).evaluate({"python_version": "3.10"})
+        assert Marker(marker).evaluate({"python_version": "3.11"})
+        assert Marker(marker).evaluate({"python_version": "3.12"})
+    assert not stack & {item.canonical_name for item in profiles["action"].requirements}
+    action_pip = next(item.version for item in profiles["action"].requirements
+                      if item.canonical_name == "pip")
+    docs_pip = next(item.version for item in profiles["docs"].requirements
+                    if item.canonical_name == "pip")
+    assert docs_pip == action_pip
+    with pytest.raises(locker.LockError, match="unsupported marker"):
+        locker._parse_requirement("example==1.0; python_version >= '3.12'", "test")
+
+
+def test_pep517_build_requirements_match_hash_locked_action_tools():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    build_section = pyproject.split("[build-system]", 1)[1].split("\n[", 1)[0]
+    requirements = re.search(r"requires\s*=\s*(\[[^\]]+\])", build_section)
+    assert requirements is not None
+    pins = json.loads(requirements.group(1))
+    action_lock = (ROOT / "scripts/requirements/action.lock").read_text(encoding="utf-8")
+    assert pins
+    for pin in pins:
+        assert re.fullmatch(r"[a-zA-Z0-9_.-]+==[a-zA-Z0-9_.+-]+", pin)
+        assert re.search(r"^" + re.escape(pin) + r"\s+\\$", action_lock, re.MULTILINE)
+
+
+def test_container_builder_uses_the_reviewed_action_profile_not_duplicate_pins():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert dockerfile.count("--requirement /locks/action.lock") == 3
+    assert "setuptools==" not in dockerfile
+    assert "wheel==" not in dockerfile
+    builder = dockerfile.split(" AS builder", 1)[1].split("\nFROM ", 1)[0]
+    install = builder.split("&& python -I -m pip install", 1)[1]
+    assert "--require-hashes" in install
+    assert "--only-binary=:all:" in install
+    assert "--no-index" in install
+
+
 def test_lock_generation_rejects_active_pypi_advisories():
     locker = _load_locker()
     requirement = locker.Requirement("example", "1.0")

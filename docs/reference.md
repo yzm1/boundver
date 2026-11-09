@@ -8,8 +8,10 @@ Command syntax and options are generated from the live parser in the
 
 ## Source modes
 
-Every command that accepts `--source` defaults to `head`: committed state, not
-your unstaged edits.
+Most inspection commands and `generate` default to `head`: committed state, not
+your unstaged edits. Exceptions are `validate-config` (and `check-config`) and
+`record-derivation`, which preserve their `working-tree` default. Pass the source
+explicitly in scripts; see the [CLI reference](cli-reference.md) for each command.
 
 | Source | Path set and content | Use it for |
 |---|---|---|
@@ -53,6 +55,34 @@ Six rules follow from that model:
    newer; full repositories retain the Git 2.32 baseline. Submodules remain opaque Gitlinks:
    a changed checked-out Gitlink is visible, while dirty/untracked content and
    local filter configuration inside the submodule are not traversed.
+
+### Shared checkouts
+
+`validate-config --source head` validates the committed config, paths, version
+files, warnings and derivation receipts without capturing the index or writing
+`index.lock`. Uncommitted changes and a lock held by another session do not
+change its result. `generate --source head` likewise reads committed inputs;
+it does not require a clean checkout, but **writes its output on disk**. Do not
+let multiple sessions regenerate the same output concurrently.
+
+From v0.17 development, HEAD generation no longer scans the working tree just
+to warn about it. Text output still names `Source: head`. To explicitly request
+the old advisory, use `generate --source head --inspect-working-tree`. That
+scan can be expensive, captures the index, and may warn if another session
+holds `index.lock`; it never changes which source gets fingerprinted. The flag
+requires HEAD. Explicit inspection still runs with `--quiet` and writes any
+warning to stderr, leaving JSON stdout unchanged.
+
+The index source is different: capturing a coherent index uses `git write-tree`
+and can contend with another index writer. It refuses an unavailable or
+conflicted index rather than falling back to HEAD. The default working-tree
+validation also captures tracked index state; use explicit HEAD validation
+when another session owns the index. Never stage another session's changes
+merely to make a validation or regeneration command succeed.
+
+Source selection is not deployment evidence. HEAD can include committed but
+undeployed changes; a successful generation records those selected inputs,
+not a claim that they were deployed.
 
 A complete staged refresh therefore looks like this:
 
@@ -111,29 +141,43 @@ fail with `ConfigError` instead of approximating an immutable source.
 
 ### Diagnostic bases
 
-Fingerprint drift accumulates from the source represented by the lock, not
-necessarily from the previous commit. For `source=head`, `why` and `explain`
-therefore inspect bounded lock history and default their changed-file comparison
-to the commit that introduced the component's current lock entry. This remains
-correct when a later partial update changes another component in the same lock.
-They print the inferred base and its origin. If bounded history cannot establish
-that entry-specific point, they report and use a broader root/lock-history
-fallback instead of silently claiming that the previous commit is authoritative.
-The inference avoids adding a commit SHA that would make identical locks differ
-between `head`, `index`, and `working-tree` generation.
+The lock does not record its generating source commit. A commit that stores or
+introduces a lock entry is not proof of that source: locks can be copied, or
+generated before other changes are committed. Fingerprint equality is not
+unique source provenance either.
 
-Use `--base-ref REF` to override the inference. Boundver resolves an explicit
-ref once to an immutable commit before the diff and discloses both the requested
-name and resolved object ID. Empty, whitespace-only, missing, or ambiguous refs
-are usage errors. `index` and `working-tree` default to `HEAD`, because their
-staged or on-disk source does not yet have a commit identity. Inference is
-diagnostic evidence, not lock integrity: verify still recomputes every selected
-fingerprint from the requested source.
+In v0.17 development, `why --source head` therefore leaves changed-file
+attribution unavailable unless you supply `--base-ref REF`. Fingerprint drift
+is still computed and reported. An explicit ref is resolved once to an immutable
+commit and compared with the captured current source. This is an operator-chosen
+source comparison, not proof that the lock was generated there or deployed.
+Empty, whitespace-only, missing and ambiguous refs are usage errors.
+
+`index` and `working-tree` diagnostics default to `HEAD` as a source-comparison
+convenience, not as lock-source provenance. Verification still recomputes
+fingerprints from the selected source independently of file diagnostics.
+
+`explain --source head` requires an explicit `--base-ref` and exits 2 without
+one: it has no file comparison to perform without a chosen old source. It does
+not infer one from lock history or substitute a root-commit fallback. Fetching
+more history alone does not prove where the lock was generated.
 
 When `explain` finds no changes in the selected source, text output names the
 other exact `--source` forms without silently reading those additional views.
 This keeps the result bound to one snapshot while making an adjacent source
 switch visible.
+
+### Resolved version comparisons
+
+In v0.17 development, component `why --format json` includes `version_change`:
+`previous` is the version recorded in the lock, `current` is resolved from the
+selected source, and `status` is `changed`, `unchanged` or `unavailable`.
+Missing, invalid or failed version resolution is unavailable; two null values
+are not evidence of equal resolved versions. The legacy `version` field keeps
+its fallback behavior and must not be used to determine whether a version moved.
+Text output shows the comparison separately. Version movement does not prove
+compatibility, deployment, or the lock's generating source. Slice explanations
+and [generation previews](generation-previews.md) make the same distinction.
 
 ### Text and JSON presentation
 
@@ -166,7 +210,59 @@ Duplicate object keys, aliases, non-finite numbers, oversized integer or
 floating-point tokens, and format-specific ambiguous values remain
 fail-closed.
 
+## Repository-relative version files
+
+The v0.17 development variant `version_source.repo_file` reads a version from
+a sibling or shared manifest anywhere inside the same repository:
+
+```json
+{
+  "path": "bi-jobs/processor",
+  "version_source": {
+    "repo_file": "bi-jobs/processor.service-definition.json",
+    "field": "image.version"
+  },
+  "boundary": {"provider": "leaf", "paths": []}
+}
+```
+
+`file` remains relative to the component; `repo_file` is always relative to the
+repository root, even when the config lives in another directory. Choose one
+version-source variant only. No traversal, globs, absolute paths, backslashes,
+or drive/ADS colons are permitted. Both file forms use the same strict JSON,
+TOML or YAML reader, and the selected version must be text. YAML still requires
+the optional parser; no repository code or generator is executed.
+
+HEAD reads the committed file, index reads its staged version, and working-tree
+reads tracked disk bytes under the existing tracking policy. Symlinks and
+ancestor reparse points cannot supply version bytes through the source accessor.
+Missing, untracked or unparseable required versions fail closed rather than
+falling back to a different source, constant or Git tag.
+
+The declaration participates in semantic-config identity. Existing `file`
+declarations keep their meaning and digest algorithms; adopting `repo_file`
+is an intentional config change requiring a supporting tool/schema and reviewed
+lock regeneration. Older clients reject the new variant. It does not require
+adding `..` support or changing the v4 lock format.
+
+An external version file contributes the resolved version and compatibility
+identity, **not** implicit component exact/behavior/boundary coverage. If the
+manifest is itself a published contract, declare that surface separately.
+`--changed-from` includes its readers, any input-owning component, and transitive
+version inheritors, while still verifying full lock integrity. Version
+inheritance does not invent consumer edges. `why` and `explain` can list the
+currently declared external version input without labeling it a boundary edit
+or treating a version bump as deployment evidence.
+
+For a migration from duplicated Git tags, first compare the file's version to
+the intended tag, change the declaration in a reviewed commit, and inspect the
+generated lock. Boundver does not create or delete release tags for you.
+
 ## Declaration coverage
+
+Before auditing selectors, note that an external version source is not
+automatically a boundary or behavior input; see
+[repository-relative version files](#repository-relative-version-files).
 
 `boundver coverage` audits declarations without reading or writing the lock.
 It reports two kinds of omission:
@@ -207,7 +303,10 @@ reported separately.
 ```bash
 boundver coverage --source head                 # advisory; exits 0
 boundver coverage --source head --strict        # exits 1 on uncovered paths
-boundver coverage --source index --format json  # boundver-declaration-coverage/v1
+boundver coverage --source index --format json  # boundver-declaration-coverage/v2
+boundver coverage --source head --summary --strict
+boundver coverage --component payment-api --component payment-client --summary
+boundver coverage --path-prefix services/payment --limit 2000 --format json
 ```
 
 The result names the selected config identity and the JSON Pointer responsible
@@ -216,6 +315,52 @@ does not change config digests, component identities, slices, locks, or
 `verify` results. Ignored untracked files are absent because coverage begins
 from Git's tracked path set; a deliberately tracked ignored file remains in the
 report.
+
+### Large and filtered coverage reports
+
+Coverage analyzes the selected scope even when its path listing is shortened.
+The default listing limit is 1,000 **path entries** across all facets and
+ownership groups, not 1,000 unique files. A file omitted from both behavior and
+boundary declarations contributes two entries. `--limit 0` or `--summary`
+prints counts without paths; `--limit` accepts 0 through 10,000. A separate
+512 KiB detail budget may shorten a listing before the requested row limit.
+Shell redirection to a file does not remove these limits.
+
+`--component NAME` is repeatable and audits only those components' facets. It
+does not run repository-wide ownership auditing: unowned paths cannot be
+attributed to a selected component. `--path-prefix PATH` is a repeatable union
+of literal, repository-relative path prefixes with segment boundaries, not
+globs. It narrows both facet paths and ownership paths when ownership auditing
+is enabled. Both filters may be combined. The full config must still validate;
+filters cannot hide an invalid declaration elsewhere.
+
+The v2 JSON contract records `scope` and `presentation` separately:
+
+- `complete: true` means analysis finished **within the explicit scope**. Check
+  `scope.filtered` before treating it as a whole-repository audit.
+- `presentation.total_paths`, `shown_paths` and `omitted_paths` count entries;
+  `truncated` says that paths were omitted from presentation. Each facet or
+  ownership group has full `uncovered_count` and `excluded_count`, independently
+  of its displayed `uncovered_files` and `excluded` arrays.
+- `ok` and `--strict` use all in-scope findings, including undisplayed paths.
+  A summary or truncated listing can therefore exit 1 even if no uncovered
+  path is displayed. A complete all-excluded report remains advisory-clean.
+
+Existing v1 consumers must explicitly accept and handle v2; the shorter arrays
+are no longer exhaustive when presentation is truncated. Matchers retain their
+work budgets. Coverage additionally bounds analyzed omitted entries to
+1,000,000, facet/ownership groups to 10,000, filters to 256 of each kind, and
+the full serialized result to 4 MiB. Exhausting an analysis/result budget exits
+2 with no partial-success report; JSON analysis failures have `complete: false`
+and `ok: false`. These are resource limits, not invitations to weaken policy.
+
+Reasoned `coverage.exclusions` remain policy decisions. Do not add exclusions
+or narrow declarations merely to make a large listing fit; use summary or
+presentation filters instead.
+
+Ownership auditing only considers `coverage.source_indicators`. With no
+indicators it has no candidates; a clean result does not establish that every
+source file in the repository has a declared owner.
 
 ## Selector work limits
 
@@ -641,8 +786,18 @@ schema annotation. A structural lock change must advance the lock schema and
 select a new canonical publication. The upgrade procedure is:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
-boundver validate-config
+python -m pip install --upgrade "boundver[schema,yaml]==0.17.0"
+boundver validate-config --source head
+boundver verify --source head
+```
+
+Upgrading from 0.16 with an existing supported lock does not require lock
+regeneration. Do not record unrelated or undeployed checkout changes merely
+to upgrade the tool. Read the release's upgrade contract first. Only when
+declarations or selected source inputs intentionally change, review and stage
+those changes before generating a new snapshot:
+
+```bash
 # Stage changed config and every changed or newly selected contract input.
 git add boundary.config.json services/payment/openapi/new-route.yaml
 boundver generate --source index

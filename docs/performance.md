@@ -39,6 +39,178 @@ physical cold-disk measurement.
 
 ## Enforced CI target
 
+### Larger adoption profile (local)
+
+For v0.17 investigation, run:
+
+```bash
+python -I scripts/benchmark_adoption.py --runs 3 --components 58 --output adoption.json
+```
+
+This synthetic fixture adds file, tag, inherited and constant versions, ten
+generated-artifact receipts with a shared source, consumer chains, and slices.
+It measures validation, verification and generation separately, with first
+and repeated runs, median/range/standard deviation, phase CPU/wall timings,
+Git process counts and generation/verification source-read attribution.
+Use `--components 116` to examine growth; the permitted range is 6 through 232.
+
+The profile uses the in-process APIs. It does not include CLI startup,
+CLI-only advisory scans, or atomic lock publication, and does not flush OS caches. It is not an adopter
+benchmark or a new enforced CI latency promise. Validation uses the explicit
+HEAD source; the CLI's compatibility default remains working-tree. Compare
+equivalent source modes and record the host and fixture with any results.
+
+The initial local Windows/Python 3.14 58-component run (three repetitions)
+measured generation median 1.350 seconds (range 1.349-1.379), verification
+1.405 seconds (1.386-1.437), and HEAD validation 0.446 seconds (0.445-0.452).
+Generation started 38 Git processes; verification started 40. This fixture
+does **not** reproduce the adopter's 90-315 second generation timings. More
+representative file counts, tag/history topology, selectors and host/container
+I/O still need investigation. These API numbers alone cannot explain CLI
+generation latency; the separate CLI profile below measures a previously
+implicit advisory cost.
+
+### HEAD generation CLI work budget (local)
+
+```bash
+python -I scripts/benchmark_generation_cli.py --runs 3 --include-inspect --enforce \
+  --output generation-cli.json
+```
+
+This runs actual CLI dispatch in-process with `--dry-run`, using the same 58
+components plus 512 tracked files outside every declared component. It includes
+CLI preparation and rendering, but not interpreter startup, final file
+publication or physical cold-disk measurements. The counterfactual mode
+suppresses only the advisory warning helper, never validation or fingerprinting.
+The explicit inspection mode runs that helper normally. Host, repeat variance,
+Git commands, working-tree reads/bytes and computed lock hashes are recorded.
+
+To investigate slow mounted storage, run the same synthetic workload separately
+on each filesystem. `--fixture-parent` creates and removes a new temporary
+repository under an existing scratch directory; never point it at an adopter's
+checkout. For example:
+
+```bash
+python -I scripts/benchmark_generation_cli.py --outside-files 4000 \
+  --outside-payload-bytes 24576 --fixture-parent /path/to/scratch \
+  --storage-label mounted-scratch --runs 3 --include-inspect \
+  --output mounted-profile.json
+```
+
+The storage label is supplied by the operator, not detected. Reports include
+the outside-file payload size (each file also has a short identifying header).
+Fixture creation permits up to 8,000 outside files and 64 KiB payload per file,
+with a conservative 256 MiB aggregate outside-file budget. Defaults are unchanged.
+This varies I/O volume and placement, not the provider/version/dependency shape;
+it is not a reconstruction of any adopter's repository. Run comparisons
+sequentially and record other workloads; first invocation does not mean a
+flushed physical disk cache.
+
+To include substantial data inside component roots, both adoption and CLI
+profiles accept `--owned-files` and `--owned-payload-bytes`. The default is zero
+extra owned files. Files are spread across the synthetic components and affect
+their exact fingerprints; they do not enlarge provider inputs or alter version
+sources and derivations. Owned payload uses deterministic SHAKE-256 bytes,
+exercising Git blob I/O and hashing with high-entropy content. For example:
+
+```bash
+python -I scripts/benchmark_adoption.py --components 58 --owned-files 4000 \
+  --owned-payload-bytes 24576 --runs 3 --output owned-api-profile.json
+python -I scripts/benchmark_generation_cli.py --components 58 --owned-files 4000 \
+  --owned-payload-bytes 24576 --outside-files 4000 --outside-payload-bytes 24576 \
+  --runs 3 --enforce --output owned-cli-profile.json
+```
+
+Reports include actual tracked file counts and bytes inside/outside component
+roots, collected after the timed operations. Each extra-file group permits
+0..8000 files, 0..65536 payload bytes per file, and at most 256 MiB including
+headers. To examine growth, use 116 components and 8000 files in each group.
+This doubles the extra workload without changing the correctness or work-count
+budgets. These are local synthetic I/O profiles, not reproductions of an
+adopter's nested roots, large schema parsing, file-size distribution or storage.
+The API profile still measures validation, verification and generation separately.
+
+#### Owned-volume results (2026-11-08)
+
+The commands above were run sequentially from development commit
+`4c013029adb582120fb4febd834db688035be014`, using Python 3.10.22 and Git 2.39.5
+in a local Linux container limited to two CPUs and 3 GiB RAM. Fixtures lived on
+container-local storage, not a Windows-mounted checkout. Each operation had a
+first invocation and three measured repeats; no OS caches were flushed and
+other host workloads were not controlled.
+
+The CLI fixtures contained 8,825 tracked files / 196.9 MB and 17,646 files /
+393.7 MB respectively (decimal MB). API fixtures omitted the extra outside
+files and contained approximately 98.4 MB / 196.8 MB inside component roots.
+The larger case doubled components and both extra-file groups.
+
+| Operation | 58 components: median / SD (s) | 116 components: median / SD (s) | Git starts, 58 → 116 |
+| --- | --- | --- | --- |
+| API validation | 0.129 / 0.002 | 0.381 / 0.019 | 10 → 10 |
+| API verification | 0.725 / 0.035 | 1.305 / 0.147 | 40 → 70 |
+| API generation | 0.742 / 0.084 | 1.588 / 0.027 | 38 → 68 |
+| Default CLI generation | 0.704 / 0.096 | 1.551 / 0.039 | 44 → 74 |
+| Quiet CLI generation | 0.706 / 0.011 | 1.609 / 0.035 | 44 → 74 |
+
+SD is the population standard deviation of the three repeats, not a confidence
+interval. Raw local reports also retain ranges, first-run values and phase data.
+Both CLI profiles passed the existing per-invocation contract: no working-tree
+content reads, no index capture, identical lock bytes across modes, and at most
+48 / 78 Git starts. The relative default-versus-quiet timing budget also passed.
+
+The local growth acceptance budget is: after doubling this fixture's components
+and extra-file counts on the same host/runtime, each API operation's repeated
+median and default CLI generation's median must remain at most
+`3 * baseline median + 0.25 seconds`. All four checks passed. This complements
+the structural work-count bounds; it is not a timeout or latency promise for
+arbitrary repositories. Re-run both sizes before accepting a performance change.
+These results do not explain the adopter's reported latency or replace acceptance
+on their storage and provider inputs.
+
+An exploratory Linux/Python 3.14 run with this larger outside-file workload
+measured default HEAD generation at 0.42s on Linux-local storage and 9.96s on a
+Windows-backed mount. Default generation read no working-tree content in either
+case. Explicit inspection took 1.75s locally; on the mount its first/repeated
+calls took 68.96s/319.89s. The mounted repeat read fewer files than the local
+scan, and that report did not record advisory completion, so it is **not**
+evidence of a completed 319-second scan. All modes produced identical lock
+bytes. These were single-repeat, instrumented development runs with other local
+work active, not controlled latency promises or proof of an adopter's cause.
+
+New reports record `advisory_completed` and `advisory_failure_type`. The profile
+contract refuses to count an unconfirmed inspection as a completed-scan timing,
+even if generation exits successfully after an advisory warning. Old inspection
+reports without completion metadata cannot satisfy that check.
+
+Before the change, a local Windows/Python 3.14 run measured default generation
+at a repeated median of 6.334s versus 3.492s quiet. The warning scan added 24 Git
+processes and 1,337 working-tree reads, including 525 outside declared roots.
+After making the scan explicit, a separate run measured default 2.530s, quiet
+2.549s, and explicitly inspected 6.176s. Both runs computed the same canonical
+lock bytes. Between-run quiet timings also moved, so the structural difference
+and within-run comparisons are stronger evidence than a claimed absolute
+speedup. This does not prove the cause of every adopter's reported latency.
+
+The enforceable fixture contract is:
+
+- Default HEAD generation performs zero working-tree content reads, zero
+  advisory calls and zero `git write-tree` commands.
+- Git starts are bounded by `20 + 2 * floor(component_count / 4)` (48 for 58
+  components), allowing two independently guarded calls per tag prefix.
+- Repeated default median is at most `1.5 * quiet median + 0.25 seconds` on the
+  same fixture/host. This is not an arbitrary-repository latency promise.
+- Every measured mode computes identical canonical lock bytes and succeeds.
+
+This profile is local; no additional hosted job is scheduled. Small executable
+regressions enforce the zero-read/index/advisory and lock-equivalence properties
+in ordinary tests. The optional `--inspect-working-tree` diagnostic keeps its
+existing no-fetch, filter, fsmonitor and resource protections; opting in may
+still capture a contended index. The default optimization does not skip any
+integrity check or add a persistent cache. User-facing timing/progress and
+deadline-safe generation remain separate v0.17 work.
+
+### Existing verification contract
+
 The Linux/Python 3.12 CI job runs:
 
 ```bash
@@ -61,6 +233,36 @@ configuration is deliberately checked afresh before each Git command because
 it can change during an operation and can name executable clean filters. The
 wider wall ceilings remain stable on shared runners while still catching
 severe extraction or I/O regressions.
+
+## Generation diagnostics (v0.17 development)
+
+To see where generation spends time without changing its inputs:
+
+```sh
+boundver generate --source head --dry-run --progress --timing
+```
+
+`--progress` reports phase and component starts. `--timing` reports elapsed
+phase and component times. Both write only to stderr, including with `--quiet`
+or `--format json`; neither changes lock identities. Timing starts after CLI
+argument parsing and repository discovery. Nested phase times overlap, so do
+not add them together. Scoped generation still recomputes the complete lock
+for integrity checks and reports those components too.
+
+Diagnostics are limited to 256 progress lines, 32 distinct phase timings,
+128 component timing rows and 64 KiB overall. The final summary records omitted
+rows and lines. Labels are truncated and escaped for safe terminal display.
+These options do not send data anywhere or impose an execution deadline by
+themselves. Add `--timeout SECONDS` to bound computation before publication.
+Atomic commit and final output are not hard wall-time bounded.
+
+See the [publication and process-cleanup contract](generation-deadline-design.md)
+for timeout behavior, cleanup allowances and native-provider limitations.
+
+The summary distinguishes a dry run, a confirmed write, and publication not
+attempted. If a write is interrupted or raises before its outcome can be
+confirmed, it reports `attempted-outcome-unconfirmed`: inspect the destination
+before retrying. Cancellation is not proof that the destination was unchanged.
 
 ## Optimization baseline
 

@@ -105,10 +105,10 @@ SIDECAR_MODULE = (
 )
 
 #: The exact bytes `boundver init` writes without --discover, as a template over
-#: the one field it copies from the checkout. A release that moves the schema
-#: URL has to move this line deliberately; that is what makes it a golden.
+#: the project field it copies from the checkout. Scaffold bytes remain golden;
+#: schema identity follows the packaged contract, also checked separately below.
 INIT_SCAFFOLD = """{
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+  "$schema": "__CONFIG_SCHEMA_ID__",
   "project": %s,
   "defaults": {
     "compat_mode": "major"
@@ -124,7 +124,7 @@ INIT_SCAFFOLD = """{
     }
   }
 }
-"""
+""".replace("__CONFIG_SCHEMA_ID__", json.loads(CONFIG_SCHEMA.read_text(encoding="utf-8"))["$id"])
 
 INIT_NEXT_LINE = (
     "Next: review the config, then run `boundver validate-config` and "
@@ -987,13 +987,13 @@ class BaseRefNormalizationTests(unittest.TestCase):
         self.assertEqual(document["diagnostic_base_origin"], "explicit --base-ref")
         self.assertEqual(document["changed_files_status"], "ok")
 
-    def test_no_base_ref_infers_the_lock_history_origin(self):
+    def test_no_base_ref_leaves_lock_source_unproven(self):
         with _drift_scene() as scene:
             result, document = self._why_json(scene)
-            head = scene.head()
         self.assertEqual(result.returncode, DRIFT, result.stderr)
-        self.assertEqual(document["diagnostic_base_origin"], self.INFERRED_ORIGIN)
-        self.assertNotEqual(document["diagnostic_base"], head)
+        self.assertIn("unavailable", document["diagnostic_base_origin"])
+        self.assertIsNone(document["diagnostic_base"])
+        self.assertEqual(document["changed_files_status"], "not-run")
 
     def test_an_empty_base_ref_is_used_or_refused_but_never_inferred(self):
         """An explicitly empty CI variable is a usage error, never inference."""
@@ -1021,13 +1021,13 @@ class BaseRefNormalizationTests(unittest.TestCase):
         self.assertIn("invalid diagnostic base ref", result.stderr)
 
     def test_explain_maps_the_same_three_forms_the_same_way(self):
-        """The text command agrees: omission infers; explicit blanks refuse."""
+        """Omission lacks provenance; explicit blanks are invalid refs."""
         with _drift_scene() as scene:
             absent = run_cli(scene.root, "explain", "svc")
             empty = run_cli(scene.root, "explain", "svc", "--base-ref", "")
             blank = run_cli(scene.root, "explain", "svc", "--base-ref", " ")
-        self.assertEqual(absent.returncode, 0, absent.stderr)
-        self.assertIn(f"({self.INFERRED_ORIGIN})", absent.stdout)
+        self.assertEqual(absent.returncode, USAGE, absent.stderr)
+        self.assertIn("Lock source provenance is unavailable", absent.stderr)
         self.assertEqual(empty.returncode, USAGE)
         self.assertEqual(empty.stdout, "")
         self.assertIn("ERROR: invalid base ref: ''", empty.stderr)

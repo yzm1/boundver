@@ -121,7 +121,10 @@ docs/RELEASING.md
     (package / "boundary.config.schema.json").write_text(
         config_schema, encoding="utf-8"
     )
-    (package / "core.py").write_text(config_schema_url + "\n", encoding="utf-8")
+    (package / "core.py").write_text(
+        '# Config identity comes from the packaged schema, not a URL literal.\n',
+        encoding="utf-8",
+    )
     (package / "_lockfile.py").write_text(
         lock_schema_url + "\n", encoding="utf-8"
     )
@@ -286,6 +289,54 @@ def test_readiness_rejects_stale_lock_contracts(tmp_path: Path) -> None:
         "'boundver-semantic-config/v3'" in error
         for error in errors
     ), errors
+
+
+@pytest.mark.parametrize("filename", ["verify-baseline.schema.json", "cli-output.migrate-lock.schema.json"])
+def test_canonical_output_identity_does_not_replace_release_schema_id(tmp_path: Path, filename: str) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    schema_path = tmp_path / "spec" / filename
+    release_id = f"https://raw.githubusercontent.com/yzm1/boundver/{TAG}/spec/{filename}"
+    canonical_id = f"https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/{filename}"
+    schema_path.write_text(json.dumps({
+        "$id": release_id, "properties": {"$schema": {"const": canonical_id}},
+    }), encoding="utf-8")
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    assert not any(filename in error for error in errors), errors
+    schema_path.write_text(json.dumps({"$id": canonical_id}), encoding="utf-8")
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    assert any(f"{filename} $id must be" in error for error in errors), errors
+
+
+def test_generated_site_is_not_a_release_source_surface(tmp_path: Path) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    generated = tmp_path / "site" / "search"
+    generated.mkdir(parents=True)
+    (generated / "search_index.json").write_text("old generated output", encoding="utf-8")
+    assert not any("site" in path.relative_to(tmp_path).parts
+                   for path in release_readiness._release_files(tmp_path))
+
+
+@pytest.mark.parametrize("relative,ref,accepted", [
+    ("examples/range-review/fixture/boundary.config.json", "v0.16.0", True),
+    ("examples/range-review/fixture/boundary.config.json", TAG, False),
+    ("examples/range-review/fixture/boundary.config.json", "main", False),
+    ("examples/range-review/fixture/other.config.json", "v0.16.0", False),
+    ("examples/current/boundary.config.json", "v0.16.0", False),
+])
+def test_only_the_named_historical_config_retains_its_frozen_schema_pin(
+    tmp_path: Path, relative: str, ref: str, accepted: bool,
+) -> None:
+    _write_minimal_project(tmp_path, _changelog())
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "$schema": f"https://raw.githubusercontent.com/yzm1/boundver/{ref}/boundary.config.schema.json",
+    }), encoding="utf-8")
+    errors = release_readiness.readiness_errors(tmp_path, TAG)
+    if accepted:
+        assert errors == []
+    else:
+        assert any("schema URL uses" in error for error in errors), errors
 
 
 def test_readiness_rejects_stale_new_public_schema_ids(tmp_path: Path) -> None:

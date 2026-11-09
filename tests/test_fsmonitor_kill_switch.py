@@ -161,8 +161,8 @@ ARGV_SHAPE_KEY = "with a safe.directory prefix"
 #: The commands the claim is made about, and the exit code each returns against
 #: the fixture repository. They run in this order in one repository, so the
 #: first `generate` writes the lockfile the last two read. Head mode belongs
-#: here despite reading only committed objects, because the CLI additionally
-#: checks the working tree to warn about uncommitted changes.
+#: here to prove ordinary HEAD generation is safe too; the explicit advisory
+#: case still drives the working-tree/index scan and its hostile-hook defenses.
 CLEAN_COMMANDS = {
     "generate --source working-tree": (
         ("generate", "--source", "working-tree"),
@@ -170,12 +170,20 @@ CLEAN_COMMANDS = {
     ),
     "generate --source index": (("generate", "--source", "index"), 0),
     "generate --source head": (("generate", "--source", "head"), 0),
+    "generate head with explicit inspection": (
+        ("generate", "--source", "head", "--inspect-working-tree"), 0,
+    ),
     "status --source working-tree": (("status", "--source", "working-tree"), 0),
     "explain --source working-tree": (
         ("explain", "svc", "--source", "working-tree"),
         0,
     ),
 }
+
+# These commands intentionally never consult the index, even when its
+# hardening is removed. The explicit inspection case above is the positive
+# control for the warning scan; all other cases retain their hook premise.
+COMMITTED_ONLY_COMMANDS = frozenset({"generate --source head"})
 
 #: verify's exit code when it finds drift, which is what the fixture arranges.
 VERIFY_DRIFT_EXIT = 4
@@ -626,7 +634,7 @@ class TheLiteralFalseIsInertHereTests(_MarkerCase):
 
 
 class HookReachabilityPremiseTests(_MarkerCase):
-    """OBL-GIT-SOURCE-157: every command claimed clean does reach the hook.
+    """OBL-GIT-SOURCE-157: source-only reads and real hook premises differ.
 
     These run the CLI inside this interpreter rather than as a subprocess,
     because removing a carrier is an in-process patch. The end-to-end claim in
@@ -640,16 +648,15 @@ class HookReachabilityPremiseTests(_MarkerCase):
             with _carriers_removed(drop_flag=True, drop_config=True):
                 return run_cli_in_process(self.scene.root, *arguments)
 
-    def test_every_command_reaches_the_hook_once_the_switch_is_removed(self):
+    def test_index_commands_reach_the_hook_but_head_alone_does_not(self):
         for label, (arguments, expected) in CLEAN_COMMANDS.items():
             with self.subTest(command=label):
                 result = self._stripped(arguments)
                 self.assertEqual(result.returncode, expected, result.stderr)
-                self.assertNotEqual(
-                    self.marker.fired(),
-                    [],
-                    f"{label} never consulted the fsmonitor hook even with the "
-                    "kill switch removed, so asserting its silence proves nothing",
+                self.assertEqual(
+                    bool(self.marker.fired()),
+                    label not in COMMITTED_ONLY_COMMANDS,
+                    f"{label} violated its source-only or hook reachability premise",
                 )
 
     def test_verify_reaches_the_hook_once_the_switch_is_removed(self):
@@ -666,9 +673,9 @@ class HookReachabilityPremiseTests(_MarkerCase):
     def test_the_head_mode_digest_walk_alone_is_blind_where_the_others_are_not(self):
         """Head mode reads committed objects only, and the contrast is measured.
 
-        `generate --source head` at the CLI does fire the marker above, but only
-        because the CLI inspects the working tree to warn about uncommitted
-        changes. The walk underneath it touches nothing the hook is consulted
+        `generate --source head --inspect-working-tree` can fire the marker
+        above when its guards are stripped, because the explicit advisory
+        inspects the working tree. The walk underneath touches nothing consulted
         for. Asserting that alone would be worthless without showing that this
         very entry point - `generate_lockfile`, not the CLI - can fire the
         marker at all, so the working-tree and index sources are driven through
@@ -767,7 +774,7 @@ class HostileRepositoryTests(_CacheDiscipline):
                     self.assertEqual(engaged.returncode, expected, engaged.stderr)
                     self.assertEqual(
                         self.marker.fired_names(),
-                        [LIVE_FSMONITOR_VALUE],
+                        [] if label in COMMITTED_ONLY_COMMANDS else [LIVE_FSMONITOR_VALUE],
                         f"{label} did not spawn the hook in a real subprocess "
                         "even with both carriers stripped inside the child, so "
                         "its silence below would be evidence about the runner",

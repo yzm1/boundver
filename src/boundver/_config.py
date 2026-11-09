@@ -71,6 +71,7 @@ from ._config_contract import (
     ROOT_FIELDS,
     SLICE_FIELDS,
     VERSION_FILE_FIELDS,
+    VERSION_REPO_FILE_FIELDS,
     VERSION_COMPONENT_FIELDS,
     VERSION_CONSTANT_FIELDS,
     VERSION_SOURCE_FIELDS,
@@ -92,6 +93,7 @@ from ._discovery import (
     discover_components as _discover_components_impl,
 )
 from .versions import parse_semver
+from ._version_paths import version_file_repo_path
 
 MAX_CONFIG_BYTES = 10 * 1024 * 1024
 
@@ -597,8 +599,9 @@ def validate_config(
     rules.  Its backward-compatible default permits intentional null slice
     inputs for callers that will generate with ``strict=False``.
 
-    ``validate_provider_runtime=False`` is reserved for read-only historical
-    analysis: declarations, paths, graph edges, and slices remain validated,
+    ``validate_provider_runtime=False`` supports read-only historical analysis
+    and controller preparation before contained worker validation:
+    declarations, paths, graph edges, and slices remain validated,
     but no custom provider is imported and no host dependency probe can make a
     committed endpoint depend on the review machine.
     """
@@ -1502,17 +1505,18 @@ def validate_config(
                         f"Component '{name}' version_source.git_tag_prefix "
                         f"{prefix_error}"
                     )
-            elif "file" in version_source:
+            elif "file" in version_source or "repo_file" in version_source:
+                file_kind = "file" if "file" in version_source else "repo_file"
                 _reject_unknown_fields(
                     errors,
                     version_source,
-                    VERSION_FILE_FIELDS,
+                    VERSION_FILE_FIELDS if file_kind == "file" else VERSION_REPO_FILE_FIELDS,
                     f"component '{name}' version_source",
                 )
-                vs_file = version_source["file"]
+                vs_file = version_source[file_kind]
                 vs_file_display = _bounded_diagnostic_repr(vs_file)
                 if not isinstance(vs_file, str) or not vs_file.strip():
-                    errors.append(f"Component '{name}' version_source.file must be a non-empty string")
+                    errors.append(f"Component '{name}' version_source.{file_kind} must be a non-empty string")
                 else:
                     try:
                         normalized_vs_file = _normalize_declared_path(vs_file)
@@ -1525,45 +1529,40 @@ def validate_config(
                     )
                     if not safe_vs_file:
                         errors.append(
-                            f"Component '{name}' version_source.file must be a safe "
-                            "component-relative path using '/' separators: "
+                            f"Component '{name}' version_source.{file_kind} must be a safe "
+                            f"{'component' if file_kind == 'file' else 'repository'}-relative path using '/' separators: "
                             f"{vs_file_display}"
                         )
                         normalized_vs_file = vs_file
                     _supported_vs_exts = {".json", ".toml", ".yaml", ".yml"}
                     if Path(normalized_vs_file).suffix not in _supported_vs_exts:
                         errors.append(
-                            f"Component '{name}' version_source.file has unsupported "
+                            f"Component '{name}' version_source.{file_kind} has unsupported "
                             "extension "
                             f"'{_bounded_diagnostic_text(Path(normalized_vs_file).suffix)}'"
                             f" — supported: {', '.join(sorted(_supported_vs_exts))}"
                         )
-                    vs_full = (
-                        repo_root / component_path / normalized_vs_file
-                        if component_path is not None and safe_vs_file
-                        else None
-                    )
                     version_repo_path = (
-                        f"{component_path.rstrip('/')}/{normalized_vs_file}"
+                        version_file_repo_path(component_path, version_source)
                         if component_path is not None and safe_vs_file
                         else None
                     )
+                    vs_full = repo_root / version_repo_path if version_repo_path is not None else None
                     if source == "working-tree" and vs_full is not None and vs_full.is_symlink():
                         errors.append(
-                            f"Component '{name}' version_source.file must not be a symlink: "
+                            f"Component '{name}' version_source.{file_kind} must not be a symlink: "
                             f"{vs_file_display}"
                         )
                     elif source == "working-tree" and vs_full is not None and not _is_within(repo_root, vs_full):
                         errors.append(
-                            f"Component '{name}' version_source.file escapes the repository: "
+                            f"Component '{name}' version_source.{file_kind} escapes the repository: "
                             f"{vs_file_display}"
                         )
                     if source == "working-tree" and vs_full is not None and not vs_full.exists():
                         errors.append(
-                            f"Component '{name}' version_source.file not found: "
+                            f"Component '{name}' version_source.{file_kind} not found: "
                             f"{vs_file_display} (looked for "
-                            f"{_bounded_diagnostic_text(component_path)}/"
-                            f"{_bounded_diagnostic_text(vs_file)})"
+                            f"{_bounded_diagnostic_text(version_repo_path)})"
                         )
                     elif source == "working-tree" and vs_full is not None:
                         if tracking_snapshot_error is not None:
@@ -1575,7 +1574,7 @@ def validate_config(
                             and version_repo_path not in tracking_snapshot.tracked_paths
                         ):
                             errors.append(
-                                f"Component '{name}' version_source.file must be "
+                                f"Component '{name}' version_source.{file_kind} must be "
                                 f"tracked in Git: {vs_file_display}"
                             )
                     elif (
@@ -1594,14 +1593,14 @@ def validate_config(
                                 )
                         except (OSError, subprocess.CalledProcessError, ValueError) as exc:
                             errors.append(
-                                f"Component '{name}' version_source.file cannot be "
+                                f"Component '{name}' version_source.{file_kind} cannot be "
                                 f"read at {source}: {vs_file_display}: "
                                 f"{_bounded_diagnostic_text(str(exc))}"
                             )
                         else:
                             if selected_entry is None:
                                 errors.append(
-                                    f"Component '{name}' version_source.file not found "
+                                    f"Component '{name}' version_source.{file_kind} not found "
                                     f"in captured {source} source: {vs_file_display}"
                                 )
                             elif snapshot is not None and (
@@ -1609,13 +1608,13 @@ def validate_config(
                                 or selected_entry.mode not in {"100644", "100755"}
                             ):
                                 errors.append(
-                                    f"Component '{name}' version_source.file must be "
+                                    f"Component '{name}' version_source.{file_kind} must be "
                                     f"a regular file in captured {source} source: "
                                     f"{vs_file_display}"
                                 )
                     if "field" not in version_source:
                         errors.append(
-                            f"Component '{name}' version_source has 'file' but no 'field' — "
+                            f"Component '{name}' version_source has '{file_kind}' but no 'field' — "
                             "specify which field to read, e.g. \"field\": \"version\""
                         )
                     elif not isinstance(version_source.get("field"), str) or not version_source["field"].strip():
@@ -1690,7 +1689,7 @@ def validate_config(
                 )
                 errors.append(
                     f"Component '{name}' version_source must have exactly one of "
-                    "'file', 'git_tag_prefix', 'component', or 'constant'"
+                    "'file', 'repo_file', 'git_tag_prefix', 'component', or 'constant'"
                 )
 
     if not errors.truncated:
@@ -1948,7 +1947,7 @@ def validate_config(
         provider_name = boundary_provider_name(boundary)
         provider = get_provider(provider_name, registry=registry)
         if provider is None:
-            if allow_custom_providers and provider_name.startswith("custom."):
+            if validate_provider_runtime and allow_custom_providers and provider_name.startswith("custom."):
                 errors.append(
                     f"Component '{name}' provider "
                     f"'{_bounded_diagnostic_text(provider_name)}' was not registered "
@@ -1998,7 +1997,13 @@ def validate_config(
     return list(errors)
 
 
-def config_warnings(config: dict, repo_root: Path) -> List[str]:
+def config_warnings(
+    config: dict,
+    repo_root: Path,
+    *,
+    source: str = "working-tree",
+    snapshot: Optional[GitSourceSnapshot] = None,
+) -> List[str]:
     warnings = BoundedDiagnosticList()
     if not isinstance(config, dict):
         return list(warnings)
@@ -2035,7 +2040,8 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
                 repo_root,
                 component_path,
                 boundary_paths,
-                source="working-tree",
+                source=source,
+                snapshot=snapshot,
                 _glob_operation=glob_operation,
             )
         except GuardrailError as exc:
@@ -2051,7 +2057,8 @@ def config_warnings(config: dict, repo_root: Path) -> List[str]:
                 repo_root,
                 component_path,
                 behavior_paths,
-                source="working-tree",
+                source=source,
+                snapshot=snapshot,
                 _glob_operation=glob_operation,
             )
         except GuardrailError as exc:

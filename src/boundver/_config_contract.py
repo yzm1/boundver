@@ -115,11 +115,13 @@ COMPONENT_FIELDS = frozenset(
 BOUNDARY_FIELDS = frozenset({"provider", "paths", "options", "note"})
 BEHAVIOR_FIELDS = frozenset({"paths"})
 VERSION_FILE_FIELDS = frozenset({"file", "field"})
+VERSION_REPO_FILE_FIELDS = frozenset({"repo_file", "field"})
 VERSION_TAG_FIELDS = frozenset({"git_tag_prefix"})
 VERSION_COMPONENT_FIELDS = frozenset({"component"})
 VERSION_CONSTANT_FIELDS = frozenset({"constant"})
 VERSION_SOURCE_FIELDS = (
     VERSION_FILE_FIELDS
+    | VERSION_REPO_FILE_FIELDS
     | VERSION_TAG_FIELDS
     | VERSION_COMPONENT_FIELDS
     | VERSION_CONSTANT_FIELDS

@@ -607,6 +607,7 @@ _DIAGNOSTIC_SINKS = {
     "structural_issues",
     "messages",
     "message",
+    "annotation",
     "errors",
 }
 

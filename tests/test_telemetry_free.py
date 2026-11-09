@@ -116,6 +116,68 @@ def test_runtime_has_no_outbound_network_or_telemetry_imports() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_posix_worker_creation_is_a_fixed_isolated_local_interpreter() -> None:
+    tree = ast.parse((RUNTIME_ROOT / "_posix_worker.py").read_text(encoding="utf-8"))
+    launches = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                and _qualified_name(node.func) == "subprocess.Popen"]
+    assert len(launches) == 1
+    call = launches[0]
+    assert isinstance(call.args[0], ast.Name) and call.args[0].id == "worker_command"
+    assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "worker_command" for target in node.targets)]
+    assert len(assignments) == 1
+    command = assignments[0].value
+    assert isinstance(command, ast.List) and len(command.elts) == 2
+    assert _qualified_name(command.elts[0]) == "sys.executable"
+    assert isinstance(command.elts[1], ast.Starred)
+    assert _qualified_name(command.elts[1].value.func) == "worker_arguments"
+    options = {keyword.arg: keyword.value for keyword in call.keywords}
+    assert options["start_new_session"].value is True
+    assert options["close_fds"].value is True
+    assert isinstance(options["pass_fds"], ast.Tuple) and len(options["pass_fds"].elts) == 1
+    assert options["pass_fds"].elts[0].id == "reader"
+    assert all(_qualified_name(options[name]) == "subprocess.DEVNULL" for name in ("stdin", "stdout", "stderr"))
+    assert "shell" not in options
+
+
+def test_worker_bootstrap_is_fixed_local_code_not_repository_selected():
+    from boundver._worker_bootstrap import WORKER_BOOTSTRAP, worker_arguments
+    tree = ast.parse(WORKER_BOOTSTRAP)
+    assert set(_import_names(tree)) == {"runpy", "sys"}
+    assert not any(_forbidden_import(name) for name in _import_names(tree))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and _qualified_name(node.func) == "runpy.run_module"]
+    assert len(calls) == 1 and calls[0].args[0].value == "boundver._generation_worker"
+    directory = REPO_ROOT / "hypothetical-private-transfer"
+    arguments = worker_arguments(directory)
+    assert arguments[:3] == ["-I", "-c", WORKER_BOOTSTRAP]
+    assert Path(arguments[3]) == RUNTIME_ROOT.parent
+    assert arguments[4] == str(directory)
+
+
+def test_posix_lifeline_bootstrap_has_only_local_imports_and_targets_own_group():
+    from boundver._worker_bootstrap import POSIX_WORKER_BOOTSTRAP
+    tree = ast.parse(POSIX_WORKER_BOOTSTRAP)
+    assert set(_import_names(tree)) == {"os", "signal", "stat", "sys", "threading", "runpy"}
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and _qualified_name(node.func) == "os.killpg"]
+    assert len(calls) == 1
+    assert _qualified_name(calls[0].args[0].func) == "os.getpid"
+
+
+def test_native_worker_creation_is_statically_interpreter_rooted() -> None:
+    calls = []
+    for path in sorted(RUNTIME_ROOT.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls.extend((path, node) for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and _qualified_name(node.func).endswith(".CreateProcessW"))
+    assert len(calls) == 1
+    path, call = calls[0]
+    assert path.name == "_windows_job.py"
+    assert _qualified_name(call.args[0]) == "sys.executable"
+    assert isinstance(call.args[4], ast.Constant) and call.args[4].value is False
+
+
 def test_runtime_processes_are_statically_git_rooted() -> None:
     process_calls: list[tuple[Path, ast.Call]] = []
     git_command_assignments: list[ast.Assign] = []
@@ -131,6 +193,10 @@ def test_runtime_processes_are_statically_git_rooted() -> None:
                     or name.startswith("os.exec")
                     or name.startswith("os.spawn")
                 ):
+                    if path.name == "_posix_worker.py" and name == "subprocess.Popen":
+                        # A separate exact-shape test pins this local Python
+                        # worker exception; the Git launch policy stays intact.
+                        continue
                     process_calls.append((path, node))
             elif isinstance(node, ast.Assign) and any(
                 isinstance(target, ast.Name) and target.id == "command"

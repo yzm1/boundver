@@ -54,7 +54,13 @@ nav:
       - Range-review case study: case-study-range-review.md
       - CI cookbook: ci-cookbook.md
       - Migration and ratcheting: migration-and-ratcheting.md
+      - Scoped verification: scoped-verification.md
+      - Deployment-reference comparison: deployment-comparison-design.md
+      - Slice explanations: slice-explanations.md
+      - Generation previews: generation-previews.md
+      - Historical lock inspection: historical-lock-inspection.md
       - Lockfile merges: LOCKFILE_MERGE.md
+      - Shared checkouts: shared-checkouts.md
       - Distribution: distribution.md
       - Troubleshooting: troubleshooting.md
   - Reference:
@@ -76,6 +82,8 @@ nav:
       - Documentation style: documentation-style.md
       - Release process: RELEASING.md
       - Design and assurance:
+          - Reviewed-drift proposal: reviewed-drift-design.md
+          - Generation deadline contract: generation-deadline-design.md
           - Testing obligation dispositions: design/testing-obligation-dispositions.md
           - Semantic provider RFC: design/semantic-provider-rfc.md
           - Semantic provider threat model: design/semantic-provider-threat-model.md

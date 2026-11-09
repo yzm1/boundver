@@ -1103,7 +1103,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             side_effect=OSError("git unavailable"),
         ):
             result = analyze_explain_changes(
-                self._config(), Path("."), "svc", source="head"
+                self._config(), Path("."), "svc", base_ref="HEAD", source="head"
             )
 
         self.assertEqual(
@@ -1127,7 +1127,7 @@ class DiagnosticGuardrailTests(unittest.TestCase):
             side_effect=OSError("x" * 10_000),
         ):
             result = analyze_explain_changes(
-                self._config(), Path("."), "svc", source="head"
+                self._config(), Path("."), "svc", base_ref="HEAD", source="head"
             )
 
         self.assertTrue(result["error"].startswith("cannot capture head source: "))

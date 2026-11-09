@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/boundary.config.schema.json",
   "title": "boundver config",
   "description": "Declares repository components, their contract identities, downstream consumers, and optional slices.",
   "$defs": {
@@ -221,6 +221,24 @@
                   "file": {
                     "$ref": "#/$defs/relativePath",
                     "description": "Component-relative manifest file containing the version."
+                  },
+                  "field": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Field path read from the version manifest."
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "description": "Read a version field from a repository-root-relative JSON, TOML, or YAML file, including a sibling or shared manifest outside the component.",
+                "required": ["repo_file", "field"],
+                "properties": {
+                  "repo_file": {
+                    "$ref": "#/$defs/relativePath",
+                    "not": {"pattern": "[:*?\\[]"},
+                    "description": "Explicit repository-root-relative version file; not relative to the component or config directory. Uses the selected source's regular-file and tracking checks; no globs or traversal."
                   },
                   "field": {
                     "type": "string",

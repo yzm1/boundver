@@ -4,6 +4,7 @@ import json
 import os
 import posixpath
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -16,6 +17,7 @@ from ._consumer_graph import (
 )
 from ._structured_data import strict_json_loads
 from ._derivations import verify_derivations
+from ._generation_diagnostics import GenerationDiagnostics
 
 from ._git import (
     _GitBlobSession,
@@ -442,6 +444,7 @@ def generate_lockfile(
     allow_custom_providers: bool = False,
     snapshot: Optional[GitSourceSnapshot] = None,
     components_filter: Optional[Set[str]] = None,
+    observer: Optional[GenerationDiagnostics] = None,
 ) -> dict:
     """Generate a lockfile from config + repo state.
 
@@ -522,32 +525,28 @@ def generate_lockfile(
         raise ConfigError(f"Cannot capture {source} source: {exc}") from exc
     generation_errors = BoundedDiagnosticList()
     with accessor:
-        freshness_issues = verify_derivations(config, accessor)
+        phase = observer.phase if observer is not None else lambda _: nullcontext()
+        with phase("derivations"):
+            freshness_issues = verify_derivations(config, accessor)
         if freshness_issues:
             raise ConfigError(
                 "Generated-artifact freshness failed:\n"
                 + "\n".join(freshness_issues)
             )
-        accessor.prime_latest_tags(tag_prefixes)
-        resolved_versions = _resolve_component_versions(
-            components_config,
-            repo_root,
-            accessor,
-            required=set(components_to_compute),
-        )
+        with phase("versions"):
+            accessor.prime_latest_tags(tag_prefixes)
+            resolved_versions = _resolve_component_versions(
+                components_config, repo_root, accessor,
+                required=set(components_to_compute),
+            )
 
         # --- Components ---
         for name, comp in components_to_compute.items():
-            component_entry = _compute_component_entry(
-                name,
-                comp,
-                repo_root,
-                source,
-                defaults,
-                accessor,
-                registry,
-                version_result=resolved_versions.get(name),
-            )
+            with observer.component(name) if observer is not None else nullcontext():
+                component_entry = _compute_component_entry(
+                    name, comp, repo_root, source, defaults, accessor, registry,
+                    version_result=resolved_versions.get(name),
+                )
             lockfile["components"][name] = component_entry
             generation_errors.extend(
                 _generation_errors({"components": {name: component_entry}})
@@ -937,13 +936,14 @@ def _compute_component_entry(
         elif version is None:
             message = "Configured version source did not produce a version"
             version_source = comp.get("version_source")
+            file_kind = "repo_file" if isinstance(version_source, dict) and "repo_file" in version_source else "file"
             if (
                 isinstance(version_source, dict)
-                and isinstance(version_source.get("file"), str)
+                and isinstance(version_source.get(file_kind), str)
                 and isinstance(version_source.get("field"), str)
             ):
                 message += (
-                    f" (file {_bounded_diagnostic_repr(version_source['file'])}, "
+                    f" ({file_kind} {_bounded_diagnostic_repr(version_source[file_kind])}, "
                     f"field {_bounded_diagnostic_repr(version_source['field'])})"
                 )
             version_errors.append(message)
@@ -1284,6 +1284,7 @@ def generate_lockfile_for_components(
     snapshot: Optional[GitSourceSnapshot] = None,
     existing_lockfile: Optional[dict] = None,
     running_version: Optional[str] = None,
+    observer: Optional[GenerationDiagnostics] = None,
 ) -> dict:
     """Generate/update lockfile only for selected components and impacted slices."""
     source = _normalize_source(source)
@@ -1370,6 +1371,7 @@ def generate_lockfile_for_components(
         config, repo_root, source=source, strict=strict,
         allow_custom_providers=allow_custom_providers,
         snapshot=snapshot,
+        **({"observer": observer} if observer is not None else {}),
     )
     for name in set(components_cfg) - set(selected):
         if merged.get("components", {}).get(name) != current_lock["components"][name]:
@@ -1467,6 +1469,7 @@ def verify_lockfile(
     transitive_consumers: bool = False,
     consumer_impact: Optional[List[dict]] = None,
     drifted_components: Optional[Set[str]] = None,
+    verification_report: Optional[dict] = None,
 ) -> List[str]:
     """Check if the lockfile matches current repo state. Returns list of mismatches.
 
@@ -1478,7 +1481,25 @@ def verify_lockfile(
     with both gating and non-gating drift. A truncated diagnostic result may
     leave that set incomplete, so callers must retain the truncation signal.
     *observations* is an output list: each invocation replaces its contents.
+    *verification_report* is an optional structured computation receipt. It
+    records facet findings at their origin, never by parsing display labels.
+    It is not an independent integrity verdict; the returned issues still gate.
+    ``traversal_complete`` means comparisons finished without diagnostic
+    truncation, not that the repository is valid. Computed components include
+    slice dependencies; version components also include inheritance readers.
+    No claim about component metadata or global integrity follows from an
+    empty ``component_findings`` list.
     """
+    if verification_report is not None:
+        if not isinstance(verification_report, dict):
+            raise TypeError("verification_report must be a dict or None")
+        verification_report.clear()
+        verification_report.update(
+            traversal_complete=False, computed_components=[], compared_components=[],
+            version_components=[], compared_slices=[], component_findings=[],
+            component_diagnostics=[],
+            unavailable_components=[],
+        )
     if observations is not None:
         if not isinstance(observations, list):
             raise TypeError("observations must be a list or None")
@@ -1655,6 +1676,10 @@ def verify_lockfile(
                         version_result=resolved_versions.get(name),
                     )
 
+    if verification_report is not None:
+        verification_report["computed_components"] = sorted(computed_entries)
+        verification_report["version_components"] = sorted(resolved_versions)
+
     def identity_label(value: str) -> str:
         """Return a bounded display label that remains identity-distinct."""
         rendered = _bounded_diagnostic_text(value)
@@ -1668,11 +1693,14 @@ def verify_lockfile(
             max_chars=prefix_limit,
         ) + suffix
 
+    incomplete_comparisons: Set[str] = set()
     # Per-component verification with optional early exit.
     for name, comp_cfg in check_components.items():
         if issues.truncated:
             return truncated_issue_result()
         display_name = identity_label(name)
+        if verification_report is not None:
+            verification_report["compared_components"].append(name)
         component_gated_facets = explicit_gated_facets
         configured_component_facets = comp_cfg.get("verify_facets")
         if component_gated_facets is None:
@@ -1693,6 +1721,7 @@ def verify_lockfile(
             current_vendored_issues = []
         locked_comp = lockfile.get("components", {}).get(name)
         if locked_comp is None:
+            incomplete_comparisons.add(name)
             if drifted_components is not None:
                 drifted_components.add(name)
             issues.append(f"NEW component not in lockfile: {display_name}")
@@ -1704,6 +1733,8 @@ def verify_lockfile(
             include_vendored=False,
         )
         locked_errors = _generation_errors({"components": {name: locked_comp}})
+        if current_errors or locked_errors:
+            incomplete_comparisons.add(name)
         for message in current_errors:
             if drifted_components is not None:
                 drifted_components.add(name)
@@ -1735,6 +1766,7 @@ def verify_lockfile(
                 and facet in component_gated_facets
                 and (cv is None or lv is None)
             ):
+                incomplete_comparisons.add(name)
                 if drifted_components is not None:
                     drifted_components.add(name)
                 issues.append(
@@ -1753,6 +1785,13 @@ def verify_lockfile(
                     f"MISMATCH {display_name}.{facet}: "
                     f"lockfile={_short(lv)} current={_short(cv)}"
                 )
+                if verification_report is not None:
+                    verification_report["component_findings"].append({
+                        "component": name, "facet": facet,
+                        "gating": facet in component_gated_facets,
+                        "before": lv, "after": cv,
+                    })
+                    verification_report["component_diagnostics"].append(message)
                 if facet in component_gated_facets:
                     issues.append(message)
                     if facet in {"boundary", "compat"}:
@@ -1794,10 +1833,13 @@ def verify_lockfile(
                         if consumers:
                             qualifier = " (TRANSITIVE)" if transitive_consumers else ""
                             consumer_preview = _diagnostic_list_preview(consumers)
-                            issues.append(
+                            annotation = (
                                 f"AFFECTED CONSUMERS{qualifier} {display_name}: "
                                 f"{consumer_preview}"
                             )
+                            issues.append(annotation)
+                            if verification_report is not None:
+                                verification_report["component_diagnostics"].append(annotation)
                     if fail_fast:
                         return issues
                 else:
@@ -1866,6 +1908,8 @@ def verify_lockfile(
             )
             if use_filter and not (selected & resolved_slice_components):
                 continue
+            if verification_report is not None:
+                verification_report["compared_slices"].append(sname)
             current_slice = _recompute_slice_entry(
                 sname,
                 sdef,
@@ -1979,6 +2023,9 @@ def verify_lockfile(
 
     if observations is not None:
         observations[:] = list(non_gating)
+    if verification_report is not None:
+        verification_report["traversal_complete"] = not (issues.truncated or non_gating.truncated)
+        verification_report["unavailable_components"] = sorted(incomplete_comparisons)
     if limit_report and issues:
         if issues.truncated:
             return [_DIAGNOSTIC_TRUNCATION_MARKER]

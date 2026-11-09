@@ -6,6 +6,147 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-09
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+Existing supported locks do not need regeneration merely to upgrade. Adding
+new declarations such as `version_source.repo_file` changes the declared
+configuration and requires a normal reviewed lock update. Historical inspection
+does not migrate incompatible digests or assert deployment provenance.
+
+### Added
+
+- Deployment comparison follows component facet overrides and aggregate slice
+  gates, even when affected rows are hidden by presentation limits. Reports
+  expose effective policies and separate slice changes; unavailable selected
+  facets fail closed instead of treating null digests as agreement.
+
+- Component `why` now reports recorded/current version values and explicit
+  changed, unchanged or unavailable status, matching slice and generation
+  reports without treating version movement as compatibility or deployment proof.
+
+- Added read-only `diff --format upgrade-json` for strict supported v3/v4
+  historical record inspection. Reports separate header/config contracts,
+  provider identities, component value equality and slice metadata. Equal
+  values across incompatible contracts remain incomparable, not migrated or
+  verified. Normal verification and migration still refuse old digest contracts.
+
+- Added read-only `generate --dry-run --format changes-json` and
+  `diff --format changes-json` reports for component/facet differences, explicit
+  version status and slice changes. Summary/row limits preserve counts;
+  incompatible declarations or provider contracts are marked incomparable.
+  Existing JSON lock/diff output is unchanged. Reports neither publish locks
+  nor replace current-lock verification or attest deployment provenance.
+
+- Added `why --slice NAME` with deterministic text/JSON explanations of slice
+  drift, contributing members, changed facets and version movement. Summary
+  and row limits preserve complete counts. Incompatible declarations/provider
+  contracts and unavailable facets fail closed; lock-source provenance remains
+  explicitly unavailable rather than inferred from history.
+
+- Added `verify --format scoped-json` to separate requested selection, actual
+  computation dependencies, selected fingerprint drift and repository-level
+  diagnostics. The existing JSON shape and aggregate gating remain unchanged;
+  unknown component selections now produce a structured JSON failure.
+  Scoped text output also distinguishes a clean selected fingerprint comparison
+  from global integrity failures; `--changed-from` still verifies full integrity.
+
+- Added read-only `compare-deployment --environment NAME --ref LOCAL_REF`,
+  with text/JSON output, summary counts and bounded component/slice listings. It
+  requires a reconciled reference lock and compatible declarations, computes
+  current contracts without refreshing a lock, and never fetches or moves refs.
+  Environment labels are operator assertions, not deployment attestations;
+  current-lock integrity still requires a separate `verify` command.
+
+- Added opt-in `generate --timeout SECONDS` for a computation deadline before
+  controller-managed publication. It supervises an owned worker, validates the
+  result and rejects late publication. Commit/output latency is not hard
+  wall-time bounded; native custom providers remain trusted, not sandboxed.
+
+- Added opt-in `generate --progress` and `--timing` diagnostics on stderr,
+  with bounded phase/component reporting and explicit publication outcomes.
+  JSON stdout and persisted lock identities are unchanged. These diagnostics
+  do not enforce an execution deadline.
+
+- Added `version_source.repo_file` for an explicit repository-root-relative
+  version manifest outside a component. Existing `file` paths remain
+  component-relative. Both use the same captured-source, tracking, regular-file,
+  bounded-parser and symlink safeguards. Changed-component reporting and
+  diagnostics include shared readers and transitive version inheritors without
+  treating external version bytes as boundary content or weakening full-lock
+  verification. Existing config and fingerprint algorithms are unchanged; using
+  the new declaration is an intentional semantic-config change.
+
+- Made declaration coverage useful on large repositories with repeatable
+  `--component` and literal `--path-prefix` filters, per-facet summary counts,
+  `--summary`, and bounded `--limit` listings. The new
+  `boundver-declaration-coverage/v2` output separates completed analysis from
+  filtered scope and truncated presentation. Strict gating counts uncovered
+  entries even when no uncovered paths fit in the listing. Real work and
+  document-size budgets still fail closed; exclusions are not required merely
+  to fit an output limit.
+
+- Added `--source head|index|working-tree` to `validate-config` and its
+  `check-config` alias. The default remains working-tree. HEAD validation reads
+  config, declarations, warnings and derivation receipts from its captured
+  commit without writing the shared index, even when another session holds
+  `index.lock` or the checkout has unrelated dirty files.
+- Added a local 58-component adoption profiling fixture covering separate
+  validation, verification and generation, shared derivation inputs, version
+  inheritance and tags. Synthetic measurements do not reproduce or claim to
+  resolve reported downstream generation latency.
+
+### Changed
+
+- Corrected the merge/re-lock workflow: resolve and explicitly stage reviewed
+  source/config and a temporary generated-lock placeholder before full index
+  regeneration. Real merge tests show that even a lock-only unmerged index
+  prevents coherent working-tree capture. Added shared-checkout guidance for
+  validation contention, source inputs and manual atomic relocking; no automatic
+  staging, conflict resolution or new wrapper is introduced.
+
+- `why --source head` no longer infers its changed-file base from the commit
+  that introduced a lock entry. That commit is not proof of the generating
+  source. Fingerprint drift remains available; pass `--base-ref` explicitly
+  for a source comparison. This does not attest lock provenance or deployment.
+  `explain --source head` likewise requires an explicit `--base-ref`; without
+  one it exits 2 rather than guessing an old source from lock history.
+
+- Declaration-only config validation no longer incorrectly requires custom
+  providers to have been runtime-registered when runtime validation is disabled.
+  Explicit provider-name cross-checks remain enforced; normal validation still
+  imports only with operator authorization and checks runtime registration.
+
+- HEAD generation no longer fingerprints the working tree and captures the
+  shared index merely to print an advisory warning. Request that extra scan
+  explicitly with `--inspect-working-tree`; it retains the existing bounded
+  no-fetch/filter/fsmonitor safeguards and never changes generation inputs.
+  Source context stays visible, canonical lock bytes are unchanged, and a
+  local CLI profile enforces zero default working-tree reads/index captures
+  plus measured process/relative-latency budgets. This does not claim to
+  resolve all downstream generation latency.
+
+### Fixed
+
+- Refreshed vulnerable automation-tool pins and their wheel-hash evidence,
+  including pip's vendored certificate bundle. Hook tooling in the CI profile
+  requires Python 3.11+; the CLI, Action and core tests retain Python 3.10.
+
+- Timeout workers use the controller's runtime-version resolver, so source
+  checkouts without distribution metadata no longer reject their own worker
+  as a different runtime. Genuine runtime mismatches remain fatal.
+
+- Lock publication refuses destinations that alias declared version inputs,
+  including repository-root files outside component roots. Direct, timed,
+  scoped and API generation cannot overwrite a shared version manifest;
+  filesystem aliases receive the same protection.
+
 ## [0.16.0] - 2026-10-07
 
 ### Upgrade contract
@@ -1403,7 +1544,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/yzm1/boundver/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/yzm1/boundver/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/yzm1/boundver/compare/v0.15.0...v0.15.1

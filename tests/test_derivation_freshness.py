@@ -117,6 +117,22 @@ def _ready_repository(root: Path) -> None:
     assert not (root / "GENERATOR-RAN").exists()
 
 
+def test_config_head_validation_uses_committed_derivation_with_held_index_lock(tmp_path):
+    _ready_repository(tmp_path)
+    (tmp_path / INPUT).write_text("dirty generator input", encoding="utf-8")
+    (tmp_path / EVIDENCE).write_text("invalid dirty receipt", encoding="utf-8")
+    index_lock = tmp_path / ".git" / "index.lock"
+    index_lock.write_bytes(b"another session")
+    try:
+        result = _run(tmp_path, "validate-config", "--source", "head")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert index_lock.read_bytes() == b"another session"
+    finally:
+        index_lock.unlink()
+    dirty = _run(tmp_path, "validate-config", "--source", "working-tree")
+    assert dirty.returncode == 2
+
+
 def test_derivation_hash_budget_is_shared_across_digest_calls(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_bytes(b"abcd")
     (tmp_path / "b.txt").write_bytes(b"efgh")

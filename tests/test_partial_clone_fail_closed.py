@@ -85,14 +85,20 @@ CONTENT = b"openapi: 3.1.0\n"
 SHAPE_SIGNALS = ("promisor", "partialclone", "blob:none")
 
 #: Every generate spelling that must refuse, and whether that spelling also
-#: compares the working tree - only ``--source head`` does, which is where the
-#: uncommitted-changes warning comes from.
+#: compares the working tree. HEAD does so only when explicitly requested;
+#: missing promised objects must still refuse in every spelling.
 GENERATE_SPELLINGS = {
-    "head": (("generate", "--source", "head"), True),
+    "head": (("generate", "--source", "head"), False),
     "index": (("generate", "--source", "index"), False),
     "head with --allow-partial": (
         ("generate", "--source", "head", "--allow-partial"),
-        True,
+        False,
+    ),
+    "head with explicit inspection": (
+        ("generate", "--source", "head", "--inspect-working-tree"), True,
+    ),
+    "quiet head with explicit inspection": (
+        ("generate", "--source", "head", "--inspect-working-tree", "--quiet"), True,
     ),
 }
 

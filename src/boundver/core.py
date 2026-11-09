@@ -30,6 +30,7 @@ Requires: Git and Python 3.10+.
 
 import os
 import secrets
+from contextlib import nullcontext, redirect_stderr
 import stat
 import subprocess
 import sys
@@ -61,6 +62,8 @@ from ._git import (
     _git_batch_cat as _git_batch_cat,
 )
 from ._hashing import (
+    _capture_working_tree_ancestors,
+    _verify_working_tree_ancestors,
     MAX_HASH_FILE_BYTES as MAX_HASH_FILE_BYTES,
     MAX_HASH_FILES as MAX_HASH_FILES,
     _content_only_digest as _content_only_digest,
@@ -125,7 +128,18 @@ from ._lockfile import (
 )
 from ._diff import _summarize_change as _summarize_change
 from ._diff import diff_lockfiles, require_compatible_lockfile_schemas
-from ._coverage import declaration_coverage
+from ._coverage import COVERAGE_SCHEMA, MAX_COVERAGE_RESULT_BYTES, declaration_coverage
+from ._deployment import MAX_DEPLOYMENT_RESULT_BYTES, compare_deployment
+from ._verification_scope import verification_scope_result
+from ._slice_explanation import MAX_SLICE_EXPLANATION_BYTES, analyze_slice_drift
+from ._change_report import MAX_CHANGE_REPORT_BYTES, lock_change_report
+from ._generation_diagnostics import GenerationDiagnostics
+from ._bounded_output import BoundedDiagnosticOutput
+from ._generation_control import GenerationControl, GenerationState
+from ._generation_runner import run_generation
+from ._generation_snapshot import snapshot_to_value
+from ._generation_worker import REQUEST_SCHEMA, encode_request
+from ._git import git_operation_deadline
 from ._derivations import (
     build_derivation_evidence,
     derivation_inputs_selecting_path,
@@ -192,6 +206,7 @@ from ._baseline import (
     replace_baseline_if_unchanged,
     write_baseline_create_only,
 )
+from ._version_paths import version_file_repo_path
 from .versions import (
     _extract_json_field as _extract_json_field,
     _extract_toml_field as _extract_toml_field,
@@ -540,6 +555,30 @@ def _ensure_lock_outside_components(
             f"Lockfile path {lock_paths[0]} aliases the selected config "
             f"{config_paths[0]}; choose a different output path"
         )
+
+    # Root-relative version files need the same publication protection that
+    # component roots already provide for component-relative version files.
+    # Check each distinct input once, including filesystem aliases; inherited
+    # readers refer to one of these declared source components.
+    checked_version_paths = set()
+    for name, component in config.get("components", {}).items():
+        if not isinstance(component, dict):
+            continue
+        version_path = version_file_repo_path(
+            component.get("path"), component.get("version_source"),
+        )
+        if version_path is None or version_path in checked_version_paths:
+            continue
+        checked_version_paths.add(version_path)
+        version_paths = _normalized_filesystem_paths(
+            repo_root / version_path, "version input", relative_to=repo_root,
+        )
+        if _filesystem_paths_alias(lock_paths, version_paths):
+            raise ConfigError(
+                f"Lockfile path {lock_paths[0]} aliases version input "
+                f"{version_paths[0]} declared by component '{name}'; choose "
+                "a different output path"
+            )
 
     try:
         repo_paths = _normalized_filesystem_paths(
@@ -1539,6 +1578,11 @@ def _cmd_migrate_lock(args) -> None:
 
 
 def _cmd_diff(args) -> None:
+    if args.format in {"changes-json", "upgrade-json"}:
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Change report limit must be 0..10000")
+    elif getattr(args, "summary", False) or getattr(args, "limit", 1000) != 1000:
+        raise ConfigError("--summary and --limit require --format changes-json or upgrade-json")
     for label, fpath in (("old", args.old), ("new", args.new)):
         if not Path(fpath).exists():
             print(f"ERROR: {label} lockfile not found: {fpath}", file=sys.stderr)
@@ -1546,7 +1590,8 @@ def _cmd_diff(args) -> None:
     try:
         old = _load_lockfile(Path(args.old))
         new = _load_lockfile(Path(args.new))
-        require_compatible_lockfile_schemas(old, new)
+        if args.format != "upgrade-json":
+            require_compatible_lockfile_schemas(old, new)
         _require_diffable_lockfile(old)
         _require_diffable_lockfile(new)
     except LockfileError as exc:
@@ -1555,6 +1600,18 @@ def _cmd_diff(args) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
+    if args.format in {"changes-json", "upgrade-json"}:
+        result = lock_change_report(
+            old, new, operation="lock-diff",
+            source={"mode": "lockfiles", "commit": None, "tree": None,
+                    "lock": str(args.new), "previous_lock": str(args.old)},
+            limit=0 if args.summary else args.limit,
+            historical=args.format == "upgrade-json",
+        )
+        _print_json(result, max_bytes=MAX_CHANGE_REPORT_BYTES)
+        if result["exit_code"]:
+            sys.exit(result["exit_code"])
+        return
     result = diff_lockfiles(old, new)
     if args.format == "json":
         _print_json(result)
@@ -1609,10 +1666,61 @@ def _cmd_review(args, repo_root: Path) -> None:
 
 
 def _cmd_generate(args, repo_root: Path) -> None:
+    timeout = getattr(args, "timeout", None)
+    if timeout is None:
+        return _cmd_generate_reporting(args, repo_root)
+    control = GenerationControl(timeout)
+    with BoundedDiagnosticOutput(sys.stderr) as output, redirect_stderr(output):
+        return _cmd_generate_reporting(args, repo_root, control=control)
+
+
+def _cmd_generate_reporting(args, repo_root: Path, control: Optional[GenerationControl] = None) -> None:
+    diagnostics = GenerationDiagnostics(
+        progress=getattr(args, "progress", False), timing=getattr(args, "timing", False),
+    )
     try:
-        snapshot = _capture_operation_snapshot(repo_root, args.source)
-        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
-        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+        with (git_operation_deadline(control.monotonic_deadline) if control is not None else nullcontext()) as operation_expiry:
+            if control is not None:
+                control.bind_operation_expiry(operation_expiry)
+            if control is None:
+                _cmd_generate_observed(args, repo_root, diagnostics)
+            else:
+                _cmd_generate_observed(args, repo_root, diagnostics, control=control)
+    except KeyboardInterrupt:
+        if control is not None:
+            control.cancel()
+        diagnostics.finish("cancelled")
+        raise
+    except BaseException:
+        state = control.state if control is not None else None
+        diagnostics.finish(state.value if state in (GenerationState.EXPIRED, GenerationState.CANCELLED) else "failed")
+        raise
+    else:
+        diagnostics.finish("success")
+
+
+def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnostics,
+                           control: Optional[GenerationControl] = None) -> None:
+    preview = args.format == "changes-json"
+    if preview:
+        if not args.dry_run:
+            raise ConfigError("--format changes-json requires --dry-run; it never publishes a lock")
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Change report limit must be 0..10000")
+        args = type(args)(**vars(args))
+        args.format = "json"  # Preserve all existing machine-output guards.
+    elif getattr(args, "summary", False) or getattr(args, "limit", 1000) != 1000:
+        raise ConfigError("--summary and --limit require --format changes-json")
+    inspect_working_tree = getattr(args, "inspect_working_tree", False)
+    if inspect_working_tree and args.source != "head":
+        print("ERROR: --inspect-working-tree requires --source head", file=sys.stderr)
+        sys.exit(EXIT_USAGE)
+    try:
+        with diagnostics.phase("capture-source"):
+            snapshot = _capture_operation_snapshot(repo_root, args.source)
+        with diagnostics.phase("load-config"):
+            config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+            config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
@@ -1622,14 +1730,16 @@ def _cmd_generate(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
-    config_errors = validate_config(
-        config,
-        repo_root,
-        allow_custom_providers=allow_custom,
-        source=args.source,
-        snapshot=snapshot,
-        require_slice_facets=not args.allow_partial,
-    )
+    if control is not None and allow_custom and config.get("providers"):
+        detail = " Detached POSIX children are outside the owned process group." if os.name == "posix" else ""
+        print("WARNING: Custom providers remain trusted Python; --timeout is not a sandbox." + detail, file=sys.stderr)
+    with diagnostics.phase("validate-config"):
+        config_errors = validate_config(
+            config, repo_root, allow_custom_providers=allow_custom,
+            source=args.source, snapshot=snapshot,
+            require_slice_facets=not args.allow_partial,
+            **({"validate_provider_runtime": False} if control is not None else {}),
+        )
     if config_errors:
         print(
             f"ERROR: Config is invalid ({len(config_errors)} issues):", file=sys.stderr
@@ -1649,11 +1759,51 @@ def _cmd_generate(args, repo_root: Path) -> None:
     except ConfigError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    # Warn when --source head but working tree has uncommitted changes
-    if args.source == "head" and not args.quiet:
+    preview_previous = None
+    if preview:
+        # A read-only bootstrap can name a directory that has never existed.
+        # Capture the existing plain prefix, and never read through a missing
+        # ancestor if another process creates/replaces it during this window.
+        preview_missing_ancestor = None
+        if snapshot is None:
+            parent = out_path.parent
+            while parent != repo_root:
+                try:
+                    parent.lstat()
+                except FileNotFoundError:
+                    preview_missing_ancestor = parent
+                    parent = parent.parent
+                else:
+                    break
+        preview_ancestors = (
+            _capture_working_tree_ancestors(
+                repo_root, preview_missing_ancestor or out_path,
+                out_path.relative_to(repo_root).as_posix(),
+            )
+            if snapshot is None else None
+        )
+        if preview_missing_ancestor is None:
+            try:
+                preview_previous = load_lockfile_file(out_path, repo_root=repo_root, snapshot=snapshot)
+            except FileNotFoundError:
+                if snapshot is None and out_path.is_symlink():
+                    raise ConfigError("Previous lock is a symlink, not an absent checkpoint")
+        if preview_ancestors is not None:
+            _verify_working_tree_ancestors(preview_ancestors, out_path.relative_to(repo_root).as_posix())
+            if preview_missing_ancestor is not None:
+                try:
+                    preview_missing_ancestor.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ConfigError("Previous lock ancestor changed during bootstrap preview")
+    # HEAD generation must not implicitly fingerprint a second source merely
+    # to warn about it. The explicit diagnostic retains its bounded safe scan.
+    if inspect_working_tree:
         comp_paths = [c.get("path", "") for c in config.get("components", {}).values()]
         try:
-            dirty = dirty_component_paths(repo_root, comp_paths)
+            with diagnostics.phase("working-tree-inspection"):
+                dirty = dirty_component_paths(repo_root, comp_paths)
         except (OSError, ValueError) as exc:
             # This check is advisory: generation still reads the immutable
             # captured HEAD tree. A malformed or oversized status listing must
@@ -1689,27 +1839,43 @@ def _cmd_generate(args, repo_root: Path) -> None:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     try:
-        if components_filter:
-            lockfile = generate_lockfile_for_components(
-                config,
-                repo_root,
-                selected_components=components_filter,
-                out_path=out_path,
-                source=args.source,
-                strict=(not args.allow_partial),
-                allow_custom_providers=allow_custom,
-                snapshot=snapshot,
-                running_version=_get_version(),
-            )
-        else:
-            lockfile = generate_lockfile(
-                config,
-                repo_root,
-                source=args.source,
-                strict=(not args.allow_partial),
-                allow_custom_providers=allow_custom,
-                snapshot=snapshot,
-            )
+        observer_args = {"observer": diagnostics} if diagnostics.enabled else {}
+        if preview and components_filter and preview_previous is None:
+            raise ConfigError("Scoped generation preview requires a previous selected-source lock")
+        with diagnostics.phase("compute-lock"):
+            if control is not None:
+                existing = None
+                if components_filter:
+                    existing = preview_previous if preview else load_lockfile_file(
+                        out_path, repo_root=repo_root,
+                        snapshot=snapshot if args.source in {"head", "index"} else None,
+                    )
+                    if existing is None:
+                        raise ConfigError("Scoped generation preview requires a previous selected-source lock")
+                request = encode_request({
+                    "schema": REQUEST_SCHEMA, "operation_id": secrets.token_hex(32),
+                    "repo_root": str(repo_root), "config": config, "source": args.source,
+                    "snapshot": snapshot_to_value(snapshot) if snapshot is not None else None,
+                    "strict": not args.allow_partial, "allow_custom_providers": allow_custom,
+                    "components": components_filter or None, "existing_lock": existing,
+                    "running_version": _get_version(),
+                    "progress": diagnostics.progress, "timing": diagnostics.timing,
+                })
+                lockfile = run_generation(request, control=control, running_version=_get_version(), diagnostics=diagnostics)
+            elif components_filter:
+                lockfile = generate_lockfile_for_components(
+                    config, repo_root, selected_components=components_filter,
+                    out_path=out_path, source=args.source,
+                    strict=(not args.allow_partial), allow_custom_providers=allow_custom,
+                    snapshot=snapshot, running_version=_get_version(), **observer_args,
+                    **({"existing_lockfile": preview_previous} if preview else {}),
+                )
+            else:
+                lockfile = generate_lockfile(
+                    config, repo_root, source=args.source,
+                    strict=(not args.allow_partial), allow_custom_providers=allow_custom,
+                    snapshot=snapshot, **observer_args,
+                )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         print(
@@ -1719,12 +1885,42 @@ def _cmd_generate(args, repo_root: Path) -> None:
         )
         sys.exit(EXIT_USAGE)
     if args.dry_run:
+        if control is not None and control.state is not GenerationState.READY:
+            raise ConfigError(f"Generation did not publish: {control.state.value}")
+        diagnostics.publication = "dry-run"
+        if preview:
+            report = lock_change_report(
+                preview_previous, lockfile,
+                source={"mode": args.source, "commit": snapshot.head_oid if snapshot else None,
+                        "tree": snapshot.tree_oid if snapshot else None,
+                        "lock": out_path.relative_to(repo_root).as_posix(),
+                        "components_filter": components_filter},
+                limit=0 if args.summary else args.limit,
+            )
+            _print_json(report, max_bytes=MAX_CHANGE_REPORT_BYTES)
+            if report["exit_code"]:
+                sys.exit(report["exit_code"])
+            return
         _log(
             f"Dry run: lockfile not written ({out_path})",
             quiet=(args.quiet or args.format == "json"),
         )
     else:
-        _write_lockfile_atomic(out_path, lockfile)
+        def publish():
+            diagnostics.publication = "attempted-outcome-unconfirmed"
+            _write_lockfile_atomic(out_path, lockfile)
+
+        with diagnostics.phase("publish"):
+            if control is None:
+                publish()
+            else:
+                try:
+                    control.publish(publish)
+                except RuntimeError as exc:
+                    if control.state in (GenerationState.EXPIRED, GenerationState.CANCELLED, GenerationState.FAILED):
+                        raise ConfigError(f"Generation did not publish: {control.state.value}") from exc
+                    raise
+        diagnostics.publication = "written"
         _log(f"Generated {out_path}", quiet=(args.quiet or args.format == "json"))
     if args.verbose and not args.quiet and args.format != "json":
         print(f"Generation source={args.source} strict={not args.allow_partial}")
@@ -1762,6 +1958,7 @@ def _print_verify_json(
     consumer_impact: List[dict],
     notices: Optional[List[dict]] = None,
     baseline: Optional[dict] = None,
+    scope_context=None,
 ) -> None:
     """Print the stable structured result for every verify outcome."""
     payload = {
@@ -1783,6 +1980,9 @@ def _print_verify_json(
     }
     if baseline is not None:
         payload["baseline"] = baseline
+    if scope_context is not None:
+        args, receipt = scope_context
+        payload = verification_scope_result(args, receipt, payload)
     _print_json(payload)
 
 
@@ -1870,6 +2070,15 @@ def _print_update_failure(exc: ValueError) -> None:
 
 
 def _cmd_verify(args, repo_root: Path) -> None:
+    receipt = {}
+    scoped_json = args.format == "scoped-json"
+    if scoped_json:
+        # Copy the argparse namespace: downstream verification keeps the same
+        # JSON-only code paths, without changing the caller's requested format.
+        args = type(args)(**vars(args))
+        args.format = "json"
+
+    scope_context = (args, receipt) if scoped_json else None
     baseline_mode = next(
         (
             mode
@@ -1921,6 +2130,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=reported_config_errors,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=[],
                 facets=None,
@@ -2005,6 +2215,16 @@ def _cmd_verify(args, repo_root: Path) -> None:
         name for name in components_filter if name not in config.get("components", {})
     ]
     if unknown:
+        if args.format == "json":
+            _print_verify_json(
+                ok=False, updated=False,
+                issues=["Unknown verification component(s): " + ", ".join(unknown)],
+                scope_context=scope_context,
+                resolved_issues=[], observations=[], facets=None,
+                facet_policy=_facet_policy_payload(config, None),
+                components_filter=requested_components_filter, changed_components=[],
+                inputs=inputs, consumer_impact=[],
+            )
         print(
             f"ERROR: unknown --components entries: {', '.join(unknown)}",
             file=sys.stderr,
@@ -2141,6 +2361,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     preflight_issues,
                     fail_fast=args.fail_fast,
                 ),
+                scope_context=scope_context,
                 observations=[],
                 facets=explicit_gated_facets,
                 facet_policy=facet_policy,
@@ -2164,6 +2385,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=reported_preflight_issues,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=[],
                 facets=explicit_gated_facets,
@@ -2178,6 +2400,8 @@ def _cmd_verify(args, repo_root: Path) -> None:
             if not args.quiet:
                 print(input_line, file=sys.stderr)
             print("ERROR: lockfile preflight failed:", file=sys.stderr)
+            if args.components or args.changed_from:
+                print("Selected fingerprint comparison not performed; repository preflight failed.", file=sys.stderr)
             for issue in reported_preflight_issues:
                 print(f"  - {issue}", file=sys.stderr)
         sys.exit(_drift_exit_code(preflight_issues))
@@ -2197,10 +2421,23 @@ def _cmd_verify(args, repo_root: Path) -> None:
             snapshot=snapshot,
             transitive_consumers=args.transitive,
             consumer_impact=consumer_impact,
+            verification_report=receipt if scoped_json or args.components or args.changed_from else None,
         )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
+    if args.format != "json" and not args.quiet and (args.components or args.changed_from):
+        scoped = verification_scope_result(args, receipt, {
+            "components_filter": reported_components_filter,
+            "changed_components": changed_components, "issues": issues,
+        })
+        selection = scoped["selection"]
+        status = (
+            "incomplete" if not selection["comparison_complete"] else
+            "fingerprint drift found" if selection["fingerprint_drift"] else "no fingerprint drift"
+        )
+        print(f"Selected components ({len(selection['components'])}): {status}.")
+        print("Repository integrity and affected-slice checks still gate the aggregate result.")
     baseline_info: Optional[dict] = None
     if baseline_mode is not None:
         raw_baseline_path = getattr(args, baseline_mode)
@@ -2361,6 +2598,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     ok=False,
                     updated=False,
                     issues=issues,
+                    scope_context=scope_context,
                     resolved_issues=[],
                     observations=observations,
                     facets=explicit_gated_facets,
@@ -2409,6 +2647,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     updated=True,
                     issues=[],
                     resolved_issues=issues,
+                    scope_context=scope_context,
                     observations=observations,
                     facets=explicit_gated_facets,
                     facet_policy=facet_policy,
@@ -2426,6 +2665,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=False,
                 updated=False,
                 issues=issues,
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=observations,
                 facets=explicit_gated_facets,
@@ -2479,6 +2719,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                     updated=True,
                     issues=[],
                     resolved_issues=[],
+                    scope_context=scope_context,
                     observations=observations,
                     facets=explicit_gated_facets,
                     facet_policy=facet_policy,
@@ -2496,6 +2737,7 @@ def _cmd_verify(args, repo_root: Path) -> None:
                 ok=True,
                 updated=False,
                 issues=[],
+                scope_context=scope_context,
                 resolved_issues=[],
                 observations=observations,
                 facets=explicit_gated_facets,
@@ -2611,13 +2853,14 @@ def _cmd_slice(args, repo_root: Path) -> None:
 
 
 def _cmd_validate_config(args, repo_root: Path) -> None:
-    config_path = find_config_file(repo_root, args.config)
-    if not config_path.exists():
-        print(f"ERROR: Config file not found: {config_path}", file=sys.stderr)
-        sys.exit(EXIT_USAGE)
+    source = getattr(args, "source", "working-tree")
     try:
-        config = load_config_file(config_path, repo_root=repo_root)
-    except ValueError as exc:
+        snapshot = _capture_operation_snapshot(repo_root, source)
+        config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
+        if snapshot is None and not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
@@ -2625,11 +2868,13 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         config,
         repo_root,
         allow_custom_providers=allow_custom,
+        source=source,
+        snapshot=snapshot,
         require_slice_facets=not args.allow_partial,
     )
     if not errors and config.get("derivations"):
         try:
-            with _SourceAccessor(repo_root, "working-tree") as accessor:
+            with _SourceAccessor(repo_root, source, snapshot=snapshot) as accessor:
                 errors.extend(verify_derivations(config, accessor))
         except (ConfigError, GuardrailError, OSError, ValueError) as exc:
             errors.append(
@@ -2641,7 +2886,7 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
         for err in errors:
             print(f"  - {err}")
         sys.exit(EXIT_USAGE)
-    warnings = config_warnings(config, repo_root)
+    warnings = config_warnings(config, repo_root, source=source, snapshot=snapshot)
     if warnings:
         print(_yellow(f"CONFIG WARNINGS ({len(warnings)}):"))
         for warning in warnings:
@@ -2673,8 +2918,12 @@ def _cmd_init(args, repo_root: Path) -> None:
             file=sys.stderr,
         )
         sys.exit(EXIT_USAGE)
+    schema = _load_config_schema(repo_root)
+    schema_id = schema.get("$id") if isinstance(schema, dict) else None
+    if not isinstance(schema_id, str) or not schema_id or len(schema_id) > 1024 or not schema_id.isprintable():
+        raise ConfigError("Cannot initialize config: the validation schema has no usable identity")
     starter = {
-        "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+        "$schema": schema_id,
         "project": repo_root.name,
         "defaults": {"compat_mode": "major"},
         "components": discovered
@@ -3037,13 +3286,60 @@ def _cmd_status(args, repo_root: Path) -> None:
         sys.exit(EXIT_USAGE)
 
 
+def _cmd_compare_deployment(args, repo_root: Path) -> None:
+    # Validate the presentation limit even when --summary overrides row display.
+    if not 0 <= args.limit <= 10_000:
+        raise ConfigError("Deployment presentation limit must be 0..10000")
+    result = compare_deployment(
+        repo_root, args.environment, args.ref, source=args.source,
+        config_hint=args.config, reference_config_hint=args.reference_config,
+        reference_lock_hint=args.reference_lock,
+        facets=parse_review_facets(args.facets),
+        limit=0 if args.summary else args.limit,
+        allow_custom_providers=args.allow_custom_providers,
+    )
+    if args.format == "json":
+        _print_json(result, max_bytes=MAX_DEPLOYMENT_RESULT_BYTES)
+    else:
+        print(f"Environment: {_display_path(result['environment'])} (operator assertion; not attested)")
+        reference = result["reference"]
+        print(f"Reference: {_display_path(reference['ref'])} at {reference['commit'] or 'unresolved'}")
+        print("Current-lock verification: not performed; run boundver verify separately.")
+        if result["complete"]:
+            counts = result["counts"]
+            outcome = "selected gates passed" if result["ok"] else f"gated drift (exit {result['exit_code']})"
+            print(f"Comparison complete: {outcome}; not deployment attestation.")
+            print(f"Components: {counts['changed']} changed, {counts['unchanged']} unchanged")
+            for row in result["changes"]:
+                gating = sorted(set(row["facets"]) & set(result["facet_policy"]["components"][row["component"]]))
+                gate_detail = f"gating: {', '.join(gating)}" if gating else "non-gating"
+                print(f"  {_display_path(row['component'])}: {', '.join(row['facets'])} ({gate_detail})")
+            if counts["slices"]:
+                print(f"Slices: {counts['changed_slices']} changed, {counts['unchanged_slices']} unchanged")
+            for row in result["slice_changes"]:
+                print(f"  slice {_display_path(row['slice'])}: {row['mode']} ({'gating' if row['gated'] else 'non-gating'})")
+            if result["presentation"]["omitted"]:
+                print(f"  {result['presentation']['omitted']} changed row(s) omitted; gating is unchanged.")
+        else:
+            print("Comparison incomplete; no deployment conclusion.")
+        for issue in result["issues"]["items"]:
+            print(f"ERROR: {_display_path(issue)}")
+        if result["issues"]["truncated"]:
+            print("Diagnostics truncated.")
+    sys.exit(result["exit_code"])
+
+
 def _cmd_coverage(args, repo_root: Path) -> None:
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
         config_path = find_config_file(repo_root, args.config, snapshot=snapshot)
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
+        if args.format == "json":
+            _print_json({"schema": COVERAGE_SCHEMA, "complete": False,
+                         "ok": False, "issues": [_bounded_exception_text(exc)]})
+        else:
+            print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     config_errors = validate_config(
         config,
@@ -3056,7 +3352,7 @@ def _cmd_coverage(args, repo_root: Path) -> None:
         if args.format == "json":
             _print_json(
                 {
-                    "schema": "boundver-declaration-coverage/v1",
+                    "schema": COVERAGE_SCHEMA,
                     "complete": False,
                     "ok": False,
                     "issues": config_errors,
@@ -3070,36 +3366,46 @@ def _cmd_coverage(args, repo_root: Path) -> None:
             for error in config_errors:
                 print(f"  - {error}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
-    provenance = _operation_input_provenance(
-        repo_root,
-        args.source,
-        snapshot,
-        config_path=config_path,
-        lock_path=repo_root / "boundary.lock.json",
-    )
-    inputs = {
-        key: provenance[key]
-        for key in ("source", "tree", "commit", "config")
-    }
     try:
+        provenance = _operation_input_provenance(
+            repo_root,
+            args.source,
+            snapshot,
+            config_path=config_path,
+            lock_path=repo_root / "boundary.lock.json",
+        )
+        inputs = {
+            key: provenance[key]
+            for key in ("source", "tree", "commit", "config")
+        }
         report = declaration_coverage(
             config,
             repo_root,
             source=args.source,
             snapshot=snapshot,
             inputs=inputs,
+            component_names=args.component,
+            path_prefixes=args.path_prefix,
+            limit=args.limit,
+            summary_only=args.summary,
         )
     except (GuardrailError, OSError, ValueError) as exc:
-        print(
-            f"ERROR: declaration coverage failed: {_bounded_exception_text(exc)}",
-            file=sys.stderr,
-        )
+        issue = f"Declaration coverage failed: {_bounded_exception_text(exc)}"
+        if args.format == "json":
+            _print_json({"schema": COVERAGE_SCHEMA, "complete": False,
+                         "ok": False, "issues": [issue]})
+        else:
+            print(f"ERROR: {issue}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
 
     if args.format == "json":
-        _print_json(report)
+        _print_json(report, max_bytes=MAX_COVERAGE_RESULT_BYTES)
     elif not args.quiet:
         print(f"Source: {args.source} | Config: {inputs['config']}")
+        if report["scope"]["filtered"]:
+            print("Scope: filtered; results do not describe the whole repository.")
+        if not report["scope"]["ownership_analyzed"]:
+            print("Ownership audit: not selected (--component audits component facets only).")
         for component in report["components"]:
             print()
             print(
@@ -3109,11 +3415,12 @@ def _cmd_coverage(args, repo_root: Path) -> None:
             for facet in component["facets"]:
                 print(
                     f"  {facet['facet']}: {facet['selected_files']} selected; "
-                    f"declaration {facet['declaration']}"
+                    f"{facet['uncovered_count']} uncovered, {facet['excluded_count']} excluded; "
+                    f"declaration {_display_path(facet['declaration'])}"
                 )
-                for path in facet["uncovered_files"][:256]:
+                for path in facet["uncovered_files"]:
                     print(f"    UNCOVERED {_display_path(path)}")
-                for exclusion in facet["excluded"][:256]:
+                for exclusion in facet["excluded"]:
                     print(
                         f"    EXCLUDED {_display_path(exclusion['path'])}: "
                         f"{_bounded_diagnostic_text(exclusion['reason'])} "
@@ -3121,22 +3428,30 @@ def _cmd_coverage(args, repo_root: Path) -> None:
                     )
                 omitted = max(
                     0,
-                    len(facet["uncovered_files"]) + len(facet["excluded"]) - 256,
+                    facet["uncovered_count"] + facet["excluded_count"]
+                    - len(facet["uncovered_files"]) - len(facet["excluded"]),
                 )
                 if omitted:
-                    print(f"    ... {omitted} more path(s); use --format json")
+                    print(f"    ... {omitted} path entry/entries omitted by presentation limits")
         for directory in report["unowned_source_directories"]:
             print()
             print(f"Unowned source directory: {_display_path(directory['directory'])}")
-            for path in directory["uncovered_files"][:256]:
+            print(f"  {directory['uncovered_count']} uncovered, {directory['excluded_count']} excluded")
+            for path in directory["uncovered_files"]:
                 print(f"    UNCOVERED {_display_path(path)}")
-            for exclusion in directory["excluded"][:256]:
+            for exclusion in directory["excluded"]:
                 print(
                     f"    EXCLUDED {_display_path(exclusion['path'])}: "
                     f"{_bounded_diagnostic_text(exclusion['reason'])} "
                     f"({exclusion['declaration']})"
                 )
         summary = report["summary"]
+        presentation = report["presentation"]
+        if presentation["truncated"]:
+            print(
+                f"Paths: {presentation['shown_paths']} shown, "
+                f"{presentation['omitted_paths']} omitted; totals include omitted entries."
+            )
         print()
         print(
             "Declaration coverage: "
@@ -3278,6 +3593,11 @@ def _cmd_explain(args, repo_root: Path) -> None:
 
 
 def _cmd_why(args, repo_root: Path) -> None:
+    if args.slice is not None:
+        if args.base_ref is not None or args.transitive:
+            raise ConfigError("Slice explanations do not support --base-ref or --transitive; no file attribution is inferred")
+    elif args.summary or args.limit != 1000:
+        raise ConfigError("--summary and --limit apply to why --slice")
     lock_path = _repository_relative_path(repo_root, args.lock, label="Lockfile path")
     try:
         snapshot = _capture_operation_snapshot(repo_root, args.source)
@@ -3315,6 +3635,35 @@ def _cmd_why(args, repo_root: Path) -> None:
         config_path=config_path,
         lock_path=lock_path,
     )
+    if args.slice is not None:
+        if not 0 <= args.limit <= 10_000:
+            raise ConfigError("Slice explanation limit must be 0..10000")
+        result = analyze_slice_drift(
+            config, lockfile, repo_root, args.slice, source=args.source, snapshot=snapshot,
+            limit=0 if args.summary else args.limit, allow_custom_providers=allow_custom,
+        )
+        if args.format == "json":
+            _print_json(result, max_bytes=MAX_SLICE_EXPLANATION_BYTES)
+        else:
+            print(f"Slice: {_display_path(result['slice'])} ({result['mode'] or 'unavailable'})")
+            print("Locked source provenance: unavailable; this is not deployment evidence.")
+            if result["complete"]:
+                counts = result["counts"]
+                print(f"Members: {counts['members']}; contributors to aggregate drift: {counts['contributing_members']}")
+                print(f"Slice fingerprint: {'changed' if result['slice_changed'] else 'unchanged'}")
+                print(f"Resolved versions: {counts['version_changes']} changed, {counts['unavailable_versions']} unavailable")
+                for member in result["members"]:
+                    facets = ', '.join(member['changes']) or 'none'
+                    print(f"  {_display_path(member['component'])}: changed facets={facets}; version={member['version']['status']}")
+                if result["presentation"]["omitted"]:
+                    print(f"  {result['presentation']['omitted']} member row(s) omitted; analysis is unchanged.")
+            else:
+                print("Slice comparison incomplete; no drift conclusion.")
+            for issue in result["issues"]:
+                print(f"ERROR: {_display_path(issue)}")
+        if result["exit_code"]:
+            sys.exit(result["exit_code"])
+        return
     rc = why_component(
         config,
         lockfile,
@@ -3434,6 +3783,7 @@ def main():
         "discover": _cmd_discover,
         "status": _cmd_status,
         "coverage": _cmd_coverage,
+        "compare-deployment": _cmd_compare_deployment,
         "record-derivation": _cmd_record_derivation,
         "explain": _cmd_explain,
         "why": _cmd_why,

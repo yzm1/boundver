@@ -34,8 +34,8 @@ environment, replace the install above with an exact upgraded pin and assert
 what Python imports before writing a lock:
 
 ```bash
-python -m pip install --upgrade "boundver[schema,yaml]==0.16.0"
-python -c "import boundver; assert boundver.__version__ == '0.16.0', boundver.__version__"
+python -m pip install --upgrade "boundver[schema,yaml]==0.17.0"
+python -c "import boundver; assert boundver.__version__ == '0.17.0', boundver.__version__"
 ```
 
 Run persistent automation through `python -m boundver ...` with that same
@@ -91,7 +91,7 @@ Replace the placeholder component path before validating.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/boundary.config.schema.json",
   "project": "checkout-platform",
   "defaults": {
     "compat_mode": "major",
@@ -132,6 +132,23 @@ Component `path` values are relative to the repository. Boundary, behavior,
 vendored-copy, and file version-source paths use `/` separators and are relative
 to the scope documented by the schema. Empty, absolute, traversing, and
 backslash-separated declarations are rejected.
+
+For a sibling or shared version manifest outside the component, v0.17 development
+adds an explicit repository-root-relative variant:
+
+```json
+{
+  "version_source": {
+    "repo_file": "releases/payment.service-definition.json",
+    "field": "image.version"
+  }
+}
+```
+
+`file` still means component-relative. Do not use `..` to reach a sibling. The
+new variant needs a supporting Boundver version/schema; old clients reject it.
+See [version files](reference.md#repository-relative-version-files) for source
+and fingerprint semantics.
 
 v0.13 treats component `ecosystem`, component `note`, and `boundary.note` as
 presentation-only, so they can record classification, ownership, migration,
@@ -193,6 +210,11 @@ per-component policy to combine heterogeneous component types in one config.
 ```bash
 boundver validate-config
 ```
+
+This defaults to tracked files on disk. To validate only the committed snapshot
+in CI or a shared checkout, use `boundver validate-config --source head`; it
+does not capture or write the shared index. Keep source choices explicit across
+validation and generation. See [source modes](reference.md#source-modes).
 
 Fix every error and review every warning. Validation rejects unknown fields even
 without the optional schema engine, checks path safety and component roots, and
@@ -280,7 +302,7 @@ jobs:
         with:
           fetch-depth: 0
       # Pin the writer and verifier to the lock contract used by the repository.
-      - uses: yzm1/boundver@v0.16.0
+      - uses: yzm1/boundver@v0.17.0
         with:
           config: boundary.config.json
           lock: boundary.lock.json

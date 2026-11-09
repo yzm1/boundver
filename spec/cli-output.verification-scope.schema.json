@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.verification-scope.schema.json",
+  "title": "Boundver scoped verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "verification", "requested", "selection", "analysis", "other_component_findings", "repository_issues"],
+  "properties": {
+    "schema": {"const": "boundver-verification-scope/v1"},
+    "verification": {"$ref": "cli-output.verify.schema.json"},
+    "requested": {
+      "type": "object", "additionalProperties": false,
+      "required": ["components_argument", "changed_from"],
+      "properties": {"components_argument": {"type": ["string", "null"]}, "changed_from": {"type": ["string", "null"]}}
+    },
+    "selection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["components", "compared", "fingerprint_findings", "comparison_complete", "fingerprint_drift"],
+      "properties": {
+        "components": {"$ref": "#/$defs/names"}, "compared": {"$ref": "#/$defs/names"},
+        "fingerprint_findings": {"$ref": "#/$defs/findings"},
+        "comparison_complete": {"type": "boolean"}, "fingerprint_drift": {"type": ["boolean", "null"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"comparison_complete": {"const": false}}}, "then": {"properties": {"fingerprint_drift": {"type": "null"}}}},
+        {"if": {"properties": {"comparison_complete": {"const": true}}}, "then": {"properties": {"fingerprint_drift": {"type": "boolean"}}}}
+      ]
+    },
+    "analysis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["traversal_complete", "computed_components", "compared_components", "version_components", "compared_slices", "unavailable_components", "repository_integrity_required"],
+      "properties": {
+        "traversal_complete": {"type": "boolean"},
+        "computed_components": {"$ref": "#/$defs/names"}, "compared_components": {"$ref": "#/$defs/names"},
+        "version_components": {"$ref": "#/$defs/names"}, "compared_slices": {"$ref": "#/$defs/names"},
+        "unavailable_components": {"$ref": "#/$defs/names"}, "repository_integrity_required": {"const": true}
+      }
+    },
+    "other_component_findings": {"$ref": "#/$defs/findings"},
+    "repository_issues": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "names": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "digest": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["component", "facet", "gating", "before", "after"],
+        "properties": {
+          "component": {"type": "string", "minLength": 1},
+          "facet": {"enum": ["exact", "behavior", "boundary", "compat"]}, "gating": {"type": "boolean"},
+          "before": {"$ref": "#/$defs/digest"}, "after": {"$ref": "#/$defs/digest"}
+        }
+      }
+    }
+  }
+}

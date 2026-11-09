@@ -16,11 +16,11 @@
 # Keep the multi-architecture base digest and Debian package snapshot explicit.
 # The base records the older snapshot it was built from; the runtime refreshes
 # inherited packages from the newer immutable security-review snapshot below.
-FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998 AS builder
+FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
 # source inputs produce the same local wheel bytes.
-ENV SOURCE_DATE_EPOCH=1790985600
+ENV SOURCE_DATE_EPOCH=1794139200
 
 WORKDIR /build
 COPY scripts/requirements/action.lock /locks/action.lock
@@ -38,9 +38,10 @@ RUN python -I -m pip download \
       --disable-pip-version-check \
       --no-cache-dir \
       --no-index \
-      --no-deps \
+      --require-hashes \
+      --only-binary=:all: \
       --find-links=/wheelhouse \
-      setuptools==84.0.0 wheel==0.48.0
+      --requirement /locks/action.lock
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN python -I -m pip wheel \
@@ -53,11 +54,11 @@ RUN python -I -m pip wheel \
       .
 
 
-FROM python:3.12.14-slim-trixie@sha256:97490e383c4cffb12825431fa24e3d2b70e39fd691a8e33c46bf4c18edca3998
+FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # pip compiles installed modules in this stage. Force hash-based bytecode so
 # retries do not embed the wall clock in hundreds of .pyc headers.
-ENV SOURCE_DATE_EPOCH=1790985600
+ENV SOURCE_DATE_EPOCH=1794139200
 
 ARG BOUNDVER_VERSION=development
 ARG BOUNDVER_REVISION=unknown
@@ -75,14 +76,14 @@ LABEL org.opencontainers.image.source="https://github.com/yzm1/boundver" \
 # pinned base image, rather than today's mutable package index.
 RUN export DEBIAN_FRONTEND=noninteractive \
     && grep -Fqx \
-      '# http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+      '# http://snapshot.debian.org/archive/debian/20261104T212339Z' \
       /etc/apt/sources.list.d/debian.sources \
     && grep -Fqx \
-      '# http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+      '# http://snapshot.debian.org/archive/debian-security/20261104T212339Z' \
       /etc/apt/sources.list.d/debian.sources \
     && sed -i \
-      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20261003T000000Z|' \
-      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20261003T000000Z|' \
+      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20261108T120000Z|' \
+      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20261108T120000Z|' \
       /etc/apt/sources.list.d/debian.sources \
     && printf 'Acquire::Check-Valid-Until "false";\n' \
       > /etc/apt/apt.conf.d/99snapshot \

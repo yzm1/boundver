@@ -46,8 +46,8 @@ def require_compatible_lockfile_schemas(old: dict, new: dict) -> None:
         raise LockfileError(
             "lockfiles use incompatible schemas "
             f"(old={_bounded_diagnostic_repr(old_schema)}, "
-            f"new={_bounded_diagnostic_repr(new_schema)}); regenerate both "
-            "lockfiles with the same Boundver version before diffing"
+            f"new={_bounded_diagnostic_repr(new_schema)}); use --format upgrade-json "
+            "for supported v3/v4 inspection; do not rewrite historical locks"
         )
     if (
         not isinstance(old_schema, str)
@@ -57,8 +57,8 @@ def require_compatible_lockfile_schemas(old: dict, new: dict) -> None:
         raise LockfileError(
             "lockfiles use unsupported schema "
             f"{_bounded_diagnostic_repr(old_schema)} (supported schemas: "
-            f"{supported}); regenerate both lockfiles with a supported "
-            "Boundver version before diffing"
+            f"{supported}); use --format upgrade-json for supported v3/v4 "
+            "inspection; do not rewrite historical locks"
         )
 
 

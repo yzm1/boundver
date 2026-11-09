@@ -22,10 +22,11 @@ configuration examples, and exit-code semantics, use the
 | [`boundver add`](#add) | Add a component to the config |
 | [`boundver remove`](#remove) | Remove a component from the config |
 | [`boundver status`](#status) | Show lockfile summary and warnings |
+| [`boundver compare-deployment`](#compare-deployment) | Compare contracts against an explicit local deployment reference |
 | [`boundver coverage`](#coverage) | Find tracked files missing from declarations |
 | [`boundver record-derivation`](#record-derivation) | Record generated-artifact freshness after a trusted generator runs |
 | [`boundver explain`](#explain) | Explain changed files for a component |
-| [`boundver why`](#why) | Explain why a component's lockfile is out of date |
+| [`boundver why`](#why) | Explain component or slice drift |
 | [`boundver discover`](#discover) | Find Git-tracked component manifests |
 | [`boundver migrate-lock`](#migrate-lock) | Normalize a current lock or explain why regeneration is required |
 | [`boundver completions`](#completions) | Emit shell completion scripts |
@@ -34,7 +35,7 @@ configuration examples, and exit-code semantics, use the
 
 ```text
 usage: boundver [-h] [--version] [--quiet | --verbose]
-                {generate,verify,review,diff,slice,validate-config,check-config,init,add,remove,status,coverage,record-derivation,explain,why,discover,migrate-lock,completions} ...
+                {generate,verify,review,diff,slice,validate-config,check-config,init,add,remove,status,compare-deployment,coverage,record-derivation,explain,why,discover,migrate-lock,completions} ...
 ```
 
 Detect declared component, behavior, boundary, and compatibility drift
@@ -53,7 +54,9 @@ Detect declared component, behavior, boundary, and compatibility drift
 ```text
 usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,index,working-tree}]
                          [--allow-partial] [--dry-run] [--components COMPONENTS]
-                         [--format {json,text}] [--allow-custom-providers]
+                         [--format {json,text,changes-json}] [--limit LIMIT] [--summary]
+                         [--allow-custom-providers] [--inspect-working-tree] [--progress]
+                         [--timing] [--timeout SECONDS]
 ```
 
 | Argument | Value | Default | Description |
@@ -65,8 +68,14 @@ usage: boundver generate [-h] [--config CONFIG] [--out OUT] [--source {head,inde
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices (not provider or source errors) |
 | `--dry-run` | — | `false` | Compute lockfile and print status without writing output |
 | `--components` | `COMPONENTS` | — | Comma-separated component names to regenerate |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,changes-json}` | `text` | Output format; changes-json requires --dry-run and compares the previous selected-source lock |
+| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json only |
+| `--summary` | — | `false` | Change-report counts without rows; changes-json only |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key (or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1) |
+| `--inspect-working-tree` | — | `false` | With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs |
+| `--progress` | — | `false` | Print bounded generation progress to stderr |
+| `--timing` | — | `false` | Print bounded local phase/component timings to stderr |
+| `--timeout` | `SECONDS` | — | Computation deadline from source capture; expiry exits 2 before publication. Atomic commit and final output are not hard wall-time bounded; native providers are not sandboxed |
 
 ```text
 Examples:
@@ -85,7 +94,7 @@ usage: boundver verify [-h] [--config CONFIG] [--lock LOCK] [--source {head,inde
                        [--components COMPONENTS] [--changed-from CHANGED_FROM] [--fail-fast]
                        [--facets FACETS] [--transitive] [--update] [--strict-config-source]
                        [--baseline PATH | --write-baseline PATH | --update-baseline PATH]
-                       [--format {json,text}] [--allow-custom-providers]
+                       [--format {json,text,scoped-json}] [--allow-custom-providers]
 ```
 
 Verify the lockfile is up to date with the current repo state.
@@ -116,7 +125,7 @@ Exit codes:
 | `--baseline` | `PATH` | empty | Allow reviewed violation identities from a baseline while failing on new ones |
 | `--write-baseline` | `PATH` | empty | Explicitly capture current baselinable violations in a new JSON file |
 | `--update-baseline` | `PATH` | empty | Shrink an existing baseline by removing resolved identities; never adds violations |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,scoped-json}` | `text` | Output format; scoped-json adds versioned selection and analysis attribution |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
 ```text
@@ -170,7 +179,9 @@ Examples:
 ## `boundver diff`
 
 ```text
-usage: boundver diff [-h] [--format {json,text}] old new
+usage: boundver diff [-h] [--format {json,text,changes-json,upgrade-json}] [--limit LIMIT]
+                     [--summary]
+                     old new
 ```
 
 | Argument | Value | Default | Description |
@@ -178,7 +189,9 @@ usage: boundver diff [-h] [--format {json,text}] old new
 | `-h`, `--help` | — | — | show this help message and exit |
 | `old` | `OLD` | required | Old lockfile |
 | `new` | `NEW` | required | New lockfile |
-| `--format` | `{json,text}` | `text` | Output format |
+| `--format` | `{json,text,changes-json,upgrade-json}` | `text` | Output format; upgrade-json inspects supported v3/v4 contracts read-only, without migration |
+| `--limit` | `LIMIT` | `1000` | Change-report rows, 0..10000; changes-json/upgrade-json only |
+| `--summary` | — | `false` | Change-report counts without rows; changes-json/upgrade-json only |
 
 <a id="slice"></a>
 
@@ -200,14 +213,15 @@ usage: boundver slice [-h] [--lock LOCK] [--format {json,text}] name
 ## `boundver validate-config`
 
 ```text
-usage: boundver validate-config [-h] [--config CONFIG] [--allow-partial]
-                                [--allow-custom-providers]
+usage: boundver validate-config [-h] [--config CONFIG] [--source {head,index,working-tree}]
+                                [--allow-partial] [--allow-custom-providers]
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--source` | `{head,index,working-tree}` | `working-tree` | Snapshot to validate (default: working-tree); head does not capture the index |
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
@@ -222,13 +236,15 @@ Examples:
 ## `boundver check-config`
 
 ```text
-usage: boundver check-config [-h] [--config CONFIG] [--allow-partial] [--allow-custom-providers]
+usage: boundver check-config [-h] [--config CONFIG] [--source {head,index,working-tree}]
+                             [--allow-partial] [--allow-custom-providers]
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--source` | `{head,index,working-tree}` | `working-tree` | Snapshot to validate (default: working-tree); head does not capture the index |
 | `--allow-partial` | — | `false` | Allow intentional null facet inputs in slices |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
@@ -318,12 +334,43 @@ Examples:
   boundver status --strict  # exit non-zero on drift (for CI)
 ```
 
+<a id="compare-deployment"></a>
+
+## `boundver compare-deployment`
+
+```text
+usage: boundver compare-deployment [-h] --environment ENVIRONMENT --ref REF [--config CONFIG]
+                                   [--reference-config REFERENCE_CONFIG]
+                                   [--reference-lock REFERENCE_LOCK]
+                                   [--source {head,index,working-tree}] [--facets FACETS]
+                                   [--limit LIMIT] [--summary] [--format {json,text}]
+                                   [--allow-custom-providers]
+```
+
+Read-only comparison; an environment/ref is an operator assertion, not deployment attestation. Run verify separately for current-lock integrity. Never fetches, moves refs or writes locks.
+
+| Argument | Value | Default | Description |
+| --- | --- | --- | --- |
+| `-h`, `--help` | — | — | show this help message and exit |
+| `--environment` | `ENVIRONMENT` | required | Operator-supplied environment label |
+| `--ref` | `REF` | required | Explicit local deployment Git ref |
+| `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--reference-config` | `REFERENCE_CONFIG` | — | Reference config path (defaults to --config) |
+| `--reference-lock` | `REFERENCE_LOCK` | `boundary.lock.json` | — |
+| `--source` | `{head,index,working-tree}` | `head` | — |
+| `--facets` | `FACETS` | — | Comma-separated gating facets; defaults to current config policy |
+| `--limit` | `LIMIT` | `1000` | Displayed component and slice changes, 0..10000; hidden drift still gates |
+| `--summary` | — | `false` | Report counts without component or slice rows |
+| `--format` | `{json,text}` | `text` | — |
+| `--allow-custom-providers` | — | `false` | Allow trusted native Python providers; not a sandbox |
+
 <a id="coverage"></a>
 
 ## `boundver coverage`
 
 ```text
-usage: boundver coverage [-h] [--config CONFIG] [--source {head,index,working-tree}]
+usage: boundver coverage [-h] [--config CONFIG] [--component NAME] [--path-prefix PATH]
+                         [--limit LIMIT] [--summary] [--source {head,index,working-tree}]
                          [--format {json,text}] [--strict]
 ```
 
@@ -331,6 +378,10 @@ usage: boundver coverage [-h] [--config CONFIG] [--source {head,index,working-tr
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
+| `--component` | `NAME` | — | Audit this component's facets; repeat to select more. Skips repository ownership audit |
+| `--path-prefix` | `PATH` | none | Restrict findings to a literal repository-relative path prefix; repeat for a union |
+| `--limit` | `LIMIT` | `1000` | Maximum displayed path entries, 0..10000; analysis and strict totals remain complete |
+| `--summary` | — | `false` | Report per-component/facet counts without listing paths |
 | `--source` | `{head,index,working-tree}` | `head` | Snapshot to inspect (default: head) |
 | `--format` | `{json,text}` | `text` | Output format |
 | `--strict` | — | `false` | Exit 1 when any uncovered declaration path is reported |
@@ -378,8 +429,8 @@ usage: boundver explain [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_RE
 | `-h`, `--help` | — | — | show this help message and exit |
 | `component` | `COMPONENT` | required | Component name from config |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
-| `--lock` | `LOCK` | `boundary.lock.json` | Lockfile path used to infer the default diagnostic base |
-| `--base-ref` | `BASE_REF` | — | Git ref to resolve to an immutable commit and diff against (default: commit that introduced the component's current lock entry for source=head; HEAD otherwise) |
+| `--lock` | `LOCK` | `boundary.lock.json` | Lockfile path; not proof of its generating source |
+| `--base-ref` | `BASE_REF` | — | Git ref to resolve to an immutable commit and diff against (required for source=head; defaults to HEAD for index/working-tree). This comparison is not lock-source provenance |
 | `--source` | `{head,index,working-tree}` | `head` | Source to diff against base-ref (default: head) |
 | `--allow-custom-providers` | — | `false` | Allow loading external provider modules declared in the config 'providers' key |
 
@@ -388,30 +439,30 @@ usage: boundver explain [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_RE
 ## `boundver why`
 
 ```text
-usage: boundver why [-h] [--config CONFIG] [--lock LOCK] [--base-ref BASE_REF]
-                    [--source {head,index,working-tree}] [--format {json,text}] [--transitive]
-                    [--allow-custom-providers]
-                    component
+usage: boundver why [options] (component | --slice SLICE)
 ```
 
 Compare current fingerprints against the lockfile and explain what changed.
 
-Shows which facets (exact/behavior/boundary/compat) drifted, what type of change it is, and which files are responsible.
+Shows which facets (exact/behavior/boundary/compat) drifted, what type of change it is. Explicit --base-ref adds a source comparison, not proof of lock provenance.
 
 ```text
 Exit codes:
-  0  Component is up to date
-  1  Component has drifted
+  0  No gated component/slice drift
+  1  Selected component/slice has drifted
   2  Usage error (unknown component, missing config, etc.)
 ```
 
 | Argument | Value | Default | Description |
 | --- | --- | --- | --- |
 | `-h`, `--help` | — | — | show this help message and exit |
-| `component` | `COMPONENT` | required | Component name from config |
+| `component` | `COMPONENT?` | — | Component name from config |
+| `--slice` | `SLICE` | — | Explain a declared slice instead of one component |
+| `--limit` | `LIMIT` | `1000` | Slice member rows, 0..10000; counts remain complete |
+| `--summary` | — | `false` | Slice counts without member rows |
 | `--config` | `CONFIG` | `boundary.config.json` | — |
 | `--lock` | `LOCK` | `boundary.lock.json` | — |
-| `--base-ref` | `BASE_REF` | — | Git ref resolved to an immutable commit for changed-file diagnostics (default: commit that introduced the component's current lock entry for source=head; HEAD otherwise) |
+| `--base-ref` | `BASE_REF` | — | Git ref resolved to an immutable commit for changed-file diagnostics (required for source=head file lists; defaults to HEAD for index/working-tree). A lock-containing commit does not prove the generating source |
 | `--source` | `{head,index,working-tree}` | `head` | Fingerprint source to compare against (default: head) |
 | `--format` | `{json,text}` | `text` | Output format |
 | `--transitive` | — | `false` | Report the transitive downstream consumer closure |

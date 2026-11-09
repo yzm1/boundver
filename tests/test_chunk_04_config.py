@@ -629,6 +629,9 @@ class RepositoryStateMachineTests(unittest.TestCase):
             for label, root in cls.states.items()
             for command, argv in MATRIX_COMMANDS.items()
         }
+        cls.conflicted_inspection = run_cli(
+            cls.states["conflicted-merge"], "generate", "--inspect-working-tree",
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -1061,9 +1064,7 @@ class RepositoryStateMachineTests(unittest.TestCase):
         ("refs-directory-removed", "review"): (2, "ERROR: Not inside a git repository."),
         ("conflicted-merge", "generate"): (
             0,
-            "WARNING: Could not inspect uncommitted component changes: Cannot "
-            "capture index as a complete Git tree: git write-tree failed "
-            "(return code 128; stderr='boundary.lock.json: unmerged (",
+            None,
         ),
         ("conflicted-merge", "generate --source working-tree"): (
             2,
@@ -1090,10 +1091,9 @@ class RepositoryStateMachineTests(unittest.TestCase):
         ("dangling-git-file", "review"): (2, "ERROR: Not inside a git repository."),
     }
 
-    #: The one cell whose recorded text is a prefix rather than the whole line:
-    #: the rest of it is `git write-tree`'s list of unmerged blob ids, which is
-    #: a fact about the fixture's own lockfile bytes and not about the state.
-    PREFIX_ONLY_CELLS = {("conflicted-merge", "generate")}
+    #: Default HEAD generation no longer inspects an unrelated index. The
+    #: explicit scan's variable Git conflict diagnostic is tested separately.
+    PREFIX_ONLY_CELLS = set()
 
     def test_every_cell_of_the_matrix_matches_its_pinned_outcome(self):
         self.assertEqual(sorted(self.MATRIX_OUTCOMES), sorted(self.results))
@@ -1117,7 +1117,12 @@ class RepositoryStateMachineTests(unittest.TestCase):
 
     def test_the_conflicted_merge_warning_names_both_unmerged_paths(self):
         """The half of that cell the prefix leaves out, asserted by content."""
-        stderr = self.results[("conflicted-merge", "generate")].stderr
+        self.assertEqual(self.conflicted_inspection.returncode, 0)
+        stderr = self.conflicted_inspection.stderr
+        self.assertTrue(stderr.startswith(
+            "WARNING: Could not inspect uncommitted component changes: Cannot "
+            "capture index as a complete Git tree: git write-tree failed "
+        ), stderr)
         self.assertIn("boundary.lock.json: unmerged (", stderr)
         self.assertIn("svc/c.txt: unmerged (", stderr)
         self.assertIn("fatal: git-write-tree: error building trees", stderr)
@@ -1794,13 +1799,22 @@ VERSION_READING_COMMANDS = {
     "generate": ("generate", "--source", "head"),
     "verify": ("verify", "--source", "head"),
     "status": ("status", "--source", "head"),
-    "explain": ("explain", "a"),
+    "explain": ("explain", "a", "--base-ref", "HEAD"),
     "why": ("why", "a"),
     "review": ("review", "--base", "HEAD~1", "--target", "HEAD"),
 }
 
+# Deployment comparison has two captured endpoints and structured stdout
+# errors, unlike the legacy stderr golden cases below. Exercise its readers
+# and failures separately rather than misclassifying it as non-measuring.
+DEPLOYMENT_READING_COMMANDS = {
+    "compare-deployment": (
+        "compare-deployment", "--environment", "taxonomy", "--ref", "HEAD~1", "--format", "json",
+    ),
+}
+
 #: Subcommands that create, mutate or describe rather than measure a component,
-#: and so are deliberately not driven here. The union of the two sets is
+#: and so are deliberately not driven here. The union of these classifications is
 #: compared against the parser at runtime, so a new subcommand fails this file
 #: until somebody decides which side it belongs on.
 NON_MEASURING_COMMANDS = {
@@ -2272,7 +2286,7 @@ class VersionReaderTaxonomyTests(unittest.TestCase):
 
     def test_every_registered_subcommand_is_classified_by_this_file(self):
         self.assertEqual(
-            sorted(set(VERSION_READING_COMMANDS) | NON_MEASURING_COMMANDS),
+            sorted(set(VERSION_READING_COMMANDS) | set(DEPLOYMENT_READING_COMMANDS) | NON_MEASURING_COMMANDS),
             _registered_subcommands(),
         )
 
@@ -2298,6 +2312,59 @@ class VersionReaderTaxonomyTests(unittest.TestCase):
         scene.commit("bumped")
         argv_by_command["review"] = ("review", "--base", base, "--target", scene.head())
         return argv_by_command
+
+    def test_deployment_comparison_reads_versions_at_both_captured_endpoints(self):
+        observed = []
+        original = _SourceAccessor.version_read_file
+
+        def counting(accessor, repo_rel):
+            observed.append((accessor.snapshot.head_oid, repo_rel))
+            return original(accessor, repo_rel)
+
+        with self._scene() as scene:
+            self._prepare_reader_reachable(scene)
+            previous = scene.head()
+            scene.file("outside.txt", "not a component contract\n")
+            scene.commit("new source identity, unchanged contracts")
+            current = scene.head()
+            with mock.patch.object(_SourceAccessor, "version_read_file", counting):
+                result = run_cli_in_process(scene.root, *DEPLOYMENT_READING_COMMANDS["compare-deployment"])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["complete"])
+            self.assertEqual(payload["reference"]["commit"], previous)
+            self.assertEqual(payload["current"]["commit"], current)
+            self.assertEqual(set(observed), {
+                (commit, path) for commit in (previous, current)
+                for path in ("a/meta.json", "b/meta.json")
+            })
+
+    def test_deployment_reader_failure_is_structured_and_endpoint_specific(self):
+        original = _SourceAccessor.version_read_file
+        with self._scene() as scene:
+            self._prepare_reader_reachable(scene)
+            previous = scene.head()
+            scene.file("outside.txt", "not a component contract\n")
+            scene.commit("new source identity, unchanged contracts")
+            current = scene.head()
+            lock_before = (scene.root / "boundary.lock.json").read_bytes()
+            for endpoint, commit in (("reference", previous), ("current", current)):
+                with self.subTest(endpoint=endpoint):
+                    def poisoned(accessor, repo_rel):
+                        if accessor.snapshot.head_oid == commit:
+                            raise ValueError("File changed while hashing: " + repo_rel)
+                        return original(accessor, repo_rel)
+
+                    with mock.patch.object(_SourceAccessor, "version_read_file", poisoned):
+                        result = run_cli_in_process(scene.root, *DEPLOYMENT_READING_COMMANDS["compare-deployment"])
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(result.stderr, "")
+                    payload = json.loads(result.stdout)
+                    self.assertFalse(payload["complete"])
+                    self.assertEqual(payload["reference"]["verified"], endpoint == "current")
+                    self.assertTrue(any(endpoint + " endpoint:" in issue and "a/meta.json" in issue
+                                        for issue in payload["issues"]["items"]))
+                    self.assertEqual((scene.root / "boundary.lock.json").read_bytes(), lock_before)
 
     def test_which_commands_read_a_version_source_is_derived_not_assumed(self):
         """Observe the surface rather than trusting the obligation's list.

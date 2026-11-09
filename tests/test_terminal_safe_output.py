@@ -278,6 +278,11 @@ class TerminalSafeOutputTests(unittest.TestCase):
             "current_fps": {"boundary": "b" * 64},
             "changed_files": [],
             "version": "1.0.0\n::warning::not real",
+            "version_change": {
+                "previous": "1.0.0\n::warning::not real",
+                "current": "2.0.0\x1b[31m",
+                "status": "unavailable",
+            },
             "provider_explanation": provider_detail,
         }
         config = {

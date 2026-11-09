@@ -2494,7 +2494,7 @@ def _disposable_gate(repo: Path, remote: str, sha: str, tag: str) -> str:
             cwd=repo,
             env=audit_env,
         )
-        if tag == "v0.17.0":
+        if tag == "v0.20.0":
             _run(
                 (
                     sys.executable,

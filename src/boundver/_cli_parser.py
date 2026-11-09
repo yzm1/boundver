@@ -1,6 +1,7 @@
 """Argument-parser construction for the public boundver CLI."""
 
 import argparse
+import math
 import sys
 
 from ._output import _display_text
@@ -13,6 +14,16 @@ class _TerminalSafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         self.print_usage(sys.stderr)
         self.exit(2, f"{self.prog}: error: {_display_text(message)}\n")
+
+
+def _positive_timeout(value: str) -> float:
+    try:
+        seconds = float(value)
+    except (ValueError, OverflowError):
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number") from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a finite positive number")
+    return seconds
 
 
 def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
@@ -74,13 +85,26 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Comma-separated component names to regenerate",
     )
     gen.add_argument(
-        "--format", choices=["json", "text"], default="text", help="Output format"
+        "--format", choices=["json", "text", "changes-json"], default="text",
+        help="Output format; changes-json requires --dry-run and compares the previous selected-source lock",
     )
+    gen.add_argument("--limit", type=int, default=1000, help="Change-report rows, 0..10000; changes-json only")
+    gen.add_argument("--summary", action="store_true", help="Change-report counts without rows; changes-json only")
     gen.add_argument(
         "--allow-custom-providers",
         action="store_true",
         help="Allow loading external provider modules declared in the config 'providers' key "
         "(or set BOUNDVER_ALLOW_CUSTOM_PROVIDERS=1)",
+    )
+    gen.add_argument(
+        "--inspect-working-tree", action="store_true",
+        help="With source head, also run an expensive working-tree warning scan using index capture; never changes generation inputs",
+    )
+    gen.add_argument("--progress", action="store_true", help="Print bounded generation progress to stderr")
+    gen.add_argument("--timing", action="store_true", help="Print bounded local phase/component timings to stderr")
+    gen.add_argument(
+        "--timeout", type=_positive_timeout, metavar="SECONDS",
+        help="Computation deadline from source capture; expiry exits 2 before publication. Atomic commit and final output are not hard wall-time bounded; native providers are not sandboxed",
     )
     ver = sub.add_parser(
         "verify",
@@ -181,7 +205,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Shrink an existing baseline by removing resolved identities; never adds violations",
     )
     ver.add_argument(
-        "--format", choices=["json", "text"], default="text", help="Output format"
+        "--format", choices=["json", "text", "scoped-json"], default="text",
+        help="Output format; scoped-json adds versioned selection and analysis attribution",
     )
     ver.add_argument(
         "--allow-custom-providers",
@@ -271,8 +296,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     dif.add_argument("old", help="Old lockfile")
     dif.add_argument("new", help="New lockfile")
     dif.add_argument(
-        "--format", choices=["json", "text"], default="text", help="Output format"
+        "--format", choices=["json", "text", "changes-json", "upgrade-json"], default="text",
+        help="Output format; upgrade-json inspects supported v3/v4 contracts read-only, without migration",
     )
+    dif.add_argument("--limit", type=int, default=1000, help="Change-report rows, 0..10000; changes-json/upgrade-json only")
+    dif.add_argument("--summary", action="store_true", help="Change-report counts without rows; changes-json/upgrade-json only")
 
     # slice
     sl = sub.add_parser("slice", help="Show fingerprint for a specific slice")
@@ -295,6 +323,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     vc.add_argument("--config", default="boundary.config.json")
     vc.add_argument(
+        "--source", choices=["head", "index", "working-tree"],
+        default="working-tree",
+        help="Snapshot to validate (default: working-tree); head does not capture the index",
+    )
+    vc.add_argument(
         "--allow-partial",
         action="store_true",
         help="Allow intentional null facet inputs in slices",
@@ -306,6 +339,11 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     )
     cc = sub.add_parser("check-config", help="Alias for validate-config")
     cc.add_argument("--config", default="boundary.config.json")
+    cc.add_argument(
+        "--source", choices=["head", "index", "working-tree"],
+        default="working-tree",
+        help="Snapshot to validate (default: working-tree); head does not capture the index",
+    )
     cc.add_argument(
         "--allow-partial",
         action="store_true",
@@ -406,6 +444,25 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         help="Allow loading external provider modules declared in the config 'providers' key",
     )
 
+    deployment = sub.add_parser(
+        "compare-deployment",
+        help="Compare contracts against an explicit local deployment reference",
+        description=("Read-only comparison; an environment/ref is an operator assertion, "
+                     "not deployment attestation. Run verify separately for current-lock integrity. "
+                     "Never fetches, moves refs or writes locks."),
+    )
+    deployment.add_argument("--environment", required=True, help="Operator-supplied environment label")
+    deployment.add_argument("--ref", required=True, help="Explicit local deployment Git ref")
+    deployment.add_argument("--config", default="boundary.config.json")
+    deployment.add_argument("--reference-config", default=None, help="Reference config path (defaults to --config)")
+    deployment.add_argument("--reference-lock", default="boundary.lock.json")
+    deployment.add_argument("--source", choices=SOURCE_MODES, default="head")
+    deployment.add_argument("--facets", default=None, help="Comma-separated gating facets; defaults to current config policy")
+    deployment.add_argument("--limit", type=int, default=1000, help="Displayed component and slice changes, 0..10000; hidden drift still gates")
+    deployment.add_argument("--summary", action="store_true", help="Report counts without component or slice rows")
+    deployment.add_argument("--format", choices=["json", "text"], default="text")
+    deployment.add_argument("--allow-custom-providers", action="store_true", help="Allow trusted native Python providers; not a sandbox")
+
     coverage = sub.add_parser(
         "coverage",
         help="Find tracked files missing from declarations",
@@ -417,6 +474,22 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     coverage.add_argument("--config", default="boundary.config.json")
+    coverage.add_argument(
+        "--component", action="append", default=None, metavar="NAME",
+        help="Audit this component's facets; repeat to select more. Skips repository ownership audit",
+    )
+    coverage.add_argument(
+        "--path-prefix", action="append", default=[], metavar="PATH",
+        help="Restrict findings to a literal repository-relative path prefix; repeat for a union",
+    )
+    coverage.add_argument(
+        "--limit", type=int, default=1000,
+        help="Maximum displayed path entries, 0..10000; analysis and strict totals remain complete",
+    )
+    coverage.add_argument(
+        "--summary", action="store_true",
+        help="Report per-component/facet counts without listing paths",
+    )
     coverage.add_argument(
         "--source",
         choices=SOURCE_MODES,
@@ -459,15 +532,15 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
     ex.add_argument(
         "--lock",
         default="boundary.lock.json",
-        help="Lockfile path used to infer the default diagnostic base",
+        help="Lockfile path; not proof of its generating source",
     )
     ex.add_argument(
         "--base-ref",
         default=None,
         help=(
             "Git ref to resolve to an immutable commit and diff against "
-            "(default: commit that introduced the "
-            "component's current lock entry for source=head; HEAD otherwise)"
+            "(required for source=head; defaults to HEAD for index/working-tree). "
+            "This comparison is not lock-source provenance"
         ),
     )
     ex.add_argument(
@@ -484,19 +557,27 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
 
     why = sub.add_parser(
         "why",
-        help="Explain why a component's lockfile is out of date",
+        # Older argparse versions misrender a group mixing an optional
+        # positional with an option. Keep the required target explicit and
+        # portable; the argument table still documents every option.
+        usage="%(prog)s [options] (component | --slice SLICE)",
+        help="Explain component or slice drift",
         description=(
             "Compare current fingerprints against the lockfile and explain what changed.\n\n"
             "Shows which facets (exact/behavior/boundary/compat) drifted, what type of change\n"
-            "it is, and which files are responsible.\n\n"
+            "it is. Explicit --base-ref adds a source comparison, not proof of lock provenance.\n\n"
             "Exit codes:\n"
-            "  0  Component is up to date\n"
-            "  1  Component has drifted\n"
+            "  0  No gated component/slice drift\n"
+            "  1  Selected component/slice has drifted\n"
             "  2  Usage error (unknown component, missing config, etc.)\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    why.add_argument("component", help="Component name from config")
+    why_target = why.add_mutually_exclusive_group(required=True)
+    why_target.add_argument("component", nargs="?", help="Component name from config")
+    why_target.add_argument("--slice", default=None, help="Explain a declared slice instead of one component")
+    why.add_argument("--limit", type=int, default=1000, help="Slice member rows, 0..10000; counts remain complete")
+    why.add_argument("--summary", action="store_true", help="Slice counts without member rows")
     why.add_argument("--config", default="boundary.config.json")
     why.add_argument("--lock", default="boundary.lock.json")
     why.add_argument(
@@ -504,8 +585,8 @@ def build_parser(*, version: str, epilog: str) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Git ref resolved to an immutable commit for changed-file diagnostics "
-            "(default: commit that introduced "
-            "the component's current lock entry for source=head; HEAD otherwise)"
+            "(required for source=head file lists; defaults to HEAD for index/working-tree). "
+            "A lock-containing commit does not prove the generating source"
         ),
     )
     why.add_argument(

@@ -31,6 +31,7 @@ from boundver._baseline import (
 
 from tests._parity import run_cli
 from tests._scenarios import Scenario
+from tests._project_metadata import CURRENT_TAG
 
 SPEC = Path(__file__).resolve().parents[1] / "spec" / "verify-baseline.schema.json"
 
@@ -157,9 +158,13 @@ class PreviousReleaseHelperTests(unittest.TestCase):
 class BaselineSchemaPinTests(unittest.TestCase):
     """OBL-BASELINE-004, first half: the pin must agree with the schema file."""
 
-    def test_the_constant_equals_the_published_id(self):
+    def test_canonical_record_identity_and_release_schema_identity_are_distinct(self):
         published = json.loads(io.open(SPEC, encoding="utf-8").read())
-        self.assertEqual(published["$id"], BASELINE_SCHEMA_URL)
+        self.assertEqual(published["$id"],
+                         f"https://raw.githubusercontent.com/yzm1/boundver/{CURRENT_TAG}/spec/verify-baseline.schema.json")
+        self.assertEqual(published["properties"]["$schema"]["const"], BASELINE_SCHEMA_URL)
+        self.assertEqual(BASELINE_SCHEMA_URL,
+                         "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/verify-baseline.schema.json")
 
     def test_the_url_carries_a_release_tag(self):
         match = _TAG.search(BASELINE_SCHEMA_URL)

@@ -197,7 +197,10 @@ _boundver_completions
 printf '<%s>\n' "${COMPREPLY[@]}"
 '''
             result = subprocess.run(
-                [_BASH, "-c", probe],
+                # Feed the complete program on stdin: Windows Bash launchers
+                # can truncate a growing completion script passed via -c.
+                [_BASH, "-s"],
+                input=probe,
                 cwd=td,
                 capture_output=True,
                 text=True,
@@ -215,7 +218,8 @@ _boundver_completions
 printf 'count=%s\n' "${#COMPREPLY[@]}"
 '''
         result = subprocess.run(
-            [_BASH, "-c", probe],
+            [_BASH, "-s"],
+            input=probe,
             capture_output=True,
             text=True,
             check=False,
@@ -235,7 +239,8 @@ _boundver_completions
 printf '<%s>\n' "${COMPREPLY[@]}"
 '''
             result = subprocess.run(
-                [_BASH, "-c", probe],
+                [_BASH, "-s"],
+                input=probe,
                 cwd=td,
                 capture_output=True,
                 text=True,

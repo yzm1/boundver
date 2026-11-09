@@ -1138,6 +1138,7 @@ def _write_baseline_then_drift(scene: Scenario) -> None:
 #: every `_print_verify_json` call site `core.py` contains; the census below
 #: enumerates the sites from the source rather than trusting this list.
 VERIFY_JSON_STATES: Tuple[Tuple[str, Optional[Callable[[Scenario], None]], Tuple[str, ...]], ...] = (
+    ("unknown-component", None, ("--components", "unknown")),
     ("invalid-config", _invalid_config, ()),
     ("preflight-failure", _add_a_component, ()),
     ("preflight-repair-update", _add_a_component, ("--update", "--source", "working-tree")),

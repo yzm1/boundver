@@ -49,6 +49,9 @@ TAG_RE = re.compile(
     r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
 )
 CANONICAL_LOCK_SCHEMA_REF = "v0.16.0"
+HISTORICAL_CONFIG_SCHEMA_REFS = {
+    "examples/range-review/fixture/boundary.config.json": "v0.16.0",
+}
 RAW_SCHEMA_RE = re.compile(
     r"https://raw\.githubusercontent\.com/yzm1/boundver/"
     r"(?P<ref>[^/\s\"'<>]+)/(?P<path>[^\s\"'<>]*schema\.json)"
@@ -62,6 +65,7 @@ SKIP_PARTS = {
     ".venv",
     "build",
     "dist",
+    "site",
     "__pycache__",
 }
 RELEASE_DOCS = (
@@ -799,7 +803,20 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                 if match.group("path") == "spec/boundary.lock.schema.json"
                 else tag
             )
-            if match.group("ref") != expected_ref:
+            if match.group("path") == "boundary.config.schema.json":
+                expected_ref = HISTORICAL_CONFIG_SCHEMA_REFS.get(
+                    path.relative_to(repo).as_posix(), expected_ref,
+                )
+            # These unchanged output contracts embed their original canonical
+            # identity. A release-pinned schema $id is still checked below.
+            canonical_output_identity = (
+                match.group("ref") == "v0.16.0"
+                and match.group("path") in {
+                    "spec/verify-baseline.schema.json",
+                    "spec/cli-output.migrate-lock.schema.json",
+                }
+            )
+            if match.group("ref") != expected_ref and not canonical_output_identity:
                 errors.append(
                     f"{relative}: schema URL uses {match.group('ref')!r}, "
                     f"expected {expected_ref!r}"
@@ -951,8 +968,9 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                         f"{path.relative_to(repo)} {field} must be {expected!r}"
                     )
 
+    # Config initialization obtains its identity from the packaged schema,
+    # already checked above. Do not require a second, unused URL literal.
     required_source_urls = {
-        "src/boundver/core.py": expected_config_schema,
         "src/boundver/_lockfile.py": expected_lock_schema,
     }
     for relative, expected in required_source_urls.items():

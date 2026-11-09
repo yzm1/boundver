@@ -1056,12 +1056,13 @@ class WitnessProvider:
 #: the refusal anyway, which is the one row where the two disagree. Streams
 #: observed: stderr for generate, why and review; stdout for verify and status.
 TRUST_COMMANDS: Dict[str, Tuple[Tuple[str, ...], int, bool, int]] = {
+    "compare-deployment": (("compare-deployment", "--environment", "test", "--ref", "<target>"), 2, True, 1),
     "generate": (("generate", "--out", "scratch.lock.json"), 2, True, 1),
     "verify": (("verify",), 2, True, 1),
     "validate-config": (("validate-config",), 0, False, 1),
     "check-config": (("check-config",), 0, False, 1),
     "status": (("status",), 0, True, 1),
-    "explain": (("explain", "svc"), 0, False, 1),
+    "explain": (("explain", "svc", "--base-ref", "<target>"), 0, False, 1),
     "why": (("why", "svc"), 2, True, 1),
     "review": (("review", "--base", "<base>", "--target", "<target>"), 2, True, 1),
 }
@@ -1573,20 +1574,16 @@ class ComponentLockHistoryBaseTests(unittest.TestCase):
                 base, _origin = self._base(scene, head, lock, component)
                 self.assertIn(base, self._lock_commits(scene, head))
 
-    def test_the_command_a_reviewer_runs_reports_that_same_commit(self):
+    def test_the_command_does_not_promote_lock_history_to_source_provenance(self):
         result = run_cli(
             self.aba.root, "why", "svc", "--source", "head", "--format", "json"
         )
         self.assertEqual(result.returncode, 1, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["diagnostic_base"], self.a2)
-        self.assertEqual(
-            payload["diagnostic_base_origin"],
-            "commit that introduced the current lock entry for svc",
-        )
-        self.assertEqual(
-            payload["changed_files"], [{"path": "svc/impl.py", "status": "M"}]
-        )
+        self.assertIsNone(payload["diagnostic_base"])
+        self.assertIn("unavailable", payload["diagnostic_base_origin"])
+        self.assertEqual(payload["changed_files_status"], "not-run")
+        self.assertEqual(payload["changed_files"], [])
 
     def test_the_resolution_ladder_agrees_with_the_component_walk(self):
         snapshot = _capture_git_source_snapshot(self.aba.root, "head")

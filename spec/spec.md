@@ -50,6 +50,13 @@ axis to match, and non-equivalent digests must be regenerated from source.
 
 ## Version sources
 
+- `version_source.file` is component-relative. The explicit
+  `version_source.repo_file` variant is relative to the repository root, not
+  the config directory. Each requires a `field`, uses the same captured
+  source, and rejects globs, absolute paths, traversal, backslashes and ADS
+  colons. They are mutually exclusive with each other and with other version
+  source variants. Established Git repositories require tracked, regular
+  source files; existing first-run fallback rules are unchanged.
 - A component may inherit the resolved version of another configured component.
   Resolution uses the same captured source, is transitive, and rejects unknown
   targets, self-references, and cycles. The identity relation does not create a
@@ -58,18 +65,26 @@ axis to match, and non-equivalent digests must be regenerated from source.
   participates in the semantic config digest and is intended for identities
   with no repository-owned manifest or tag.
 - Compat slices consume the resolved compatibility fingerprint without
-  distinguishing which of the four version-source forms supplied it.
-- File-backed version fields are textual identifiers. TOML version values must
-  be quoted strings; numeric TOML values are rejected so extraction cannot vary
-  with the parser or Python's process-wide decimal conversion limit.
-- JSON and YAML retain bounded numeric-version compatibility. Integers use the
-  JSON decimal grammar (no plus sign, leading zeroes, separators, alternate
-  bases, or sexagesimal notation) and are limited to 4,300 decimal digits.
-- Version values must be strings or finite numbers; booleans, nulls, mappings,
-  and sequences are rejected. TOML parsing is provided by the standard library
+  distinguishing which version-source form supplied it. The source declaration
+  participates in the semantic-config identity; opting into `repo_file` changes
+  that declaration but does not redefine existing digests or lock structure.
+- File-backed version fields are textual identifiers in JSON, TOML and YAML.
+  Numeric values, booleans, nulls, mappings and sequences are rejected: parser
+  conversion must not change a version's source spelling. Numeric data elsewhere
+  in a JSON/YAML document still uses the bounded JSON decimal grammar (no plus
+  sign, leading zeroes, separators, alternate bases, or sexagesimal notation),
+  with integers limited to 4,300 decimal digits.
+- TOML parsing is provided by the standard library
   or the required `tomli` compatibility dependency. YAML version sources
   require the `yaml` extra. If an authoritative parser is unavailable,
   extraction fails closed rather than applying a partial regex grammar.
+- External version bytes do not implicitly become component exact, behavior or
+  boundary inputs. They affect the resolved version and compatibility identity.
+  Changed-path reporting includes file readers and transitive version inheritors
+  (and any owning component); unknown paths retain conservative full selection.
+  Full lock integrity is still verified. Component diagnostics can name the
+  currently declared external version file without classifying it as boundary
+  content or claiming deployment/compatibility proof.
 - A numeric run longer than 640 significant digits anywhere in a TOML config
   or version-source document is rejected before parsing, including when the
   selected version field is a valid string. Digits inside strings and comments
@@ -174,12 +189,24 @@ comparison to the discovery payload. Baseline-aware verification adds its
 action, acknowledged issues, stale identities, and shrink delta under the
 optional `baseline` member.
 
-Declaration coverage uses `boundver-declaration-coverage/v1`. It reports
+Declaration coverage uses `boundver-declaration-coverage/v2`. It reports
 unselected component paths and unowned source-indicator paths, binds them to
 the selected config source and responsible JSON Pointer, and separates
 reasoned exclusions from uncovered paths. Coverage policy is intentionally
 absent from the semantic-config projection: this read-only advisory cannot
 change a component, slice, or lock identity.
+
+The v2 scope records selected components, literal path prefixes, and whether
+ownership was analyzed. Component filtering disables repository-wide ownership
+analysis; path-prefix filtering narrows both applicable analyses. Config
+validation is not narrowed. `complete` means completed analysis in that scope,
+not exhaustive path presentation or whole-repository coverage. Presentation
+records total/shown/omitted entries, truncation, summary mode and path/byte
+limits. Counts include every in-scope finding, while path arrays may be shorter.
+Strict exit 1 and `ok: false` depend on all uncovered findings, including omitted
+ones. Exceeding a genuine work/result budget exits 2 without partial success.
+An unchanged file omitted in two facets contributes two path entries. The v1
+and v2 array-completeness contracts are not interchangeable.
 
 `diff` is a non-mutating review surface. It accepts canonical
 `boundary-lock/v4` inputs using `boundver-semantic-config/v3`, reports metadata

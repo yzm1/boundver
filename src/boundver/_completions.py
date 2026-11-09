@@ -24,6 +24,7 @@ _COMMAND_DESCRIPTIONS: Dict[str, str] = {
     "add": "Add a component",
     "remove": "Remove a component",
     "status": "Show status and drift",
+    "compare-deployment": "Compare against an asserted local deployment reference",
     "coverage": "Report declaration coverage gaps",
     "record-derivation": "Record generated-artifact freshness",
     "explain": "Explain changed files",
@@ -51,7 +52,10 @@ _POST_COMMAND_GLOBAL_OPTIONS: Tuple[str, ...] = ("--quiet", "--verbose")
 _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
     "generate": (
         "-h", "--help", "--config", "--out", "--source", "--allow-partial",
-        "--dry-run", "--components", "--format", "--allow-custom-providers",
+        "--dry-run", "--components", "--format", "--limit", "--summary",
+        "--allow-custom-providers",
+        "--inspect-working-tree",
+        "--progress", "--timing", "--timeout",
     ),
     "verify": (
         "-h", "--help", "--config", "--lock", "--source", "--components",
@@ -64,14 +68,14 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--lock", "--facets", "--transitive", "--format", "--summary-file",
         "--allow-custom-providers",
     ),
-    "diff": ("-h", "--help", "--format"),
+    "diff": ("-h", "--help", "--format", "--limit", "--summary"),
     "slice": ("-h", "--help", "--lock", "--format"),
     "validate-config": (
-        "-h", "--help", "--config", "--allow-partial",
+        "-h", "--help", "--config", "--source", "--allow-partial",
         "--allow-custom-providers",
     ),
     "check-config": (
-        "-h", "--help", "--config", "--allow-partial",
+        "-h", "--help", "--config", "--source", "--allow-partial",
         "--allow-custom-providers",
     ),
     "init": ("-h", "--help", "--out", "--force", "--discover"),
@@ -84,7 +88,14 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--strict", "--allow-custom-providers",
     ),
     "coverage": (
-        "-h", "--help", "--config", "--source", "--format", "--strict",
+        "-h", "--help", "--config",
+        "--component", "--path-prefix", "--limit", "--summary",
+        "--source", "--format", "--strict",
+    ),
+    "compare-deployment": (
+        "-h", "--help", "--environment", "--ref", "--config",
+        "--reference-config", "--reference-lock", "--source", "--facets",
+        "--limit", "--summary", "--format", "--allow-custom-providers",
     ),
     "record-derivation": ("-h", "--help", "--config", "--source"),
     "explain": (
@@ -92,7 +103,7 @@ _COMMAND_OPTIONS: Dict[str, Tuple[str, ...]] = {
         "--allow-custom-providers",
     ),
     "why": (
-        "-h", "--help", "--config", "--lock", "--base-ref", "--source", "--format",
+        "-h", "--help", "--slice", "--limit", "--summary", "--config", "--lock", "--base-ref", "--source", "--format",
         "--transitive", "--allow-custom-providers",
     ),
     "discover": (
@@ -112,14 +123,27 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
     "--quiet": "Reduce output",
     "--verbose": "Extra diagnostics",
     "--config": "Config file",
+    "--slice": "Declared slice to explain",
+    "--environment": "Asserted environment label",
+    "--ref": "Explicit local deployment Git ref",
+    "--reference-config": "Reference config file",
+    "--reference-lock": "Reference lockfile",
     "--out": "Lockfile output",
     "--source": "Snapshot source",
     "--allow-partial": "Allow intentional null slice facet inputs",
     "--dry-run": "Preview without writing",
     "--components": "Comma-separated component names",
+    "--component": "One coverage component (repeatable)",
+    "--path-prefix": "Literal coverage path prefix (repeatable)",
+    "--limit": "Maximum displayed detail entries",
+    "--summary": "Counts without detail listings",
     "--format": "Output format",
     "--summary-file": "Bounded Markdown plan summary",
     "--allow-custom-providers": "Allow external provider modules",
+    "--inspect-working-tree": "Also inspect working-tree drift during HEAD generation",
+    "--progress": "Bounded local generation progress",
+    "--timing": "Local phase and component timing diagnostics",
+    "--timeout": "Computation deadline before publication, in seconds",
     "--lock": "Lockfile",
     "--changed-from": "Git base ref",
     "--base": "Review base Git ref",
@@ -149,10 +173,19 @@ _OPTION_DESCRIPTIONS: Dict[str, str] = {
 # option -> (argument label, zsh completion action).  An empty action still
 # marks the option as taking a value.  Fish uses the same table to add -r.
 _OPTION_ARGUMENTS: Dict[str, Tuple[str, str]] = {
+    "--slice": ("slice", ""),
+    "--environment": ("environment", ""),
+    "--ref": ("Git ref", ""),
+    "--reference-config": ("file", "_files"),
+    "--reference-lock": ("file", "_files"),
     "--config": ("file", "_files"),
     "--out": ("file", "_files"),
     "--source": ("source", f"({_SOURCE_CHOICES})"),
     "--components": ("components", ""),
+    "--component": ("component", ""),
+    "--path-prefix": ("prefix", ""),
+    "--limit": ("count", ""),
+    "--timeout": ("seconds", ""),
     "--format": ("format", ""),
     "--summary-file": ("file", "_files"),
     "--lock": ("file", "_files"),
@@ -178,10 +211,14 @@ _OPTION_CHOICES: Dict[str, Tuple[str, ...]] = {
 }
 
 _COMMAND_OPTION_CHOICES: Dict[Tuple[str, str], Tuple[str, ...]] = {
+    ("generate", "--format"): ("json", "text", "changes-json"),
+    ("diff", "--format"): ("json", "text", "changes-json", "upgrade-json"),
+    ("verify", "--format"): ("json", "text", "scoped-json"),
     ("review", "--format"): ("json", "text", "plan"),
 }
 
 _FILE_OPTIONS = (
+    "--reference-config", "--reference-lock",
     "--config", "--lock", "--out", "--baseline", "--write-baseline",
     "--update-baseline", "--boundary-path", "--summary-file",
 )

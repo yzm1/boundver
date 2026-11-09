@@ -1,13 +1,17 @@
 """Git helper primitives for boundver."""
 
 import hashlib
+import math
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import threading
-from collections import Counter
+import time
+from collections import Counter, deque
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -25,6 +29,7 @@ from typing import (
 )
 
 from ._config_contract import git_tag_prefix_error
+from ._version_paths import version_file_repo_path
 from ._utils import (
     GuardrailError,
     SOURCE_MODE_SET,
@@ -139,8 +144,44 @@ _OFFLINE_GIT_SUBCOMMANDS = frozenset(
 _OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
 
 
+_OPERATION_GIT_DEADLINE: ContextVar[Optional[float]] = ContextVar("boundver_git_deadline", default=None)
+_OPERATION_GIT_EXPIRY: ContextVar[Optional[threading.Event]] = ContextVar(
+    "boundver_git_expiry", default=None,
+)
+
+
+@contextmanager
+def git_operation_deadline(deadline: float):
+    """Apply an absolute monotonic deadline to Git calls in this context.
+
+    No repository state is changed. Nested scopes cannot extend an outer
+    deadline, and leaving the scope restores the previous deadline.
+    """
+    if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+        raise ValueError("Git operation deadline must be finite")
+    previous = _OPERATION_GIT_DEADLINE.get()
+    expiry = (
+        _OPERATION_GIT_EXPIRY.get()
+        if previous is not None and previous <= deadline
+        else threading.Event()
+    )
+    token = _OPERATION_GIT_DEADLINE.set(min(previous, deadline) if previous is not None else deadline)
+    expiry_token = _OPERATION_GIT_EXPIRY.set(expiry)
+    try:
+        yield expiry
+    finally:
+        _OPERATION_GIT_EXPIRY.reset(expiry_token)
+        _OPERATION_GIT_DEADLINE.reset(token)
+
+
 def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
     """Build a Git argv only for a statically approved local subcommand."""
+    operation_deadline = _OPERATION_GIT_DEADLINE.get()
+    if operation_deadline is not None and time.monotonic() >= operation_deadline:
+        expiry = _OPERATION_GIT_EXPIRY.get()
+        if expiry is not None:
+            expiry.set()
+        raise GuardrailError("Git operation deadline expired before command launch")
     command_index = 0
     while command_index < len(args):
         argument = args[command_index]
@@ -407,6 +448,13 @@ class _GitProcessDeadline:
     ) -> None:
         self.process = process
         self.seconds = MAX_GIT_COMMAND_SECONDS if seconds is None else seconds
+        self.operation_expiry = None
+        operation_deadline = _OPERATION_GIT_DEADLINE.get()
+        if operation_deadline is not None:
+            remaining = max(0.0, operation_deadline - time.monotonic())
+            if remaining <= self.seconds:
+                self.operation_expiry = _OPERATION_GIT_EXPIRY.get()
+            self.seconds = min(self.seconds, remaining)
         self.expired = threading.Event()
         self.timer = threading.Timer(self.seconds, self._expire)
         self.timer.daemon = True
@@ -416,6 +464,10 @@ class _GitProcessDeadline:
             if self.process.poll() is not None:
                 return
             self.expired.set()
+            if self.operation_expiry is not None:
+                # The independent watchdog can fire before a coarse controller
+                # clock advances. Signal only the operation-limited timer.
+                self.operation_expiry.set()
             self.process.kill()
         except (OSError, ValueError):
             # A concurrent normal reap won the race with the deadline.
@@ -875,6 +927,10 @@ def _repository_filter_config_overrides(
             environment=environment,
             deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
         )
+    except GuardrailError:
+        # GuardrailError is also a ValueError. Preserve the bounded query's
+        # timeout/output diagnostic rather than disguising it as bad config.
+        raise
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 1 and not exc.output and not exc.stderr:
             return ()
@@ -3496,7 +3552,18 @@ def changed_components_since_ref(
     }
     components = config.get("components", {})
     matched_files: set = set()
+    changed_path_set = set(changed_files)
+    version_dependents: Dict[str, List[str]] = {}
     for cname, comp in components.items():
+        version_source = comp.get("version_source")
+        if isinstance(version_source, dict):
+            inherited = version_source.get("component")
+            if isinstance(inherited, str):
+                version_dependents.setdefault(inherited, []).append(cname)
+            version_path = version_file_repo_path(comp.get("path"), version_source)
+            if version_path is not None and version_path in changed_path_set:
+                changed.append(cname)
+                matched_files.add(version_path)
         raw_path = str(comp.get("path", "")).strip()
         cpath = _to_posix(os.path.normpath(raw_path)) if raw_path else ""
         if cpath in {"", "."}:
@@ -3516,9 +3583,16 @@ def changed_components_since_ref(
     # deleted/moved component or another config input.  Selecting everything is
     # conservative, but avoids a false-clean result when the old path is no
     # longer available to map precisely.
-    if changed_files and matched_files != set(changed_files):
+    if changed_files and matched_files != changed_path_set:
         return sorted(components)
-    return sorted(set(changed) | tag_versioned)
+    selected = set(changed) | tag_versioned
+    pending = deque(sorted(selected))
+    while pending:
+        for dependent in version_dependents.get(pending.popleft(), []):
+            if dependent not in selected:
+                selected.add(dependent)
+                pending.append(dependent)
+    return sorted(selected)
 
 
 def dirty_component_paths(repo_root: Path, component_paths: List[str]) -> List[str]:

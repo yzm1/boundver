@@ -295,6 +295,108 @@ immutable tag, published packages, and retained OCI bytes untouched. The
 exception-aware and independent fixable-finding scans still run for both
 architectures; any new finding or available vendor fix blocks publication.
 
+### v0.17 container refresh (in progress)
+
+The integrated policy replaces expired historical entries with exactly the
+assessed 17 CVE IDs and 56 Debian package/CVE pairs, expiring 2026-11-22.
+The owner accepted that limited residual risk, conditional on review and scans.
+Policy-only [PR #177](https://github.com/yzm1/boundver/pull/177) received clean
+code and security reviews at `8d75ade1eeb2cc5e9386ef443001cc74b1099bf9`.
+Those reviews do not make vulnerable packages patched or authorize publication.
+The complete integrated candidate still requires exact-head review, and final
+release-image scans plus the separate no-exceptions fixable-finding gates remain
+mandatory on both architectures.
+
+The development Dockerfile selects the immutable Debian and Debian-security
+snapshot `20261108T120000Z` and a digest-pinned Python 3.12.16 multi-platform
+base. The Git version remains pinned. Builder dependencies come from the same
+hash-locked Action profile as the downloaded wheelhouse, without duplicate pins.
+On 2026-11-08, an initial amd64 package-index probe against `20261107T000000Z` selected
+Git `1:2.47.3-0+deb13u1` and Expat `2.9.0-1~deb13u1`. Debian now lists that Expat
+version as fixed for [CVE-2026-77214](https://security-tracker.debian.org/tracker/CVE-2026-77214).
+The October assessment above is historical, not current release acceptance.
+
+That initial amd64 development image built successfully and its installed-package
+query confirmed Expat `2.9.0-1~deb13u1`, GnuTLS `3.8.9-3+deb13u4`, curl
+`8.14.1-2+deb13u7`, OpenSSL `3.5.7-1~deb13u3`, and PCRE2 `10.46-1~deb13u3`.
+The obsolete CVE-2026-77214 exception has been removed. A network-disabled,
+read-only smoke check ran as the non-root `boundver` user. These are development
+checks, not exact-release artifact acceptance; the project version was still
+0.16.0 at that stage.
+
+An unfiltered HIGH/CRITICAL Trivy scan of that image found fixable zlib findings
+[CVE-2026-76844](https://security-tracker.debian.org/tracker/CVE-2026-76844) and
+[CVE-2026-85091](https://security-tracker.debian.org/tracker/CVE-2026-85091).
+The newer `20261108T120000Z` snapshot installs Debian's fixed zlib
+`1:1.3.dfsg+really1.3.1-1+deb13u1`, confirmed by an installed-package query.
+Its unfiltered amd64 scan reports 56 HIGH package/CVE rows across 17 distinct
+IDs, zero CRITICAL rows and zero rows with a vendor fix. Neither zlib finding
+remains in that report, and neither is exempted. These results use the same
+pinned Trivy image as CI, with a database downloaded on 2026-11-08.
+Those scans used the earlier Python 3.12.14 base; they are not scans of the
+updated Python 3.12.16 candidate.
+The separate no-exceptions `--ignore-unfixed --exit-code 1` scan of the same
+newer amd64 archive also passed. The primary exception-aware scan is not
+cleared by that result alone: at that stage its no-fix findings and expired
+policy still blocked it.
+
+Seven newly reported no-fix IDs were not covered by the historical policy:
+Expat CVE-2026-113351, CVE-2026-115506, CVE-2026-117610, CVE-2026-118370;
+SQLite CVE-2026-119373, CVE-2026-119374, CVE-2026-119379. Debian's trackers
+for [Expat](https://security-tracker.debian.org/tracker/source-package/expat)
+and [SQLite](https://security-tracker.debian.org/tracker/source-package/sqlite3)
+must be checked again before each policy reassessment. These seven IDs are now
+included in the assessed scope above. No-fix findings alone are not a passing
+primary scan or permission to add exceptions.
+
+On 2026-11-08 the maintainer conditionally accepted the assessed 17 no-fix HIGH
+CVEs through 2026-11-22, only for the built-in CLI running non-root with no
+network or capabilities, excluding custom providers and overridden entrypoints.
+The decision remains subject to independent review and successful exact-image
+scans on both architectures. It does not accept new findings, waive a vendor
+fix or authorize publication. The assessed report's SHA-256 is
+`bcc7ec8552a74f3a692d0e6a0f530c404518de170127ffe1089f46d4d772436d`.
+
+The Python 3.12.16 amd64 development image built from source
+`bf7215d28786cb7d4d7d386598147651bec006d5` was subsequently scanned on
+2026-11-08. Its Docker archive SHA-256 is
+`b1026da5e9ed4dae9600c05e61ddb7319f80240f06cb00d124dd94f4c1486b1b`.
+Using the pinned CI scanner and database updated at
+`2026-11-08T12:51:20.684876801Z`, its unfiltered report contains the same
+56 package/CVE pairs and 17 HIGH IDs as the conditionally accepted report,
+with no CRITICAL or fixable HIGH findings. The separate no-exceptions
+fixable-finding gate passed on that same archive. The unfiltered report's
+SHA-256 is
+`7f52461d96d2d2bd618e36d75e3ee27fdb23aba8d4c613c3125f6af1d9723648`.
+This is amd64 development evidence, not ARM validation, independent approval
+or final release-image acceptance; it does not renew the exception policy.
+
+On 2026-11-09, the authorized single-job native ARM audit
+[42577206773](https://github.com/yzm1/boundver/actions/runs/42577206773)
+built source `59b510feffe890814e46f306b293b925f241efdd` on `ubuntu-24.04-arm`.
+Native architecture and source checks, non-root offline smoke, and the independent
+no-exceptions fixable-finding gate passed. The unfiltered ARM report contains
+the same 56 package/CVE pairs as the amd64 assessment, all HIGH, with no
+additional IDs. Its archive SHA-256 is
+`b5e63dfc9204915c81ded2ca8c4c4183d48119e9ddaed5ef78c99927534acc7e`;
+the unfiltered report SHA-256 is
+`4efc9465d5980c0d40bf414b52c6a81a6a6909e9a3a5bb12a8fcdb1f8e616147`.
+The scanner database was updated at `2026-11-09T00:56:17.155719746Z`.
+This diagnostic run published reports only, not an image or release. Neither
+development scan replaces final exact-release-image verification. Subsequent
+policy review is recorded above; future changes require fresh reassessment.
+
+The earlier local arm64 build and a fresh direct-runtime
+probe returned `exec format error`; a separate BuildKit arm64 probe failed the
+same way. Neither a base-image pull nor a build probe is security-scan evidence.
+The reviewed policy is limited to the matching scan scope; this refresh alone
+does not make the container publishable. The historical findings
+[CVE-2026-88647](https://security-tracker.debian.org/tracker/CVE-2026-88647) and
+[CVE-2026-88648](https://security-tracker.debian.org/tracker/CVE-2026-88648) as
+were absent from the assessed scans and are not exempted in the new policy.
+Their historical classification does not authorize adding them back without
+fresh evidence and acceptance.
+
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with
 member-count and byte limits, rejects links and unexpected paths, verifies every
@@ -319,6 +421,14 @@ Its advisory-free cryptography pin also has upstream wheels for Windows and
 Apple silicon, but not macOS Intel, so do not use an Intel Mac as the release
 build host. The release-profile installer rejects Python older than 3.12
 before contacting the package index.
+
+The CI profile installs its pre-commit/virtualenv stack only on Python 3.11+:
+the patched filelock dependency requires that interpreter floor. This marker
+also covers python-discovery, which depends on filelock. Python 3.10 still
+runs the core suite and public Action; the existing Python 3.12 installation
+job exercises all public hooks. Do not restore a vulnerable older filelock to
+make pre-commit available in the legacy core-test environment. This tooling
+split does not change the CLI's supported Python versions.
 
 Use Python 3.12 or newer to maintain the locks:
 

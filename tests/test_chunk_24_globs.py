@@ -373,6 +373,15 @@ FIELD_MUTATIONS: Dict[str, Tuple[Tuple[str, Callable[[Dict[str, Any]], Any], str
     "components[].version_source.file": (
         ("repointed", lambda c: _svc(c)["version_source"].__setitem__("file", "other.txt"), "changed"),
     ),
+    "components[].version_source.repo_file": (
+        (
+            "repository relative",
+            lambda c: _svc(c).__setitem__(
+                "version_source", {"repo_file": "version.txt", "field": "version"}
+            ),
+            "changed",
+        ),
+    ),
     "components[].version_source.field": (
         ("repointed", lambda c: _svc(c)["version_source"].__setitem__("field", "release"), "changed"),
     ),

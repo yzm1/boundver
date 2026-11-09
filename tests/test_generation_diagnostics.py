@@ -1,0 +1,254 @@
+"""Generation reporting is local, bounded, non-authoritative and stderr-only."""
+
+import io
+import json
+from contextlib import redirect_stderr
+from types import SimpleNamespace
+
+import pytest
+
+from boundver import core
+from boundver import _git
+from boundver._generation_control import GenerationControl, GenerationState
+from boundver._cli_parser import build_parser
+from boundver._generation_diagnostics import (
+    GenerationDiagnostics, MAX_GENERATION_COMPONENT_ROWS,
+    MAX_GENERATION_DIAGNOSTIC_BYTES, MAX_GENERATION_PHASE_ROWS,
+    MAX_GENERATION_PROGRESS_LINES,
+    WorkerDiagnosticReader,
+)
+from boundver._utils import ConfigError
+from tests._parity import run_cli, run_cli_in_process
+from tests._repo_fixtures import commit_all, init_git_repo
+
+
+@pytest.fixture
+def repository(tmp_path):
+    init_git_repo(tmp_path)
+    for name in ("api", "client"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "schema.json").write_text("{}", encoding="utf-8")
+    config = {"project": "generation-diagnostics", "components": {
+        name: {"path": name, "boundary": {"provider": "path-hash", "paths": ["schema.json"]}}
+        for name in ("api", "client")
+    }}
+    (tmp_path / "boundary.config.json").write_text(json.dumps(config), encoding="utf-8")
+    commit_all(tmp_path)
+    generated = run_cli(tmp_path, "generate", "--source", "head", "--quiet")
+    assert generated.returncode == 0, generated.stderr
+    commit_all(tmp_path)
+    return tmp_path
+
+
+@pytest.mark.parametrize("flags", [("--progress",), ("--timing",), ("--progress", "--timing")])
+def test_explicit_reporting_leaves_json_and_lock_unchanged(repository, flags):
+    before = (repository / "boundary.lock.json").read_bytes()
+    plain = run_cli(repository, "generate", "--source", "head", "--dry-run", "--format", "json")
+    reported = run_cli(repository, "generate", "--source", "head", "--dry-run", "--format", "json",
+                       "--quiet", *flags)
+    assert reported.returncode == plain.returncode == 0
+    assert reported.stdout == plain.stdout
+    assert json.loads(reported.stdout)["schema"] == "boundary-lock/v4"
+    assert not plain.stderr
+    assert "publication=dry-run" in reported.stderr
+    assert "outcome=success" in reported.stderr
+    assert ("Generation: capture-source started" in reported.stderr) == ("--progress" in flags)
+    assert ("Timing component api:" in reported.stderr) == ("--timing" in flags)
+    assert (repository / "boundary.lock.json").read_bytes() == before
+
+
+def test_component_subset_still_reports_full_integrity_recomputation(repository):
+    result = run_cli(repository, "generate", "--source", "head", "--components", "api",
+                     "--dry-run", "--timing", "--progress", "--quiet")
+    assert result.returncode == 0, result.stderr
+    assert "Timing component api:" in result.stderr
+    assert "Timing component client:" in result.stderr
+    assert "components_attempted=2" in result.stderr
+
+
+def test_published_generation_reports_written_only_after_success(repository):
+    result = run_cli(repository, "generate", "--source", "head", "--timing", "--quiet")
+    assert result.returncode == 0, result.stderr
+    assert "publication=written" in result.stderr
+    assert "Timing phase publish:" in result.stderr
+
+
+def test_invalid_source_state_does_not_claim_to_publish(repository):
+    result = run_cli(repository, "generate", "--config", "missing.json", "--timing", "--quiet")
+    assert result.returncode == 2
+    assert "outcome=failed" in result.stderr
+    assert "publication=not-attempted" in result.stderr
+
+
+@pytest.mark.parametrize("operation_limited", [True, False])
+def test_watchdog_expiry_is_classified_without_waiting_for_controller_clock(
+    repository, monkeypatch, capsys, operation_limited,
+):
+    before = (repository / "boundary.lock.json").read_bytes()
+    control = GenerationControl(60, clock=lambda: 1000.0)
+    monkeypatch.setattr(_git.time, "monotonic", lambda: 1000.0)
+
+    def capture(*args):
+        process = SimpleNamespace(poll=lambda: None, kill=lambda: None)
+        timer = _git._GitProcessDeadline(
+            process, seconds=300 if operation_limited else 1,
+        )
+        timer._expire()
+        timer.raise_if_expired()
+
+    monkeypatch.setattr(core, "_capture_operation_snapshot", capture)
+    args = build_parser(version="test", epilog="").parse_args(
+        ["--quiet", "generate", "--source", "head", "--timing"],
+    )
+    with pytest.raises(SystemExit) as raised:
+        core._cmd_generate_reporting(args, repository, control=control)
+    diagnostic = capsys.readouterr().err
+    assert raised.value.code == 2
+    outcome = "expired" if operation_limited else "failed"
+    assert f"outcome={outcome}" in diagnostic
+    assert "publication=not-attempted" in diagnostic
+    assert control.state is (
+        GenerationState.EXPIRED if operation_limited else GenerationState.COMPUTING
+    )
+    assert (repository / "boundary.lock.json").read_bytes() == before
+
+
+def test_write_failure_is_not_mislabeled_as_definitely_unpublished(repository, monkeypatch):
+    before = (repository / "boundary.lock.json").read_bytes()
+    def fail(*args):
+        raise ConfigError("injected publication failure")
+    monkeypatch.setattr(core, "_write_lockfile_atomic", fail)
+    result = run_cli_in_process(repository, "generate", "--source", "head", "--timing", "--quiet")
+    assert result.returncode == 2
+    assert "publication=attempted-outcome-unconfirmed" in result.stderr
+    assert "outcome=failed" in result.stderr
+    assert (repository / "boundary.lock.json").read_bytes() == before
+
+
+def test_cancellation_before_publication_preserves_lock_and_reports_cancelled(repository, monkeypatch, capsys):
+    before = (repository / "boundary.lock.json").read_bytes()
+    def cancel(*args, **kwargs):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(core, "generate_lockfile", cancel)
+    args = build_parser(version="test", epilog="").parse_args(["generate", "--timing", "--progress"])
+    with pytest.raises(KeyboardInterrupt):
+        core._cmd_generate(args, repository)
+    stderr = capsys.readouterr().err
+    assert "outcome=cancelled" in stderr
+    assert "publication=not-attempted" in stderr
+    assert (repository / "boundary.lock.json").read_bytes() == before
+
+
+def test_diagnostics_have_independent_storage_and_output_budgets():
+    output = io.StringIO()
+    observer = GenerationDiagnostics(progress=True, timing=True)
+    with redirect_stderr(output):
+        for index in range(1000):
+            with observer.component("\U0001f600" * 1000 + str(index)):
+                pass
+        for index in range(100):
+            with observer.phase(str(index)):
+                pass
+        observer.finish("success")
+    assert len(observer.components) == MAX_GENERATION_COMPONENT_ROWS
+    assert len(observer.phases) == MAX_GENERATION_PHASE_ROWS
+    assert observer.progress_count == MAX_GENERATION_PROGRESS_LINES
+    assert len(output.getvalue().encode("utf-8")) <= MAX_GENERATION_DIAGNOSTIC_BYTES
+    assert "Generation diagnostics: outcome=success" in output.getvalue()
+    assert observer.omitted > 0
+    assert observer.omitted_phases == 100 - MAX_GENERATION_PHASE_ROWS
+    omitted = observer.component_count - observer.component_rows_shown
+    assert f"omitted_component_rows={omitted}" in output.getvalue()
+
+
+def test_component_labels_do_not_inject_terminal_or_workflow_commands():
+    output = io.StringIO()
+    with redirect_stderr(output):
+        observer = GenerationDiagnostics(progress=True, timing=True)
+        with observer.component("::error::injected\n\x1b[31m\u202e"):
+            pass
+        observer.finish("success")
+    value = output.getvalue()
+    assert "\x1b" not in value and "\u202e" not in value
+    assert not any(line.startswith("::") for line in value.splitlines())
+    assert "\\n" in value and "\\x1b" in value
+
+
+def test_closed_diagnostic_stream_cannot_fail_successful_work():
+    class ClosedStream:
+        def write(self, value):
+            raise BrokenPipeError()
+    with redirect_stderr(ClosedStream()):
+        observer = GenerationDiagnostics(progress=True, timing=True)
+        with observer.phase("work"):
+            pass
+        observer.finish("success")
+    assert observer.stream_failed is True
+
+
+def test_disabled_observer_is_silent_and_retains_no_rows(monkeypatch):
+    import boundver._generation_diagnostics as diagnostics
+    def forbidden():
+        raise AssertionError("disabled diagnostics should not read the clock")
+    monkeypatch.setattr(diagnostics.time, "perf_counter", forbidden)
+    observer = GenerationDiagnostics()
+    with observer.phase("work"), observer.component("component"):
+        pass
+    observer.finish("success")
+    assert observer.phases == {} and observer.components == []
+
+
+def test_worker_stream_forwards_complete_lines_once_and_escapes_them(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"first\npartial")
+        reader.poll(final=True)
+    assert "Worker: first" in output.getvalue()
+    assert "Worker: partial" not in output.getvalue()
+    assert "incomplete final line" in output.getvalue()
+
+
+def test_worker_stream_append_does_not_duplicate_prior_lines(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"first\npartial")
+        reader.poll()
+        path.write_bytes(b"first\npartial completed\n::error::bad\x1b[31m\n")
+        reader.poll(final=True)
+    text = output.getvalue()
+    assert text.count("Worker: first") == 1
+    assert "Worker: partial completed" in text
+    assert "\x1b" not in text and "\\x1b" in text
+    assert not any(line.startswith("::") for line in text.splitlines())
+
+
+@pytest.mark.parametrize("contents,expected", [
+    (b"x" * (MAX_GENERATION_DIAGNOSTIC_BYTES + 1), "byte limit"),
+    (b"\xff\n", "invalid UTF-8"),
+], ids=["oversized-stream", "invalid-utf8"])
+def test_invalid_worker_diagnostics_are_omitted_not_executed(tmp_path, contents, expected):
+    output = io.StringIO()
+    (tmp_path / "diagnostics.log").write_bytes(contents)
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        reader.poll(final=True)
+    assert reader.stopped
+    assert expected in output.getvalue()
+    assert len(output.getvalue().encode()) <= MAX_GENERATION_DIAGNOSTIC_BYTES
+
+
+def test_replaced_worker_stream_is_not_replayed(tmp_path):
+    output = io.StringIO()
+    path = tmp_path / "diagnostics.log"
+    reader = WorkerDiagnosticReader(tmp_path, GenerationDiagnostics(progress=True))
+    with redirect_stderr(output):
+        path.write_bytes(b"original\n")
+        reader.poll()
+        path.write_bytes(b"replacement\n")
+        reader.poll(final=True)
+    assert reader.stopped
+    assert "Worker: replacement" not in output.getvalue()

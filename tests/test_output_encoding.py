@@ -251,6 +251,7 @@ class LegacyCodePageOutputTests(unittest.TestCase):
             "metadata_changes": {},
             "digest_errors": [],
             "version": None,
+            "version_change": {"previous": None, "current": None, "status": "unavailable"},
         }
         config = {"components": {"svc\U0001f600": {"path": "svc/\U0001f600"}}}
         with patch.object(output, "analyze_component_drift", return_value=analysis):
