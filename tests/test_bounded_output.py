@@ -180,12 +180,26 @@ def test_real_full_pipe_does_not_hold_controller_or_python_stderr_lock(monkeypat
 
 def test_cli_process_can_exit_while_real_stderr_pipe_is_not_consumed():
     code = (
-        "import json,sys\n"
+        "import json,os,sys\n"
         "from boundver._bounded_output import BoundedDiagnosticOutput\n"
+        # POSIX pipe capacity varies, and can exceed the entire bounded output
+        # allowance on macOS. Establish a full pipe rather than assuming that
+        # repeatedly enqueueing diagnostics will necessarily block the writer.
+        "prefilled=False\n"
+        "if os.name == 'posix':\n"
+        "    descriptor=sys.stderr.fileno()\n"
+        "    os.set_blocking(descriptor,False)\n"
+        "    try:\n"
+        "        for _ in range(2048): os.write(descriptor,b'x'*4096)\n"
+        "        raise RuntimeError('stderr pipe exceeds the test fill budget')\n"
+        "    except BlockingIOError:\n"
+        "        prefilled=True\n"
+        "    finally:\n"
+        "        os.set_blocking(descriptor,True)\n"
         "output=BoundedDiagnosticOutput(sys.stderr)\n"
         "for _ in range(1000): output.write('x'*1024)\n"
         "drained=output.close()\n"
-        "sys.stdout.write(json.dumps({'drained':drained,'failed':output.failed}))\n"
+        "sys.stdout.write(json.dumps({'drained':drained,'failed':output.failed,'prefilled':prefilled}))\n"
     )
     options = {"pipesize": 4096} if sys.platform == "linux" else {}
     process = subprocess.Popen(
@@ -197,7 +211,9 @@ def test_cli_process_can_exit_while_real_stderr_pipe_is_not_consumed():
         # would hide the exact consumer-stall case this test is proving.
         assert process.wait(timeout=10) == 0
         stdout, _ = process.communicate(timeout=5)
-        assert json.loads(stdout) == {"drained": False, "failed": False}
+        assert json.loads(stdout) == {
+            "drained": False, "failed": False, "prefilled": os.name == "posix",
+        }
     finally:
         if process.poll() is None:
             process.kill()
