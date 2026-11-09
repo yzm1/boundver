@@ -110,7 +110,7 @@ designed to make.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/boundary.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/boundary.config.schema.json",
   "project": "payments-platform",
   "defaults": {
     "compat_mode": "major",
@@ -195,7 +195,7 @@ Pin the Action to the same release used to write the lock:
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
-- uses: yzm1/boundver@v0.16.0
+- uses: yzm1/boundver@v0.17.0
   with:
     operation: verify
     source: head
@@ -211,9 +211,9 @@ GitLab, pre-commit, range review, outputs, and shallow-history failures.
 - PyPI: `python -m pip install "boundver[schema,yaml]"`
 - GitHub Action: [Marketplace](https://github.com/marketplace/actions/boundver)
 - GitLab CI/CD: [Catalog project](https://gitlab.com/boundver-project/boundver)
-- Container: `docker run --rm ghcr.io/yzm1/boundver:0.16.0 --version`
+- Container: `docker run --rm ghcr.io/yzm1/boundver:0.17.0 --version`
 - Homebrew: `brew install yzm1/boundver/boundver`
-- Standalone archive: download `boundver-0.16.0.pyz` from
+- Standalone archive: download `boundver-0.17.0.pyz` from
   [GitHub Releases](https://github.com/yzm1/boundver/releases)
 
 The project supports Python 3.10 or newer and Git 2.32 or newer. Boundver checks

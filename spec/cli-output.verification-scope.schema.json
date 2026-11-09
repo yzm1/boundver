@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.verification-scope.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.verification-scope.schema.json",
   "title": "Boundver scoped verification v1",
   "type": "object",
   "additionalProperties": false,

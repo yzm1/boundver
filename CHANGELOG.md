@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-09
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+Existing supported locks do not need regeneration merely to upgrade. Adding
+new declarations such as `version_source.repo_file` changes the declared
+configuration and requires a normal reviewed lock update. Historical inspection
+does not migrate incompatible digests or assert deployment provenance.
+
 ### Added
 
 - Deployment comparison follows component facet overrides and aggregate slice
@@ -1530,7 +1544,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/yzm1/boundver/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/yzm1/boundver/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/yzm1/boundver/compare/v0.15.0...v0.15.1

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.coverage.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.coverage.schema.json",
   "title": "boundver coverage --format json output",
   "description": "v2 declaration coverage. Complete means all analysis in the explicit scope finished; path listings may be truncated independently. Counts include omitted entries. Coverage does not alter fingerprints or verification.",
   "type": "object",

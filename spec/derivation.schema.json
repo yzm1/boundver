@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.16.0/spec/derivation.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/derivation.schema.json",
   "title": "boundver generated-artifact derivation evidence",
   "description": "A bounded receipt binding one trusted generator identity to the selected input and generated-output file sets.",
   "type": "object",

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.why.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.why.schema.json",
   "title": "boundver why --format json output",
   "description": "A drift report, or a machine-readable error document when the requested component cannot be analyzed.",
   "type": "object",

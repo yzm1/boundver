@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/yzm1/boundver/main/spec/cli-output.slice-explanation.schema.json",
+  "$id": "https://raw.githubusercontent.com/yzm1/boundver/v0.17.0/spec/cli-output.slice-explanation.schema.json",
   "title": "Boundver slice explanation v1",
   "type": "object", "additionalProperties": false,
   "required": ["schema", "slice", "mode", "complete", "comparable", "drifted", "slice_changed", "gating", "exit_code", "previous", "current", "counts", "members", "source", "locked_source", "presentation", "issues"],

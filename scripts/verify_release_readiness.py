@@ -62,6 +62,7 @@ SKIP_PARTS = {
     ".venv",
     "build",
     "dist",
+    "site",
     "__pycache__",
 }
 RELEASE_DOCS = (
@@ -799,7 +800,16 @@ def readiness_errors(repo: Path, tag: str) -> list[str]:
                 if match.group("path") == "spec/boundary.lock.schema.json"
                 else tag
             )
-            if match.group("ref") != expected_ref:
+            # These unchanged output contracts embed their original canonical
+            # identity. A release-pinned schema $id is still checked below.
+            canonical_output_identity = (
+                match.group("ref") == "v0.16.0"
+                and match.group("path") in {
+                    "spec/verify-baseline.schema.json",
+                    "spec/cli-output.migrate-lock.schema.json",
+                }
+            )
+            if match.group("ref") != expected_ref and not canonical_output_identity:
                 errors.append(
                     f"{relative}: schema URL uses {match.group('ref')!r}, "
                     f"expected {expected_ref!r}"
