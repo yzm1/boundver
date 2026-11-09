@@ -297,13 +297,15 @@ architectures; any new finding or available vendor fix blocks publication.
 
 ### v0.17 container refresh (in progress)
 
-The isolated policy-review branch proposes replacing the expired historical
-entries with exactly the assessed 17 CVE IDs and 56 Debian package/CVE pairs,
-expiring 2026-11-22. This is a draft for independent acceptance, not permission
-to merge, publish or treat vulnerable packages as patched. The main development
-candidate retains its old policy until this proposal passes review. Both final
-release-image scans and the separate no-exceptions fixable-finding gates remain
-mandatory even if the proposal is accepted.
+The integrated policy replaces expired historical entries with exactly the
+assessed 17 CVE IDs and 56 Debian package/CVE pairs, expiring 2026-11-22.
+The owner accepted that limited residual risk, conditional on review and scans.
+Policy-only [PR #177](https://github.com/yzm1/boundver/pull/177) received clean
+code and security reviews at `8d75ade1eeb2cc5e9386ef443001cc74b1099bf9`.
+Those reviews do not make vulnerable packages patched or authorize publication.
+The complete integrated candidate still requires exact-head review, and final
+release-image scans plus the separate no-exceptions fixable-finding gates remain
+mandatory on both architectures.
 
 The development Dockerfile selects the immutable Debian and Debian-security
 snapshot `20261108T120000Z` and a digest-pinned Python 3.12.16 multi-platform
@@ -319,8 +321,8 @@ query confirmed Expat `2.9.0-1~deb13u1`, GnuTLS `3.8.9-3+deb13u4`, curl
 `8.14.1-2+deb13u7`, OpenSSL `3.5.7-1~deb13u3`, and PCRE2 `10.46-1~deb13u3`.
 The obsolete CVE-2026-77214 exception has been removed. A network-disabled,
 read-only smoke check ran as the non-root `boundver` user. These are development
-checks, not exact-release artifact acceptance; the project version is still
-0.16.0 on this branch.
+checks, not exact-release artifact acceptance; the project version was still
+0.16.0 at that stage.
 
 An unfiltered HIGH/CRITICAL Trivy scan of that image found fixable zlib findings
 [CVE-2026-76844](https://security-tracker.debian.org/tracker/CVE-2026-76844) and
@@ -335,15 +337,17 @@ Those scans used the earlier Python 3.12.14 base; they are not scans of the
 updated Python 3.12.16 candidate.
 The separate no-exceptions `--ignore-unfixed --exit-code 1` scan of the same
 newer amd64 archive also passed. The primary exception-aware scan is not
-cleared by that result: its no-fix findings and expired policy still block it.
+cleared by that result alone: at that stage its no-fix findings and expired
+policy still blocked it.
 
-Seven newly reported no-fix IDs are not covered by the historical policy:
+Seven newly reported no-fix IDs were not covered by the historical policy:
 Expat CVE-2026-113351, CVE-2026-115506, CVE-2026-117610, CVE-2026-118370;
 SQLite CVE-2026-119373, CVE-2026-119374, CVE-2026-119379. Debian's trackers
 for [Expat](https://security-tracker.debian.org/tracker/source-package/expat)
 and [SQLite](https://security-tracker.debian.org/tracker/source-package/sqlite3)
-must be checked again before updating policy. No-fix findings are not a passing
-primary scan or permission to add exceptions. No new exception is added here.
+must be checked again before each policy reassessment. These seven IDs are now
+included in the assessed scope above. No-fix findings alone are not a passing
+primary scan or permission to add exceptions.
 
 On 2026-11-08 the maintainer conditionally accepted the assessed 17 no-fix HIGH
 CVEs through 2026-11-22, only for the built-in CLI running non-root with no
@@ -379,19 +383,19 @@ the unfiltered report SHA-256 is
 `4efc9465d5980c0d40bf414b52c6a81a6a6909e9a3a5bb12a8fcdb1f8e616147`.
 The scanner database was updated at `2026-11-09T00:56:17.155719746Z`.
 This diagnostic run published reports only, not an image or release. Neither
-development scan replaces final exact-release-image verification. Explicit
-independent residual-risk review and policy reassessment remain required.
+development scan replaces final exact-release-image verification. Subsequent
+policy review is recorded above; future changes require fresh reassessment.
 
 The earlier local arm64 build and a fresh direct-runtime
 probe returned `exec format error`; a separate BuildKit arm64 probe failed the
 same way. Neither a base-image pull nor a build probe is security-scan evidence.
-Remaining exceptions keep their expired dates until updated scans are checked
-against the accepted scope; this refresh alone does not make the container
-publishable. Debian continues to list
+The reviewed policy is limited to the matching scan scope; this refresh alone
+does not make the container publishable. The historical findings
 [CVE-2026-88647](https://security-tracker.debian.org/tracker/CVE-2026-88647) and
 [CVE-2026-88648](https://security-tracker.debian.org/tracker/CVE-2026-88648) as
-unfixed, with upstream disputing their security classification. That does not
-by itself authorize a new exception.
+were absent from the assessed scans and are not exempted in the new policy.
+Their historical classification does not authorize adding them back without
+fresh evidence and acceptance.
 
 The release build retains one multi-platform OCI archive for publication.
 Before scanning, reviewed release-control code extracts that archive with

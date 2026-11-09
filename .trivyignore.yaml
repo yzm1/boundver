@@ -1,4 +1,4 @@
-# Draft policy: pending independent acceptance; do not merge or publish before review.
+# Temporary package-scoped policy reviewed in PR #177; final release scans remain mandatory.
 # Owner acceptance is conditional through 2026-11-22. No vendor fix is waived.
 # Built-in CLI only: non-root, no network/capabilities, no custom providers or overridden entrypoints.
 # Scope derived from the matching amd64 and native ARM reports; final release rescans required.
