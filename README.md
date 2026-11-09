@@ -244,7 +244,7 @@ maintainers should use
 the checked-in [release process](https://github.com/yzm1/boundver/blob/main/docs/RELEASING.md).
 
 The [changelog](https://github.com/yzm1/boundver/blob/main/CHANGELOG.md) records
-user-visible changes. The v0.16 line is focused on declaration coverage,
-security hardening, and making the public documentation easier to use.
+user-visible changes. The v0.17 line focuses on large-repository coverage,
+bounded generation, scoped diagnostics, and explicit deployment comparisons.
 Semantic-provider implementation remains separately gated work for a later
 release.
