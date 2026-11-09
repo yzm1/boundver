@@ -325,7 +325,7 @@ class ReproducibleBuildContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn(
-            'requires = ["setuptools==84.0.0", "wheel==0.48.0"]',
+            'requires = ["setuptools==84.2.1", "wheel==0.48.0"]',
             pyproject,
         )
         self.assertIn("scripts/install_locked_tools.py release", smoke)

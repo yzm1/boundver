@@ -223,6 +223,19 @@ def test_legacy_core_runtime_excludes_the_entire_modern_hook_tool_stack():
         locker._parse_requirement("example==1.0; python_version >= '3.12'", "test")
 
 
+def test_pep517_build_requirements_match_hash_locked_action_tools():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    build_section = pyproject.split("[build-system]", 1)[1].split("\n[", 1)[0]
+    requirements = re.search(r"requires\s*=\s*(\[[^\]]+\])", build_section)
+    assert requirements is not None
+    pins = json.loads(requirements.group(1))
+    action_lock = (ROOT / "scripts/requirements/action.lock").read_text(encoding="utf-8")
+    assert pins
+    for pin in pins:
+        assert re.fullmatch(r"[a-zA-Z0-9_.-]+==[a-zA-Z0-9_.+-]+", pin)
+        assert re.search(r"^" + re.escape(pin) + r"\s+\\$", action_lock, re.MULTILINE)
+
+
 def test_container_builder_uses_the_reviewed_action_profile_not_duplicate_pins():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert dockerfile.count("--requirement /locks/action.lock") == 3
