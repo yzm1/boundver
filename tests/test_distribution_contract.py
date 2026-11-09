@@ -474,7 +474,7 @@ class AutomationContractTests(unittest.TestCase):
                 schema_path = REPO_ROOT / "spec" / schema_name
                 self.assertTrue(schema_path.is_file())
                 schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                schema_ref = "main" if schema_name in {"cli-output.coverage.schema.json", "cli-output.deployment.schema.json", "cli-output.verification-scope.schema.json", "cli-output.slice-explanation.schema.json", "cli-output.lock-changes.schema.json"} else "v0.16.0"
+                schema_ref = CURRENT_TAG
                 self.assertEqual(
                     schema["$id"],
                     "https://raw.githubusercontent.com/yzm1/boundver/"

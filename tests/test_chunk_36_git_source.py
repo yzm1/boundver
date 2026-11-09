@@ -105,10 +105,10 @@ SIDECAR_MODULE = (
 )
 
 #: The exact bytes `boundver init` writes without --discover, as a template over
-#: the one field it copies from the checkout. A release that moves the schema
-#: URL has to move this line deliberately; that is what makes it a golden.
+#: the project field it copies from the checkout. Scaffold bytes remain golden;
+#: schema identity follows the packaged contract, also checked separately below.
 INIT_SCAFFOLD = """{
-  "$schema": "https://raw.githubusercontent.com/yzm1/boundver/main/boundary.config.schema.json",
+  "$schema": "__CONFIG_SCHEMA_ID__",
   "project": %s,
   "defaults": {
     "compat_mode": "major"
@@ -124,7 +124,7 @@ INIT_SCAFFOLD = """{
     }
   }
 }
-"""
+""".replace("__CONFIG_SCHEMA_ID__", json.loads(CONFIG_SCHEMA.read_text(encoding="utf-8"))["$id"])
 
 INIT_NEXT_LINE = (
     "Next: review the config, then run `boundver validate-config` and "
