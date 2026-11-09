@@ -53,9 +53,60 @@ def test_incomplete_and_failed_results_cannot_publish():
         control.publish(lambda: pytest.fail("failed result"))
 
 
+@pytest.mark.parametrize("ready", [False, True])
+def test_explicit_expiry_prevents_publication_before_clock_advances(ready):
+    control = GenerationControl(60, clock=lambda: 1000.0)
+    signal = threading.Event()
+    control.bind_operation_expiry(signal)
+    if ready:
+        assert control.result_ready()
+    signal.set()
+    assert control.state is GenerationState.EXPIRED
+    assert not control.result_ready()
+    with pytest.raises(RuntimeError, match="expired"):
+        control.publish(lambda: pytest.fail("expired operation published"))
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "failed", "published", "publication-unconfirmed"])
+def test_late_watchdog_signal_cannot_reopen_terminal_state(terminal):
+    control = GenerationControl(60, clock=lambda: 1000.0)
+    signal = threading.Event()
+    control.bind_operation_expiry(signal)
+    if terminal == "cancelled":
+        assert control.cancel()
+    elif terminal == "failed":
+        control.fail()
+    else:
+        assert control.result_ready()
+        if terminal == "published":
+            control.publish(lambda: None)
+        else:
+            def fail():
+                raise OSError("uncertain publication")
+            with pytest.raises(OSError):
+                control.publish(fail)
+    signal.set()
+    assert control.state.value == terminal
+    assert not control.result_ready()
+    with pytest.raises(RuntimeError, match=terminal):
+        control.publish(lambda: pytest.fail("terminal operation published again"))
+
+
+def test_bound_signal_cannot_be_replaced_to_clear_expiry():
+    control = GenerationControl(60)
+    signal = threading.Event()
+    control.bind_operation_expiry(signal)
+    signal.set()
+    with pytest.raises(RuntimeError, match="only be bound once"):
+        control.bind_operation_expiry(threading.Event())
+    assert control.state is GenerationState.EXPIRED
+
+
 def test_commit_admission_wins_cancellation_without_holding_writer_lock():
     now = [0.0]
     control = GenerationControl(5, clock=lambda: now[0])
+    signal = threading.Event()
+    control.bind_operation_expiry(signal)
     assert control.result_ready()
     admitted = threading.Event()
     finish = threading.Event()
@@ -78,6 +129,8 @@ def test_commit_admission_wins_cancellation_without_holding_writer_lock():
         now[0] = 10.0
         assert not control.cancel()
         control.fail()
+        assert control.state is GenerationState.COMMITTING
+        signal.set()
         assert control.state is GenerationState.COMMITTING
         with pytest.raises(RuntimeError, match="committing"):
             control.publish(lambda: pytest.fail("duplicate publication"))

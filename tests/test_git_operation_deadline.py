@@ -38,12 +38,56 @@ def test_context_is_restored_after_exception():
         with _git.git_operation_deadline(0):
             raise RuntimeError("injected")
     assert _git._OPERATION_GIT_DEADLINE.get() is None
+    assert _git._OPERATION_GIT_EXPIRY.get() is None
 
 
 def test_expired_budget_refuses_git_argv_before_any_process(tmp_path):
-    with _git.git_operation_deadline(0):
+    with _git.git_operation_deadline(0) as expiry:
         with pytest.raises(GuardrailError, match="before command launch"):
             _git._offline_git_command(tmp_path, ["status"])
+        assert expiry.is_set()
+
+
+@pytest.mark.parametrize("operation_limited", [False, True])
+def test_only_operation_limited_watchdog_signals_operation_expiry(
+    monkeypatch, operation_limited,
+):
+    monkeypatch.setattr(_git.time, "monotonic", lambda: 1000.0)
+    with _git.git_operation_deadline(1060.0) as expiry:
+        timer = _git._GitProcessDeadline(
+            FakeProcess(), seconds=300 if operation_limited else 1,
+        )
+        timer._expire()
+        assert timer.process.killed.is_set()
+        assert expiry.is_set() is operation_limited
+        with pytest.raises(GuardrailError, match="wall-clock limit"):
+            timer.raise_if_expired()
+
+
+def test_nested_expiry_tracks_only_the_effective_deadline(monkeypatch):
+    monkeypatch.setattr(_git.time, "monotonic", lambda: 1000.0)
+    with _git.git_operation_deadline(1060.0) as outer:
+        with _git.git_operation_deadline(1120.0) as extended:
+            assert extended is outer
+        with _git.git_operation_deadline(1001.0) as shorter:
+            assert shorter is not outer
+            timer = _git._GitProcessDeadline(FakeProcess(), seconds=300)
+            timer._expire()
+            assert shorter.is_set()
+            assert not outer.is_set()
+        assert _git._OPERATION_GIT_EXPIRY.get() is outer
+    assert _git._OPERATION_GIT_EXPIRY.get() is None
+
+
+def test_finished_process_cannot_signal_operation_expiry(monkeypatch):
+    monkeypatch.setattr(_git.time, "monotonic", lambda: 1000.0)
+    process = FakeProcess()
+    monkeypatch.setattr(process, "poll", lambda: 0)
+    with _git.git_operation_deadline(1060.0) as expiry:
+        timer = _git._GitProcessDeadline(process, seconds=300)
+        timer._expire()
+        assert not expiry.is_set()
+        assert not process.killed.is_set()
 
 
 def test_expired_timer_still_kills_process_created_at_deadline_boundary():

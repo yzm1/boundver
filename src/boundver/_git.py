@@ -145,6 +145,9 @@ _OFFLINE_GIT_GLOBAL_OPTIONS = frozenset({"--literal-pathspecs"})
 
 
 _OPERATION_GIT_DEADLINE: ContextVar[Optional[float]] = ContextVar("boundver_git_deadline", default=None)
+_OPERATION_GIT_EXPIRY: ContextVar[Optional[threading.Event]] = ContextVar(
+    "boundver_git_expiry", default=None,
+)
 
 
 @contextmanager
@@ -157,10 +160,17 @@ def git_operation_deadline(deadline: float):
     if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
         raise ValueError("Git operation deadline must be finite")
     previous = _OPERATION_GIT_DEADLINE.get()
+    expiry = (
+        _OPERATION_GIT_EXPIRY.get()
+        if previous is not None and previous <= deadline
+        else threading.Event()
+    )
     token = _OPERATION_GIT_DEADLINE.set(min(previous, deadline) if previous is not None else deadline)
+    expiry_token = _OPERATION_GIT_EXPIRY.set(expiry)
     try:
-        yield
+        yield expiry
     finally:
+        _OPERATION_GIT_EXPIRY.reset(expiry_token)
         _OPERATION_GIT_DEADLINE.reset(token)
 
 
@@ -168,6 +178,9 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
     """Build a Git argv only for a statically approved local subcommand."""
     operation_deadline = _OPERATION_GIT_DEADLINE.get()
     if operation_deadline is not None and time.monotonic() >= operation_deadline:
+        expiry = _OPERATION_GIT_EXPIRY.get()
+        if expiry is not None:
+            expiry.set()
         raise GuardrailError("Git operation deadline expired before command launch")
     command_index = 0
     while command_index < len(args):
@@ -435,9 +448,13 @@ class _GitProcessDeadline:
     ) -> None:
         self.process = process
         self.seconds = MAX_GIT_COMMAND_SECONDS if seconds is None else seconds
+        self.operation_expiry = None
         operation_deadline = _OPERATION_GIT_DEADLINE.get()
         if operation_deadline is not None:
-            self.seconds = min(self.seconds, max(0.0, operation_deadline - time.monotonic()))
+            remaining = max(0.0, operation_deadline - time.monotonic())
+            if remaining <= self.seconds:
+                self.operation_expiry = _OPERATION_GIT_EXPIRY.get()
+            self.seconds = min(self.seconds, remaining)
         self.expired = threading.Event()
         self.timer = threading.Timer(self.seconds, self._expire)
         self.timer.daemon = True
@@ -447,6 +464,10 @@ class _GitProcessDeadline:
             if self.process.poll() is not None:
                 return
             self.expired.set()
+            if self.operation_expiry is not None:
+                # The independent watchdog can fire before a coarse controller
+                # clock advances. Signal only the operation-limited timer.
+                self.operation_expiry.set()
             self.process.kill()
         except (OSError, ValueError):
             # A concurrent normal reap won the race with the deadline.

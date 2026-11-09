@@ -4,7 +4,7 @@ from enum import Enum
 import math
 import threading
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 
 class GenerationState(Enum):
@@ -37,11 +37,22 @@ class GenerationControl:
             raise ValueError("Generation deadline is outside the clock range")
         self._lock = threading.Lock()
         self._state = GenerationState.COMPUTING
+        self._operation_expiry: Optional[threading.Event] = None
 
     def _expire_locked(self) -> None:
         if self._state in (GenerationState.COMPUTING, GenerationState.READY):
-            if self._clock() >= self._deadline:
+            if (
+                self._operation_expiry is not None and self._operation_expiry.is_set()
+            ) or self._clock() >= self._deadline:
                 self._state = GenerationState.EXPIRED
+
+    def bind_operation_expiry(self, signal: threading.Event) -> None:
+        """Observe the scoped Git watchdog before admitting computation."""
+        with self._lock:
+            if self._operation_expiry is not None or self._state is not GenerationState.COMPUTING:
+                raise RuntimeError("Generation operation expiry can only be bound once before computation")
+            self._operation_expiry = signal
+            self._expire_locked()
 
     @property
     def monotonic_deadline(self) -> float:

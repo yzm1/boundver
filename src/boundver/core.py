@@ -1679,7 +1679,9 @@ def _cmd_generate_reporting(args, repo_root: Path, control: Optional[GenerationC
         progress=getattr(args, "progress", False), timing=getattr(args, "timing", False),
     )
     try:
-        with git_operation_deadline(control.monotonic_deadline) if control is not None else nullcontext():
+        with (git_operation_deadline(control.monotonic_deadline) if control is not None else nullcontext()) as operation_expiry:
+            if control is not None:
+                control.bind_operation_expiry(operation_expiry)
             if control is None:
                 _cmd_generate_observed(args, repo_root, diagnostics)
             else:

@@ -3,10 +3,13 @@
 import io
 import json
 from contextlib import redirect_stderr
+from types import SimpleNamespace
 
 import pytest
 
 from boundver import core
+from boundver import _git
+from boundver._generation_control import GenerationControl, GenerationState
 from boundver._cli_parser import build_parser
 from boundver._generation_diagnostics import (
     GenerationDiagnostics, MAX_GENERATION_COMPONENT_ROWS,
@@ -75,6 +78,39 @@ def test_invalid_source_state_does_not_claim_to_publish(repository):
     assert result.returncode == 2
     assert "outcome=failed" in result.stderr
     assert "publication=not-attempted" in result.stderr
+
+
+@pytest.mark.parametrize("operation_limited", [True, False])
+def test_watchdog_expiry_is_classified_without_waiting_for_controller_clock(
+    repository, monkeypatch, capsys, operation_limited,
+):
+    before = (repository / "boundary.lock.json").read_bytes()
+    control = GenerationControl(60, clock=lambda: 1000.0)
+    monkeypatch.setattr(_git.time, "monotonic", lambda: 1000.0)
+
+    def capture(*args):
+        process = SimpleNamespace(poll=lambda: None, kill=lambda: None)
+        timer = _git._GitProcessDeadline(
+            process, seconds=300 if operation_limited else 1,
+        )
+        timer._expire()
+        timer.raise_if_expired()
+
+    monkeypatch.setattr(core, "_capture_operation_snapshot", capture)
+    args = build_parser(version="test", epilog="").parse_args(
+        ["--quiet", "generate", "--source", "head", "--timing"],
+    )
+    with pytest.raises(SystemExit) as raised:
+        core._cmd_generate_reporting(args, repository, control=control)
+    diagnostic = capsys.readouterr().err
+    assert raised.value.code == 2
+    outcome = "expired" if operation_limited else "failed"
+    assert f"outcome={outcome}" in diagnostic
+    assert "publication=not-attempted" in diagnostic
+    assert control.state is (
+        GenerationState.EXPIRED if operation_limited else GenerationState.COMPUTING
+    )
+    assert (repository / "boundary.lock.json").read_bytes() == before
 
 
 def test_write_failure_is_not_mislabeled_as_definitely_unpublished(repository, monkeypatch):
