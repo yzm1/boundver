@@ -898,7 +898,7 @@ maintainer_exception_scope_matches() {
       CHANGELOG.md) expected=d7c43a511491ef1ecc58a827d29924e5b035bc25 ;;
       scripts/publish_release.py) expected=1fd1a251cb82e936a6940d7aa303ddedef0b1bc1 ;;
       tests/test_publish_release.py) expected=019b882fffd50e2ed15bc2233fd0c49b4cf1fc06 ;;
-      scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_distribution_contract.py) ;;
+      scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_distribution_contract.py|tests/test_github_api_read.py) ;;
       tests/test_release_review_exception.py)
         [[ "$status" == added ]] || return 1
         count=$((count + 1))
@@ -909,9 +909,9 @@ maintainer_exception_scope_matches() {
     [[ "$status" == modified ]] || return 1
     [[ -z "$expected" || "$blob" == "$expected" ]] || return 1
     count=$((count + 1))
-    (( count <= 7 )) || return 1
+    (( count <= 8 )) || return 1
   done <<< "$records"
-  [[ "$count" -eq 7 ]]
+  [[ "$count" -eq 8 ]]
 }
 # END one-time PR 181 maintainer exception helpers
 
@@ -1325,7 +1325,7 @@ for pr_number in "${sorted_prs[@]}"; do
     if ! capture_github_api_bounded exception_file_count "one-time exception changed-file count" \
         "$max_small_capture_bytes" gh api \
         "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.changed_files' || \
-        [[ "$exception_file_count" != 7 ]]; then
+        [[ "$exception_file_count" != 8 ]]; then
       echo "PR #181 maintainer exception changed-file count is unavailable or outside scope." >&2
       exit 1
     fi

@@ -578,12 +578,13 @@ tag mutation, so editing or deleting authorization during promotion aborts it.
 
 The original `CHANGELOG.md`, `scripts/publish_release.py` and
 `tests/test_publish_release.py` blobs must match that original fix exactly.
-The changed-file metadata count must also be seven, independently of the
-paginated file listing. The only additional changed files allowed are the exception's enforcement,
+The changed-file metadata count must also be eight, independently of the
+paginated file listing. The only additional changed files allowed are the
+exception's enforcement,
 documentation and regression corpus: `scripts/audit_release_reviews.sh`, this
-runbook, `tests/test_distribution_contract.py`, and the new
-`tests/test_release_review_exception.py`. All seven paths must be present with
-the expected added/modified statuses; renames, deletions, duplicate records,
+runbook, `tests/test_distribution_contract.py`, `tests/test_github_api_read.py`,
+and the new `tests/test_release_review_exception.py`. All eight paths must be
+present with the expected added/modified statuses; renames, deletions, duplicate records,
 extra files and changed original-fix blobs are refused. No CLI flag,
 environment variable, or arbitrary per-PR manifest enables this exception.
 

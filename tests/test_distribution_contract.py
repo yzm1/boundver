@@ -3954,7 +3954,7 @@ exit 74
                     "FAKE_PR_NUMBER": "17",
                     "FAKE_REPOSITORY_ID": "1226008327",
                     "FAKE_FILES": "",
-                    "FAKE_CHANGED_FILES": "7",
+                    "FAKE_CHANGED_FILES": "8",
                     "FAKE_FAILURE": "none",
                     "FAKE_RELEASES": (
                         "101\tv0.14.1\tfalse\tfalse\ttrue\t"
@@ -4096,8 +4096,8 @@ exit 74
             {"FAKE_FILES": files + f"\nsrc/boundver/core.py|modified|{'c' * 40}|"},
             {"FAKE_FILES": "\n".join(files.splitlines()[:-1])},
             {"FAKE_FAILURE": "files"},
-            {"FAKE_CHANGED_FILES": "8"},
-            {"FAKE_CHANGED_FILES": "7\n7"},
+            {"FAKE_CHANGED_FILES": "9"},
+            {"FAKE_CHANGED_FILES": "8\n8"},
             {"FAKE_FAILURE": "scope-count"},
         )
         for values in cases:

@@ -20,6 +20,7 @@ SUPPORT_FILES = (
     "scripts/audit_release_reviews.sh",
     "docs/RELEASING.md",
     "tests/test_distribution_contract.py",
+    "tests/test_github_api_read.py",
 )
 NEW_TEST = "tests/test_release_review_exception.py"
 
