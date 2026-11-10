@@ -1048,6 +1048,7 @@ for pr_number in "${sorted_prs[@]}"; do
   maintainer_exception=0
   maintainer_exception_records=0
   maintainer_exception_matching_records=0
+  pending_review_records=0
   codex_latest_timestamp=
   codex_latest_kind=
   codex_latest_count=0
@@ -1085,6 +1086,9 @@ for pr_number in "${sorted_prs[@]}"; do
         ! github_timestamp_is_valid "$review_submitted_at"; then
       echo "GitHub API returned malformed review data for PR #$pr_number." >&2
       exit 1
+    fi
+    if [[ "$review_state" == PENDING ]]; then
+      pending_review_records=$((pending_review_records + 1))
     fi
 
     if [[ "$review_state" == "APPROVED" && "$reviewer_type" == "User" && \
@@ -1309,6 +1313,7 @@ for pr_number in "${sorted_prs[@]}"; do
     owner_authored=1
   fi
   if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
+        "$pending_review_records" -eq 0 && \
         "$maintainer_exception_records" -eq 1 && \
         "$maintainer_exception_matching_records" -eq 1 ]]; then
     if ! capture_github_api_bounded exception_repository_id "one-time exception repository identity" \

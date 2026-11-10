@@ -4105,6 +4105,10 @@ exit 74
             {"FAKE_PENDING_REVIEWERS": "1"},
             {"FAKE_PENDING_TEAMS": "1"},
             {"FAKE_REVIEWS": self._review_record("1" * 40, state="PENDING")},
+            {"FAKE_REVIEWS": self._review_record(
+                "1" * 40, state="PENDING", actor_id="999",
+                login="reviewer", actor_type="User",
+            )},
         )
         for values in cases:
             with self.subTest(overrides=values):
