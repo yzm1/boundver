@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2842,8 +2843,32 @@ print(json.dumps(payload, separators=(",", ":")))
             ".github/workflows/ci.yml",
             ".github/workflows/publish-container.yml",
         ):
+            workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            logical_lines = workflow.replace("\\\n", " ").splitlines()
+            invocations = [
+                shlex.split(line)
+                for line in logical_lines
+                if line.strip().startswith('"${scan[@]}"')
+            ]
+            self.assertEqual(invocations, [
+                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1"],
+                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1"],
+            ], relative)
+            self.assertEqual(workflow.count("scan=("), 1, relative)
+            shared_lines = []
+            for line in workflow.split("scan=(", 1)[1].splitlines():
+                if line.strip() == ")":
+                    break
+                shared_lines.append(line)
+            else:
+                self.fail(f"{relative}: unterminated shared scan arguments")
+            shared_arguments = shlex.split("\n".join(shared_lines))
+            self.assertFalse(any(
+                argument == flag or argument.startswith(flag + "=")
+                for argument in shared_arguments
+                for flag in ("--ignorefile", "--ignore-unfixed")
+            ), relative)
             with self.subTest(workflow=relative):
-                workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn(scanner, workflow)
                 self.assertIn(
                     "--ignorefile /policy/.trivyignore.yaml --exit-code 1",
@@ -3044,6 +3069,43 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertEqual(len(entry["purls"]), len(set(entry["purls"])))
             for purl in entry["purls"]:
                 self.assertRegex(purl, r"^pkg:deb/debian/[A-Za-z0-9.+-]+$")
+
+    def test_fixable_only_container_scan_rejects_allowlist_injection(self):
+        original_read_text = Path.read_text
+        for relative in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/publish-container.yml",
+        ):
+            target = REPO_ROOT / relative
+            original = original_read_text(target, encoding="utf-8")
+            mutations = {
+                "appended": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --ignorefile /policy/.trivyignore.yaml",
+                ),
+                "equals": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --ignorefile=/policy/.trivyignore.yaml",
+                ),
+                "shared-array": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n"
+                    "            --ignorefile /policy/.trivyignore.yaml\n          )",
+                ),
+            }
+            for mutation, changed in mutations.items():
+                with self.subTest(workflow=relative, mutation=mutation):
+                    self.assertNotEqual(original, changed)
+
+                    def read_text(path, *args, **kwargs):
+                        if path == target:
+                            return changed
+                        return original_read_text(path, *args, **kwargs)
+
+                    with mock.patch.object(
+                        Path, "read_text", autospec=True, side_effect=read_text
+                    ), self.assertRaises(AssertionError):
+                        self.test_container_vulnerability_policy_is_pinned_expiring_and_fail_closed()
 
     def test_packaging_smoke_resolves_posix_and_windows_venv_layouts(self):
         smoke = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(
