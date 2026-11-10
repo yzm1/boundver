@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -2844,7 +2845,27 @@ print(json.dumps(payload, separators=(",", ":")))
             ".github/workflows/publish-container.yml",
         ):
             workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
-            logical_lines = workflow.replace("\\\n", " ").splitlines()
+            run_blocks = [
+                step["run"]
+                for job in yaml.safe_load(workflow)["jobs"].values()
+                for step in job.get("steps", [])
+                if "scan=(" in step.get("run", "")
+            ]
+            self.assertEqual(len(run_blocks), 1, relative)
+            scan_script = run_blocks[0]
+            # Pin the three permitted references in these trusted scripts:
+            # one definition and two calls. Extra direct/alias array writes
+            # require explicit review; this is not a general Bash analyser.
+            without_comments = "\n".join(
+                line for line in scan_script.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            self.assertEqual(
+                re.findall(r"(?<![A-Za-z0-9_./-])scan(?![A-Za-z0-9_./-])", without_comments),
+                ["scan"] * 3,
+                relative,
+            )
+            logical_lines = scan_script.replace("\\\n", " ").splitlines()
             invocations = [
                 shlex.split(line)
                 for line in logical_lines
@@ -2854,9 +2875,9 @@ print(json.dumps(payload, separators=(",", ":")))
                 ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1"],
                 ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1"],
             ], relative)
-            self.assertEqual(workflow.count("scan=("), 1, relative)
+            self.assertEqual(scan_script.count("scan=("), 1, relative)
             shared_lines = []
-            for line in workflow.split("scan=(", 1)[1].splitlines():
+            for line in scan_script.split("scan=(", 1)[1].splitlines():
                 if line.strip() == ")":
                     break
                 shared_lines.append(line)
@@ -3091,6 +3112,23 @@ print(json.dumps(payload, separators=(",", ":")))
                     "--skip-version-check\n          )",
                     "--skip-version-check\n"
                     "            --ignorefile /policy/.trivyignore.yaml\n          )",
+                ),
+                "later-append": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          scan+=(--ignorefile /policy/.trivyignore.yaml)",
+                ),
+                "later-indexed-write": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          scan[${#scan[@]}]=--ignorefile\n"
+                    "          scan[${#scan[@]}]=/policy/.trivyignore.yaml",
+                ),
+                "later-alias-write": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          declare -n scan_alias=scan\n"
+                    "          scan_alias+=(--ignorefile /policy/.trivyignore.yaml)",
                 ),
             }
             for mutation, changed in mutations.items():
