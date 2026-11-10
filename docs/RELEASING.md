@@ -559,6 +559,46 @@ remains adverse and fails closed. Code-review evidence cannot clear adverse
 security evidence; only a later valid security-review result for the same
 current commit can do so.
 
+### One-time maintainer exception: v0.17.0 / PR #181
+
+The owner explicitly authorized reduced independent assurance for the Windows
+UTF-8 launcher correction in PR #181 because both Codex review channels were
+quota-blocked. **Independent review was not obtained.** This is not a standing
+solo-maintainer mode, a clean Codex verdict, or permission to waive findings.
+
+The audit accepts this exception only for `yzm1/boundver` (repository ID
+`1226008327`), release `v0.17.0`,
+owner-authored PR #181, and one canonical authorization comment by numeric owner
+ID `22440724` (`yzm1`, type `User`). The comment binds the full final PR head
+SHA and the original fix commit `757904de704ff2984ef5e229e92ecbf58e946ece`.
+It must be posted after the source is frozen; any head change invalidates it.
+Duplicate owner authorization records do not grant acceptance. The tag workflow
+already snapshots every comment's ID, actor and raw body before/after audit and
+tag mutation, so editing or deleting authorization during promotion aborts it.
+
+The original `CHANGELOG.md`, `scripts/publish_release.py` and
+`tests/test_publish_release.py` blobs must match that original fix exactly.
+The only additional changed files allowed are the exception's enforcement,
+documentation and regression corpus: `scripts/audit_release_reviews.sh`, this
+runbook, `tests/test_distribution_contract.py`, and the new
+`tests/test_release_review_exception.py`. All seven paths must be present with
+the expected added/modified statuses; renames, deletions, duplicate records,
+extra files and changed original-fix blobs are refused. No CLI flag,
+environment variable, or arbitrary per-PR manifest enables this exception.
+
+Generate the canonical comment body from `maintainer_exception_body` in the
+audit script with `pr_head_sha` set to the frozen full head. Preserve its final
+LF. Its explicit `Independent-review: not-obtained` and owner-risk statement
+must remain visible on the PR. Do not forge a reviewer identity or approval.
+
+Every other PR still needs ordinary exact-commit review evidence. Pending or
+blocking reviews, unresolved threads, adverse/ambiguous code or security
+evidence, CI, CodeQL, dependency/secret/container scans, immutable tag controls,
+artifact checks and publishing approvals remain mandatory. This exception does
+not relax semantic-provider acceptance or renew container risk exceptions.
+Another release tag cannot reuse it. Retain it as historical policy after
+v0.17.0; do not broaden its scope to unblock later work.
+
 The release PR subject should name the user-visible contract. Avoid generic
 subjects such as “release changes.” For the v3 transition, an appropriate
 subject is:
