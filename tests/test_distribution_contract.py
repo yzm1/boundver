@@ -3856,6 +3856,11 @@ if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY" ]]; then
 fi
 if [[ "$endpoint" == */pulls/$FAKE_PR_NUMBER ]]; then
   if [[ "$FAKE_FAILURE" == metadata ]]; then exit 73; fi
+  if [[ "$args" == *" --jq .changed_files "* ]]; then
+    if [[ "$FAKE_FAILURE" == scope-count ]]; then exit 73; fi
+    printf '%s' "$FAKE_CHANGED_FILES"
+    exit 0
+  fi
   echo "$FAKE_AUTHOR_ID|$FAKE_AUTHOR_LOGIN|$FAKE_AUTHOR_TYPE|$FAKE_HEAD_SHA|$FAKE_MERGE_SHA|$FAKE_PENDING_REVIEWERS|$FAKE_PENDING_TEAMS|$FAKE_PR_STATE|$FAKE_MERGED_AT|$FAKE_BASE_REPOSITORY|$FAKE_BASE_REF"
   exit 0
 fi
@@ -3949,6 +3954,7 @@ exit 74
                     "FAKE_PR_NUMBER": "17",
                     "FAKE_REPOSITORY_ID": "1226008327",
                     "FAKE_FILES": "",
+                    "FAKE_CHANGED_FILES": "7",
                     "FAKE_FAILURE": "none",
                     "FAKE_RELEASES": (
                         "101\tv0.14.1\tfalse\tfalse\ttrue\t"
@@ -4090,6 +4096,9 @@ exit 74
             {"FAKE_FILES": files + f"\nsrc/boundver/core.py|modified|{'c' * 40}|"},
             {"FAKE_FILES": "\n".join(files.splitlines()[:-1])},
             {"FAKE_FAILURE": "files"},
+            {"FAKE_CHANGED_FILES": "8"},
+            {"FAKE_CHANGED_FILES": "7\n7"},
+            {"FAKE_FAILURE": "scope-count"},
         )
         for values in cases:
             with self.subTest(overrides=values):

@@ -1322,6 +1322,13 @@ for pr_number in "${sorted_prs[@]}"; do
       echo "PR #181 maintainer exception repository identity is unavailable or changed." >&2
       exit 1
     fi
+    if ! capture_github_api_bounded exception_file_count "one-time exception changed-file count" \
+        "$max_small_capture_bytes" gh api \
+        "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.changed_files' || \
+        [[ "$exception_file_count" != 7 ]]; then
+      echo "PR #181 maintainer exception changed-file count is unavailable or outside scope." >&2
+      exit 1
+    fi
     if ! capture_github_api_bounded exception_files "one-time exception file scope for PR #181" \
         "$max_small_capture_bytes" gh api --paginate \
         "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
