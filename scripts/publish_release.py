@@ -782,7 +782,11 @@ def _run(
         max_stderr_bytes=max_stderr_bytes,
         timeout_seconds=timeout_seconds,
     )
-    encoding = locale.getpreferredencoding(False)
+    # GitHub CLI emits UTF-8 independently of the Windows ANSI code page.
+    # Keep native command decoding unchanged and reject invalid protocol bytes.
+    encoding = (
+        "utf-8" if command and command[0] == "gh" else locale.getpreferredencoding(False)
+    )
 
     def as_text(value: bytes) -> str:
         return value.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")

@@ -857,6 +857,64 @@ record_codex_evidence() {
   fi
 }
 
+# BEGIN one-time PR 181 maintainer exception helpers
+# Owner-authorized exception for one release and one PR, not independent review.
+# Original fix blobs are immutable; the other paths implement/test this policy.
+maintainer_exception_eligible() {
+  [[ "$github_repository_lower" == "yzm1/boundver" && \
+     "$release_tag" == "v0.17.0" && "$pr_number" == 181 && \
+     "$repository_owner_type" == User && "$repository_owner_id" == 22440724 && \
+     "$repository_owner_login" == yzm1 && "$author_id" == 22440724 && \
+     "$author_login" == yzm1 && "$author_type" == User ]]
+}
+
+maintainer_exception_body() {
+  printf '%s\n' \
+    'boundver-maintainer-review-exception/v1' \
+    'Repository: yzm1/boundver' \
+    'Repository-id: 1226008327' \
+    'Release: v0.17.0' \
+    'Pull-request: 181' \
+    "Head-sha: $pr_head_sha" \
+    'Original-fix: 757904de704ff2984ef5e229e92ecbf58e946ece' \
+    'Independent-review: not-obtained' \
+    'Scope: UTF-8 launcher fix and one-time exception enforcement only' \
+    'Reason: Codex GitHub review capacity unavailable' \
+    'Owner-risk-acceptance: explicit; no test, scan, finding, or publication waiver'
+}
+
+maintainer_exception_scope_matches() {
+  local records=$1 record filename status blob previous extra expected count=0
+  local seen='|'
+  [[ -n "$records" ]] || return 1
+  while IFS= read -r record; do
+    IFS='|' read -r filename status blob previous extra <<< "$record"
+    [[ "$record" == "$filename|$status|$blob|" && \
+       "$blob" =~ ^[0-9a-f]{40}$ && -z "$previous" && -z "$extra" ]] || return 1
+    [[ "$seen" != *"|$filename|"* ]] || return 1
+    seen+="$filename|"
+    expected=
+    case "$filename" in
+      CHANGELOG.md) expected=d7c43a511491ef1ecc58a827d29924e5b035bc25 ;;
+      scripts/publish_release.py) expected=1fd1a251cb82e936a6940d7aa303ddedef0b1bc1 ;;
+      tests/test_publish_release.py) expected=019b882fffd50e2ed15bc2233fd0c49b4cf1fc06 ;;
+      scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_distribution_contract.py|tests/test_github_api_read.py) ;;
+      tests/test_release_review_exception.py)
+        [[ "$status" == added ]] || return 1
+        count=$((count + 1))
+        continue
+        ;;
+      *) return 1 ;;
+    esac
+    [[ "$status" == modified ]] || return 1
+    [[ -z "$expected" || "$blob" == "$expected" ]] || return 1
+    count=$((count + 1))
+    (( count <= 8 )) || return 1
+  done <<< "$records"
+  [[ "$count" -eq 8 ]]
+}
+# END one-time PR 181 maintainer exception helpers
+
 record_security_evidence() {
   local timestamp=$1
   local kind=$2
@@ -1076,9 +1134,12 @@ for pr_number in "${sorted_prs[@]}"; do
   local_agent_exception=0
   local_agent_exception_records=0
   local_agent_exception_matches=0
-  local_agent_blocking_reviews=0
+  blocking_review_records=0
   human_evidence=0
   codex_evidence=0
+  maintainer_exception=0
+  maintainer_exception_records=0
+  maintainer_exception_matching_records=0
   codex_latest_timestamp=
   codex_latest_kind=
   codex_latest_count=0
@@ -1117,9 +1178,8 @@ for pr_number in "${sorted_prs[@]}"; do
       echo "GitHub API returned malformed review data for PR #$pr_number." >&2
       exit 1
     fi
-
     if [[ "$review_state" == PENDING || "$review_state" == CHANGES_REQUESTED ]]; then
-      local_agent_blocking_reviews=$((local_agent_blocking_reviews + 1))
+      blocking_review_records=$((blocking_review_records + 1))
     fi
     if [[ "$review_state" == "APPROVED" && "$reviewer_type" == "User" && \
           -n "$reviewer_id" && "$reviewer_id" != "$author_id" && \
@@ -1250,6 +1310,17 @@ for pr_number in "${sorted_prs[@]}"; do
       echo "GitHub API returned an invalid issue-comment body for PR #$pr_number." >&2
       exit 1
     fi
+    if maintainer_exception_eligible && \
+        [[ "$commenter_id" == 22440724 && "$commenter_login" == yzm1 && \
+           "$commenter_type" == User && \
+           "$comment_body" == boundver-maintainer-review-exception/* ]]; then
+      maintainer_exception_records=$((maintainer_exception_records + 1))
+      # Compare canonical raw bytes too: shell variables cannot retain NULs or
+      # trailing newlines. The authorization body includes one final LF.
+      if [[ "$encoded_body" == "$(maintainer_exception_body | base64 | tr -d '\n')" ]]; then
+        maintainer_exception_matching_records=$((maintainer_exception_matching_records + 1))
+      fi
+    fi
     if local_agent_exception_eligible && \
         [[ "$commenter_id" == 22440724 && "$commenter_login" == yzm1 && \
            "$commenter_type" == User && \
@@ -1341,7 +1412,38 @@ for pr_number in "${sorted_prs[@]}"; do
     owner_authored=1
   fi
   if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
-        "$local_agent_blocking_reviews" -eq 0 && \
+        "$blocking_review_records" -eq 0 && \
+        "$maintainer_exception_records" -eq 1 && \
+        "$maintainer_exception_matching_records" -eq 1 ]]; then
+    if ! capture_github_api_bounded exception_repository_id "one-time exception repository identity" \
+        "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" --jq '.id' || \
+        [[ "$exception_repository_id" != 1226008327 ]]; then
+      echo "PR #181 maintainer exception repository identity is unavailable or changed." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded exception_file_count "one-time exception changed-file count" \
+        "$max_small_capture_bytes" gh api \
+        "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" --jq '.changed_files' || \
+        [[ "$exception_file_count" != 8 ]]; then
+      echo "PR #181 maintainer exception changed-file count is unavailable or outside scope." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded exception_files "one-time exception file scope for PR #181" \
+        "$max_small_capture_bytes" gh api --paginate \
+        "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+        --jq '.[] | [ .filename, .status, .sha, (.previous_filename // "") ] | join("|")'; then
+      echo "GitHub API failed while validating the PR #181 maintainer exception scope." >&2
+      exit 1
+    fi
+    if maintainer_exception_scope_matches "$exception_files"; then
+      maintainer_exception=1
+      echo "PR #181: owner-accepted one-time v0.17.0 exception at $pr_head_sha; independent review NOT obtained."
+    else
+      echo "PR #181 maintainer exception does not match the pinned launcher/policy file scope." >&2
+    fi
+  fi
+  if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
+        "$blocking_review_records" -eq 0 && \
         "$local_agent_exception_records" -eq 1 && "$local_agent_exception_matches" -eq 1 ]]; then
     if ! capture_github_api_bounded local_agent_repo_id "PR182 exception repository identity" \
         "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" --jq '.id' || \
@@ -1371,7 +1473,7 @@ for pr_number in "${sorted_prs[@]}"; do
   fi
   if [[ "$human_evidence" -eq 0 && \
         ! ( "$owner_authored" -eq 1 && "$codex_evidence" -eq 1 ) && \
-        "$local_agent_exception" -eq 0 ]]; then
+        "$maintainer_exception" -eq 0 && "$local_agent_exception" -eq 0 ]]; then
     if [[ "$owner_authored" -eq 1 ]]; then
       expected_evidence="a non-author human with push access or the trusted Codex bot"
     else

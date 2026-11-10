@@ -298,7 +298,8 @@ def test_release_review_audit_routes_every_api_call_through_the_retry_helper() -
     )
 
     assert script.count("run_github_api_bounded_to_file") == 5
-    assert script.count("capture_github_api_bounded") == 13
+    # Each scoped exception adds three calls through the same bounded wrapper.
+    assert script.count("capture_github_api_bounded") == 16
     for line in script.splitlines():
         if "gh api" in line:
             assert "run_bounded_to_file" not in line

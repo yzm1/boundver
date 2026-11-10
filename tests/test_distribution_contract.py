@@ -3925,6 +3925,8 @@ class ReleaseReviewAuditTests(unittest.TestCase):
         )
         publication_alias = overrides.pop("FAKE_PUBLICATION_ALIAS", "v0.14")
         publication_resume = overrides.pop("FAKE_PUBLICATION_RESUME", "")
+        fixture_repository = overrides.pop("AUDIT_FIXTURE_REPOSITORY", "owner/repository")
+        fixture_tag = overrides.pop("AUDIT_FIXTURE_RELEASE_TAG", CURRENT_TAG)
         publication_branch = "main" if publication_resume else "v0.14.1"
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -3963,16 +3965,25 @@ if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml" ]]
 fi
 if [[ "$endpoint" == */commits/*/pulls ]]; then
   if [[ "$FAKE_FAILURE" == associated ]]; then exit 73; fi
-  echo 17
+  echo "$FAKE_PR_NUMBER"
   exit 0
 fi
 if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY" ]]; then
   if [[ "$FAKE_FAILURE" == owner ]]; then exit 73; fi
+  if [[ "$args" == *" --jq .id "* ]]; then
+    printf '%s' "$FAKE_REPOSITORY_ID"
+    exit 0
+  fi
   echo "$FAKE_OWNER_ID|$FAKE_OWNER_LOGIN|$FAKE_OWNER_TYPE"
   exit 0
 fi
-if [[ "$endpoint" == */pulls/17 ]]; then
+if [[ "$endpoint" == */pulls/$FAKE_PR_NUMBER ]]; then
   if [[ "$FAKE_FAILURE" == metadata ]]; then exit 73; fi
+  if [[ "$args" == *" --jq .changed_files "* ]]; then
+    if [[ "$FAKE_FAILURE" == scope-count ]]; then exit 73; fi
+    printf '%s' "$FAKE_CHANGED_FILES"
+    exit 0
+  fi
   echo "$FAKE_AUTHOR_ID|$FAKE_AUTHOR_LOGIN|$FAKE_AUTHOR_TYPE|$FAKE_HEAD_SHA|$FAKE_MERGE_SHA|$FAKE_PENDING_REVIEWERS|$FAKE_PENDING_TEAMS|$FAKE_PR_STATE|$FAKE_MERGED_AT|$FAKE_BASE_REPOSITORY|$FAKE_BASE_REF"
   exit 0
 fi
@@ -3986,12 +3997,17 @@ if [[ "$args" == *" graphql "* && "$args" == *" --paginate "* ]]; then
   printf '%s' "$FAKE_UNRESOLVED"
   exit 0
 fi
-if [[ "$endpoint" == */pulls/17/reviews* ]]; then
+if [[ "$endpoint" == */pulls/$FAKE_PR_NUMBER/files* ]]; then
+  if [[ "$FAKE_FAILURE" == files ]]; then exit 73; fi
+  printf '%s' "$FAKE_FILES"
+  exit 0
+fi
+if [[ "$endpoint" == */pulls/$FAKE_PR_NUMBER/reviews* ]]; then
   if [[ "$FAKE_FAILURE" == reviews ]]; then exit 73; fi
   printf '%s' "$FAKE_REVIEWS"
   exit 0
 fi
-if [[ "$endpoint" == */issues/17/comments* ]]; then
+if [[ "$endpoint" == */issues/$FAKE_PR_NUMBER/comments* ]]; then
   if [[ "$FAKE_FAILURE" == comments ]]; then exit 73; fi
   printf '%s' "$FAKE_COMMENTS"
   exit 0
@@ -4057,7 +4073,11 @@ exit 74
                 {
                     "PATH": f"{bin_dir}{os.pathsep}{environment['PATH']}",
                     "GH_TOKEN": "test-token",
-                    "GITHUB_REPOSITORY": "owner/repository",
+                    "GITHUB_REPOSITORY": fixture_repository,
+                    "FAKE_PR_NUMBER": "17",
+                    "FAKE_REPOSITORY_ID": "1226008327",
+                    "FAKE_FILES": "",
+                    "FAKE_CHANGED_FILES": "8",
                     "FAKE_FAILURE": "none",
                     "FAKE_RELEASES": (
                         "101\tv0.14.1\tfalse\tfalse\ttrue\t"
@@ -4074,10 +4094,10 @@ exit 74
                         f"{publication_resume}\t"
                         "workflow_dispatch\tcompleted\tsuccess\t"
                         f"{previous_sha}\t{publication_branch}\t1\t270075259\t"
-                        "owner/repository\towner/repository\t"
+                        f"{fixture_repository}\t{fixture_repository}\t"
                         "2026-08-27T14:05:36Z\t"
                         "2026-08-27T16:05:36Z\t"
-                        "https://github.com/owner/repository/actions/runs/"
+                        f"https://github.com/{fixture_repository}/actions/runs/"
                         "33112740009\n"
                     ),
                     "FAKE_OWNER_ID": "101",
@@ -4092,7 +4112,7 @@ exit 74
                     "FAKE_PENDING_TEAMS": "0",
                     "FAKE_PR_STATE": "closed",
                     "FAKE_MERGED_AT": "2026-08-18T12:00:00Z",
-                    "FAKE_BASE_REPOSITORY": "owner/repository",
+                    "FAKE_BASE_REPOSITORY": fixture_repository,
                     "FAKE_BASE_REF": "main",
                     "FAKE_DECISION": "REVIEW_REQUIRED",
                     "FAKE_UNRESOLVED": "0",
@@ -4105,13 +4125,153 @@ exit 74
             )
             environment.update(overrides)
             return subprocess.run(
-                ["bash", "./audit_release_reviews.sh", release_sha, CURRENT_TAG],
+                ["bash", "./audit_release_reviews.sh", release_sha, fixture_tag],
                 cwd=root,
                 env=environment,
                 capture_output=True,
                 text=True,
                 input="",
             )
+
+    def _run_exception_audit(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+        from tests.test_release_review_exception import exception_body, exception_files
+
+        values = {
+            "AUDIT_FIXTURE_REPOSITORY": "yzm1/boundver",
+            "AUDIT_FIXTURE_RELEASE_TAG": "v0.17.0",
+            "FAKE_PR_NUMBER": "181",
+            "FAKE_OWNER_ID": "22440724",
+            "FAKE_OWNER_LOGIN": "yzm1",
+            "FAKE_AUTHOR_ID": "22440724",
+            "FAKE_AUTHOR_LOGIN": "yzm1",
+            "FAKE_HEAD_SHA": "1" * 40,
+            "FAKE_REVIEWS": "",
+            "FAKE_FILES": exception_files(),
+            "FAKE_COMMENTS": self._comment_record(
+                exception_body("1" * 40), record_id="501", actor_id="22440724",
+                login="yzm1", actor_type="User",
+            ),
+        }
+        values.update(overrides)
+        return self._run_audit(**values)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_one_time_exception_reports_missing_independent_review(self):
+        result = self._run_exception_audit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("owner-accepted one-time v0.17.0 exception", result.stdout)
+        self.assertIn("independent review NOT obtained", result.stdout)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exception_cannot_apply_to_another_release_pr_owner_or_head(self):
+        cases = (
+            {"AUDIT_FIXTURE_RELEASE_TAG": "v0.17.1"},
+            {"FAKE_PR_NUMBER": "182"},
+            {"FAKE_OWNER_ID": "999"},
+            {"FAKE_REPOSITORY_ID": "999"},
+            {"FAKE_AUTHOR_ID": "999"},
+            {"FAKE_HEAD_SHA": "2" * 40},
+            {"FAKE_COMMENTS": "", "BOUNDVER_SKIP_REVIEWS": "1",
+             "ALLOW_MAINTAINER_EXCEPTION": "1"},
+        )
+        for values in cases:
+            with self.subTest(overrides=values):
+                result = self._run_exception_audit(**values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exception_rejects_spoofed_malformed_or_duplicate_authorization(self):
+        from tests.test_release_review_exception import exception_body
+
+        body = exception_body("1" * 40)
+        comments = [
+            self._comment_record(body, actor_id="999", login="yzm1", actor_type="User"),
+            self._comment_record(body, actor_id="22440724", login="other", actor_type="User"),
+            self._comment_record(body, actor_id="22440724", login="yzm1", actor_type="Bot"),
+        ]
+        for invalid in (
+            body.replace("not-obtained", "obtained"),
+            body.replace("Head-sha: " + "1" * 40, "Head-sha: " + "1" * 10),
+            body + "\n",
+            body + "\0",
+            body.replace("no test, scan, finding, or publication waiver", "skip everything"),
+        ):
+            comments.append(self._comment_record(
+                invalid, actor_id="22440724", login="yzm1", actor_type="User",
+            ))
+        comments.append("\n".join(
+            self._comment_record(body, record_id=str(identifier), actor_id="22440724",
+                                 login="yzm1", actor_type="User")
+            for identifier in (501, 502)
+        ))
+        for index, records in enumerate(comments):
+            with self.subTest(case=index):
+                result = self._run_exception_audit(FAKE_COMMENTS=records)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exception_refuses_modified_fix_extra_files_and_scope_api_failure(self):
+        from tests.test_release_review_exception import exception_files, FIX_BLOBS
+
+        files = exception_files()
+        cases = (
+            {"FAKE_FILES": files.replace(FIX_BLOBS["scripts/publish_release.py"], "c" * 40)},
+            {"FAKE_FILES": files + f"\nsrc/boundver/core.py|modified|{'c' * 40}|"},
+            {"FAKE_FILES": "\n".join(files.splitlines()[:-1])},
+            {"FAKE_FAILURE": "files"},
+            {"FAKE_CHANGED_FILES": "9"},
+            {"FAKE_CHANGED_FILES": "8\n8"},
+            {"FAKE_FAILURE": "scope-count"},
+        )
+        for values in cases:
+            with self.subTest(overrides=values):
+                result = self._run_exception_audit(**values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("exception", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exception_does_not_waive_pending_blocking_or_unresolved_reviews(self):
+        cases = (
+            {"FAKE_DECISION": "CHANGES_REQUESTED"},
+            {"FAKE_UNRESOLVED": "1"},
+            {"FAKE_PENDING_REVIEWERS": "1"},
+            {"FAKE_PENDING_TEAMS": "1"},
+            {"FAKE_REVIEWS": self._review_record("1" * 40, state="PENDING")},
+            {"FAKE_REVIEWS": self._review_record("1" * 40, state="CHANGES_REQUESTED")},
+            {"FAKE_REVIEWS": self._review_record(
+                "1" * 40, state="PENDING", actor_id="999",
+                login="reviewer", actor_type="User",
+            )},
+            {"FAKE_REVIEWS": self._review_record(
+                "1" * 40, state="CHANGES_REQUESTED", actor_id="999",
+                login="reviewer", actor_type="User",
+            )},
+        )
+        for values in cases:
+            with self.subTest(overrides=values):
+                result = self._run_exception_audit(**values)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("not release-ready", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_exception_does_not_clear_adverse_codex_or_security_evidence(self):
+        from tests.test_release_review_exception import exception_body
+
+        authorization = self._comment_record(
+            exception_body("1" * 40), record_id="501", actor_id="22440724",
+            login="yzm1", actor_type="User",
+        )
+        for adverse in (
+            self._codex_comment("1" * 40, verdict="Codex Review: This is unsafe."),
+            self._codex_security_comment("1" * 40).replace(
+                "No security issues were found", "Security issues were found",
+            ),
+        ):
+            with self.subTest(body=adverse.splitlines()[0]):
+                records = authorization + "\n" + self._comment_record(adverse)
+                result = self._run_exception_audit(FAKE_COMMENTS=records)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("not release-ready", result.stderr)
 
     @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
     def test_owner_authored_pr_accepts_exact_codex_review_or_clean_comment(self):
