@@ -10,6 +10,8 @@ import importlib.util
 import io
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2842,8 +2844,52 @@ print(json.dumps(payload, separators=(",", ":")))
             ".github/workflows/ci.yml",
             ".github/workflows/publish-container.yml",
         ):
+            workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            run_blocks = [
+                step["run"]
+                for job in yaml.safe_load(workflow)["jobs"].values()
+                for step in job.get("steps", [])
+                if "scan=(" in step.get("run", "")
+            ]
+            self.assertEqual(len(run_blocks), 1, relative)
+            scan_script = run_blocks[0]
+            # Pin the three permitted references in these trusted scripts:
+            # one definition and two calls. Extra direct/alias array writes
+            # require explicit review; this is not a general Bash analyser.
+            without_comments = "\n".join(
+                line for line in scan_script.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            self.assertEqual(
+                re.findall(r"(?<![A-Za-z0-9_./-])scan(?![A-Za-z0-9_./-])", without_comments),
+                ["scan"] * 3,
+                relative,
+            )
+            logical_lines = scan_script.replace("\\\n", " ").splitlines()
+            invocations = [
+                shlex.split(line)
+                for line in logical_lines
+                if line.strip().startswith('"${scan[@]}"')
+            ]
+            self.assertEqual(invocations, [
+                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1"],
+                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1"],
+            ], relative)
+            self.assertEqual(scan_script.count("scan=("), 1, relative)
+            shared_lines = []
+            for line in scan_script.split("scan=(", 1)[1].splitlines():
+                if line.strip() == ")":
+                    break
+                shared_lines.append(line)
+            else:
+                self.fail(f"{relative}: unterminated shared scan arguments")
+            shared_arguments = shlex.split("\n".join(shared_lines))
+            self.assertFalse(any(
+                argument == flag or argument.startswith(flag + "=")
+                for argument in shared_arguments
+                for flag in ("--ignorefile", "--ignore-unfixed")
+            ), relative)
             with self.subTest(workflow=relative):
-                workflow = (REPO_ROOT / relative).read_text(encoding="utf-8")
                 self.assertIn(scanner, workflow)
                 self.assertIn(
                     "--ignorefile /policy/.trivyignore.yaml --exit-code 1",
@@ -2909,13 +2955,15 @@ print(json.dumps(payload, separators=(",", ":")))
             "CVE-2026-9538", "CVE-2026-113351", "CVE-2026-115506",
             "CVE-2026-117610", "CVE-2026-118370", "CVE-2026-119373",
             "CVE-2026-119374", "CVE-2026-119379",
+            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
+            "CVE-2026-119079",
         }
         by_id = {entry["id"]: entry for entry in exceptions}
         # The development snapshot installs Debian's fixed Expat package;
         # the historical v0.16 recovery exception must not survive that update.
         self.assertNotIn("CVE-2026-77214", by_id)
         self.assertEqual(set(by_id), assessed_ids)
-        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 56)
+        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 72)
         assessed_packages = {
             "CVE-2025-69720": [
                 "pkg:deb/debian/libncursesw6",
@@ -3008,6 +3056,27 @@ print(json.dumps(payload, separators=(",", ":")))
                 "pkg:deb/debian/perl-modules-5.40"
             ]
         }
+        kerberos_ids = {
+            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
+            "CVE-2026-119079",
+        }
+        for identifier in kerberos_ids:
+            assessed_packages[identifier] = [
+                "pkg:deb/debian/libgssapi-krb5-2",
+                "pkg:deb/debian/libk5crypto3",
+                "pkg:deb/debian/libkrb5-3",
+                "pkg:deb/debian/libkrb5support0",
+            ]
+            self.assertEqual(
+                set(by_id[identifier]), {"id", "purls", "expired_at", "statement"}
+            )
+            for limitation in (
+                "built-in CLI", "no network or capabilities", "non-root",
+                "libraries remain vulnerable", "Custom providers",
+                "overridden entrypoints", "independent review",
+                "exact-image scans on both platforms",
+            ):
+                self.assertIn(limitation, by_id[identifier]["statement"])
         self.assertEqual(
             {identifier: sorted(entry["purls"]) for identifier, entry in by_id.items()},
             assessed_packages,
@@ -3021,6 +3090,60 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertEqual(len(entry["purls"]), len(set(entry["purls"])))
             for purl in entry["purls"]:
                 self.assertRegex(purl, r"^pkg:deb/debian/[A-Za-z0-9.+-]+$")
+
+    def test_fixable_only_container_scan_rejects_allowlist_injection(self):
+        original_read_text = Path.read_text
+        for relative in (
+            ".github/workflows/ci.yml",
+            ".github/workflows/publish-container.yml",
+        ):
+            target = REPO_ROOT / relative
+            original = original_read_text(target, encoding="utf-8")
+            mutations = {
+                "appended": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --ignorefile /policy/.trivyignore.yaml",
+                ),
+                "equals": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --ignorefile=/policy/.trivyignore.yaml",
+                ),
+                "shared-array": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n"
+                    "            --ignorefile /policy/.trivyignore.yaml\n          )",
+                ),
+                "later-append": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          scan+=(--ignorefile /policy/.trivyignore.yaml)",
+                ),
+                "later-indexed-write": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          scan[${#scan[@]}]=--ignorefile\n"
+                    "          scan[${#scan[@]}]=/policy/.trivyignore.yaml",
+                ),
+                "later-alias-write": original.replace(
+                    "--skip-version-check\n          )",
+                    "--skip-version-check\n          )\n"
+                    "          declare -n scan_alias=scan\n"
+                    "          scan_alias+=(--ignorefile /policy/.trivyignore.yaml)",
+                ),
+            }
+            for mutation, changed in mutations.items():
+                with self.subTest(workflow=relative, mutation=mutation):
+                    self.assertNotEqual(original, changed)
+
+                    def read_text(path, *args, **kwargs):
+                        if path == target:
+                            return changed
+                        return original_read_text(path, *args, **kwargs)
+
+                    with mock.patch.object(
+                        Path, "read_text", autospec=True, side_effect=read_text
+                    ), self.assertRaises(AssertionError):
+                        self.test_container_vulnerability_policy_is_pinned_expiring_and_fail_closed()
 
     def test_packaging_smoke_resolves_posix_and_windows_venv_layouts(self):
         smoke = (REPO_ROOT / "scripts/packaging_smoke.sh").read_text(

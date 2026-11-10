@@ -875,6 +875,94 @@ record_security_evidence() {
   fi
 }
 
+# BEGIN one-time PR 182 local-agent exception helpers
+# This is explicit owner-attested reduced identity assurance, not a signed App review.
+local_agent_exception_eligible() {
+  [[ "$github_repository_lower" == yzm1/boundver && \
+     "$release_tag" == v0.17.0 && "$pr_number" == 182 && \
+     "$repository_owner_type" == User && "$repository_owner_id" == 22440724 && \
+     "$repository_owner_login" == yzm1 && "$author_id" == 22440724 && \
+     "$author_login" == yzm1 && "$author_type" == User ]]
+}
+
+local_agent_exception_body() {
+  printf '%s\n' \
+    'boundver-local-agent-review-exception/v1' \
+    'Repository: yzm1/boundver' \
+    'Repository-id: 1226008327' \
+    'Release: v0.17.0' \
+    'Pull-request: 182' \
+    "Head-sha: $pr_head_sha" \
+    'Original-policy: 441a68a81fc551433ffe19de9c6f4d3d999c181d' \
+    'Review-kind: owner-attested local-agent assessment; authenticated GitHub approval not obtained' \
+    'Reviewer-agent-id: 01a1c535-0f5a-7cb1-b670-cf583e847831' \
+    'Verdict: approve-conditional-scope' \
+    "Report-sha256: $1" \
+    "Report-base64: $2" \
+    'Owner-authorization: explicit PR182-only identity exception; no finding, CI, scan, expiry, risk-scope or publication waiver'
+}
+
+local_agent_exception_record_matches() {
+  local body=$1 encoded=$2 report_sha report_b64 canonical digest header expected_header
+  local pattern=$'\nReport-sha256: ([0-9a-f]{64})\nReport-base64: ([A-Za-z0-9+/=]+)\nOwner-authorization: '
+  [[ ${#body} -le 36864 && "$body" =~ $pattern ]] || return 1
+  report_sha=${BASH_REMATCH[1]}
+  report_b64=${BASH_REMATCH[2]}
+  [[ -n "$report_b64" && ${#report_b64} -le 32768 ]] || return 1
+  # Canonical base64 and NUL-free report bytes; do not let shell NUL stripping
+  # reinterpret the report's source-bound header.
+  if ! canonical=$(printf '%s' "$report_b64" | base64 --decode | \
+      tr -d '\000' | base64 | tr -d '\n'); then
+    return 1
+  fi
+  [[ "$canonical" == "$report_b64" ]] || return 1
+  if ! digest=$(printf '%s' "$report_b64" | base64 --decode | \
+      "$python_command" -I -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read(24577)).hexdigest())'); then
+    return 1
+  fi
+  [[ "$digest" == "$report_sha" ]] || return 1
+  header=$(printf '%s' "$report_b64" | base64 --decode | sed -n '1,3p') || return 1
+  expected_header=$(printf '%s\n' \
+    "Reviewed-sha: $pr_head_sha" \
+    'Reviewer-agent-id: 01a1c535-0f5a-7cb1-b670-cf583e847831' \
+    'Verdict: approve-conditional-scope')
+  [[ "$header" == "$expected_header" ]] || return 1
+  # The raw API body must include exactly the canonical final LF.
+  [[ "$encoded" == "$(local_agent_exception_body "$report_sha" "$report_b64" | base64 | tr -d '\n')" ]]
+}
+
+local_agent_exception_scope_matches() {
+  local records=$1 record filename status blob previous extra expected count=0
+  local seen='|'
+  [[ -n "$records" ]] || return 1
+  while IFS= read -r record; do
+    IFS='|' read -r filename status blob previous extra <<< "$record"
+    [[ "$record" == "$filename|$status|$blob|" && \
+       "$blob" =~ ^[0-9a-f]{40}$ && -z "$previous" && -z "$extra" ]] || return 1
+    [[ "$seen" != *"|$filename|"* ]] || return 1
+    seen+="$filename|"
+    expected=
+    case "$filename" in
+      .trivyignore.yaml) expected=46f01ab58625d4efb2b0e92da9c691039c78b54e ;;
+      SECURITY.md) expected=785ca715363f2cc0a7df0aee1469c1369b73cb10 ;;
+      tests/test_distribution_contract.py) expected=0067dc243afb20b4cd09a55619b7c678ec0c4d6e ;;
+      scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_github_api_read.py) ;;
+      tests/test_release_review_exception_182.py)
+        [[ "$status" == added ]] || return 1
+        count=$((count + 1))
+        continue
+        ;;
+      *) return 1 ;;
+    esac
+    [[ "$status" == modified ]] || return 1
+    [[ -z "$expected" || "$blob" == "$expected" ]] || return 1
+    count=$((count + 1))
+    (( count <= 7 )) || return 1
+  done <<< "$records"
+  [[ "$count" -eq 7 ]]
+}
+# END one-time PR 182 local-agent exception helpers
+
 failed=0
 if ! capture_bounded sorted_output "sorted release pull requests" \
     "$max_capture_bytes" sort -nu "$release_prs_file"; then
@@ -985,6 +1073,10 @@ for pr_number in "${sorted_prs[@]}"; do
     exit 1
   fi
 
+  local_agent_exception=0
+  local_agent_exception_records=0
+  local_agent_exception_matches=0
+  local_agent_blocking_reviews=0
   human_evidence=0
   codex_evidence=0
   codex_latest_timestamp=
@@ -1026,6 +1118,9 @@ for pr_number in "${sorted_prs[@]}"; do
       exit 1
     fi
 
+    if [[ "$review_state" == PENDING || "$review_state" == CHANGES_REQUESTED ]]; then
+      local_agent_blocking_reviews=$((local_agent_blocking_reviews + 1))
+    fi
     if [[ "$review_state" == "APPROVED" && "$reviewer_type" == "User" && \
           -n "$reviewer_id" && "$reviewer_id" != "$author_id" && \
           -n "$reviewer_login" ]]; then
@@ -1155,6 +1250,15 @@ for pr_number in "${sorted_prs[@]}"; do
       echo "GitHub API returned an invalid issue-comment body for PR #$pr_number." >&2
       exit 1
     fi
+    if local_agent_exception_eligible && \
+        [[ "$commenter_id" == 22440724 && "$commenter_login" == yzm1 && \
+           "$commenter_type" == User && \
+           "$comment_body" == boundver-local-agent-review-exception/* ]]; then
+      local_agent_exception_records=$((local_agent_exception_records + 1))
+      if local_agent_exception_record_matches "$comment_body" "$encoded_body"; then
+        local_agent_exception_matches=$((local_agent_exception_matches + 1))
+      fi
+    fi
     if [[ "$commenter_id" == "$trusted_codex_bot_id" && \
           "$commenter_type" == "Bot" ]]; then
       if codex_body_is_security_review_candidate "$comment_body"; then
@@ -1236,8 +1340,38 @@ for pr_number in "${sorted_prs[@]}"; do
         "$author_id" == "$repository_owner_id" ]]; then
     owner_authored=1
   fi
+  if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
+        "$local_agent_blocking_reviews" -eq 0 && \
+        "$local_agent_exception_records" -eq 1 && "$local_agent_exception_matches" -eq 1 ]]; then
+    if ! capture_github_api_bounded local_agent_repo_id "PR182 exception repository identity" \
+        "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" --jq '.id' || \
+        [[ "$local_agent_repo_id" != 1226008327 ]]; then
+      echo "PR #182 local-agent exception repository identity is unavailable or changed." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded local_agent_file_count "PR182 exception changed-file count" \
+        "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
+        --jq '.changed_files' || [[ "$local_agent_file_count" != 7 ]]; then
+      echo "PR #182 local-agent exception changed-file count is outside its seven-file scope." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded local_agent_files "PR182 exception complete file listing" \
+        "$max_small_capture_bytes" gh api --paginate \
+        "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+        --jq '.[] | [ .filename, .status, .sha, (.previous_filename // "") ] | join("|")'; then
+      echo "PR #182 local-agent exception file scope is unavailable." >&2
+      exit 1
+    fi
+    if local_agent_exception_scope_matches "$local_agent_files"; then
+      local_agent_exception=1
+      echo "PR #182: owner-accepted local-agent assessment at $pr_head_sha; authenticated GitHub approval NOT obtained."
+    else
+      echo "PR #182 local-agent exception does not match its pinned policy/enforcement scope." >&2
+    fi
+  fi
   if [[ "$human_evidence" -eq 0 && \
-        ! ( "$owner_authored" -eq 1 && "$codex_evidence" -eq 1 ) ]]; then
+        ! ( "$owner_authored" -eq 1 && "$codex_evidence" -eq 1 ) && \
+        "$local_agent_exception" -eq 0 ]]; then
     if [[ "$owner_authored" -eq 1 ]]; then
       expected_evidence="a non-author human with push access or the trusted Codex bot"
     else
