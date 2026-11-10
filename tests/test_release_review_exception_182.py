@@ -257,6 +257,7 @@ fi
             "FAKE_OWNER_ID": "22440724", "FAKE_OWNER_LOGIN": "yzm1",
             "FAKE_AUTHOR_ID": "22440724", "FAKE_AUTHOR_LOGIN": "yzm1",
             "FAKE_BASE_REPOSITORY": "yzm1/boundver", "FAKE_HEAD_SHA": HEAD,
+            "FAKE_PR_NUMBER": "182",
             "FAKE_REVIEWS": "", "FAKE_COMMENTS": comments,
             "FAKE_EXCEPTION_REPO_ID": "1226008327",
             "FAKE_EXCEPTION_FILE_COUNT": "7", "FAKE_EXCEPTION_FILES": files(),
