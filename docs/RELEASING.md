@@ -609,6 +609,43 @@ subject is:
 feat!: introduce boundary-lock/v3 and close v0.10 integrity gaps
 ```
 
+### One-time local-agent identity exception: v0.17.0 / PR #182
+
+The owner explicitly authorized accepting the separate local Codex agent's
+exact-commit assessment for PR #182 because the GitHub code/security review
+service could not execute. This is reduced reviewer-identity assurance:
+the owner attests the report's origin; the audit cannot authenticate the local
+agent as a GitHub human or App. Do not call it either kind of approval.
+
+The exception is restricted to repository ID `1226008327`, owner ID `22440724`,
+owner-authored PR #182 and release `v0.17.0`. The original three security-policy
+payload blobs are pinned to `441a68a81fc551433ffe19de9c6f4d3d999c181d`.
+Exactly seven files are permitted: `.trivyignore.yaml`, `SECURITY.md`,
+`tests/test_distribution_contract.py`, this runbook,
+`scripts/audit_release_reviews.sh`, `tests/test_github_api_read.py`, and the
+new `tests/test_release_review_exception_182.py`. Metadata count and complete
+file listing must agree; renamed/deleted/duplicate/extra files are refused.
+
+After the entire final source is frozen and the separate agent approves its
+conditional scope, record exactly one canonical owner-authenticated comment
+using `local_agent_exception_body` in the audit script. Bind the full PR head,
+the fixed reviewer-agent ID, the SHA-256 and canonical base64 of its report.
+The report begins with the three source/agent/verdict lines checked by
+`local_agent_exception_record_matches`, followed by the verbatim assessment.
+The source/report binding is owner attestation, not a cryptographic agent
+signature. Missing, duplicate, malformed, NUL-bearing, tampered, over-budget
+or stale records do not grant the exception. Preserve the comment's final LF.
+Changing the head requires a new exact-commit assessment and owner record.
+Existing tag-promotion snapshots bind all comment IDs, actors and raw bodies
+around audit and mutation, detecting edits/deletion during promotion.
+
+This waives only the normal GitHub reviewer-identity requirement for this PR.
+Pending/requested/blocking reviews, unresolved threads, adverse or ambiguous
+formal code/security evidence, CI, scans, CVE/package scope, November 22 expiry
+and publication approvals remain in force. It neither expands PR #181's
+separate launcher exception nor changes any other PR/release's review policy.
+Retain it as historical policy; do not broaden or reuse it for future releases.
+
 ## Promote the exact commit
 
 The publishing script is the only supported local release entry point. Its

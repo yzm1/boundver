@@ -75,3 +75,43 @@ the least-privilege invocation in the
 no capabilities, `no-new-privileges`, a read-only root and repository mount,
 and no writable temporary filesystem. Do not opt into custom providers in that
 environment.
+
+## Temporary v0.17 container risk acceptance
+
+As of November 10, 2026, the proposed v0.17 image contains Debian libraries
+with unpatched HIGH findings. The package/CVE allowlist in `.trivyignore.yaml`
+expires on **November 22, 2026**; it is not a claim that the libraries are fixed.
+An independent, no-exceptions scan still rejects fixable HIGH/CRITICAL findings.
+New findings outside the explicit allowlist block publication.
+
+The maintainer accepted four additional Kerberos IDs on November 10, conditional
+on independent review and successful final exact-image scans on both amd64 and
+arm64: CVE-2026-112321, CVE-2026-112322, CVE-2026-112323 and CVE-2026-119079.
+This adds only 16 package/CVE pairs, against `libgssapi-krb5-2`, `libk5crypto3`,
+`libkrb5-3` and `libkrb5support0`. The pinned Debian inputs currently install
+version `1.21.3-5+deb13u1`; other packages are not covered by these four entries.
+Existing acceptance for the other 17 IDs is not extended or renewed.
+
+Acceptance applies only to the built-in CLI running non-root, with no network,
+all capabilities dropped and `no-new-privileges`. Custom providers, overridden
+entrypoints and additional services are excluded. Keep the read-only root and
+repository mounts recommended above for verification. The launcher-specific
+review exception in PR #181 does not approve this risk assessment or waive any
+security finding, independent review, expiry or scan gate.
+
+The first three IDs concern the legacy AUTH_GSSAPI server path used by
+`kadmind`; the fourth concerns ASN.1 decoding exploited through KDC requests.
+See Debian's trackers for [112321](https://security-tracker.debian.org/tracker/CVE-2026-112321),
+[112322](https://security-tracker.debian.org/tracker/CVE-2026-112322),
+[112323](https://security-tracker.debian.org/tracker/CVE-2026-112323) and
+[119079](https://security-tracker.debian.org/tracker/CVE-2026-119079).
+The inspected local runtime has no `krb5-kdc`, `krb5-admin-server`, `kadmind`,
+`krb5kdc` or `libgssrpc` installed. This is preliminary reachability evidence,
+not proof that every remaining library path is unreachable or that the final
+release image has been scanned. The built-in CLI performs local Git inspection,
+not Kerberos server operations; the vulnerable libraries remain installed.
+
+[MIT's 1.22.3 release](https://web.mit.edu/kerberos/krb5-1.22/krb5-1.22.3.html)
+contains upstream fixes. Debian currently reports its packaged version unfixed.
+Prefer patched, reviewed distribution inputs when available; do not renew the
+exceptions automatically or substitute an unreviewed native-library build.
