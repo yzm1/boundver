@@ -679,6 +679,73 @@ class PublishReleaseInterfaceTests(unittest.TestCase):
                     max_stderr_bytes=8,
                 )
 
+    def test_github_json_uses_utf8_instead_of_windows_ansi(self):
+        publisher = _load_script()
+        payload = {"name": "release \u201d caf\u00e9 \u4e2d\u6587"}
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.assertIn(b"\x9d", encoded)
+        raw = subprocess.CompletedProcess(["gh", "api"], 0, encoded, b"")
+        with mock.patch.object(
+            publisher.locale, "getpreferredencoding", return_value="cp1252"
+        ), mock.patch.object(publisher, "_run_bytes", return_value=raw):
+            self.assertEqual(
+                publisher._gh_json(Path("."), "yzm1/boundver", "repos/x/y"),
+                payload,
+            )
+
+    def test_paginated_github_json_uses_utf8_instead_of_windows_ansi(self):
+        publisher = _load_script()
+        item = {"name": "release \u201d \u4e2d\u6587"}
+        for collection in (None, "workflow_runs"):
+            with self.subTest(collection=collection):
+                page = {collection: [item]} if collection else [item]
+                raw = subprocess.CompletedProcess(
+                    ["gh", "api"], 0,
+                    json.dumps([page], ensure_ascii=False).encode("utf-8"), b"",
+                )
+                with mock.patch.object(
+                    publisher.locale, "getpreferredencoding", return_value="cp1252"
+                ), mock.patch.object(publisher, "_run_bytes", return_value=raw):
+                    self.assertEqual(
+                        publisher._gh_paginated_list(
+                            Path("."), "repos/x/y/releases", collection=collection,
+                        ),
+                        [item],
+                    )
+
+    def test_github_command_errors_decode_utf8_without_masking_failure(self):
+        publisher = _load_script()
+        detail = "API refused release \u201d \u4e2d\u6587"
+        raw = subprocess.CompletedProcess(
+            ["gh", "workflow", "run"], 1, b"", detail.encode("utf-8"),
+        )
+        with mock.patch.object(
+            publisher.locale, "getpreferredencoding", return_value="cp1252"
+        ), mock.patch.object(publisher, "_run_bytes", return_value=raw):
+            with self.assertRaises(publisher.GateError) as raised:
+                publisher._run(("gh", "workflow", "run"), cwd=Path("."))
+        self.assertIn(detail, str(raised.exception))
+
+    def test_github_json_rejects_non_utf8_instead_of_reinterpreting_bytes(self):
+        publisher = _load_script()
+        raw = subprocess.CompletedProcess(
+            ["gh", "api"], 0, b'{"name":"\xff"}', b"",
+        )
+        with mock.patch.object(
+            publisher.locale, "getpreferredencoding", return_value="cp1252"
+        ), mock.patch.object(publisher, "_run_bytes", return_value=raw):
+            with self.assertRaises((publisher.GateError, UnicodeDecodeError)):
+                publisher._gh_json(Path("."), "yzm1/boundver", "repos/x/y")
+
+    def test_native_command_preserves_locale_decoding(self):
+        publisher = _load_script()
+        raw = subprocess.CompletedProcess(["git", "status"], 0, b"caf\xe9\r\n", b"")
+        with mock.patch.object(
+            publisher.locale, "getpreferredencoding", return_value="cp1252"
+        ), mock.patch.object(publisher, "_run_bytes", return_value=raw):
+            result = publisher._run(("git", "status"), cwd=Path("."))
+        self.assertEqual(result.stdout, "caf\u00e9\n")
+
     def test_failed_command_reports_both_bounded_output_streams(self):
         publisher = _load_script()
         program = (

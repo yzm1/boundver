@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.17.0] - 2026-11-09
+## [0.17.0] - 2026-11-10
 
 ### Upgrade contract
 
@@ -133,6 +133,10 @@ does not migrate incompatible digests or assert deployment provenance.
   resolve all downstream generation latency.
 
 ### Fixed
+
+- The release launcher decodes GitHub CLI output as strict UTF-8, independent
+  of the Windows ANSI code page. Unicode in API responses no longer crashes
+  release checks; invalid UTF-8 still fails closed.
 
 - Refreshed vulnerable automation-tool pins and their wheel-hash evidence,
   including pip's vendored certificate bundle. Hook tooling in the CI profile
