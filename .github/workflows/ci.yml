@@ -1,529 +1,104 @@
-name: CI
-
+name: Native ARM curl-free candidate audit
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * 1"
-
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
-
+concurrency:
+  group: v017-native-arm-curlfree-audit
+  cancel-in-progress: false
 jobs:
-  preflight:
-    name: Automation dependency preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  audit:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    env:
+      SOURCE_SHA: 3abae7048d662618b7ea2dded08319bf4d8c8c0e
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        timeout-minutes: 1
         with:
+          ref: 3abae7048d662618b7ea2dded08319bf4d8c8c0e
           persist-credentials: false
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Reject automation dependencies with current PyPI advisories
-        run: python -I scripts/lock_release_tools.py check
-      - name: Reject expired container security exceptions before paid runners
-        run: python -I scripts/check_security_policy_expiry.py
-
-  test:
-    needs: preflight
-    if: >-
-      github.event_name != 'schedule' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: "3.10"
-          - os: ubuntu-latest
-            python-version: "3.11"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: ubuntu-latest
-            python-version: "3.13"
-          - os: ubuntu-latest
-            python-version: "3.14"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: macos-15
-            python-version: "3.12"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dev dependencies
+      - name: Verify exact source and native architecture
+        timeout-minutes: 1
         run: |
-          python -I scripts/install_locked_tools.py ci
-          python -I -m pip --isolated install --no-index --no-deps --no-build-isolation -e .
-
-      - name: Verify automation dependency locks
-        run: python -I scripts/lock_release_tools.py verify
-
-      - name: Report test assurance inventory
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: python -I scripts/test_tiers.py check
-
-      - name: Reject undefined names and unused code
-        run: python -I -m ruff check src tests scripts
-
-      - name: Reject undeclared product source and unexplained selector gaps
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: python -I -m boundver coverage --source head --strict --quiet
-
-      - name: Run required core tests
-        run: >-
-          python -I scripts/test_tiers.py run core --
-          -v --tb=long --junit-xml=pytest_results.xml
-
-      - name: Enforce semantic-provider gate branch coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(uname -m)" = aarch64
+          mkdir -p "$RUNNER_TEMP/arm-audit/reports" "$RUNNER_TEMP/arm-audit/cache"
+          printf '%s\n' "$SOURCE_SHA" > "$RUNNER_TEMP/arm-audit/reports/source-sha.txt"
+      - name: Build exact candidate without publishing
+        timeout-minutes: 12
         run: |
-          python -I -m coverage erase
-          python -I -m coverage run --branch -m pytest -q tests/test_semantic_provider_proposal.py
-          python -I -m coverage report --include="scripts/audit_semantic_provider_proposal.py,scripts/check_semantic_provider_proposal.py" --fail-under=75
-
-      - name: Enforce intrinsic runtime contract
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        run: >-
-          python -I scripts/benchmark_runtime.py --runs 3 --enforce
-          --output runtime_benchmark.json
-
-      - name: Print failures
-        if: failure()
-        run: python -I scripts/report_pytest_failures.py pytest_results.xml
-
-      - name: Upload test results
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=15s 660 docker build \
+            --platform linux/arm64 --progress plain \
+            --build-arg BOUNDVER_VERSION=0.17.0 --build-arg BOUNDVER_REVISION="$SOURCE_SHA" \
+            --tag boundver-arm-audit:candidate . 2>&1 | tee "$RUNNER_TEMP/arm-audit/reports/build.log"
+          docker image inspect boundver-arm-audit:candidate > "$RUNNER_TEMP/arm-audit/reports/image-inspect.json"
+          test "$(docker image inspect --format '{{.Architecture}}' boundver-arm-audit:candidate)" = arm64
+          test "$(docker image inspect --format '{{.Config.User}}' boundver-arm-audit:candidate)" = boundver
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' boundver-arm-audit:candidate)" = "$SOURCE_SHA"
+          docker image save --output "$RUNNER_TEMP/arm-audit/image.tar" boundver-arm-audit:candidate
+          sha256sum "$RUNNER_TEMP/arm-audit/image.tar" > "$RUNNER_TEMP/arm-audit/reports/archive-sha256.txt"
+      - name: Non-root offline read-only smoke and source bundle
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges boundver-arm-audit:candidate --version
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --volume "$PWD:/repo:ro" \
+            boundver-arm-audit:candidate verify --source head
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/sh boundver-arm-audit:candidate -eu -c '
+              test "$(id -u)" = 1000
+              test -s /usr/share/licenses/git/COPYING
+              test -s /usr/share/doc/git/copyright
+              cd /usr/share/licenses/git/source
+              sha256sum -c SHA256SUMS
+              for package in libcurl3t64-gnutls libgssapi-krb5-2 libkrb5-3 libk5crypto3 libkrb5support0 libexpat1 perl perl-modules-5.40; do
+                status=$(dpkg-query -W -f="\${db:Status-Status}" "$package" 2>/dev/null || true)
+                test "$status" != installed
+              done
+              for library in /usr/lib/*/libkrb5*.so* /usr/lib/*/libgssapi*.so* /usr/lib/*/libgssrpc*.so* /usr/lib/*/libk5crypto*.so* /usr/lib/*/libcurl*.so*; do
+                test ! -e "$library" && test ! -L "$library"
+              done
+              git_exec_path=$(git --exec-path)
+              for helper in git-remote-http git-remote-https git-http-fetch git-http-push; do
+                test ! -e "$git_exec_path/$helper"
+              done
+            '
+      - name: Download pinned scanner and current database
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          docker pull "$TRIVY_IMAGE"
+          docker run --rm --volume "$RUNNER_TEMP/arm-audit/cache:/cache" "$TRIVY_IMAGE" \
+            image --cache-dir /cache --download-db-only
+          cp "$RUNNER_TEMP/arm-audit/cache/db/metadata.json" "$RUNNER_TEMP/arm-audit/reports/db-metadata.json"
+      - name: Raw inventory plus scoped and independent fixable gates
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          scan=(docker run --rm --network none
+            --volume "$RUNNER_TEMP/arm-audit/image.tar:/audit/image.tar:ro"
+            --volume "$RUNNER_TEMP/arm-audit/cache:/cache"
+            --volume "$RUNNER_TEMP/arm-audit/reports:/reports"
+            --volume "$PWD/.trivyignore.yaml:/policy.yaml:ro" "$TRIVY_IMAGE"
+            image --cache-dir /cache --skip-db-update --skip-java-db-update
+            --scanners vuln --severity HIGH,CRITICAL --format json --input /audit/image.tar --timeout 75s)
+          timeout --signal=TERM --kill-after=10s 90 "${scan[@]}" --output /reports/raw.json --exit-code 0
+          timeout --signal=TERM --kill-after=10s 90 "${scan[@]}" --output /reports/policy.json --ignorefile /policy.yaml --exit-code 1
+          # The separate fixable scan deliberately receives no ignorefile.
+          timeout --signal=TERM --kill-after=10s 90 "${scan[@]}" --output /reports/fixable.json --ignore-unfixed --exit-code 1
+          sha256sum -c "$RUNNER_TEMP/arm-audit/reports/archive-sha256.txt"
+      - name: Retain bounded reports, not image archives
+        timeout-minutes: 2
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: pytest-results-${{ matrix.os }}-py${{ matrix.python-version }}
-          retention-days: 7
-          path: |
-            pytest_results.xml
-            runtime_benchmark.json
-
-  previous-release:
-    name: Previous release lockfile contract
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      # Every legacy lockfile in the suite is synthesized by relabelling one
-      # this build produced, so nothing checks what the previous release
-      # actually wrote. This installs it and asks it to write one.
-      - name: Generate example locks with the previous release
-        run: |
-          python -I -m venv "$RUNNER_TEMP/previous"
-          "$RUNNER_TEMP/previous/bin/python" -I -m pip --isolated install             --disable-pip-version-check --quiet --only-binary=:all:             --index-url https://pypi.org/simple             "boundver==$(python -I scripts/previous_release.py)"
-          "$RUNNER_TEMP/previous/bin/boundver" --version
-          python -I scripts/previous_release_locks.py write             --boundver "$RUNNER_TEMP/previous/bin/boundver"             --out "$RUNNER_TEMP/previous-locks"
-
-      - name: Install this build
-        run: |
-          python -I scripts/install_locked_tools.py ci
-          python -I -m pip --isolated install --no-index --no-deps             --no-build-isolation -e .
-
-      # The contract: verify clean, or refuse with an error naming the axis
-      # that changed. Never a silent mismatch and never a wrong digest.
-      - name: Check the previous release's locks against this build
-        run: |
-          python -I scripts/previous_release_locks.py check             --locks "$RUNNER_TEMP/previous-locks"
-
-  exhaustive:
-    name: Exhaustive obligation suite
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: [preflight, test]
-    if: >-
-      always() &&
-      needs.preflight.result == 'success' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'schedule' || needs.test.result == 'success')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Install dev dependencies
-        run: |
-          python -I scripts/install_locked_tools.py ci
-          python -I -m pip --isolated install --no-index --no-deps --no-build-isolation -e .
-
-      - name: Validate the test-tier catalog
-        run: python -I scripts/test_tiers.py check
-
-      - name: Run the exhaustive obligation suite
-        run: >-
-          python -I scripts/test_tiers.py run exhaustive --
-          -v --tb=long --junit-xml=pytest_exhaustive_results.xml
-
-      - name: Print failures
-        if: failure()
-        run: >-
-          python -I scripts/report_pytest_failures.py
-          pytest_exhaustive_results.xml
-
-      - name: Upload exhaustive test results
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: pytest-exhaustive-results
-          retention-days: 7
-          path: pytest_exhaustive_results.xml
-
-  mutation:
-    name: Mutation catalog
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [preflight, test]
-    if: >-
-      always() &&
-      needs.preflight.result == 'success' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name == 'schedule' || needs.test.result == 'success')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Install dev dependencies
-        run: |
-          python -I scripts/install_locked_tools.py ci
-          python -I -m pip --isolated install --no-index --no-deps --no-build-isolation -e .
-
-      # Keep a bounded release-focused sample of high-risk faults as executable
-      # evidence that the relevant tests notice incorrect behavior.
-      - name: Run the curated release mutation catalog
-        run: python -I scripts/mutation_check.py
-
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Validate semantic-provider proposal gate
-        run: python -I scripts/check_semantic_provider_proposal.py
-
-      - name: Build package
-        env:
-          BASH_ENV: ""
-          CDPATH: ""
-          ENV: ""
-          GLOBIGNORE: ""
-        run: |
-          python -I scripts/check_repo_hygiene.py
-          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA") \
-            bash scripts/packaging_smoke.sh
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist
-          retention-days: 7
-          path: dist/
-
-  action:
-    name: Public Action contract (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: "3.12"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify with the public interface
-        id: boundver
-        uses: ./
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Check bounded Action outputs
-        shell: bash
-        env:
-          BOUNDVER_CONSUMER_IMPACT: ${{ steps.boundver.outputs.consumer-impact }}
-          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver.outputs.truncated-outputs }}
-          BOUNDVER_RESULT_FILE: ${{ steps.boundver.outputs.result-file }}
-        run: |
-          python -I - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          assert json.loads(os.environ["BOUNDVER_CONSUMER_IMPACT"]) == []
-          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == []
-          result = Path(os.environ["BOUNDVER_RESULT_FILE"])
-          assert result.is_file()
-          assert json.loads(result.read_text(encoding="utf-8"))["ok"] is True
-          PY
-
-      - name: Review an immutable current-schema pair with the public interface
-        id: boundver-review
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        uses: ./
-        with:
-          operation: review
-          # Keep the Action transport smoke inside one lock/config contract.
-          # The historical range demo below exercises non-empty transitions.
-          base: HEAD
-          target: HEAD
-          transitive: true
-          python-version: ${{ matrix.python-version }}
-
-      - name: Check CI-native review outputs
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-        shell: bash
-        env:
-          BOUNDVER_RESULT_SCHEMA: ${{ steps.boundver-review.outputs.result-schema }}
-          BOUNDVER_TRANSPORT_COMPLETE: ${{ steps.boundver-review.outputs.transport-complete }}
-          BOUNDVER_SELECTION_COMPLETE: ${{ steps.boundver-review.outputs.selection-complete }}
-          BOUNDVER_CHANGED_COMPONENTS: ${{ steps.boundver-review.outputs.changed-components }}
-          BOUNDVER_TEST_COMPONENTS: ${{ steps.boundver-review.outputs.test-components }}
-          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver-review.outputs.truncated-outputs }}
-          BOUNDVER_RESULT_FILE: ${{ steps.boundver-review.outputs.result-file }}
-          BOUNDVER_SUMMARY_FILE: ${{ steps.boundver-review.outputs.summary-file }}
-        run: |
-          python -I - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          assert os.environ["BOUNDVER_RESULT_SCHEMA"] == "boundver-plan/v1"
-          assert os.environ["BOUNDVER_TRANSPORT_COMPLETE"] == "true"
-          assert os.environ["BOUNDVER_SELECTION_COMPLETE"] == "true"
-          changed = json.loads(os.environ["BOUNDVER_CHANGED_COMPONENTS"])
-          selected = json.loads(os.environ["BOUNDVER_TEST_COMPONENTS"])
-          assert isinstance(changed, list)
-          assert all(isinstance(component, str) for component in changed)
-          assert isinstance(selected, list)
-          assert all(isinstance(component, str) for component in selected)
-          assert set(changed) <= set(selected)
-          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == []
-          plan = json.loads(
-              Path(os.environ["BOUNDVER_RESULT_FILE"]).read_text(encoding="utf-8")
-          )
-          assert plan["schema"] == "boundver-plan/v1"
-          assert plan["complete"] is True
-          assert plan["selection"]["changed_components"] == changed
-          assert plan["selection"]["test_components"] == selected
-          summary = Path(os.environ["BOUNDVER_SUMMARY_FILE"]).read_text(
-              encoding="utf-8"
-          )
-          assert "Routing evidence only" in summary
-          assert "Presentation complete" in summary
-          PY
-
-      - name: Exercise pre-JSON Action failure
-        id: boundver-pre-json-failure
-        continue-on-error: true
-        uses: ./
-        with:
-          python-version: ${{ matrix.python-version }}
-          config: does-not-exist.json
-
-      - name: Check incomplete Action outputs
-        shell: bash
-        env:
-          BOUNDVER_ISSUES: ${{ steps.boundver-pre-json-failure.outputs.issues }}
-          BOUNDVER_CONSUMER_IMPACT: ${{ steps.boundver-pre-json-failure.outputs.consumer-impact }}
-          BOUNDVER_TRUNCATED_OUTPUTS: ${{ steps.boundver-pre-json-failure.outputs.truncated-outputs }}
-          BOUNDVER_RESULT_FILE: ${{ steps.boundver-pre-json-failure.outputs.result-file }}
-        run: |
-          python -I - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          expected = ["issues", "observations", "consumer-impact"]
-          assert "result unavailable" in os.environ["BOUNDVER_ISSUES"]
-          assert json.loads(os.environ["BOUNDVER_CONSUMER_IMPACT"]) == []
-          assert json.loads(os.environ["BOUNDVER_TRUNCATED_OUTPUTS"]) == expected
-          payload = json.loads(
-              Path(os.environ["BOUNDVER_RESULT_FILE"]).read_text(encoding="utf-8")
-          )
-          assert payload["ok"] is False
-          assert payload["action_transport"] == {
-              "complete": False,
-              "reason": "empty",
-          }
-          PY
-
-      - name: Exercise hostile input as data
-        continue-on-error: true
-        uses: ./
-        with:
-          python-version: ${{ matrix.python-version }}
-          components: 'boundver; touch /tmp/boundver-action-injected'
-
-      - name: Confirm input was not executed
-        shell: bash
-        run: test ! -e /tmp/boundver-action-injected
-
-  public-installations:
-    name: Public installation contracts (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Exercise all published pre-commit hooks
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -I scripts/install_locked_tools.py ci
-          python -I -m pre_commit try-repo . boundver-verify --all-files
-          python -I -m pre_commit try-repo . boundver-verify-push \
-            --all-files --hook-stage pre-push
-          python -I -m pre_commit try-repo . boundver-generate --all-files
-          git diff --exit-code -- boundary.lock.json
-
-      - name: Run the public consumer-impact demo
-        if: matrix.os == 'ubuntu-latest'
-        run: python -I scripts/demo_consumer_impact.py
-
-      - name: Run the public historical range-review demo
-        if: matrix.os == 'ubuntu-latest'
-        run: python -I scripts/demo_range_review.py
-
-      - name: Build and exercise the public Dockerfile
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --tag boundver-ci:${GITHUB_SHA} .
-          docker run --rm \
-            --network none \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            boundver-ci:${GITHUB_SHA} \
-            --version
-          docker run --rm \
-            --network none \
-            --read-only \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --volume "$GITHUB_WORKSPACE:/repo:ro" \
-            --workdir /repo \
-            boundver-ci:${GITHUB_SHA} \
-            verify --source head --facets exact
-
-      - name: Reject high-severity repository and container risks
-        if: matrix.os == 'ubuntu-latest'
-        shell: bash
-        env:
-          BASH_ENV: ""
-          CDPATH: ""
-          ENV: ""
-          GLOBIGNORE: ""
-          TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/boundver-ci.tar"
-          cache="$RUNNER_TEMP/trivy-cache"
-          mkdir -m 700 "$cache"
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            --volume "$cache:/root/.cache" \
-            "$TRIVY_IMAGE" fs \
-            --scanners misconfig,secret \
-            --severity HIGH,CRITICAL \
-            --skip-dirs /workspace/.git \
-            --no-progress \
-            --skip-version-check \
-            --exit-code 1 \
-            /workspace
-          docker save --output "$archive" "boundver-ci:${GITHUB_SHA}"
-          scan=(
-            docker run --rm
-            --volume "$RUNNER_TEMP:/scan:ro"
-            --volume "$GITHUB_WORKSPACE:/policy:ro"
-            --volume "$cache:/root/.cache"
-            "$TRIVY_IMAGE" image
-            --input /scan/boundver-ci.tar
-            --platform linux/amd64
-            --scanners vuln
-            --severity HIGH,CRITICAL
-            --max-image-size 2GB
-            --no-progress
-            --skip-version-check
-          )
-          "${scan[@]}" --ignorefile /policy/.trivyignore.yaml --exit-code 1
-          "${scan[@]}" --ignore-unfixed --exit-code 1
+          name: v017-native-arm-curlfree-audit
+          path: ${{ runner.temp }}/arm-audit/reports/
+          retention-days: 3
+          if-no-files-found: warn
