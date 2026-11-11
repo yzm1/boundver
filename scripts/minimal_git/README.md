@@ -22,9 +22,9 @@ record is also kept at `/usr/share/doc/git/copyright`. The Git source includes
 its bundled components and their notices. This bundle is not a licensing
 certification for the entire Python/Debian image.
 
-To reproduce the Git package, use the bundled Dockerfile as the base/snapshot
-record and restore `recipe/scripts/minimal_git` into a clean build context.
-The Git stage requires only that directory and `recipe/Dockerfile`:
+To reproduce the Git package, restore the contents of `recipe/` into a clean
+build context: `Dockerfile` and `LICENSE` at its root, with the scripts under
+`scripts/minimal_git/`. The Git stage requires exactly those inputs:
 
 ```sh
 docker build --target git-builder -t boundver-git-source .

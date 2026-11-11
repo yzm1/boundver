@@ -276,3 +276,11 @@ def test_build_recipe_keeps_all_checks_and_source_identity():
     ):
         assert contract in recipe
     assert "--allow-unauthenticated" not in recipe
+
+
+def test_reconstruction_instructions_include_all_root_inputs():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    instructions = (ROOT / "scripts/minimal_git/README.md").read_text(encoding="utf-8")
+    assert "COPY Dockerfile LICENSE /recipe/" in dockerfile
+    assert "`Dockerfile` and `LICENSE` at its root" in instructions
+    assert "`scripts/minimal_git/`" in instructions
