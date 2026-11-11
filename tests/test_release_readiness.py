@@ -316,6 +316,45 @@ def test_generated_site_is_not_a_release_source_surface(tmp_path: Path) -> None:
                    for path in release_readiness._release_files(tmp_path))
 
 
+@pytest.mark.parametrize("cache_name", [".ruff_cache", ".hypothesis"])
+def test_live_tool_caches_are_not_traversed_as_release_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cache_name: str,
+) -> None:
+    cache = tmp_path / cache_name
+    cache.mkdir()
+    (cache / "old-schema.json").write_text("not a release input", encoding="utf-8")
+    source = tmp_path / (cache_name + "-source")
+    source.mkdir()
+    wanted = source / "current.json"
+    wanted.write_text("{}", encoding="utf-8")
+    original_scandir = release_readiness.os.scandir
+
+    def changing_cache(directory):
+        if Path(directory) == cache:
+            raise FileNotFoundError("a tool replaced its ignored cache")
+        return original_scandir(directory)
+
+    monkeypatch.setattr(release_readiness.os, "scandir", changing_cache)
+    assert list(release_readiness._release_files(tmp_path)) == [wanted]
+
+
+def test_real_release_source_races_remain_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "spec"
+    source.mkdir()
+    original_scandir = release_readiness.os.scandir
+
+    def changing_source(directory):
+        if Path(directory) == source:
+            raise FileNotFoundError("a real source directory changed")
+        return original_scandir(directory)
+
+    monkeypatch.setattr(release_readiness.os, "scandir", changing_source)
+    with pytest.raises(release_readiness.ReleaseReadError, match="changed while traversing"):
+        list(release_readiness._release_files(tmp_path))
+
+
 @pytest.mark.parametrize("relative,ref,accepted", [
     ("examples/range-review/fixture/boundary.config.json", "v0.16.0", True),
     ("examples/range-review/fixture/boundary.config.json", TAG, False),

@@ -34,6 +34,9 @@ does not migrate incompatible digests or assert deployment provenance.
   Remove obsolete curl, Expat and Kerberos entries and unnecessary Perl package
   entries. No new risk is accepted and the November 22 expiry is unchanged;
   both final release platforms must still pass the full scan gates.
+- Exclude ignored Ruff and Hypothesis caches from release-surface inventory,
+  preventing transient tool-cache changes from blocking readiness checks.
+  Changes to actual release inputs still fail closed.
 
 ### Added
 
