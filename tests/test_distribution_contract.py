@@ -2957,13 +2957,15 @@ print(json.dumps(payload, separators=(",", ":")))
             "CVE-2026-119374", "CVE-2026-119379",
             "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
             "CVE-2026-119079",
+            "CVE-2026-112315", "CVE-2026-112316", "CVE-2026-112317",
+            "CVE-2026-112318", "CVE-2026-112319", "CVE-2026-112320",
         }
         by_id = {entry["id"]: entry for entry in exceptions}
         # The development snapshot installs Debian's fixed Expat package;
         # the historical v0.16 recovery exception must not survive that update.
         self.assertNotIn("CVE-2026-77214", by_id)
         self.assertEqual(set(by_id), assessed_ids)
-        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 72)
+        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 96)
         assessed_packages = {
             "CVE-2025-69720": [
                 "pkg:deb/debian/libncursesw6",
@@ -3059,6 +3061,8 @@ print(json.dumps(payload, separators=(",", ":")))
         kerberos_ids = {
             "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
             "CVE-2026-119079",
+            "CVE-2026-112315", "CVE-2026-112316", "CVE-2026-112317",
+            "CVE-2026-112318", "CVE-2026-112319", "CVE-2026-112320",
         }
         for identifier in kerberos_ids:
             assessed_packages[identifier] = [

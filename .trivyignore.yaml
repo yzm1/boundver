@@ -1,8 +1,9 @@
 # Original 17-CVE package scope reviewed in PR #177; final release scans remain mandatory.
 # Four Kerberos IDs accepted by the owner on 2026-11-10, conditional on independent review.
+# Six further Kerberos IDs accepted on 2026-11-11, conditional on independent review.
 # Owner acceptance is conditional through 2026-11-22. No vendor fix is waived.
 # Built-in CLI only: non-root, no network/capabilities, no custom providers or overridden entrypoints.
-# Scope derived from the matching amd64 and native ARM reports; final release rescans required.
+# Preliminary package inventory only; both final exact-image scans remain required.
 vulnerabilities:
   - id: CVE-2026-76642
     purls:
@@ -153,6 +154,54 @@ vulnerabilities:
     expired_at: 2026-11-22
     statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
   - id: CVE-2026-119079
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112315
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112316
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112317
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112318
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112319
+    purls:
+      - pkg:deb/debian/libgssapi-krb5-2
+      - pkg:deb/debian/libk5crypto3
+      - pkg:deb/debian/libkrb5-3
+      - pkg:deb/debian/libkrb5support0
+    expired_at: 2026-11-22
+    statement: The approved built-in CLI has no network or capabilities and runs non-root without Kerberos servers; libraries remain vulnerable with no Debian packaged fix reported. Custom providers and overridden entrypoints are excluded; independent review and exact-image scans on both platforms remain required.
+  - id: CVE-2026-112320
     purls:
       - pkg:deb/debian/libgssapi-krb5-2
       - pkg:deb/debian/libk5crypto3
