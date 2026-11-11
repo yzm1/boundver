@@ -85,7 +85,9 @@ def check_elf(
         raise ValueError("unstripped debug sections")
     needed = set(re.findall(r"\(NEEDED\).*\[([^\]]+)\]", dynamic))
     if not needed or not needed <= LIBRARIES:
-        raise ValueError("unexpected shared library dependency")
+        raise ValueError(
+            f"unexpected shared library dependency for {arch}: {sorted(needed)}"
+        )
     interpreter = re.findall(r"Requesting program interpreter: ([^\]]+)\]", segments)
     expected = {
         "amd64": "/lib64/ld-linux-x86-64.so.2",
@@ -107,7 +109,7 @@ def dependencies(output: str) -> str:
             raise ValueError("unsupported dependency expression")
         names.append(match[1])
     if set(names) != PACKAGES or len(names) != len(PACKAGES):
-        raise ValueError("unexpected package dependency set")
+        raise ValueError(f"unexpected package dependency set: {sorted(names)}")
     return "dash, " + value
 
 

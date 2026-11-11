@@ -93,6 +93,21 @@ def test_dependency_union_preserves_versions_and_adds_shell():
     assert audit.dependencies(DEPS) == "dash, " + DEPS.strip().split("=", 1)[1]
 
 
+def test_dependency_guard_reports_observed_names_without_allowing_them():
+    with pytest.raises(
+        ValueError, match="unexpected shared library.*amd64.*libcurl.so.4"
+    ):
+        audit.check_elf(
+            HEADER,
+            SEGMENTS,
+            DYNAMIC.replace("libz.so.1", "libcurl.so.4"),
+            ".text",
+            "amd64",
+        )
+    with pytest.raises(ValueError, match="unexpected package dependency set.*libcurl"):
+        audit.dependencies(DEPS.replace("libc6", "libcurl"))
+
+
 @pytest.mark.parametrize(
     "value",
     [
