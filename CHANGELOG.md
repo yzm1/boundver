@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.17.0] - 2026-11-10
+## [0.17.0] - 2026-11-11
 
 ### Upgrade contract
 
@@ -29,6 +29,11 @@ does not migrate incompatible digests or assert deployment provenance.
   packages from two clean source extractions. This is not a general-purpose Git
   image or a claim that the remaining base-image findings are patched; existing
   expiry, review and independent vulnerability-scan gates still apply.
+- Narrow the temporary container exception policy to the 11 previously
+  accepted CVEs / 47 package pairs still present in the amd64 candidate.
+  Remove obsolete curl, Expat and Kerberos entries and unnecessary Perl package
+  entries. No new risk is accepted and the November 22 expiry is unchanged;
+  both final release platforms must still pass the full scan gates.
 
 ### Added
 

@@ -112,4 +112,10 @@ on November 11) were conditional on review and both final-platform scans, with
 the same November 22 expiry. They do not authorize other CVEs, extend the
 expiry, or waive independent review. A dependency-removal candidate must pass
 fresh inventory and vulnerability scans before its obsolete exception entries
-can be removed. Prefer patched, reviewed distribution inputs whenever available.
+can be removed. The complete amd64 candidate's November 11 inventory and scans
+allow removing curl, Expat and Kerberos package exceptions and narrowing Perl
+to `perl-base`. The remaining policy is a subset of the original acceptance:
+11 CVEs and 47 package/CVE pairs, all with the unchanged November 22 expiry.
+No new findings are accepted by this reduction. Final exact-image checks on
+both amd64 and arm64 remain mandatory; the removed libraries are not being
+declared patched. Prefer patched, reviewed distribution inputs whenever available.

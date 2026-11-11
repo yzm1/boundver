@@ -2957,37 +2957,21 @@ print(json.dumps(payload, separators=(",", ":")))
         assessed_ids = {
             "CVE-2025-69720", "CVE-2026-16742", "CVE-2026-54369",
             "CVE-2026-76642", "CVE-2026-78408", "CVE-2026-78409",
-            "CVE-2026-78410", "CVE-2026-12064", "CVE-2026-8458",
-            "CVE-2026-9538", "CVE-2026-113351", "CVE-2026-115506",
-            "CVE-2026-117610", "CVE-2026-118370", "CVE-2026-119373",
+            "CVE-2026-78410", "CVE-2026-9538", "CVE-2026-119373",
             "CVE-2026-119374", "CVE-2026-119379",
-            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
-            "CVE-2026-119079",
         }
         by_id = {entry["id"]: entry for entry in exceptions}
         # The development snapshot installs Debian's fixed Expat package;
         # the historical v0.16 recovery exception must not survive that update.
         self.assertNotIn("CVE-2026-77214", by_id)
         self.assertEqual(set(by_id), assessed_ids)
-        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 72)
+        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 47)
         assessed_packages = {
             "CVE-2025-69720": [
                 "pkg:deb/debian/libncursesw6",
                 "pkg:deb/debian/libtinfo6",
                 "pkg:deb/debian/ncurses-base",
                 "pkg:deb/debian/ncurses-bin"
-            ],
-            "CVE-2026-113351": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-115506": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-117610": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-118370": [
-                "pkg:deb/debian/libexpat1"
             ],
             "CVE-2026-119373": [
                 "pkg:deb/debian/libsqlite3-0"
@@ -2997,9 +2981,6 @@ print(json.dumps(payload, separators=(",", ":")))
             ],
             "CVE-2026-119379": [
                 "pkg:deb/debian/libsqlite3-0"
-            ],
-            "CVE-2026-12064": [
-                "pkg:deb/debian/libcurl3t64-gnutls"
             ],
             "CVE-2026-16742": [
                 "pkg:deb/debian/libsystemd0",
@@ -3052,42 +3033,21 @@ print(json.dumps(payload, separators=(",", ":")))
                 "pkg:deb/debian/mount",
                 "pkg:deb/debian/util-linux"
             ],
-            "CVE-2026-8458": [
-                "pkg:deb/debian/libcurl3t64-gnutls"
-            ],
             "CVE-2026-9538": [
-                "pkg:deb/debian/libperl5.40",
-                "pkg:deb/debian/perl",
                 "pkg:deb/debian/perl-base",
-                "pkg:deb/debian/perl-modules-5.40"
             ]
         }
-        kerberos_ids = {
-            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
-            "CVE-2026-119079",
-        }
-        for identifier in kerberos_ids:
-            assessed_packages[identifier] = [
-                "pkg:deb/debian/libgssapi-krb5-2",
-                "pkg:deb/debian/libk5crypto3",
-                "pkg:deb/debian/libkrb5-3",
-                "pkg:deb/debian/libkrb5support0",
-            ]
-            self.assertEqual(
-                set(by_id[identifier]), {"id", "purls", "expired_at", "statement"}
-            )
-            for limitation in (
-                "built-in CLI", "no network or capabilities", "non-root",
-                "libraries remain vulnerable", "Custom providers",
-                "overridden entrypoints", "independent review",
-                "exact-image scans on both platforms",
-            ):
-                self.assertIn(limitation, by_id[identifier]["statement"])
         self.assertEqual(
             {identifier: sorted(entry["purls"]) for identifier, entry in by_id.items()},
             assessed_packages,
         )
         for entry in exceptions:
+            self.assertEqual(set(entry), {"id", "purls", "expired_at", "statement"})
+            for limitation in (
+                "libraries remain vulnerable", "independent review",
+                "exact-image scans", "entrypoints",
+            ):
+                self.assertIn(limitation, entry["statement"])
             self.assertRegex(entry["id"], r"^CVE-[0-9]{4}-[0-9]+$")
             self.assertIs(type(entry["expired_at"]), datetime.date)
             self.assertEqual(entry["expired_at"], datetime.date(2026, 11, 22))
