@@ -2246,7 +2246,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 3)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2459,21 +2459,22 @@ print(json.dumps(payload, separators=(",", ":")))
             "python:3.12.16-slim-trixie@"
             "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
         )
-        self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", dockerfile)
+        self.assertEqual(dockerfile.count(f"FROM {base}"), 3)
+        snapshot = (REPO_ROOT / "scripts/minimal_git/snapshot.sh").read_text(encoding="utf-8")
+        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", snapshot)
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian/20261104T212339Z",
-            dockerfile,
+            snapshot,
         )
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian-security/20261104T212339Z",
-            dockerfile,
+            snapshot,
         )
         snapshot_stamps = set(
             re.findall(
                 r"https://snapshot\.debian\.org/archive/(?:debian|debian-security)/"
                 r"(\d{8}T\d{6}Z)",
-                dockerfile,
+                snapshot,
             )
         )
         self.assertEqual(snapshot_stamps, {"20261108T120000Z"})
@@ -2483,10 +2484,13 @@ print(json.dumps(payload, separators=(",", ":")))
         epoch = re.search(r"(?m)^ENV SOURCE_DATE_EPOCH=(\d+)$", dockerfile)
         self.assertIsNotNone(epoch)
         self.assertEqual(int(epoch.group(1)), int(snapshot_time.timestamp()))
-        self.assertGreaterEqual(dockerfile.count("grep -Fqx"), 2)
-        self.assertIn('Acquire::Check-Valid-Until "false"', dockerfile)
+        self.assertGreaterEqual(snapshot.count("grep -Fqx"), 2)
+        self.assertIn('Acquire::Check-Valid-Until "false"', snapshot)
         self.assertIn("apt-get upgrade -y", dockerfile)
-        self.assertIn("git=1:2.47.3-0+deb13u1", dockerfile)
+        self.assertIn("ARG GIT_SOURCE_VERSION=1:2.47.3-0+deb13u1", dockerfile)
+        self.assertIn("/packages/git-minimal.deb", dockerfile)
+        self.assertIn("sha256sum -c SHA256SUMS", dockerfile)
+        self.assertIn("/usr/share/licenses/git/COPYING", dockerfile)
         self.assertIn(
             "python -I -m pip uninstall --yes pip setuptools wheel",
             dockerfile,
@@ -2517,6 +2521,8 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(credential, dockerignore)
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
+        for source_input in ("audit.py", "build.sh", "snapshot.sh", "README.md"):
+            self.assertIn(f"!scripts/minimal_git/{source_input}", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)
         for site_only_doc in (

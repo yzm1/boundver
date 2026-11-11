@@ -16,6 +16,19 @@
 # Keep the multi-architecture base digest and Debian package snapshot explicit.
 # The base records the older snapshot it was built from; the runtime refreshes
 # inherited packages from the newer immutable security-review snapshot below.
+FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS git-builder
+
+ENV SOURCE_DATE_EPOCH=1794139200
+ARG GIT_SOURCE_VERSION=1:2.47.3-0+deb13u1
+COPY scripts/minimal_git/snapshot.sh /build-inputs/snapshot.sh
+RUN sh /build-inputs/snapshot.sh source \
+    && apt-get install -y --no-install-recommends \
+      build-essential dpkg-dev zlib1g-dev libpcre2-dev
+COPY Dockerfile LICENSE /recipe/
+COPY scripts/minimal_git /recipe/scripts/minimal_git
+RUN sh /recipe/scripts/minimal_git/build.sh
+
+
 FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
@@ -71,26 +84,18 @@ LABEL org.opencontainers.image.source="https://github.com/yzm1/boundver" \
       org.opencontainers.image.version="$BOUNDVER_VERSION" \
       org.opencontainers.image.revision="$BOUNDVER_REVISION"
 
-# git is required — boundver reads HEAD/index via git subprocess calls.
-# Resolve it only from the immutable Debian archive snapshot recorded by the
-# pinned base image, rather than today's mutable package index.
+# Git is built from authenticated Debian source without HTTP client libraries.
+# Its complete source/recipe bundle is package-owned outside dpkg's doc filter.
+COPY scripts/minimal_git/snapshot.sh /build-inputs/snapshot.sh
+COPY --from=git-builder /out/git-minimal.deb /packages/git-minimal.deb
 RUN export DEBIAN_FRONTEND=noninteractive \
-    && grep -Fqx \
-      '# http://snapshot.debian.org/archive/debian/20261104T212339Z' \
-      /etc/apt/sources.list.d/debian.sources \
-    && grep -Fqx \
-      '# http://snapshot.debian.org/archive/debian-security/20261104T212339Z' \
-      /etc/apt/sources.list.d/debian.sources \
-    && sed -i \
-      -e 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20261108T120000Z|' \
-      -e 's|http://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/20261108T120000Z|' \
-      /etc/apt/sources.list.d/debian.sources \
-    && printf 'Acquire::Check-Valid-Until "false";\n' \
-      > /etc/apt/apt.conf.d/99snapshot \
-    && apt-get update \
+    && sh /build-inputs/snapshot.sh \
     && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends git=1:2.47.3-0+deb13u1 \
+    && apt-get install -y --no-install-recommends /packages/git-minimal.deb \
+    && test -s /usr/share/licenses/git/COPYING \
+    && cd /usr/share/licenses/git/source && sha256sum -c SHA256SUMS \
     && apt-get clean \
+    && rm -rf /build-inputs /packages \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f \
       /var/cache/ldconfig/aux-cache \

@@ -20,6 +20,16 @@ new declarations such as `version_source.repo_file` changes the declared
 configuration and requires a normal reviewed lock update. Historical inspection
 does not migrate incompatible digests or assert deployment provenance.
 
+### Container security
+
+- Build container Git from the pinned Debian source without HTTP client and
+  optional scripting dependencies. Include its original source, Debian patches,
+  licences and complete build recipes in the image. Check native executable
+  hardening and dependencies, SHA1 collision detection, and byte-identical Git
+  packages from two clean source extractions. This is not a general-purpose Git
+  image or a claim that the remaining base-image findings are patched; existing
+  expiry, review and independent vulnerability-scan gates still apply.
+
 ### Added
 
 - Deployment comparison follows component facet overrides and aggregate slice

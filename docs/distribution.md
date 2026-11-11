@@ -84,6 +84,28 @@ This least-privilege form is exercised in CI. Verification needs no writable
 filesystem, network access, or Linux capabilities. Add those privileges only
 for a workflow that deliberately needs them.
 
+The container's Git is a reduced-feature build of Debian source for local
+Boundver inspection, not a general-purpose Git installation. HTTP(S) clients
+and optional Perl/Tcl/Python helpers are disabled, avoiding Git's curl/Kerberos
+dependency chain. This does **not** disable every Git transport or make the
+image a sandbox; keep `--network none` and the other restrictions above.
+
+Git's full licence, original source archives (including Debian patches), build
+recipes and integrity/provenance records accompany each image under
+`/usr/share/licenses/git`. To inspect them without running the image:
+
+```bash
+docker create --name boundver-source ghcr.io/yzm1/boundver:<version>
+docker cp boundver-source:/usr/share/licenses/git ./boundver-git-source
+docker rm boundver-source
+```
+
+The bundle README describes reconstruction. The custom binary version retains
+Debian's original source identity for vulnerability matching. Its suffix does
+not mean Git advisories are fixed. Builds check executable hardening, source
+checksums, SHA1 collision detection and byte equality of two independently
+extracted Git-package builds; that check is not whole-image reproducibility.
+
 Release images target `linux/amd64` and `linux/arm64`, carry OCI source,
 version, and revision labels, and receive GitHub artifact attestations. Resolve
 and pin the manifest digest for the strongest reproducibility:
