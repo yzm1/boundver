@@ -49,6 +49,24 @@ def test_native_hardened_elf(arch):
     audit.check_elf(header, segments, DYNAMIC, ".text .data", arch)
 
 
+@pytest.mark.parametrize("arch", ["amd64", "arm64"])
+def test_only_own_required_loader_may_also_be_a_needed_library(arch):
+    header = HEADER.replace(audit.MACHINES["amd64"], audit.MACHINES[arch])
+    segments = SEGMENTS.replace(audit.LOADERS["amd64"], audit.LOADERS[arch])
+    own_loader = Path(audit.LOADERS[arch]).name
+    needed = DYNAMIC + f" 0x1 (NEEDED) Shared library: [{own_loader}]\n"
+    audit.check_elf(header, segments, needed, ".text", arch)
+    other_arch = "amd64" if arch == "arm64" else "arm64"
+    for unexpected in (
+        Path(audit.LOADERS[other_arch]).name,
+        "libcurl.so.4",
+        "libatomic.so.1",
+    ):
+        wrong = DYNAMIC + f" 0x1 (NEEDED) Shared library: [{unexpected}]\n"
+        with pytest.raises(ValueError, match="unexpected shared library"):
+            audit.check_elf(header, segments, wrong, ".text", arch)
+
+
 @pytest.mark.parametrize(
     ("field", "old", "new"),
     [

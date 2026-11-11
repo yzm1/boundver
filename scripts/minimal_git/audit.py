@@ -21,6 +21,10 @@ import subprocess
 LIBRARIES = {"libc.so.6", "libpcre2-8.so.0", "libz.so.1"}
 PACKAGES = {"libc6", "libpcre2-8-0", "zlib1g"}
 MACHINES = {"amd64": "Advanced Micro Devices X86-64", "arm64": "AArch64"}
+LOADERS = {
+    "amd64": "/lib64/ld-linux-x86-64.so.2",
+    "arm64": "/lib/ld-linux-aarch64.so.1",
+}
 ELFS = {
     "usr/bin/git",
     "usr/bin/git-shell",
@@ -84,16 +88,16 @@ def check_elf(
     if ".debug_" in sections or ".zdebug_" in sections:
         raise ValueError("unstripped debug sections")
     needed = set(re.findall(r"\(NEEDED\).*\[([^\]]+)\]", dynamic))
-    if not needed or not needed <= LIBRARIES:
+    # Some architectures also record their mandatory interpreter as DT_NEEDED
+    # (observed on arm64). It is already supplied by libc6, not another runtime
+    # package. Permit only the exact loader required below for this architecture.
+    allowed = LIBRARIES | {Path(LOADERS[arch]).name}
+    if not needed or not needed <= allowed:
         raise ValueError(
             f"unexpected shared library dependency for {arch}: {sorted(needed)}"
         )
     interpreter = re.findall(r"Requesting program interpreter: ([^\]]+)\]", segments)
-    expected = {
-        "amd64": "/lib64/ld-linux-x86-64.so.2",
-        "arm64": "/lib/ld-linux-aarch64.so.1",
-    }
-    if interpreter != [expected[arch]]:
+    if interpreter != [LOADERS[arch]]:
         raise ValueError("unexpected ELF interpreter")
 
 
