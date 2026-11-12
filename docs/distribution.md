@@ -107,6 +107,10 @@ patch claim. The upstream tar signature, pinned sizes/hashes and primary/subkey
 fingerprints are checked before extraction. Builds also check executable
 hardening, SHA1 collision detection and byte equality of two independently
 extracted Git-package builds; that check is not whole-image reproducibility.
+Three stale Debian Git records have an upstream-fixed assessment tied to each
+verified image. The release gate keeps raw and independent fixable-only scans;
+see [Security](https://github.com/yzm1/boundver/blob/main/SECURITY.md) for the
+binding checks and the separate, expiring base-library exceptions.
 
 Release images target `linux/amd64` and `linux/arm64`, carry OCI source,
 version, and revision labels, and receive GitHub artifact attestations. Resolve

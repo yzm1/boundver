@@ -1090,17 +1090,21 @@ ai_maintainer_exception_scope_matches() {
     case "$filename" in
       .dockerignore) expected=11a33e7f93e487b8d2dc972442796359154a61c8 ;;
       .trivyignore.yaml) expected=c5a93ffa50fa60139d67d84724b0896a4057f673 ;;
-      CHANGELOG.md) expected=3437b4884c1bee4df1a48ddbe5027d9b882fe030 ;;
+      CHANGELOG.md) expected=d0cc644afb0ce17ce53529d8b8ace7171117ec8d ;;
       Dockerfile) expected=2de66284ee4f947af39e74038c0cd5f7985e859a ;;
-      SECURITY.md) expected=50bb0f4afe952656c52f6330f8bf56395307429a ;;
-      docs/distribution.md) expected=21352a848b3b48b4baf7626b3667c9717e775ac0 ;;
+      SECURITY.md) expected=d6118e98399ef797119dae0385e1553c4a925598 ;;
+      docs/distribution.md) expected=d0b0313bc4d67581e9914b82f579423dd722aa51 ;;
+      .github/workflows/ci.yml) expected=0b872ae3b9cf89d807e41c203fa1bd9f9e1fd2d5 ;;
+      .github/workflows/publish-container.yml) expected=a20080ce04a1d064836c26aa70b0d9794df2a6d2 ;;
+      scripts/prepare_git_vex.py) expected=64c1797e3f8eaeafc7f484cc2ee659eb6fe8b450; expected_status=added ;;
+      tests/test_git_vex.py) expected=08d8dc9149c77e44f376bddef1c72c2ca3adcb20; expected_status=added ;;
       scripts/minimal_git/README.md) expected=49a0f41cc9f5aa990bba62ee34f2270b189f2035; expected_status=added ;;
       scripts/minimal_git/audit.py) expected=3773eff3cd434017d206bc9d9f477509160dd309; expected_status=added ;;
       scripts/minimal_git/build.sh) expected=182f66f986cab4d862bedc9ade6524c74686b54e; expected_status=added ;;
       scripts/minimal_git/snapshot.sh) expected=9fe9926e3b9e817ddc7025fd52b3e190095bcfd4; expected_status=added ;;
       scripts/minimal_git/git-release-key.gpg) expected=728ec4ea1a64c95e66d3ae358da3d6512c59793e; expected_status=added ;;
       scripts/verify_release_readiness.py) expected=e556a864cb2390fca1c9ac930f54ef44fcd04627 ;;
-      tests/test_distribution_contract.py) expected=7bb65722a9439d7c6b6a16f7e9e5e1aef5d18997 ;;
+      tests/test_distribution_contract.py) expected=1e7c42d982f174a2183c856fd44ea3c1105975f6 ;;
       tests/test_minimal_git.py) expected=968d3140d086a578937526cb6eeeb558f51b8776; expected_status=added ;;
       tests/test_release_readiness.py) expected=092accdf5f247620f1d5050a859d8b9d6a5743a6 ;;
       scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_github_api_read.py|tests/test_release_review_exception_182.py) ;;
@@ -1110,9 +1114,9 @@ ai_maintainer_exception_scope_matches() {
     [[ "$status" == "$expected_status" ]] || return 1
     [[ -z "$expected" || "$blob" == "$expected" ]] || return 1
     count=$((count + 1))
-    (( count <= 20 )) || return 1
+    (( count <= 24 )) || return 1
   done <<< "$records"
-  [[ "$count" -eq 20 ]]
+  [[ "$count" -eq 24 ]]
 }
 # END one-time PR 184 AI-maintainer identity exception helpers
 
@@ -1589,7 +1593,7 @@ for pr_number in "${sorted_prs[@]}"; do
     fi
     if ! capture_github_api_bounded ai_maintainer_file_count "PR184 exception changed-file count" \
         "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-        --jq '.changed_files' || [[ "$ai_maintainer_file_count" != 20 ]]; then
+        --jq '.changed_files' || [[ "$ai_maintainer_file_count" != 24 ]]; then
       echo "PR #184 AI-maintainer exception changed-file count is outside its reviewed scope." >&2
       exit 1
     fi

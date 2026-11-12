@@ -2860,7 +2860,7 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertEqual(len(run_blocks), 1, relative)
             scan_script = run_blocks[0]
             # Pin the three permitted references in these trusted scripts:
-            # one definition and two calls. Extra direct/alias array writes
+            # one definition and three calls. Extra direct/alias array writes
             # require explicit review; this is not a general Bash analyser.
             without_comments = "\n".join(
                 line for line in scan_script.splitlines()
@@ -2868,7 +2868,7 @@ print(json.dumps(payload, separators=(",", ":")))
             )
             self.assertEqual(
                 re.findall(r"(?<![A-Za-z0-9_./-])scan(?![A-Za-z0-9_./-])", without_comments),
-                ["scan"] * 3,
+                ["scan"] * 4,
                 relative,
             )
             logical_lines = scan_script.replace("\\\n", " ").splitlines()
@@ -2877,9 +2877,12 @@ print(json.dumps(payload, separators=(",", ":")))
                 for line in logical_lines
                 if line.strip().startswith('"${scan[@]}"')
             ]
+            prefix = "/reports/$report_name" if "publish-container" in relative else "/reports"
             self.assertEqual(invocations, [
-                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1"],
-                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1"],
+                ["${scan[@]}", "--format", "json", "--output", prefix + "/raw.json", "--show-suppressed", "--exit-code", "0"],
+                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1", "--format", "json", "--output", prefix + "/fixable.json"],
+                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1",
+                 "--vex", prefix + "/git-vex.json", "--show-suppressed", "--format", "json", "--output", prefix + "/scoped.json"],
             ], relative)
             self.assertEqual(scan_script.count("scan=("), 1, relative)
             shared_lines = []
@@ -2893,7 +2896,7 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertFalse(any(
                 argument == flag or argument.startswith(flag + "=")
                 for argument in shared_arguments
-                for flag in ("--ignorefile", "--ignore-unfixed")
+                for flag in ("--ignorefile", "--ignore-unfixed", "--vex")
             ), relative)
             with self.subTest(workflow=relative):
                 self.assertIn(scanner, workflow)
@@ -3074,25 +3077,33 @@ print(json.dumps(payload, separators=(",", ":")))
                     "--ignore-unfixed --exit-code 1",
                     "--ignore-unfixed --exit-code 1 --ignorefile=/policy/.trivyignore.yaml",
                 ),
+                "fixable-vex": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --vex /reports/git-vex.json",
+                ),
+                "raw-vex": original.replace(
+                    '"${scan[@]}" --format json',
+                    '"${scan[@]}" --vex /reports/git-vex.json --format json',
+                ),
                 "shared-array": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n"
                     "            --ignorefile /policy/.trivyignore.yaml\n          )",
                 ),
                 "later-append": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          scan+=(--ignorefile /policy/.trivyignore.yaml)",
                 ),
                 "later-indexed-write": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          scan[${#scan[@]}]=--ignorefile\n"
                     "          scan[${#scan[@]}]=/policy/.trivyignore.yaml",
                 ),
                 "later-alias-write": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          declare -n scan_alias=scan\n"
                     "          scan_alias+=(--ignorefile /policy/.trivyignore.yaml)",
                 ),

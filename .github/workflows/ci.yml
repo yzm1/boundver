@@ -467,7 +467,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker build --tag boundver-ci:${GITHUB_SHA} .
+          docker build --tag boundver-ci:${GITHUB_SHA} \
+            --build-arg BOUNDVER_REVISION="$GITHUB_SHA" .
           docker run --rm \
             --network none \
             --read-only \
@@ -511,11 +512,15 @@ jobs:
             --exit-code 1 \
             /workspace
           docker save --output "$archive" "boundver-ci:${GITHUB_SHA}"
+          reports="$RUNNER_TEMP/security-reports"
+          mkdir -m 700 "$reports"
+          trap 'result=$?; python -I scripts/prepare_git_vex.py retain --reports "$reports" || result=1; exit "$result"' EXIT
           scan=(
             docker run --rm
             --volume "$RUNNER_TEMP:/scan:ro"
             --volume "$GITHUB_WORKSPACE:/policy:ro"
             --volume "$cache:/root/.cache"
+            --volume "$reports:/reports"
             "$TRIVY_IMAGE" image
             --input /scan/boundver-ci.tar
             --platform linux/amd64
@@ -524,6 +529,16 @@ jobs:
             --max-image-size 2GB
             --no-progress
             --skip-version-check
+            --config /dev/null
           )
-          "${scan[@]}" --ignorefile /policy/.trivyignore.yaml --exit-code 1
-          "${scan[@]}" --ignore-unfixed --exit-code 1
+          "${scan[@]}" --format json --output /reports/raw.json --show-suppressed --exit-code 0
+          "${scan[@]}" --ignore-unfixed --exit-code 1 --format json --output /reports/fixable.json
+          python -I scripts/prepare_git_vex.py prepare \
+            --image "$archive" --raw-report "$reports/raw.json" \
+            --source-root "$GITHUB_WORKSPACE" --release-sha "$GITHUB_SHA" \
+            --architecture amd64 --output "$reports/git-vex.json"
+          "${scan[@]}" --ignorefile /policy/.trivyignore.yaml --exit-code 1 \
+            --vex /reports/git-vex.json --show-suppressed --format json --output /reports/scoped.json
+          python -I scripts/prepare_git_vex.py check \
+            --image "$archive" --raw-report "$reports/raw.json" \
+            --scoped-report "$reports/scoped.json" --vex "$reports/git-vex.json"

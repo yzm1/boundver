@@ -84,6 +84,31 @@ expires on **November 22, 2026**; it is not a claim that the libraries are fixed
 An independent, no-exceptions scan still rejects fixable HIGH/CRITICAL findings.
 New findings outside the explicit allowlist block publication.
 
+The Debian feed still reports three Git records against the custom upstream
+package: CVE-2026-105437, CVE-2026-111760 and CVE-2026-114466. Upstream Git 2.50.2
+contains their fixes. On November 12 the owner authorized a fixed assessment
+for these three only, not acceptance of vulnerable Git. They are not added to
+the residual-risk allowlist.
+
+`scripts/prepare_git_vex.py` checks the exact offline image, release commit,
+architecture, layer digests, pinned source inputs, reviewed build recipe,
+installed Git executable hashes and package identity before generating three
+temporary OpenVEX `fixed` statements. Offline Trivy matches component PURLs,
+not root image PURLs: image binding is enforced by the CI wrapper and its
+before/after input fingerprints, not by a self-contained root-bound VEX file.
+Never reuse that temporary file for another image. This relies on the trusted
+exact-source build and retained-artifact chain; it is not independent
+source-to-binary recompilation or an upstream signature of our binaries.
+
+Only the scoped policy scan receives VEX. Raw and independent fixable-only
+scans receive neither VEX nor the residual-risk allowlist. A final accounting
+check requires every raw finding to remain visible or have exactly the
+authorized disposition; unexpected suppression fails closed. Exact raw,
+fixable-only, scoped and VEX JSON bytes are retained in bounded, digest-checked
+job-log envelopes. Both final release architectures still require fresh scans
+and independent review. Existing library exceptions retain their November 22
+expiry and operating restrictions.
+
 Acceptance applies only to the built-in CLI running non-root, with no network,
 all capabilities dropped and `no-new-privileges`. Custom providers, overridden
 entrypoints and additional services are excluded. Keep the read-only root and
