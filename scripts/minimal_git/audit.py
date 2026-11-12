@@ -10,12 +10,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import lzma
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
+import time
+from urllib.parse import urlsplit
+from urllib.request import build_opener, HTTPRedirectHandler
 
 
 LIBRARIES = {"libc.so.6", "libpcre2-8.so.0", "libz.so.1"}
@@ -34,6 +38,187 @@ ELFS = {
     "usr/libexec/git-core/git-imap-send",
     "usr/libexec/git-core/git-sh-i18n--envsubst",
 }
+
+UPSTREAM_VERSION = "2.50.2"
+UPSTREAM_SOURCE_VERSION = "1:" + UPSTREAM_VERSION
+PRIMARY_FINGERPRINT = "96E07AF25771955980DAD10020D04E5A713660A7"
+SIGNER_FINGERPRINT = "E1F036B1FEE7221FC778ECEFB0B5E88696AFE6CB"
+SOURCE_FILES = {
+    "git-2.50.2.tar.xz": (
+        7886764,
+        "b9d6be0e286803466f998ced664566de3368534eca7eda6d5d9358e40f55c151",
+    ),
+    "git-2.50.2.tar.sign": (
+        566,
+        "31e35702bbfb688a95e29e97f94e4f74df88d0f12b098ea247535192b0f93c25",
+    ),
+    "git-release-key.gpg": (
+        6713,
+        "d6690645994921f44d0c9336f55e2b2c7e052c14a5363d039e8a5b16d6af2252",
+    ),
+}
+TAR_SIZE = 49971200
+TAR_SHA256 = "d2e48edf942f74fd26db541da6e53cd85b82c46171032e5d86212d6578c75742"
+
+
+def check_source_file(path: Path) -> None:
+    expected_size, expected_hash = SOURCE_FILES[path.name]
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.stat().st_size != expected_size
+        or sha(path) != expected_hash
+    ):
+        raise ValueError("upstream source component checksum mismatch")
+
+
+def check_source_url(url: str) -> None:
+    parts = urlsplit(url)
+    if (
+        parts.scheme != "https"
+        or parts.hostname not in {"www.kernel.org", "cdn.kernel.org"}
+        or parts.port not in {None, 443}
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or parts.path
+        not in {
+            "/pub/software/scm/git/git-2.50.2.tar.xz",
+            "/pub/software/scm/git/git-2.50.2.tar.sign",
+        }
+    ):
+        raise ValueError("unexpected upstream source URL")
+
+
+class SourceRedirects(HTTPRedirectHandler):
+    def __init__(self) -> None:
+        self.redirects = 0
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.redirects += 1
+        if self.redirects > 2:
+            raise ValueError("upstream source redirect budget exceeded")
+        check_source_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download_source(directory: Path, name: str) -> None:
+    size, _ = SOURCE_FILES[name]
+    url = "https://www.kernel.org/pub/software/scm/git/" + name
+    check_source_url(url)
+    deadline = time.monotonic() + 90
+    opener = build_opener(SourceRedirects())
+    target = directory / name
+    with opener.open(url, timeout=30) as response, target.open("xb") as output:
+        check_source_url(response.geturl())
+        remaining = size
+        while True:
+            if time.monotonic() >= deadline:
+                raise ValueError("upstream source download deadline exceeded")
+            block = response.read(min(1024 * 1024, remaining + 1))
+            if not block:
+                break
+            remaining -= len(block)
+            if remaining < 0:
+                raise ValueError("upstream source download exceeded pinned size")
+            output.write(block)
+    check_source_file(target)
+
+
+def check_signature_status(status: str) -> None:
+    lines = status.splitlines()
+    valid = [line.split() for line in lines if line.startswith("[GNUPG:] VALIDSIG ")]
+    if (
+        len(valid) != 1
+        or len(valid[0]) != 12
+        or valid[0][2] != SIGNER_FINGERPRINT
+        or valid[0][-1] != PRIMARY_FINGERPRINT
+        or len([line for line in lines if line.startswith("[GNUPG:] GOODSIG ")]) != 1
+        or any(
+            token in status
+            for token in (
+                "BADSIG ",
+                "EXPKEYSIG ",
+                "REVKEYSIG ",
+                "EXPSIG ",
+                "ERRSIG ",
+                "NO_PUBKEY ",
+                "NODATA ",
+                "FAILURE ",
+                "ERROR ",
+            )
+        )
+    ):
+        raise ValueError("upstream source signature identity or status mismatch")
+
+
+def fetch_source(directory: Path, source_version: str) -> None:
+    if source_version != UPSTREAM_SOURCE_VERSION:
+        raise ValueError("unreviewed Git source version")
+    if directory.is_symlink() or not directory.is_dir() or any(directory.iterdir()):
+        raise ValueError("upstream source directory must be empty and non-symlink")
+    key = Path(__file__).with_name("git-release-key.gpg")
+    check_source_file(key)
+    for name in ("git-2.50.2.tar.xz", "git-2.50.2.tar.sign"):
+        print(f"Fetching hash-pinned upstream component: {name}", flush=True)
+        download_source(directory, name)
+    shutil.copyfile(key, directory / key.name)
+    decoder = lzma.LZMADecompressor(memlimit=64 * 1024 * 1024)
+    tar = decoder.decompress(
+        (directory / "git-2.50.2.tar.xz").read_bytes(), max_length=TAR_SIZE + 1
+    )
+    if (
+        len(tar) != TAR_SIZE
+        or not decoder.eof
+        or decoder.unused_data
+        or hashlib.sha256(tar).hexdigest() != TAR_SHA256
+    ):
+        raise ValueError("upstream uncompressed source checksum mismatch")
+    key_home = directory / "gpgv"
+    key_home.mkdir(mode=0o700)
+    checked = subprocess.run(
+        [
+            "/usr/bin/gpgv",
+            "--homedir",
+            str(key_home),
+            "--keyring",
+            str(directory / key.name),
+            "--status-fd",
+            "1",
+            str(directory / "git-2.50.2.tar.sign"),
+            "-",
+        ],
+        input=tar,
+        capture_output=True,
+        timeout=60,
+        env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+    )
+    if checked.returncode:
+        raise ValueError("upstream source signature verification failed")
+    check_signature_status(checked.stdout.decode("utf-8", errors="strict"))
+    print(f"Verified upstream Git {UPSTREAM_VERSION} signature: {PRIMARY_FINGERPRINT}", flush=True)
+    metadata = source_metadata(source_version)
+    (directory / "upstream.json").write_bytes(
+        (json.dumps(metadata, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    )
+
+
+def source_metadata(source_version: str) -> dict:
+    if source_version != UPSTREAM_SOURCE_VERSION:
+        raise ValueError("unreviewed Git source version")
+    return {
+        "source_kind": "authenticated-upstream-security-release",
+        "upstream_version": UPSTREAM_VERSION,
+        "source_version": source_version,
+        "source_url": "https://www.kernel.org/pub/software/scm/git/",
+        "primary_fingerprint": PRIMARY_FINGERPRINT,
+        "signer_fingerprint": SIGNER_FINGERPRINT,
+        "uncompressed_tar_sha256": TAR_SHA256,
+        "source_components": {
+            name: digest for name, (_, digest) in SOURCE_FILES.items()
+        },
+    }
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -203,47 +388,42 @@ def audit(stage: Path, arch: str, output: Path) -> None:
     )
 
 
-def source_components(dsc: Path) -> dict[str, str]:
-    """Check all source components named by the authenticated .dsc."""
-    text = dsc.read_text(encoding="utf-8")
-    section = re.search(r"(?m)^Checksums-Sha256:\n((?: [^\n]+\n)+)", text)
-    if not section:
-        raise ValueError("missing source SHA256 section")
-    records = {}
-    for line in section[1].splitlines():
-        match = re.fullmatch(
-            r" ([0-9a-f]{64}) ([0-9]+) ([A-Za-z0-9][A-Za-z0-9.+~_-]*)", line
-        )
-        if not match or match[3] in records:
-            raise ValueError("invalid source component")
-        path = dsc.parent / match[3]
-        if (
-            path.is_symlink()
-            or path.stat().st_size != int(match[2])
-            or sha(path) != match[1]
-        ):
-            raise ValueError("source component checksum mismatch")
-        records[match[3]] = match[1]
-    if not records:
-        raise ValueError("empty source component list")
-    return records
+def source_components(directory: Path) -> dict[str, str]:
+    """Check the complete canonical manifest and every pinned upstream input."""
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("invalid upstream source directory")
+    manifest = directory / "upstream.json"
+    if manifest.is_symlink():
+        raise ValueError("upstream source manifest is a symlink")
+    expected = (
+        json.dumps(source_metadata(UPSTREAM_SOURCE_VERSION), sort_keys=True, indent=2)
+        + "\n"
+    )
+    with manifest.open("rb") as stream:
+        encoded = stream.read(16385)
+    if encoded != expected.encode("utf-8"):
+        raise ValueError("upstream source manifest mismatch")
+    for name in SOURCE_FILES:
+        check_source_file(directory / name)
+    return {name: digest for name, (_, digest) in SOURCE_FILES.items()}
 
 
-def bundle(stage: Path, dsc: Path, audit_path: Path, source_version: str) -> None:
-    if not re.fullmatch(r"[0-9]+:[0-9][0-9A-Za-z.+~\-]*", source_version):
-        raise ValueError("invalid source version")
+def bundle(
+    stage: Path, source_directory: Path, audit_path: Path, source_version: str
+) -> None:
+    authentication = source_metadata(source_version)
     dest = stage / "usr/share/licenses/git/source"
     dest.mkdir(parents=True)
-    components = source_components(dsc)
-    for name in [dsc.name, *components]:
-        shutil.copyfile(dsc.parent / name, dest / name)
+    components = source_components(source_directory)
+    for name in ["upstream.json", *components]:
+        shutil.copyfile(source_directory / name, dest / name)
     recipe = dest / "recipe"
     shutil.copytree("/recipe", recipe)
-    # Retain the source index/signatures/keyring used by authenticated APT.
+    # APT authenticates compiler/runtime packages; Git has its own signature.
     trust = dest / "apt"
     trust.mkdir()
     for path in sorted(Path("/var/lib/apt/lists").iterdir()):
-        if path.is_file() and ("InRelease" in path.name or "Sources" in path.name):
+        if path.is_file() and ("InRelease" in path.name or "Packages" in path.name):
             shutil.copyfile(path, trust / path.name)
     shutil.copyfile("/etc/apt/sources.list.d/debian.sources", trust / "debian.sources")
     shutil.copyfile(
@@ -257,6 +437,7 @@ def bundle(stage: Path, dsc: Path, audit_path: Path, source_version: str) -> Non
             "source_version": source_version,
             "binary_version": source_version + "+boundver1",
             "source_components": components,
+            "upstream_authentication": authentication,
             "builder_packages": run("dpkg-query", "-W", "-f=${Package}\t${Version}\n"),
             # Prefix maps differ deliberately between the independent build dirs.
             "flags": {
@@ -285,7 +466,7 @@ def bundle(stage: Path, dsc: Path, audit_path: Path, source_version: str) -> Non
         "Maintainer: Boundver maintainers <noreply@boundver.invalid>\n"
         f"Depends: {metadata['depends']}\n"
         "Description: Reduced-feature Git for local Boundver inspection\n"
-        " Custom build from Debian source; source and recipes accompany this package.\n",
+        " Custom build from authenticated upstream source; source and recipes accompany this package.\n",
         encoding="utf-8",
     )
 
@@ -294,18 +475,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("flags")
+    fetch = commands.add_parser("fetch-source")
+    fetch.add_argument("directory", type=Path)
+    fetch.add_argument("source_version")
     check = commands.add_parser("audit")
     check.add_argument("stage", type=Path)
     check.add_argument("arch", choices=sorted(MACHINES))
     check.add_argument("output", type=Path)
     source = commands.add_parser("bundle")
     source.add_argument("stage", type=Path)
-    source.add_argument("dsc", type=Path)
+    source.add_argument("source_directory", type=Path)
     source.add_argument("audit_path", type=Path)
     source.add_argument("source_version")
     args = vars(parser.parse_args())
     command = args.pop("command")
-    {"audit": audit, "bundle": bundle, "flags": flags}[command](**args)
+    {"audit": audit, "bundle": bundle, "flags": flags, "fetch-source": fetch_source}[
+        command
+    ](**args)
 
 
 if __name__ == "__main__":

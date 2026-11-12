@@ -14,19 +14,20 @@ HEAD = fixtures.HEAD
 AGENT = fixtures.AGENT
 REVIEWED_BASE = "db19d3614ec7d7f0ee6181cabac2549d02086cc5"
 PAYLOAD_BLOBS = {
-    ".dockerignore": ("modified", "83413f9022094adc797a45db6dda48006ec47efb"),
+    ".dockerignore": ("modified", "11a33e7f93e487b8d2dc972442796359154a61c8"),
     ".trivyignore.yaml": ("modified", "c5a93ffa50fa60139d67d84724b0896a4057f673"),
-    "CHANGELOG.md": ("modified", "ec15c4a5c8d4523a3f0530854ec54f0f97b461ac"),
-    "Dockerfile": ("modified", "9fba41f1adff493d8af678f47ecb0e10573336e6"),
-    "SECURITY.md": ("modified", "359f401b466ad01a077dfa5b23ef0ea95ca2fd7e"),
-    "docs/distribution.md": ("modified", "b219338cbf9fe02035f33c773acc1e73fc362697"),
-    "scripts/minimal_git/README.md": ("added", "28a60d1b06553a59da1ade680ddd7dbf314756dd"),
-    "scripts/minimal_git/audit.py": ("added", "3cb34415b03ef669ecd3965db02d29fca7550674"),
-    "scripts/minimal_git/build.sh": ("added", "5c61eff5f7dd0f9b17c2f69307cbfe7609308589"),
-    "scripts/minimal_git/snapshot.sh": ("added", "45740165f2511847a48ae7098345fd60818a77ea"),
+    "CHANGELOG.md": ("modified", "3437b4884c1bee4df1a48ddbe5027d9b882fe030"),
+    "Dockerfile": ("modified", "2de66284ee4f947af39e74038c0cd5f7985e859a"),
+    "SECURITY.md": ("modified", "50bb0f4afe952656c52f6330f8bf56395307429a"),
+    "docs/distribution.md": ("modified", "21352a848b3b48b4baf7626b3667c9717e775ac0"),
+    "scripts/minimal_git/README.md": ("added", "49a0f41cc9f5aa990bba62ee34f2270b189f2035"),
+    "scripts/minimal_git/audit.py": ("added", "3773eff3cd434017d206bc9d9f477509160dd309"),
+    "scripts/minimal_git/build.sh": ("added", "182f66f986cab4d862bedc9ade6524c74686b54e"),
+    "scripts/minimal_git/snapshot.sh": ("added", "9fe9926e3b9e817ddc7025fd52b3e190095bcfd4"),
+    "scripts/minimal_git/git-release-key.gpg": ("added", "728ec4ea1a64c95e66d3ae358da3d6512c59793e"),
     "scripts/verify_release_readiness.py": ("modified", "e556a864cb2390fca1c9ac930f54ef44fcd04627"),
-    "tests/test_distribution_contract.py": ("modified", "2c53eef388b4c19c05cb27d19144537c42a0ba8d"),
-    "tests/test_minimal_git.py": ("added", "a9734a10b8ea268071b9a95e8049dbb3fd15ee97"),
+    "tests/test_distribution_contract.py": ("modified", "7bb65722a9439d7c6b6a16f7e9e5e1aef5d18997"),
+    "tests/test_minimal_git.py": ("added", "968d3140d086a578937526cb6eeeb558f51b8776"),
     "tests/test_release_readiness.py": ("modified", "092accdf5f247620f1d5050a859d8b9d6a5743a6"),
 }
 SUPPORT_FILES = (
@@ -128,7 +129,7 @@ class AiMaintainerExceptionHelperTests(unittest.TestCase):
             with self.subTest(case=label):
                 self.assertNotEqual(self._matches(changed).returncode, 0)
 
-    def test_all_original_payload_blobs_and_statuses_are_pinned(self):
+    def test_all_reviewed_payload_blobs_and_statuses_are_pinned(self):
         self.assertEqual(self._helper('ai_maintainer_exception_scope_matches "$1"', files()).returncode, 0)
         for path, (status, blob) in PAYLOAD_BLOBS.items():
             with self.subTest(path=path):
@@ -162,7 +163,7 @@ class AiMaintainerExceptionHelperTests(unittest.TestCase):
 class AiMaintainerExceptionAuditTests(unittest.TestCase):
     def _audit(self, **overrides):
         return fixtures.LocalAgentExceptionAuditTests()._audit(
-            number=184, record_body=body(), file_records=files(), file_count=19, **overrides,
+            number=184, record_body=body(), file_records=files(), file_count=20, **overrides,
         )
 
     def _owner_record(self, **overrides):
@@ -195,7 +196,7 @@ class AiMaintainerExceptionAuditTests(unittest.TestCase):
 
     def test_full_audit_refuses_wrong_identity_release_scope_and_api_failures(self):
         for overrides in (
-            {"FAKE_EXCEPTION_REPO_ID": "9"}, {"FAKE_EXCEPTION_FILE_COUNT": "18"},
+            {"FAKE_EXCEPTION_REPO_ID": "9"}, {"FAKE_EXCEPTION_FILE_COUNT": "19"},
             {"FAKE_OWNER_ID": "99"}, {"FAKE_AUTHOR_ID": "99"},
             {"AUDIT_FIXTURE_RELEASE_TAG": "v0.17.1"},
             {"FAKE_HEAD_SHA": "2" * 40},

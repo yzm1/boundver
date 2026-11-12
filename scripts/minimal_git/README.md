@@ -1,24 +1,33 @@
 # Container Git source and rebuild recipe
 
-This image contains a custom, reduced-feature build of Debian's Git source,
-not Debian's stock Git binary. The original source identity is retained in the
-installed package's `Source` field; the `+boundver1` binary suffix is not a claim
-that any Git vulnerability has been patched.
+This image contains a custom, reduced-feature build of upstream Git 2.50.2,
+not Debian's stock Git binary. This upstream security release contains fixes
+for the November Git advisories; the build does not backport or invent patches.
+The package records its actual upstream source version, with `+boundver1`
+identifying Boundver's packaging rather than an additional security fix.
+
+The kernel.org archive and detached signature have pinned sizes and SHA-256
+digests. The vendored public key is pinned too. Before extraction, `gpgv`
+verifies the uncompressed tar against primary fingerprint
+`96E07AF25771955980DAD10020D04E5A713660A7` and its pinned signing subkey.
+No personal keyring, secret key, agent or keyserver is used. Source URL,
+redirect, size, deadline, version, digest or signature mismatches fail the build;
+there is no fallback to the older source.
 
 `/usr/share/licenses/git/source` accompanies each image with:
 
-- the `.dsc` and every archive listed in its SHA256 section, including Debian's
-  patches (applied by `dpkg-source -x`);
-- authenticated APT source indexes, InRelease signatures, archive keyring and
-  repository configuration used when obtaining those inputs;
+- the upstream archive, detached signature, public verification key and
+  canonical `upstream.json` authentication record;
+- authenticated APT package indexes, InRelease signatures, archive keyring and
+  repository configuration for the compiler and runtime dependencies;
 - the complete Dockerfile and custom build, snapshot and validation scripts;
 - Boundver's MIT licence for those custom recipes, separate from Git's licence;
 - source/recipe hashes, effective compiler flags, builder package versions,
   architecture and the installed executable hashes in `build.json`;
 - `SHA256SUMS`, covering every regular file in this directory except itself.
 
-Full Git COPYING is in `/usr/share/licenses/git/COPYING`; Debian's copyright
-record is also kept at `/usr/share/doc/git/copyright`. The Git source includes
+Full Git COPYING is in `/usr/share/licenses/git/COPYING` and
+`/usr/share/doc/git/copyright`. The original Git source includes
 its bundled components and their notices. This bundle is not a licensing
 certification for the entire Python/Debian image.
 
@@ -33,7 +42,8 @@ docker cp boundver-git-source-export:/out/git-minimal.deb .
 docker rm boundver-git-source-export
 ```
 
-Network access is needed to retrieve the pinned base and signed snapshot.
+Network access is needed to retrieve the pinned base, signed snapshot and
+hash-pinned upstream archive/signature. The public verification key is vendored.
 `build.sh` extracts the same verified source twice into different directories,
 uses Debian hardening flags with explicit PIE/RELRO/NOW, tests SHA1 collision
 detection, audits every installed ELF and script interpreter, and requires
@@ -44,7 +54,8 @@ The source bundle and package are constructed inside the build, without hidden
 repository inputs or additional patches. The `.deb` is an intermediate, not a
 separately published product. Distributing it separately requires accompanying
 source too. The manifest records integrity, not an independent signature of
-Boundver's custom build; APT authentication applies to the Debian inputs.
+Boundver's custom build. Upstream signs Git; APT authenticates Debian build and
+runtime packages. Neither substitutes for final image scans or code review.
 
 HTTP(S) client helpers, Perl, Tcl/Tk, Python helpers, gettext, Expat and OpenSSL
 integration are disabled. Local Git inspection and SHA-1/SHA-256 repositories

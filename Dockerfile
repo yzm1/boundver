@@ -19,11 +19,11 @@
 FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS git-builder
 
 ENV SOURCE_DATE_EPOCH=1794139200
-ARG GIT_SOURCE_VERSION=1:2.47.3-0+deb13u1
+ARG GIT_SOURCE_VERSION=1:2.50.2
 COPY scripts/minimal_git/snapshot.sh /build-inputs/snapshot.sh
-RUN sh /build-inputs/snapshot.sh source \
+RUN sh /build-inputs/snapshot.sh \
     && apt-get install -y --no-install-recommends \
-      build-essential dpkg-dev zlib1g-dev libpcre2-dev
+      build-essential dpkg-dev zlib1g-dev libpcre2-dev gpgv xz-utils
 COPY Dockerfile LICENSE /recipe/
 COPY scripts/minimal_git /recipe/scripts/minimal_git
 RUN sh /recipe/scripts/minimal_git/build.sh
@@ -84,7 +84,7 @@ LABEL org.opencontainers.image.source="https://github.com/yzm1/boundver" \
       org.opencontainers.image.version="$BOUNDVER_VERSION" \
       org.opencontainers.image.revision="$BOUNDVER_REVISION"
 
-# Git is built from authenticated Debian source without HTTP client libraries.
+# Git is built from authenticated upstream source without HTTP client libraries.
 # Its complete source/recipe bundle is package-owned outside dpkg's doc filter.
 COPY scripts/minimal_git/snapshot.sh /build-inputs/snapshot.sh
 COPY --from=git-builder /out/git-minimal.deb /packages/git-minimal.deb

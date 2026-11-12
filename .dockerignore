@@ -97,6 +97,7 @@ scripts/minimal_git/*
 !scripts/minimal_git/build.sh
 !scripts/minimal_git/snapshot.sh
 !scripts/minimal_git/README.md
+!scripts/minimal_git/git-release-key.gpg
 !scripts/requirements/
 scripts/requirements/*
 !scripts/requirements/action.lock

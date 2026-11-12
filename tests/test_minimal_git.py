@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
+import lzma
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.request import Request
 
 import pytest
 
@@ -158,49 +162,78 @@ def test_required_hardening_flags_cannot_silently_disappear():
                 audit.check_flags(*changed)
 
 
-def make_dsc(tmp_path, name="git.tar.xz", contents=b"source"):
-    payload = tmp_path / name
-    payload.write_bytes(contents)
-    digest = hashlib.sha256(contents).hexdigest()
-    dsc = tmp_path / "git.dsc"
-    dsc.write_text(
-        f"Format: 3.0 (quilt)\nChecksums-Sha256:\n {digest} {len(contents)} {name}\nFiles:\n",
-        encoding="utf-8",
+@pytest.fixture
+def source_inputs(tmp_path, monkeypatch):
+    payloads = {
+        "git-2.50.2.tar.xz": b"archive",
+        "git-2.50.2.tar.sign": b"signature",
+        "git-release-key.gpg": b"key",
+    }
+    monkeypatch.setattr(
+        audit,
+        "SOURCE_FILES",
+        {
+            name: (len(data), hashlib.sha256(data).hexdigest())
+            for name, data in payloads.items()
+        },
     )
-    return dsc, payload, digest
+    for name, data in payloads.items():
+        (tmp_path / name).write_bytes(data)
+    (tmp_path / "upstream.json").write_bytes(
+        (
+            json.dumps(
+                audit.source_metadata(audit.UPSTREAM_SOURCE_VERSION),
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    return tmp_path
 
 
-def test_every_dsc_source_component_is_checked(tmp_path):
-    dsc, payload, digest = make_dsc(tmp_path)
-    assert audit.source_components(dsc) == {payload.name: digest}
-    payload.write_bytes(b"change")
-    with pytest.raises(ValueError, match="checksum"):
-        audit.source_components(dsc)
+def test_every_upstream_source_component_is_checked(source_inputs):
+    assert audit.source_components(source_inputs) == {
+        name: digest for name, (_, digest) in audit.SOURCE_FILES.items()
+    }
+    for name in audit.SOURCE_FILES:
+        payload = source_inputs / name
+        original = payload.read_bytes()
+        payload.write_bytes(b"corrupt")
+        with pytest.raises(ValueError, match="checksum"):
+            audit.source_components(source_inputs)
+        payload.write_bytes(original)
 
 
 @pytest.mark.parametrize(
     "name", ["../git.tar.xz", "/git.tar.xz", "git/part", "-option"]
 )
-def test_dsc_rejects_unsafe_component_names(tmp_path, name):
-    dsc, _, _ = make_dsc(tmp_path)
-    dsc.write_text(
-        dsc.read_text(encoding="utf-8").replace("git.tar.xz", name), encoding="utf-8"
+def test_manifest_rejects_unsafe_or_unreviewed_component_names(source_inputs, name):
+    manifest = source_inputs / "upstream.json"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace("git-2.50.2.tar.xz", name),
+        encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="component"):
-        audit.source_components(dsc)
+    with pytest.raises(ValueError, match="manifest"):
+        audit.source_components(source_inputs)
 
 
-def test_dsc_missing_checksum_and_duplicate_component_fail(tmp_path):
-    dsc, _, _ = make_dsc(tmp_path)
-    text = dsc.read_text(encoding="utf-8")
-    dsc.write_text(
-        text.replace("Files:", text.splitlines()[2] + "\nFiles:"), encoding="utf-8"
-    )
-    with pytest.raises(ValueError):
-        audit.source_components(dsc)
-    dsc.write_text("Format: 3.0 (quilt)\n", encoding="utf-8")
-    with pytest.raises(ValueError):
-        audit.source_components(dsc)
+def test_manifest_missing_duplicate_tampered_or_oversized_fields_fail(source_inputs):
+    manifest = source_inputs / "upstream.json"
+    original = manifest.read_text(encoding="utf-8")
+    for changed in (
+        "{}",
+        original + "\n",
+        "x" * 16386,
+        original.replace(
+            '"source_components": {',
+            '"source_components": {},\n "source_components": {',
+        ),
+        original.replace(audit.PRIMARY_FINGERPRINT, "0" * 40),
+    ):
+        manifest.write_text(changed, encoding="utf-8")
+        with pytest.raises(ValueError, match="manifest"):
+            audit.source_components(source_inputs)
 
 
 @pytest.mark.parametrize(
@@ -235,20 +268,13 @@ def test_unknown_executable_format_fails(tmp_path):
         audit.audit(tmp_path, "amd64", tmp_path / "result.json")
 
 
-def test_corrupt_second_source_component_also_fails(tmp_path):
-    dsc, _, _ = make_dsc(tmp_path)
-    second = tmp_path / "git.debian.tar.xz"
-    second.write_bytes(b"patches")
-    digest = audit.sha(second)
-    text = dsc.read_text(encoding="utf-8").replace(
-        "Files:",
-        f" {digest} 7 {second.name}\nFiles:",
-    )
-    dsc.write_text(text, encoding="utf-8")
-    assert len(audit.source_components(dsc)) == 2
-    second.write_bytes(b"corrupt")
-    with pytest.raises(ValueError, match="checksum"):
-        audit.source_components(dsc)
+def test_unreviewed_source_version_is_refused_before_download(tmp_path, monkeypatch):
+    def unexpected(*args):
+        pytest.fail("Unreviewed source version reached network")
+
+    monkeypatch.setattr(audit, "download_source", unexpected)
+    with pytest.raises(ValueError, match="unreviewed Git source"):
+        audit.fetch_source(tmp_path, "1:2.47.3-0+deb13u1")
 
 
 def test_all_unique_installed_elfs_are_charged_to_dependency_check(
@@ -293,8 +319,9 @@ def test_build_recipe_keeps_all_checks_and_source_identity():
     for contract in (
         "for variant in a b",
         "cmp /out/git-a.deb /out/git-b.deb",
-        "dpkg-source -x",
-        "dpkg-parsechangelog -S Version",
+        "fetch-source /source",
+        "tar -xJf /source/git-2.50.2.tar.xz",
+        "git version 2.50.2",
         "sha1-is-sha1dc",
         "shattered-1.pdf",
         "hardening=+all reproducible=+all",
@@ -309,6 +336,221 @@ def test_build_recipe_keeps_all_checks_and_source_identity():
     ):
         assert contract in recipe
     assert "--allow-unauthenticated" not in recipe
+
+
+def signature_status():
+    return (
+        f"[GNUPG:] GOODSIG {audit.SIGNER_FINGERPRINT[-16:]} Junio C Hamano\n"
+        f"[GNUPG:] VALIDSIG {audit.SIGNER_FINGERPRINT} 2026-11-10 1794259170 0 4 0 1 10 00 {audit.PRIMARY_FINGERPRINT}\n"
+    )
+
+
+def test_valid_signature_binds_primary_and_signing_subkey():
+    audit.check_signature_status(signature_status())
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "",
+        "[GNUPG:] GOODSIG arbitrary\n",
+        "duplicate",
+        "wrong-primary",
+        "wrong-signer",
+        "BADSIG",
+        "EXPKEYSIG",
+        "REVKEYSIG",
+        "EXPSIG",
+        "ERRSIG",
+        "NO_PUBKEY",
+        "NODATA",
+        "FAILURE",
+        "ERROR",
+    ],
+)
+def test_invalid_signature_statuses_fail(changed):
+    status = signature_status()
+    if changed == "duplicate":
+        status += status
+    elif changed == "wrong-primary":
+        status = status.replace(audit.PRIMARY_FINGERPRINT, "0" * 40)
+    elif changed == "wrong-signer":
+        status = status.replace(audit.SIGNER_FINGERPRINT, "0" * 40)
+    elif changed in {
+        "BADSIG",
+        "EXPKEYSIG",
+        "REVKEYSIG",
+        "EXPSIG",
+        "ERRSIG",
+        "NO_PUBKEY",
+        "NODATA",
+        "FAILURE",
+        "ERROR",
+    }:
+        status += "[GNUPG:] " + changed + " bad\n"
+    else:
+        status = changed
+    with pytest.raises(ValueError, match="signature"):
+        audit.check_signature_status(status)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://www.kernel.org/pub/software/scm/git/git-2.50.2.tar.xz",
+        "https://evil.test/pub/software/scm/git/git-2.50.2.tar.xz",
+        "https://www.kernel.org:444/pub/software/scm/git/git-2.50.2.tar.xz",
+        "https://user@www.kernel.org/pub/software/scm/git/git-2.50.2.tar.xz",
+        "https://www.kernel.org/pub/software/scm/git/git-2.50.1.tar.xz",
+        "https://www.kernel.org/pub/software/scm/git/git-2.50.2.tar.xz?key=secret",
+        "https://www.kernel.org/pub/software/scm/git/git-2.50.2.tar.xz#fragment",
+        "file:///tmp/source",
+        "https://127.0.0.1/source",
+    ],
+)
+def test_source_urls_cannot_redirect_to_other_inputs_or_hosts(url):
+    with pytest.raises(ValueError):
+        audit.check_source_url(url)
+    with pytest.raises(ValueError):
+        audit.SourceRedirects().redirect_request(None, None, 302, "", {}, url)
+
+
+def test_source_redirect_count_is_bounded():
+    url = "https://www.kernel.org/pub/software/scm/git/git-2.50.2.tar.xz"
+    redirects = audit.SourceRedirects()
+    request = Request(url)
+    redirects.redirect_request(request, None, 302, "", {}, url)
+    redirects.redirect_request(request, None, 302, "", {}, url)
+    with pytest.raises(ValueError, match="redirect budget"):
+        redirects.redirect_request(request, None, 302, "", {}, url)
+
+
+@pytest.mark.parametrize(
+    "response_bytes", [b"source", b"too-large", b"short", b"tamper"]
+)
+def test_source_download_checks_exact_size_and_digest(
+    tmp_path, monkeypatch, response_bytes
+):
+    name = "git-2.50.2.tar.sign"
+    monkeypatch.setitem(
+        audit.SOURCE_FILES, name, (6, hashlib.sha256(b"source").hexdigest())
+    )
+
+    class Response(io.BytesIO):
+        def geturl(self):
+            return "https://www.kernel.org/pub/software/scm/git/" + name
+
+    monkeypatch.setattr(
+        audit,
+        "build_opener",
+        lambda *args: SimpleNamespace(
+            open=lambda *args, **kwargs: Response(response_bytes),
+        ),
+    )
+    if response_bytes == b"source":
+        audit.download_source(tmp_path, name)
+        assert (tmp_path / name).read_bytes() == b"source"
+    else:
+        with pytest.raises(ValueError):
+            audit.download_source(tmp_path, name)
+
+
+@pytest.mark.parametrize("fault", [None, "signature-exit", "wrong-signer", "wrong-tar"])
+def test_fetch_authenticates_uncompressed_tar_before_recording_provenance(
+    tmp_path, monkeypatch, fault
+):
+    recipe = tmp_path / "recipe"
+    source = tmp_path / "source"
+    recipe.mkdir()
+    source.mkdir()
+    payloads = {
+        "git-2.50.2.tar.xz": lzma.compress(
+            b"wrong tar" if fault == "wrong-tar" else b"tar bytes"
+        ),
+        "git-2.50.2.tar.sign": b"signature",
+        "git-release-key.gpg": b"public key",
+    }
+    (recipe / "git-release-key.gpg").write_bytes(payloads["git-release-key.gpg"])
+    monkeypatch.setattr(audit, "__file__", str(recipe / "audit.py"))
+    monkeypatch.setattr(
+        audit,
+        "SOURCE_FILES",
+        {
+            name: (len(data), hashlib.sha256(data).hexdigest())
+            for name, data in payloads.items()
+        },
+    )
+    monkeypatch.setattr(audit, "TAR_SIZE", 9)
+    monkeypatch.setattr(audit, "TAR_SHA256", hashlib.sha256(b"tar bytes").hexdigest())
+    monkeypatch.setattr(
+        audit,
+        "download_source",
+        lambda root, name: (root / name).write_bytes(payloads[name]),
+    )
+    calls = []
+
+    def verify(argv, **kwargs):
+        calls.append((argv, kwargs))
+        status = signature_status()
+        if fault == "wrong-signer":
+            status = status.replace(audit.SIGNER_FINGERPRINT, "0" * 40)
+        return SimpleNamespace(
+            returncode=1 if fault == "signature-exit" else 0, stdout=status.encode()
+        )
+
+    monkeypatch.setattr(audit.subprocess, "run", verify)
+    if fault:
+        with pytest.raises(ValueError):
+            audit.fetch_source(source, audit.UPSTREAM_SOURCE_VERSION)
+        assert not (source / "upstream.json").exists()
+        if fault == "wrong-tar":
+            assert not calls
+        return
+    audit.fetch_source(source, audit.UPSTREAM_SOURCE_VERSION)
+    assert calls[0][0][0] == "/usr/bin/gpgv"
+    assert calls[0][1]["input"] == b"tar bytes"
+    assert calls[0][1]["timeout"] == 60
+    assert calls[0][1]["env"] == {"LC_ALL": "C", "PATH": "/usr/bin:/bin"}
+    assert audit.source_components(source) == {
+        name: digest for name, (_, digest) in audit.SOURCE_FILES.items()
+    }
+
+
+def test_download_deadline_is_enforced_before_reading(tmp_path, monkeypatch):
+    name = "git-2.50.2.tar.sign"
+    ticks = iter([0, 91])
+    monkeypatch.setattr(audit, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+
+    class Response(io.BytesIO):
+        def geturl(self):
+            return "https://www.kernel.org/pub/software/scm/git/" + name
+
+        def read(self, *args):
+            pytest.fail("Expired download attempted a read")
+
+    monkeypatch.setattr(
+        audit,
+        "build_opener",
+        lambda *args: SimpleNamespace(
+            open=lambda *args, **kwargs: Response(b"signature"),
+        ),
+    )
+    with pytest.raises(ValueError, match="deadline"):
+        audit.download_source(tmp_path, name)
+
+
+def test_vendored_verification_key_matches_the_reviewed_bytes():
+    audit.check_source_file(ROOT / "scripts/minimal_git/git-release-key.gpg")
+
+
+def test_nonempty_source_directory_is_never_reused(tmp_path, monkeypatch):
+    (tmp_path / "existing").write_bytes(b"preserve")
+    monkeypatch.setattr(
+        audit, "download_source", lambda *args: pytest.fail("Unexpected network")
+    )
+    with pytest.raises(ValueError, match="must be empty"):
+        audit.fetch_source(tmp_path, audit.UPSTREAM_SOURCE_VERSION)
+    assert (tmp_path / "existing").read_bytes() == b"preserve"
 
 
 def test_reconstruction_instructions_include_all_root_inputs():

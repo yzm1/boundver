@@ -91,9 +91,10 @@ repository mounts recommended above for verification. The launcher-specific
 review exception in PR #181 does not approve this risk assessment or waive any
 security finding, independent review, expiry or scan gate.
 
-The reduced-feature container Git is built from the pinned, authenticated
-Debian source without curl, Expat, gettext, OpenSSL or Perl/Tcl/Python helpers.
-Its local-inspection contract, original sources, Debian patches, complete build
+The reduced-feature container Git is built from pinned upstream Git 2.50.2
+without curl, Expat, gettext, OpenSSL or Perl/Tcl/Python helpers. The archive's
+detached signature is verified against a vendored, fingerprint-pinned maintainer
+key before extraction. Its local-inspection contract, original sources, complete build
 recipes, compiler/package records and licences accompany the image. The build
 checks every installed ELF's dependency set, architecture, PIE, non-executable
 stack, RELRO and immediate binding; shell-script interpreters are checked too.
@@ -101,9 +102,11 @@ It tests SHA1 collision detection and requires byte-identical packages from two
 separate source extractions. These checks do not prove general Git feature
 parity, whole-image reproducibility or absence of every vulnerability.
 
-The custom `git` package retains its original Debian `Source` identity and
-adds a `+boundver1` binary suffix. This is not advisory suppression or a claim
-that the original Git source has been patched. Source archives and recipes are
+The custom `git` package records the actual upstream `Source` version and
+adds a `+boundver1` binary suffix. It is not Debian's official Git package, and
+the suffix does not assert a patch. Version 2.50.2 is an upstream security
+release, not a local relabelling of the older 2.47 source. Source archives,
+signature, public key and recipes are
 under `/usr/share/licenses/git/source`, with full COPYING outside dpkg's
 documentation filter. See the [container guide](https://yzm1.github.io/boundver/distribution/#container).
 

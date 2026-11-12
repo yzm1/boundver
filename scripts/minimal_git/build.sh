@@ -1,25 +1,22 @@
 #!/bin/sh
 # Build the same source twice, checking hardening, dependencies and byte identity.
 set -eu
-: "${GIT_SOURCE_VERSION:?Dockerfile must supply the exact Debian source version}"
+: "${GIT_SOURCE_VERSION:?Dockerfile must supply the exact upstream source version}"
 : "${SOURCE_DATE_EPOCH:?Dockerfile must supply the snapshot timestamp}"
 export LC_ALL=C TZ=UTC DEBIAN_FRONTEND=noninteractive
 export DEB_BUILD_MAINT_OPTIONS='hardening=+all reproducible=+all'
 mkdir /source /out /build
-chown _apt /source
-cd /source
-apt-get source --download-only "git=$GIT_SOURCE_VERSION"
-set -- /source/*.dsc
-test "$#" = 1 && test -f "$1"
-dsc=$1
+python -I /recipe/scripts/minimal_git/audit.py fetch-source /source "$GIT_SOURCE_VERSION"
 arch=$(dpkg --print-architecture)
 for variant in a b; do
   source_dir=/build/$variant
   stage=/build/stage-$variant
-  dpkg-source -x "$dsc" "$source_dir"
+  mkdir "$source_dir"
+  tar -xJf /source/git-2.50.2.tar.xz --strip-components=1 -C "$source_dir"
   cd "$source_dir"
-  test "$(dpkg-parsechangelog -S Source)" = git
-  test "$(dpkg-parsechangelog -S Version)" = "$GIT_SOURCE_VERSION"
+  # dpkg-shlibdeps needs a source control file, not Debian source patches.
+  mkdir debian
+  printf 'Source: git\n\nPackage: git\nArchitecture: any\nDescription: Upstream Git for Boundver\n' >debian/control
   export CFLAGS="$(dpkg-buildflags --get CFLAGS) -fstack-protector-strong -fPIE -ffile-prefix-map=$source_dir=. -fdebug-prefix-map=$source_dir=."
   export CPPFLAGS="$(dpkg-buildflags --get CPPFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3"
   export LDFLAGS="$(dpkg-buildflags --get LDFLAGS) -pie -Wl,-z,relro,-z,now"
@@ -34,6 +31,7 @@ for variant in a b; do
       "CFLAGS=$CFLAGS" "CPPFLAGS=$CPPFLAGS" "LDFLAGS=$LDFLAGS" "$@"
   }
   build_git all t/helper/test-tool
+  test "$(./git version)" = 'git version 2.50.2'
   ./t/helper/test-tool sha1-is-sha1dc
   if ./t/helper/test-tool sha1 <t/t0013/shattered-1.pdf 2>collision.err; then
     printf 'SHA1 collision was accepted\n' >&2; exit 1
@@ -51,9 +49,9 @@ for variant in a b; do
   python -I /recipe/scripts/minimal_git/audit.py audit "$stage" "$arch" /build/audit-$variant.json
   mkdir -p "$stage/usr/share/licenses/git" "$stage/usr/share/doc/git"
   cp COPYING "$stage/usr/share/licenses/git/COPYING"
-  cp debian/copyright "$stage/usr/share/doc/git/copyright"
+  cp COPYING "$stage/usr/share/doc/git/copyright"
   python -I /recipe/scripts/minimal_git/audit.py bundle \
-    "$stage" "$dsc" /build/audit-$variant.json "$GIT_SOURCE_VERSION"
+    "$stage" /source /build/audit-$variant.json "$GIT_SOURCE_VERSION"
   find "$stage" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
   DPKG_DEB_THREADS_MAX=2 dpkg-deb --build --root-owner-group \
     --uniform-compression -Zxz -z6 "$stage" /out/git-$variant.deb

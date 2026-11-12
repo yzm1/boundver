@@ -90,7 +90,7 @@ and optional Perl/Tcl/Python helpers are disabled, avoiding Git's curl/Kerberos
 dependency chain. This does **not** disable every Git transport or make the
 image a sandbox; keep `--network none` and the other restrictions above.
 
-Git's full licence, original source archives (including Debian patches), build
+Git's full licence, original upstream source archive and signature, public key, build
 recipes and integrity/provenance records accompany each image under
 `/usr/share/licenses/git`. To inspect them without running the image:
 
@@ -100,10 +100,12 @@ docker cp boundver-source:/usr/share/licenses/git ./boundver-git-source
 docker rm boundver-source
 ```
 
-The bundle README describes reconstruction. The custom binary version retains
-Debian's original source identity for vulnerability matching. Its suffix does
-not mean Git advisories are fixed. Builds check executable hardening, source
-checksums, SHA1 collision detection and byte equality of two independently
+The bundle README describes reconstruction. The custom package records the
+actual upstream Git 2.50.2 source version, not Debian's old source version or
+a renamed package that hides Git from inventory. Its local suffix is not a
+patch claim. The upstream tar signature, pinned sizes/hashes and primary/subkey
+fingerprints are checked before extraction. Builds also check executable
+hardening, SHA1 collision detection and byte equality of two independently
 extracted Git-package builds; that check is not whole-image reproducibility.
 
 Release images target `linux/amd64` and `linux/arm64`, carry OCI source,

@@ -2487,7 +2487,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertGreaterEqual(snapshot.count("grep -Fqx"), 2)
         self.assertIn('Acquire::Check-Valid-Until "false"', snapshot)
         self.assertIn("apt-get upgrade -y", dockerfile)
-        self.assertIn("ARG GIT_SOURCE_VERSION=1:2.47.3-0+deb13u1", dockerfile)
+        self.assertIn("ARG GIT_SOURCE_VERSION=1:2.50.2", dockerfile)
         self.assertIn("/packages/git-minimal.deb", dockerfile)
         self.assertIn("sha256sum -c SHA256SUMS", dockerfile)
         self.assertIn("/usr/share/licenses/git/COPYING", dockerfile)
@@ -2521,7 +2521,7 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(credential, dockerignore)
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
-        for source_input in ("audit.py", "build.sh", "snapshot.sh", "README.md"):
+        for source_input in ("audit.py", "build.sh", "snapshot.sh", "README.md", "git-release-key.gpg"):
             self.assertIn(f"!scripts/minimal_git/{source_input}", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)

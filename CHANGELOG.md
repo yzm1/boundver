@@ -22,8 +22,10 @@ does not migrate incompatible digests or assert deployment provenance.
 
 ### Container security
 
-- Build container Git from the pinned Debian source without HTTP client and
-  optional scripting dependencies. Include its original source, Debian patches,
+- Build container Git from authenticated upstream Git 2.50.2, including the
+  November upstream security fixes, without HTTP client and optional scripting
+  dependencies. Pin the archive/signature/key digests and signer fingerprints;
+  verify the uncompressed tar signature before extraction. Include original source,
   licences and complete build recipes in the image. Check native executable
   hardening and dependencies, SHA1 collision detection, and byte-identical Git
   packages from two clean source extractions. This is not a general-purpose Git

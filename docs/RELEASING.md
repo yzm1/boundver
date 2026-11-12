@@ -655,9 +655,12 @@ reviewer as the PR author. This exception records that mismatch honestly; it is
 not authenticated non-author GitHub approval or a standing self-approval mode.
 
 Only repository ID `1226008327`, owner ID `22440724`, PR #184 and `v0.17.0` qualify.
-The fourteen original candidate blobs and their added/modified statuses are
-pinned in `ai_maintainer_exception_scope_matches`. Exactly nineteen files are
-allowed: those fourteen plus this runbook, the audit script, the bounded-API
+The fifteen reviewed payload blobs and their added/modified statuses are pinned
+in `ai_maintainer_exception_scope_matches`, including the upstream security-release
+recipe and public verification key added after the human-reviewed base. Those
+later changes need the separate agent's complete exact-head review; do not
+attribute them to the earlier human review. Exactly twenty files are
+allowed: those fifteen plus this runbook, the audit script, the bounded-API
 routing test, the shared PR182 test fixture and the new PR184 regression tests.
 Renames, deletions, duplicate paths, changed payloads and extra files fail closed.
 The original PR181 and PR182 exceptions are not expanded.
