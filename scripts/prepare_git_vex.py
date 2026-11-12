@@ -27,7 +27,6 @@ import subprocess
 import sys
 import tarfile
 import zlib
-from urllib.parse import parse_qs, unquote
 
 
 MAX_BYTES = 2 * 1024**3
@@ -663,15 +662,9 @@ def prepare(image, report_path, source_root, release_sha, arch, output):
                 "Git finding is outside authorized correction",
             )
             purl = finding.get("PkgIdentifier", {}).get("PURL", "")
-            base, _, query = purl.partition("?")
-            qualifiers = parse_qs(query, strict_parsing=True)
-            require(
-                unquote(base) == "pkg:deb/debian/git@2.50.2+boundver1"
-                and qualifiers.get("arch") == [arch]
-                and qualifiers.get("epoch") == ["1"]
-                and set(qualifiers) == {"arch", "epoch", "distro"},
-                "Git package PURL mismatch",
-            )
+            # Match the pinned scanner's entire canonical identifier. Parsing
+            # and then checking the same string adds no assurance and has
+            # version-dependent error behaviour for malformed empty queries.
             require(purl == expected_purl, "noncanonical Git package PURL")
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     require(

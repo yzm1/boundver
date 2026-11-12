@@ -1096,8 +1096,8 @@ ai_maintainer_exception_scope_matches() {
       docs/distribution.md) expected=d0b0313bc4d67581e9914b82f579423dd722aa51 ;;
       .github/workflows/ci.yml) expected=0b872ae3b9cf89d807e41c203fa1bd9f9e1fd2d5 ;;
       .github/workflows/publish-container.yml) expected=a20080ce04a1d064836c26aa70b0d9794df2a6d2 ;;
-      scripts/prepare_git_vex.py) expected=a717b3097a0312a879efd1a88a1be49986905b66; expected_status=added ;;
-      tests/test_git_vex.py) expected=8cea241ba58a6270158b326166909dcbc4df7bdd; expected_status=added ;;
+      scripts/prepare_git_vex.py) expected=c00219c12e9480be1067f53a39a9ab6fe3f4ec4a; expected_status=added ;;
+      tests/test_git_vex.py) expected=9d1b28db144036a36f92ea5f347da16b8df81259; expected_status=added ;;
       scripts/minimal_git/README.md) expected=49a0f41cc9f5aa990bba62ee34f2270b189f2035; expected_status=added ;;
       scripts/minimal_git/audit.py) expected=3773eff3cd434017d206bc9d9f477509160dd309; expected_status=added ;;
       scripts/minimal_git/build.sh) expected=182f66f986cab4d862bedc9ade6524c74686b54e; expected_status=added ;;

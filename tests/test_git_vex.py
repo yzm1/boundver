@@ -598,3 +598,24 @@ def test_whiteout_cannot_follow_symlink_parent_and_leave_stale_installed_hash(
     upper["alias/.wh..wh..opq" if opaque else "alias/.wh.git"] = b""
     with pytest.raises(vex.VexError, match="whiteout ancestor"):
         read_layers([layer_bytes(base), layer_bytes(upper)])
+
+
+@pytest.mark.parametrize(
+    "purl",
+    [
+        "pkg:deb/debian/git",
+        "pkg:deb/debian/git?",
+        "pkg:deb/debian/git@2.50.2%2Bboundver1?",
+        "pkg:deb/debian/git@2.50.2%2Bboundver1?arch=arm64&distro=debian-13.7&epoch=1",
+        "pkg:deb/debian/git@2.50.2%2Bboundver1?arch=amd64&distro=debian-13.7&epoch=1&epoch=1",
+        "pkg:deb/debian/git@2.50.2+boundver1?arch=amd64&distro=debian-13.7&epoch=1",
+    ],
+)
+def test_noncanonical_git_purls_fail_uniformly_without_creating_vex(evidence, purl):
+    image, report, raw, source_root = archive_and_report(evidence)
+    raw["Results"][0]["Vulnerabilities"][0]["PkgIdentifier"]["PURL"] = purl
+    report.write_bytes(encoded(raw))
+    output = evidence[0] / "vex.json"
+    with pytest.raises(vex.VexError, match="noncanonical"):
+        vex.prepare(image, report, source_root, SHA, "amd64", output)
+    assert not output.exists()
