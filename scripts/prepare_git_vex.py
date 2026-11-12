@@ -401,6 +401,21 @@ def filesystem(layers, diff_ids):
             )
             if stream is not compressed:
                 stream.close()
+        # Never resolve a marker through a lower-layer symlink or an ancestor
+        # replaced by a non-directory in this layer. Runtimes may follow that
+        # parent before removing the actual target, invalidating cached hashes.
+        non_directories = {
+            entry for entry, record in operations if record[0] != "directory"
+        }
+        for parent, _ in whiteouts:
+            parts = parent.split("/") if parent else []
+            for index in range(1, len(parts) + 1):
+                ancestor = "/".join(parts[:index])
+                require(
+                    (ancestor not in files or files[ancestor][0] == "directory")
+                    and ancestor not in non_directories,
+                    "non-directory whiteout ancestor",
+                )
         # OCI whiteouts affect only lower layers, regardless of tar member order.
         for parent, leaf in whiteouts:
             transition_work += len(files)

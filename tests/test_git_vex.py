@@ -581,3 +581,20 @@ def test_vex_receipt_cannot_change_source_or_architecture_after_preparation(
     output.write_bytes(encoded(document))
     with pytest.raises(vex.VexError, match="binding"):
         vex.verify_scoped(image, report, report, output)
+
+
+@pytest.mark.parametrize("opaque", [False, True])
+@pytest.mark.parametrize("alias_in_upper", [False, True])
+def test_whiteout_cannot_follow_symlink_parent_and_leave_stale_installed_hash(
+    opaque, alias_in_upper
+):
+    base = {"usr/bin/git": b"GOOD"}
+    alias = (tarfile.SYMTYPE, "usr/bin")
+    upper = {}
+    if alias_in_upper:
+        upper["alias"] = alias
+    else:
+        base["alias"] = alias
+    upper["alias/.wh..wh..opq" if opaque else "alias/.wh.git"] = b""
+    with pytest.raises(vex.VexError, match="whiteout ancestor"):
+        read_layers([layer_bytes(base), layer_bytes(upper)])
