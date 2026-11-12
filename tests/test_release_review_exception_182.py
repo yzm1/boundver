@@ -78,13 +78,16 @@ def bash() -> str | None:
 
 
 class LocalAgentExceptionHelperTests(unittest.TestCase):
+    helper_marker = "one-time PR 182 local-agent exception helpers"
+    helper_pr_number = 182
+
     def _helper(self, command, *arguments, **overrides):
         executable = bash()
         if executable is None:
             self.skipTest("Bash required for actual audit helpers")
         source = AUDIT.read_text(encoding="utf-8")
-        start = "# BEGIN one-time PR 182 local-agent exception helpers\n"
-        end = "# END one-time PR 182 local-agent exception helpers"
+        start = f"# BEGIN {self.helper_marker}\n"
+        end = f"# END {self.helper_marker}"
         self.assertEqual(source.count(start), 1)
         self.assertEqual(source.count(end), 1)
         helpers = source.split(start, 1)[1].split(end, 1)[0]
@@ -94,7 +97,7 @@ class LocalAgentExceptionHelperTests(unittest.TestCase):
             environment.pop(key, None)
         environment.update({
             "github_repository_lower": "yzm1/boundver",
-            "release_tag": "v0.17.0", "pr_number": "182",
+            "release_tag": "v0.17.0", "pr_number": str(self.helper_pr_number),
             "repository_owner_type": "User", "repository_owner_id": "22440724",
             "repository_owner_login": "yzm1", "author_id": "22440724",
             "author_login": "yzm1", "author_type": "User", "pr_head_sha": HEAD,
@@ -207,7 +210,8 @@ class LocalAgentExceptionHelperTests(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "full release audit runs on Linux")
 class LocalAgentExceptionAuditTests(unittest.TestCase):
-    def _audit(self, *, records=None, **overrides):
+    def _audit(self, *, records=None, number=182, record_body=None,
+               file_records=None, file_count=7, **overrides):
         # Reuse the existing real-Git/full-audit fixture, not another setup helper.
         from tests.test_distribution_contract import ReleaseReviewAuditTests
 
@@ -228,13 +232,14 @@ if [[ "$endpoint" == */pulls/182/files* ]]; then
   printf '%s' "$FAKE_EXCEPTION_FILES"; exit 0
 fi
 """
+        routes = routes.replace("/pulls/182", f"/pulls/{number}")
 
         def write_bytes(path, data):
             if path.name == "gh":
                 source = data.decode()
-                source = source.replace("echo 17\n", "echo 182\n")
-                source = source.replace("/pulls/17", "/pulls/182")
-                source = source.replace("/issues/17", "/issues/182")
+                source = source.replace("echo 17\n", f"echo {number}\n")
+                source = source.replace("/pulls/17", f"/pulls/{number}")
+                source = source.replace("/issues/17", f"/issues/{number}")
                 marker = 'if [[ "$endpoint" == "repos/$GITHUB_REPOSITORY/releases?per_page=100" ]]; then'
                 self.assertEqual(source.count(marker), 1)
                 data = source.replace(marker, routes + "\n" + marker).encode()
@@ -250,17 +255,19 @@ fi
             return original_run(command, *args, **kwargs)
 
         comments = fixture._comment_record(
-            body(), actor_id="22440724", login="yzm1", actor_type="User"
+            body() if record_body is None else record_body,
+            actor_id="22440724", login="yzm1", actor_type="User"
         ) if records is None else records
         environment = {
             "GITHUB_REPOSITORY": "yzm1/boundver",
             "FAKE_OWNER_ID": "22440724", "FAKE_OWNER_LOGIN": "yzm1",
             "FAKE_AUTHOR_ID": "22440724", "FAKE_AUTHOR_LOGIN": "yzm1",
             "FAKE_BASE_REPOSITORY": "yzm1/boundver", "FAKE_HEAD_SHA": HEAD,
-            "FAKE_PR_NUMBER": "182",
+            "FAKE_PR_NUMBER": str(number),
             "FAKE_REVIEWS": "", "FAKE_COMMENTS": comments,
             "FAKE_EXCEPTION_REPO_ID": "1226008327",
-            "FAKE_EXCEPTION_FILE_COUNT": "7", "FAKE_EXCEPTION_FILES": files(),
+            "FAKE_EXCEPTION_FILE_COUNT": str(file_count),
+            "FAKE_EXCEPTION_FILES": files() if file_records is None else file_records,
         }
         environment.update(overrides)
         with mock.patch.object(Path, "write_bytes", autospec=True, side_effect=write_bytes), \

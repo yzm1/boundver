@@ -1021,6 +1021,100 @@ local_agent_exception_scope_matches() {
 }
 # END one-time PR 182 local-agent exception helpers
 
+# BEGIN one-time PR 184 AI-maintainer identity exception helpers
+# The human reviewed the AI-written base; the separate agent must assess the
+# complete final head. This is not authenticated non-author GitHub approval.
+ai_maintainer_exception_eligible() {
+  [[ "$github_repository_lower" == yzm1/boundver && \
+     "$release_tag" == v0.17.0 && "$pr_number" == 184 && \
+     "$repository_owner_type" == User && "$repository_owner_id" == 22440724 && \
+     "$repository_owner_login" == yzm1 && "$author_id" == 22440724 && \
+     "$author_login" == yzm1 && "$author_type" == User ]]
+}
+
+ai_maintainer_exception_body() {
+  printf '%s\n' \
+    'boundver-ai-maintainer-review-exception/v1' \
+    'Repository: yzm1/boundver' \
+    'Repository-id: 1226008327' \
+    'Release: v0.17.0' \
+    'Pull-request: 184' \
+    "Head-sha: $pr_head_sha" \
+    'Maintainer-reviewed-base: db19d3614ec7d7f0ee6181cabac2549d02086cc5' \
+    'Review-kind: human maintainer review of AI-written base plus owner-attested exact-head local-agent assessment; authenticated non-author GitHub approval not obtained' \
+    'Reviewer-agent-id: 01a1c535-0f5a-7cb1-b670-cf583e847831' \
+    'Verdict: approve-conditional-scope' \
+    "Report-sha256: $1" \
+    "Report-base64: $2" \
+    'Owner-authorization: explicit PR184-only account-identity exception; no finding, CI, scan, expiry, CVE-risk or publication waiver'
+}
+
+ai_maintainer_exception_record_matches() {
+  local body=$1 encoded=$2 report_sha report_b64 canonical digest header expected_header
+  local pattern=$'\nReport-sha256: ([0-9a-f]{64})\nReport-base64: ([A-Za-z0-9+/=]+)\nOwner-authorization: '
+  [[ ${#body} -le 36864 && "$body" =~ $pattern ]] || return 1
+  report_sha=${BASH_REMATCH[1]}
+  report_b64=${BASH_REMATCH[2]}
+  [[ -n "$report_b64" && ${#report_b64} -le 32768 ]] || return 1
+  if ! canonical=$(printf '%s' "$report_b64" | base64 --decode | \
+      tr -d '\000' | base64 | tr -d '\n'); then
+    return 1
+  fi
+  [[ "$canonical" == "$report_b64" ]] || return 1
+  if ! digest=$(printf '%s' "$report_b64" | base64 --decode | \
+      "$python_command" -I -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read(24577)).hexdigest())'); then
+    return 1
+  fi
+  [[ "$digest" == "$report_sha" ]] || return 1
+  header=$(printf '%s' "$report_b64" | base64 --decode | sed -n '1,3p') || return 1
+  expected_header=$(printf '%s\n' \
+    "Reviewed-sha: $pr_head_sha" \
+    'Reviewer-agent-id: 01a1c535-0f5a-7cb1-b670-cf583e847831' \
+    'Verdict: approve-conditional-scope')
+  [[ "$header" == "$expected_header" ]] || return 1
+  [[ "$encoded" == "$(ai_maintainer_exception_body "$report_sha" "$report_b64" | base64 | tr -d '\n')" ]]
+}
+
+ai_maintainer_exception_scope_matches() {
+  local records=$1 record filename status blob previous extra expected expected_status count=0
+  local seen='|'
+  [[ -n "$records" ]] || return 1
+  while IFS= read -r record; do
+    IFS='|' read -r filename status blob previous extra <<< "$record"
+    [[ "$record" == "$filename|$status|$blob|" && \
+       "$blob" =~ ^[0-9a-f]{40}$ && -z "$previous" && -z "$extra" ]] || return 1
+    [[ "$seen" != *"|$filename|"* ]] || return 1
+    seen+="$filename|"
+    expected=
+    expected_status=modified
+    case "$filename" in
+      .dockerignore) expected=83413f9022094adc797a45db6dda48006ec47efb ;;
+      .trivyignore.yaml) expected=c5a93ffa50fa60139d67d84724b0896a4057f673 ;;
+      CHANGELOG.md) expected=ec15c4a5c8d4523a3f0530854ec54f0f97b461ac ;;
+      Dockerfile) expected=9fba41f1adff493d8af678f47ecb0e10573336e6 ;;
+      SECURITY.md) expected=359f401b466ad01a077dfa5b23ef0ea95ca2fd7e ;;
+      docs/distribution.md) expected=b219338cbf9fe02035f33c773acc1e73fc362697 ;;
+      scripts/minimal_git/README.md) expected=28a60d1b06553a59da1ade680ddd7dbf314756dd; expected_status=added ;;
+      scripts/minimal_git/audit.py) expected=3cb34415b03ef669ecd3965db02d29fca7550674; expected_status=added ;;
+      scripts/minimal_git/build.sh) expected=5c61eff5f7dd0f9b17c2f69307cbfe7609308589; expected_status=added ;;
+      scripts/minimal_git/snapshot.sh) expected=45740165f2511847a48ae7098345fd60818a77ea; expected_status=added ;;
+      scripts/verify_release_readiness.py) expected=e556a864cb2390fca1c9ac930f54ef44fcd04627 ;;
+      tests/test_distribution_contract.py) expected=2c53eef388b4c19c05cb27d19144537c42a0ba8d ;;
+      tests/test_minimal_git.py) expected=a9734a10b8ea268071b9a95e8049dbb3fd15ee97; expected_status=added ;;
+      tests/test_release_readiness.py) expected=092accdf5f247620f1d5050a859d8b9d6a5743a6 ;;
+      scripts/audit_release_reviews.sh|docs/RELEASING.md|tests/test_github_api_read.py|tests/test_release_review_exception_182.py) ;;
+      tests/test_release_review_exception_184.py) expected_status=added ;;
+      *) return 1 ;;
+    esac
+    [[ "$status" == "$expected_status" ]] || return 1
+    [[ -z "$expected" || "$blob" == "$expected" ]] || return 1
+    count=$((count + 1))
+    (( count <= 19 )) || return 1
+  done <<< "$records"
+  [[ "$count" -eq 19 ]]
+}
+# END one-time PR 184 AI-maintainer identity exception helpers
+
 failed=0
 if ! capture_bounded sorted_output "sorted release pull requests" \
     "$max_capture_bytes" sort -nu "$release_prs_file"; then
@@ -1134,6 +1228,9 @@ for pr_number in "${sorted_prs[@]}"; do
   local_agent_exception=0
   local_agent_exception_records=0
   local_agent_exception_matches=0
+  ai_maintainer_exception=0
+  ai_maintainer_exception_records=0
+  ai_maintainer_exception_matches=0
   blocking_review_records=0
   human_evidence=0
   codex_evidence=0
@@ -1330,6 +1427,15 @@ for pr_number in "${sorted_prs[@]}"; do
         local_agent_exception_matches=$((local_agent_exception_matches + 1))
       fi
     fi
+    if ai_maintainer_exception_eligible && \
+        [[ "$commenter_id" == 22440724 && "$commenter_login" == yzm1 && \
+           "$commenter_type" == User && \
+           "$comment_body" == boundver-ai-maintainer-review-exception/* ]]; then
+      ai_maintainer_exception_records=$((ai_maintainer_exception_records + 1))
+      if ai_maintainer_exception_record_matches "$comment_body" "$encoded_body"; then
+        ai_maintainer_exception_matches=$((ai_maintainer_exception_matches + 1))
+      fi
+    fi
     if [[ "$commenter_id" == "$trusted_codex_bot_id" && \
           "$commenter_type" == "Bot" ]]; then
       if codex_body_is_security_review_candidate "$comment_body"; then
@@ -1471,9 +1577,39 @@ for pr_number in "${sorted_prs[@]}"; do
       echo "PR #182 local-agent exception does not match its pinned policy/enforcement scope." >&2
     fi
   fi
+  if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
+        "$blocking_review_records" -eq 0 && \
+        "$ai_maintainer_exception_records" -eq 1 && "$ai_maintainer_exception_matches" -eq 1 ]]; then
+    if ! capture_github_api_bounded ai_maintainer_repo_id "PR184 exception repository identity" \
+        "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" --jq '.id' || \
+        [[ "$ai_maintainer_repo_id" != 1226008327 ]]; then
+      echo "PR #184 AI-maintainer exception repository identity is unavailable or changed." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded ai_maintainer_file_count "PR184 exception changed-file count" \
+        "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
+        --jq '.changed_files' || [[ "$ai_maintainer_file_count" != 19 ]]; then
+      echo "PR #184 AI-maintainer exception changed-file count is outside its reviewed scope." >&2
+      exit 1
+    fi
+    if ! capture_github_api_bounded ai_maintainer_files "PR184 exception complete file listing" \
+        "$max_small_capture_bytes" gh api --paginate \
+        "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
+        --jq '.[] | [ .filename, .status, .sha, (.previous_filename // "") ] | join("|")'; then
+      echo "PR #184 AI-maintainer exception file scope is unavailable." >&2
+      exit 1
+    fi
+    if ai_maintainer_exception_scope_matches "$ai_maintainer_files"; then
+      ai_maintainer_exception=1
+      echo "PR #184: human-reviewed AI-written base and owner-attested local-agent assessment at $pr_head_sha; authenticated non-author GitHub approval NOT obtained."
+    else
+      echo "PR #184 AI-maintainer exception does not match its pinned candidate/enforcement scope." >&2
+    fi
+  fi
   if [[ "$human_evidence" -eq 0 && \
         ! ( "$owner_authored" -eq 1 && "$codex_evidence" -eq 1 ) && \
-        "$maintainer_exception" -eq 0 && "$local_agent_exception" -eq 0 ]]; then
+        "$maintainer_exception" -eq 0 && "$local_agent_exception" -eq 0 && \
+        "$ai_maintainer_exception" -eq 0 ]]; then
     if [[ "$owner_authored" -eq 1 ]]; then
       expected_evidence="a non-author human with push access or the trusted Codex bot"
     else

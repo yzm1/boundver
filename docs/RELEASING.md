@@ -646,6 +646,41 @@ and publication approvals remain in force. It neither expands PR #181's
 separate launcher exception nor changes any other PR/release's review policy.
 Retain it as historical policy; do not broaden or reuse it for future releases.
 
+### One-time AI-author/maintainer identity exception: v0.17.0 / PR #184
+
+The owner reviewed the AI-written candidate `db19d3614ec7d7f0ee6181cabac2549d02086cc5`
+and explicitly authorized a PR #184-only account-identity exception on November 12.
+The agent opened the PR using `yzm1`'s credentials, so GitHub records the human
+reviewer as the PR author. This exception records that mismatch honestly; it is
+not authenticated non-author GitHub approval or a standing self-approval mode.
+
+Only repository ID `1226008327`, owner ID `22440724`, PR #184 and `v0.17.0` qualify.
+The fourteen original candidate blobs and their added/modified statuses are
+pinned in `ai_maintainer_exception_scope_matches`. Exactly nineteen files are
+allowed: those fourteen plus this runbook, the audit script, the bounded-API
+routing test, the shared PR182 test fixture and the new PR184 regression tests.
+Renames, deletions, duplicate paths, changed payloads and extra files fail closed.
+The original PR181 and PR182 exceptions are not expanded.
+
+After the complete source is frozen, obtain the separate local agent's actual
+exact-head assessment. Generate one canonical owner-authenticated comment with
+`ai_maintainer_exception_body`, binding the full head, original human-reviewed
+base, fixed reviewer-agent ID, report SHA-256 and canonical base64. The report's
+first three lines bind the current head, agent and conditional verdict, as with
+PR182. Do not imply that the human reviewed later enforcement changes: the
+separate agent must review those against the full final source. Missing, stale,
+duplicate, malformed, tampered or over-budget attestations do not qualify.
+Changing the head requires a new assessment and replacement owner record.
+Existing promotion snapshots detect changes to comment actors, IDs and bytes.
+
+This waives only account separation. Pending/blocking reviews, unresolved
+threads, adverse/ambiguous formal review evidence, CI, CodeQL, scans, CVE scope,
+November 22 expiry, artifact binding and publication approvals remain mandatory.
+In particular, it does **not** accept CVE-2026-105437, CVE-2026-111760 or
+CVE-2026-114466. Keep the existing security failure until verified remediation
+or a separately authorized scoped risk decision is complete. No CLI flag,
+environment variable or arbitrary per-PR manifest enables this exception.
+
 ## Promote the exact commit
 
 The publishing script is the only supported local release entry point. Its
