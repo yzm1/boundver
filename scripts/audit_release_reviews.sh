@@ -648,8 +648,21 @@ resolve_evidence_sha() {
 }
 
 codex_marker_sha=
+# Accept only the observed optional receipt envelope, before any content.
+# This is transport metadata, not evidence: all verdict/SHA/actor checks remain.
+codex_strip_receipt_header() {
+  codex_receipt_body=$1
+  if [[ "$codex_receipt_body" == '<!-- codex-review-receipt:v1 -->'$'\n'* ]]; then
+    codex_receipt_body=${codex_receipt_body#*$'\n'}
+  elif [[ "$codex_receipt_body" == '<!-- codex-review-receipt:v1 -->'$'\r\n'* ]]; then
+    codex_receipt_body=${codex_receipt_body#*$'\n'}
+  fi
+}
+
 codex_body_is_clean() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local marker_policy=$2
   local clean_count=0
   local marker_count=0
@@ -720,6 +733,8 @@ codex_comment_has_unique_marker() {
 
 codex_body_is_clean_security_review() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local state=heading_or_verdict
   local footer_state=outside
   local line
@@ -796,6 +811,8 @@ codex_body_is_security_review_candidate() {
 
 codex_body_is_suggestions_review() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local state=heading
   local footer_state=outside
   local line
@@ -1026,27 +1043,31 @@ local_agent_exception_scope_matches() {
 # complete final head. This is not authenticated non-author GitHub approval.
 ai_maintainer_exception_eligible() {
   [[ "$github_repository_lower" == yzm1/boundver && \
-     "$release_tag" == v0.17.0 && "$pr_number" == 184 && \
+     "$release_tag" == v0.17.0 && ( "$pr_number" == 184 || "$pr_number" == 187 ) && \
      "$repository_owner_type" == User && "$repository_owner_id" == 22440724 && \
      "$repository_owner_login" == yzm1 && "$author_id" == 22440724 && \
      "$author_login" == yzm1 && "$author_type" == User ]]
 }
 
 ai_maintainer_exception_body() {
+  local reviewed_base=db19d3614ec7d7f0ee6181cabac2549d02086cc5
+  if [[ "$pr_number" == 187 ]]; then
+    reviewed_base=577a3b18ed234d36327ca92d844a0b2a97810a50
+  fi
   printf '%s\n' \
     'boundver-ai-maintainer-review-exception/v1' \
     'Repository: yzm1/boundver' \
     'Repository-id: 1226008327' \
     'Release: v0.17.0' \
-    'Pull-request: 184' \
+    "Pull-request: $pr_number" \
     "Head-sha: $pr_head_sha" \
-    'Maintainer-reviewed-base: db19d3614ec7d7f0ee6181cabac2549d02086cc5' \
+    "Maintainer-reviewed-base: $reviewed_base" \
     'Review-kind: human maintainer review of AI-written base plus owner-attested exact-head local-agent assessment; authenticated non-author GitHub approval not obtained' \
     'Reviewer-agent-id: 01a1c535-0f5a-7cb1-b670-cf583e847831' \
     'Verdict: approve-conditional-scope' \
     "Report-sha256: $1" \
     "Report-base64: $2" \
-    'Owner-authorization: explicit PR184-only account-identity exception; no finding, CI, scan, expiry, CVE-risk or publication waiver'
+    "Owner-authorization: explicit PR${pr_number}-only account-identity exception; no finding, CI, scan, expiry, CVE-risk or publication waiver"
 }
 
 ai_maintainer_exception_record_matches() {
@@ -1079,6 +1100,25 @@ ai_maintainer_exception_scope_matches() {
   local records=$1 record filename status blob previous extra expected expected_status count=0
   local seen='|'
   [[ -n "$records" ]] || return 1
+  if [[ "$pr_number" == 187 ]]; then
+    while IFS= read -r record; do
+      IFS='|' read -r filename status blob previous extra <<< "$record"
+      [[ "$record" == "$filename|$status|$blob|" && "$blob" =~ ^[0-9a-f]{40}$ &&
+         -z "$previous" && -z "$extra" && "$seen" != *"|$filename|"* ]] || return 1
+      seen+="$filename|"
+      case "$filename" in
+        tests/test_distribution_contract.py)
+          [[ "$status" == modified && "$blob" == 1b4b51398db0b3c0e70f6b98ab43063ddeb274e4 ]] || return 1 ;;
+        scripts/audit_release_reviews.sh) [[ "$status" == modified ]] || return 1 ;;
+        tests/test_release_review_exception_187.py) [[ "$status" == added ]] || return 1 ;;
+        *) return 1 ;;
+      esac
+      count=$((count + 1))
+    done <<< "$records"
+    [[ "$count" -eq 3 ]]
+    return
+  fi
+  [[ "$pr_number" == 184 ]] || return 1
   while IFS= read -r record; do
     IFS='|' read -r filename status blob previous extra <<< "$record"
     [[ "$record" == "$filename|$status|$blob|" && \
@@ -1585,30 +1625,32 @@ for pr_number in "${sorted_prs[@]}"; do
   if [[ "$human_evidence" -eq 0 && "$codex_evidence" -eq 0 && \
         "$blocking_review_records" -eq 0 && \
         "$ai_maintainer_exception_records" -eq 1 && "$ai_maintainer_exception_matches" -eq 1 ]]; then
-    if ! capture_github_api_bounded ai_maintainer_repo_id "PR184 exception repository identity" \
+    ai_maintainer_expected_count=24
+    [[ "$pr_number" != 187 ]] || ai_maintainer_expected_count=3
+    if ! capture_github_api_bounded ai_maintainer_repo_id "PR${pr_number} exception repository identity" \
         "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}" --jq '.id' || \
         [[ "$ai_maintainer_repo_id" != 1226008327 ]]; then
-      echo "PR #184 AI-maintainer exception repository identity is unavailable or changed." >&2
+      echo "PR #$pr_number AI-maintainer exception repository identity is unavailable or changed." >&2
       exit 1
     fi
-    if ! capture_github_api_bounded ai_maintainer_file_count "PR184 exception changed-file count" \
+    if ! capture_github_api_bounded ai_maintainer_file_count "PR${pr_number} exception changed-file count" \
         "$max_small_capture_bytes" gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-        --jq '.changed_files' || [[ "$ai_maintainer_file_count" != 24 ]]; then
-      echo "PR #184 AI-maintainer exception changed-file count is outside its reviewed scope." >&2
+        --jq '.changed_files' || [[ "$ai_maintainer_file_count" != "$ai_maintainer_expected_count" ]]; then
+      echo "PR #$pr_number AI-maintainer exception changed-file count is outside its reviewed scope." >&2
       exit 1
     fi
-    if ! capture_github_api_bounded ai_maintainer_files "PR184 exception complete file listing" \
+    if ! capture_github_api_bounded ai_maintainer_files "PR${pr_number} exception complete file listing" \
         "$max_small_capture_bytes" gh api --paginate \
         "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}/files?per_page=100" \
         --jq '.[] | [ .filename, .status, .sha, (.previous_filename // "") ] | join("|")'; then
-      echo "PR #184 AI-maintainer exception file scope is unavailable." >&2
+      echo "PR #$pr_number AI-maintainer exception file scope is unavailable." >&2
       exit 1
     fi
     if ai_maintainer_exception_scope_matches "$ai_maintainer_files"; then
       ai_maintainer_exception=1
-      echo "PR #184: human-reviewed AI-written base and owner-attested local-agent assessment at $pr_head_sha; authenticated non-author GitHub approval NOT obtained."
+      echo "PR #$pr_number: human-reviewed AI-written base and owner-attested local-agent assessment at $pr_head_sha; authenticated non-author GitHub approval NOT obtained."
     else
-      echo "PR #184 AI-maintainer exception does not match its pinned candidate/enforcement scope." >&2
+      echo "PR #$pr_number AI-maintainer exception does not match its pinned candidate/enforcement scope." >&2
     fi
   fi
   if [[ "$human_evidence" -eq 0 && \
