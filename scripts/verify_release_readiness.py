@@ -61,6 +61,8 @@ SKIP_PARTS = {
     ".git",
     ".pytest_cache",
     ".mypy_cache",
+    ".ruff_cache",
+    ".hypothesis",
     ".tox",
     ".venv",
     "build",

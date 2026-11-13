@@ -646,6 +646,78 @@ and publication approvals remain in force. It neither expands PR #181's
 separate launcher exception nor changes any other PR/release's review policy.
 Retain it as historical policy; do not broaden or reuse it for future releases.
 
+### One-time AI-author/maintainer identity exception: v0.17.0 / PR #184
+
+The owner reviewed the AI-written candidate `db19d3614ec7d7f0ee6181cabac2549d02086cc5`
+and explicitly authorized a PR #184-only account-identity exception on November 12.
+The agent opened the PR using `yzm1`'s credentials, so GitHub records the human
+reviewer as the PR author. This exception records that mismatch honestly; it is
+not authenticated non-author GitHub approval or a standing self-approval mode.
+
+Only repository ID `1226008327`, owner ID `22440724`, PR #184 and `v0.17.0` qualify.
+The nineteen reviewed payload blobs and their added/modified statuses are pinned
+in `ai_maintainer_exception_scope_matches`, including the upstream security-release
+recipe and public verification key added after the human-reviewed base. Those
+later changes need the separate agent's complete exact-head review; do not
+attribute them to the earlier human review. The owner separately authorized the
+three Git fixed assessments on November 12; their exact-image validator, tests
+and two scan-workflow integrations are included in this scope. Exactly twenty-four files are
+allowed: those nineteen plus this runbook, the audit script, the bounded-API
+routing test, the shared PR182 test fixture and the new PR184 regression tests.
+Renames, deletions, duplicate paths, changed payloads and extra files fail closed.
+The original PR181 and PR182 exceptions are not expanded.
+
+After the complete source is frozen, obtain the separate local agent's actual
+exact-head assessment. Generate one canonical owner-authenticated comment with
+`ai_maintainer_exception_body`, binding the full head, original human-reviewed
+base, fixed reviewer-agent ID, report SHA-256 and canonical base64. The report's
+first three lines bind the current head, agent and conditional verdict, as with
+PR182. Do not imply that the human reviewed later enforcement changes: the
+separate agent must review those against the full final source. Missing, stale,
+duplicate, malformed, tampered or over-budget attestations do not qualify.
+Changing the head requires a new assessment and replacement owner record.
+Existing promotion snapshots detect changes to comment actors, IDs and bytes.
+
+This waives only account separation. Pending/blocking reviews, unresolved
+threads, adverse/ambiguous formal review evidence, CI, CodeQL, scans, CVE scope,
+November 22 expiry, artifact binding and publication approvals remain mandatory.
+In particular, it does **not** accept CVE-2026-105437, CVE-2026-111760 or
+CVE-2026-114466. Keep the existing security failure until verified remediation
+or a separately authorized scoped risk decision is complete. No CLI flag,
+environment variable or arbitrary per-PR manifest enables this exception.
+
+### Three upstream-fixed Git records
+
+The owner authorized a source- and image-bound fixed assessment for
+CVE-2026-105437, CVE-2026-111760 and CVE-2026-114466 only. This is separate from
+the reviewer-identity exception and from the expiring Debian library risk
+acceptance. The signed upstream Git 2.50.2 source contains the fixes; the
+Debian tracker still reports the custom package as unfixed.
+
+The offline scan sequence is: unfiltered raw report; independent fixable-only
+scan with no VEX or allowlist; `prepare_git_vex.py prepare`; scoped policy scan
+with the generated VEX; then `prepare_git_vex.py check`. Preparation checks the
+exact image/config/layer digests, release checkout and label, architecture,
+source inputs, reviewed recipe, installed ELF hashes and package source/version.
+The final check fingerprints the input again and accounts for every raw finding.
+Only the three exact Git PURL/CVE pairs may receive `fixed`; existing accepted
+package pairs may receive `ignored`. Any other removal, duplicate, image change
+or remaining HIGH/CRITICAL finding fails closed.
+
+Trivy 0.73.0's offline inputs have no root image PURL. Its component-only VEX
+matcher is not itself an image-binding mechanism. The reviewed wrapper supplies
+that binding; never reuse its temporary VEX or apply it to the independent scans.
+This trusts the existing exact-source build/artifact chain, not arbitrary
+third-party build manifests. Both final architecture images need fresh checks.
+No Git entry is added to `.trivyignore.yaml`, and November 22 is not extended.
+
+On success or failure the scan step retains available exact JSON bytes in a
+`BEGIN boundver-security-evidence/v1` job-log envelope. Concatenate its payload
+lines, base64-decode and zlib-decompress them; check the envelope SHA-256 and each
+embedded file SHA-256 before using the evidence. Raw reports, independent
+fixable-only reports, scoped reports and generated VEX remain distinguishable.
+This does not change release artifact names or retry/recovery selection rules.
+
 ## Promote the exact commit
 
 The publishing script is the only supported local release entry point. Its

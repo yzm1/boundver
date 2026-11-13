@@ -271,11 +271,15 @@ jobs:
           python3 -I .release-control/scripts/check_security_policy_expiry.py
           cache="$RUNNER_TEMP/trivy-cache"
           mkdir -m 700 "$cache"
+          reports="$RUNNER_TEMP/security-reports"
+          mkdir -m 700 "$reports"
+          trap 'result=$?; python3 -I .release-control/scripts/prepare_git_vex.py retain --reports "$reports" || result=1; exit "$result"' EXIT
           scan=(
             docker run --rm
             --volume "$RUNNER_TEMP:/scan:ro"
             --volume "$GITHUB_WORKSPACE/.release-control:/policy:ro"
             --volume "$cache:/root/.cache"
+            --volume "$reports:/reports"
             "$TRIVY_IMAGE" image
             --input /scan/trivy-oci-scan/layout
             --scanners vuln
@@ -283,16 +287,30 @@ jobs:
             --max-image-size 2GB
             --no-progress
             --skip-version-check
+            --config /dev/null
           )
           for platform in linux/amd64 linux/arm64; do
             selector=${platform//\//-}.json
+            report_name=${platform//\//-}
+            mkdir -m 700 "$reports/$report_name"
             install --mode=0600 \
               "$RUNNER_TEMP/trivy-oci-scan/selectors/$selector" \
               "$RUNNER_TEMP/trivy-oci-scan/layout/index.json"
+            "${scan[@]}" --format json --output "/reports/$report_name/raw.json" --show-suppressed --exit-code 0
             "${scan[@]}" \
-              --ignorefile /policy/.trivyignore.yaml --exit-code 1
-            "${scan[@]}" \
-              --ignore-unfixed --exit-code 1
+              --ignore-unfixed --exit-code 1 --format json --output "/reports/$report_name/fixable.json"
+            python3 -I .release-control/scripts/prepare_git_vex.py prepare \
+              --image "$RUNNER_TEMP/trivy-oci-scan/layout" \
+              --raw-report "$reports/$report_name/raw.json" \
+              --source-root "$GITHUB_WORKSPACE" --release-sha "$RELEASE_SHA" \
+              --architecture "${platform#linux/}" --output "$reports/$report_name/git-vex.json"
+            "${scan[@]}" --ignorefile /policy/.trivyignore.yaml --exit-code 1 \
+              --vex "/reports/$report_name/git-vex.json" --show-suppressed \
+              --format json --output "/reports/$report_name/scoped.json"
+            python3 -I .release-control/scripts/prepare_git_vex.py check \
+              --image "$RUNNER_TEMP/trivy-oci-scan/layout" \
+              --raw-report "$reports/$report_name/raw.json" \
+              --scoped-report "$reports/$report_name/scoped.json" --vex "$reports/$report_name/git-vex.json"
           done
 
   publish:

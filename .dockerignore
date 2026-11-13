@@ -89,8 +89,15 @@ spec/
 examples/
 tests/
 
-# Only the reviewed hash lock is an image-build input from scripts/.
+# Only the reviewed Git build recipe and hash lock enter the build context.
 scripts/*
+!scripts/minimal_git/
+scripts/minimal_git/*
+!scripts/minimal_git/audit.py
+!scripts/minimal_git/build.sh
+!scripts/minimal_git/snapshot.sh
+!scripts/minimal_git/README.md
+!scripts/minimal_git/git-release-key.gpg
 !scripts/requirements/
 scripts/requirements/*
 !scripts/requirements/action.lock

@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.17.0] - 2026-11-10
+## [0.17.0] - 2026-11-12
 
 ### Upgrade contract
 
@@ -19,6 +19,32 @@ Existing supported locks do not need regeneration merely to upgrade. Adding
 new declarations such as `version_source.repo_file` changes the declared
 configuration and requires a normal reviewed lock update. Historical inspection
 does not migrate incompatible digests or assert deployment provenance.
+
+### Container security
+
+- Build container Git from authenticated upstream Git 2.50.2, including the
+  November upstream security fixes, without HTTP client and optional scripting
+  dependencies. Pin the archive/signature/key digests and signer fingerprints;
+  verify the uncompressed tar signature before extraction. Include original source,
+  licences and complete build recipes in the image. Check native executable
+  hardening and dependencies, SHA1 collision detection, and byte-identical Git
+  packages from two clean source extractions. This is not a general-purpose Git
+  image or a claim that the remaining base-image findings are patched; existing
+  expiry, review and independent vulnerability-scan gates still apply.
+- Correct three stale Debian Git findings only after checking the exact image's
+  upstream-fixed source, build recipe, installed executable hashes and package
+  identity. Generate temporary, externally image-bound VEX for these three
+  fixes only; retain unfiltered and independent fixable-only scans, account for
+  every raw finding, and preserve the existing residual-risk expiry. This does
+  not accept vulnerable Git or introduce a general CVE suppression switch.
+- Narrow the temporary container exception policy to the 11 previously
+  accepted CVEs / 47 package pairs still present in the amd64 candidate.
+  Remove obsolete curl, Expat and Kerberos entries and unnecessary Perl package
+  entries. No new risk is accepted and the November 22 expiry is unchanged;
+  both final release platforms must still pass the full scan gates.
+- Exclude ignored Ruff and Hypothesis caches from release-surface inventory,
+  preventing transient tool-cache changes from blocking readiness checks.
+  Changes to actual release inputs still fail closed.
 
 ### Added
 

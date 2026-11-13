@@ -84,6 +84,34 @@ This least-privilege form is exercised in CI. Verification needs no writable
 filesystem, network access, or Linux capabilities. Add those privileges only
 for a workflow that deliberately needs them.
 
+The container's Git is a reduced-feature build of Debian source for local
+Boundver inspection, not a general-purpose Git installation. HTTP(S) clients
+and optional Perl/Tcl/Python helpers are disabled, avoiding Git's curl/Kerberos
+dependency chain. This does **not** disable every Git transport or make the
+image a sandbox; keep `--network none` and the other restrictions above.
+
+Git's full licence, original upstream source archive and signature, public key, build
+recipes and integrity/provenance records accompany each image under
+`/usr/share/licenses/git`. To inspect them without running the image:
+
+```bash
+docker create --name boundver-source ghcr.io/yzm1/boundver:<version>
+docker cp boundver-source:/usr/share/licenses/git ./boundver-git-source
+docker rm boundver-source
+```
+
+The bundle README describes reconstruction. The custom package records the
+actual upstream Git 2.50.2 source version, not Debian's old source version or
+a renamed package that hides Git from inventory. Its local suffix is not a
+patch claim. The upstream tar signature, pinned sizes/hashes and primary/subkey
+fingerprints are checked before extraction. Builds also check executable
+hardening, SHA1 collision detection and byte equality of two independently
+extracted Git-package builds; that check is not whole-image reproducibility.
+Three stale Debian Git records have an upstream-fixed assessment tied to each
+verified image. The release gate keeps raw and independent fixable-only scans;
+see [Security](https://github.com/yzm1/boundver/blob/main/SECURITY.md) for the
+binding checks and the separate, expiring base-library exceptions.
+
 Release images target `linux/amd64` and `linux/arm64`, carry OCI source,
 version, and revision labels, and receive GitHub artifact attestations. Resolve
 and pin the manifest digest for the strongest reproducibility:

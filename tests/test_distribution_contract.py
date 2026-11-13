@@ -2246,7 +2246,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 2)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 3)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2459,21 +2459,22 @@ print(json.dumps(payload, separators=(",", ":")))
             "python:3.12.16-slim-trixie@"
             "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
         )
-        self.assertEqual(dockerfile.count(f"FROM {base}"), 2)
-        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", dockerfile)
+        self.assertEqual(dockerfile.count(f"FROM {base}"), 3)
+        snapshot = (REPO_ROOT / "scripts/minimal_git/snapshot.sh").read_text(encoding="utf-8")
+        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", snapshot)
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian/20261104T212339Z",
-            dockerfile,
+            snapshot,
         )
         self.assertIn(
             "# http://snapshot.debian.org/archive/debian-security/20261104T212339Z",
-            dockerfile,
+            snapshot,
         )
         snapshot_stamps = set(
             re.findall(
                 r"https://snapshot\.debian\.org/archive/(?:debian|debian-security)/"
                 r"(\d{8}T\d{6}Z)",
-                dockerfile,
+                snapshot,
             )
         )
         self.assertEqual(snapshot_stamps, {"20261108T120000Z"})
@@ -2483,10 +2484,13 @@ print(json.dumps(payload, separators=(",", ":")))
         epoch = re.search(r"(?m)^ENV SOURCE_DATE_EPOCH=(\d+)$", dockerfile)
         self.assertIsNotNone(epoch)
         self.assertEqual(int(epoch.group(1)), int(snapshot_time.timestamp()))
-        self.assertGreaterEqual(dockerfile.count("grep -Fqx"), 2)
-        self.assertIn('Acquire::Check-Valid-Until "false"', dockerfile)
+        self.assertGreaterEqual(snapshot.count("grep -Fqx"), 2)
+        self.assertIn('Acquire::Check-Valid-Until "false"', snapshot)
         self.assertIn("apt-get upgrade -y", dockerfile)
-        self.assertIn("git=1:2.47.3-0+deb13u1", dockerfile)
+        self.assertIn("ARG GIT_SOURCE_VERSION=1:2.50.2", dockerfile)
+        self.assertIn("/packages/git-minimal.deb", dockerfile)
+        self.assertIn("sha256sum -c SHA256SUMS", dockerfile)
+        self.assertIn("/usr/share/licenses/git/COPYING", dockerfile)
         self.assertIn(
             "python -I -m pip uninstall --yes pip setuptools wheel",
             dockerfile,
@@ -2517,6 +2521,8 @@ print(json.dumps(payload, separators=(",", ":")))
         ):
             self.assertIn(credential, dockerignore)
         self.assertIn("!scripts/requirements/action.lock", dockerignore)
+        for source_input in ("audit.py", "build.sh", "snapshot.sh", "README.md", "git-release-key.gpg"):
+            self.assertIn(f"!scripts/minimal_git/{source_input}", dockerignore)
         self.assertNotIn("recursive-include tests", manifest)
         self.assertIn("exclude docs/RELEASING.md", manifest)
         for site_only_doc in (
@@ -2854,7 +2860,7 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertEqual(len(run_blocks), 1, relative)
             scan_script = run_blocks[0]
             # Pin the three permitted references in these trusted scripts:
-            # one definition and two calls. Extra direct/alias array writes
+            # one definition and three calls. Extra direct/alias array writes
             # require explicit review; this is not a general Bash analyser.
             without_comments = "\n".join(
                 line for line in scan_script.splitlines()
@@ -2862,7 +2868,7 @@ print(json.dumps(payload, separators=(",", ":")))
             )
             self.assertEqual(
                 re.findall(r"(?<![A-Za-z0-9_./-])scan(?![A-Za-z0-9_./-])", without_comments),
-                ["scan"] * 3,
+                ["scan"] * 4,
                 relative,
             )
             logical_lines = scan_script.replace("\\\n", " ").splitlines()
@@ -2871,9 +2877,12 @@ print(json.dumps(payload, separators=(",", ":")))
                 for line in logical_lines
                 if line.strip().startswith('"${scan[@]}"')
             ]
+            prefix = "/reports/$report_name" if "publish-container" in relative else "/reports"
             self.assertEqual(invocations, [
-                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1"],
-                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1"],
+                ["${scan[@]}", "--format", "json", "--output", prefix + "/raw.json", "--show-suppressed", "--exit-code", "0"],
+                ["${scan[@]}", "--ignore-unfixed", "--exit-code", "1", "--format", "json", "--output", prefix + "/fixable.json"],
+                ["${scan[@]}", "--ignorefile", "/policy/.trivyignore.yaml", "--exit-code", "1",
+                 "--vex", prefix + "/git-vex.json", "--show-suppressed", "--format", "json", "--output", prefix + "/scoped.json"],
             ], relative)
             self.assertEqual(scan_script.count("scan=("), 1, relative)
             shared_lines = []
@@ -2887,7 +2896,7 @@ print(json.dumps(payload, separators=(",", ":")))
             self.assertFalse(any(
                 argument == flag or argument.startswith(flag + "=")
                 for argument in shared_arguments
-                for flag in ("--ignorefile", "--ignore-unfixed")
+                for flag in ("--ignorefile", "--ignore-unfixed", "--vex")
             ), relative)
             with self.subTest(workflow=relative):
                 self.assertIn(scanner, workflow)
@@ -2951,37 +2960,21 @@ print(json.dumps(payload, separators=(",", ":")))
         assessed_ids = {
             "CVE-2025-69720", "CVE-2026-16742", "CVE-2026-54369",
             "CVE-2026-76642", "CVE-2026-78408", "CVE-2026-78409",
-            "CVE-2026-78410", "CVE-2026-12064", "CVE-2026-8458",
-            "CVE-2026-9538", "CVE-2026-113351", "CVE-2026-115506",
-            "CVE-2026-117610", "CVE-2026-118370", "CVE-2026-119373",
+            "CVE-2026-78410", "CVE-2026-9538", "CVE-2026-119373",
             "CVE-2026-119374", "CVE-2026-119379",
-            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
-            "CVE-2026-119079",
         }
         by_id = {entry["id"]: entry for entry in exceptions}
         # The development snapshot installs Debian's fixed Expat package;
         # the historical v0.16 recovery exception must not survive that update.
         self.assertNotIn("CVE-2026-77214", by_id)
         self.assertEqual(set(by_id), assessed_ids)
-        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 72)
+        self.assertEqual(sum(len(entry["purls"]) for entry in exceptions), 47)
         assessed_packages = {
             "CVE-2025-69720": [
                 "pkg:deb/debian/libncursesw6",
                 "pkg:deb/debian/libtinfo6",
                 "pkg:deb/debian/ncurses-base",
                 "pkg:deb/debian/ncurses-bin"
-            ],
-            "CVE-2026-113351": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-115506": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-117610": [
-                "pkg:deb/debian/libexpat1"
-            ],
-            "CVE-2026-118370": [
-                "pkg:deb/debian/libexpat1"
             ],
             "CVE-2026-119373": [
                 "pkg:deb/debian/libsqlite3-0"
@@ -2991,9 +2984,6 @@ print(json.dumps(payload, separators=(",", ":")))
             ],
             "CVE-2026-119379": [
                 "pkg:deb/debian/libsqlite3-0"
-            ],
-            "CVE-2026-12064": [
-                "pkg:deb/debian/libcurl3t64-gnutls"
             ],
             "CVE-2026-16742": [
                 "pkg:deb/debian/libsystemd0",
@@ -3046,42 +3036,21 @@ print(json.dumps(payload, separators=(",", ":")))
                 "pkg:deb/debian/mount",
                 "pkg:deb/debian/util-linux"
             ],
-            "CVE-2026-8458": [
-                "pkg:deb/debian/libcurl3t64-gnutls"
-            ],
             "CVE-2026-9538": [
-                "pkg:deb/debian/libperl5.40",
-                "pkg:deb/debian/perl",
                 "pkg:deb/debian/perl-base",
-                "pkg:deb/debian/perl-modules-5.40"
             ]
         }
-        kerberos_ids = {
-            "CVE-2026-112321", "CVE-2026-112322", "CVE-2026-112323",
-            "CVE-2026-119079",
-        }
-        for identifier in kerberos_ids:
-            assessed_packages[identifier] = [
-                "pkg:deb/debian/libgssapi-krb5-2",
-                "pkg:deb/debian/libk5crypto3",
-                "pkg:deb/debian/libkrb5-3",
-                "pkg:deb/debian/libkrb5support0",
-            ]
-            self.assertEqual(
-                set(by_id[identifier]), {"id", "purls", "expired_at", "statement"}
-            )
-            for limitation in (
-                "built-in CLI", "no network or capabilities", "non-root",
-                "libraries remain vulnerable", "Custom providers",
-                "overridden entrypoints", "independent review",
-                "exact-image scans on both platforms",
-            ):
-                self.assertIn(limitation, by_id[identifier]["statement"])
         self.assertEqual(
             {identifier: sorted(entry["purls"]) for identifier, entry in by_id.items()},
             assessed_packages,
         )
         for entry in exceptions:
+            self.assertEqual(set(entry), {"id", "purls", "expired_at", "statement"})
+            for limitation in (
+                "libraries remain vulnerable", "independent review",
+                "exact-image scans", "entrypoints",
+            ):
+                self.assertIn(limitation, entry["statement"])
             self.assertRegex(entry["id"], r"^CVE-[0-9]{4}-[0-9]+$")
             self.assertIs(type(entry["expired_at"]), datetime.date)
             self.assertEqual(entry["expired_at"], datetime.date(2026, 11, 22))
@@ -3108,25 +3077,33 @@ print(json.dumps(payload, separators=(",", ":")))
                     "--ignore-unfixed --exit-code 1",
                     "--ignore-unfixed --exit-code 1 --ignorefile=/policy/.trivyignore.yaml",
                 ),
+                "fixable-vex": original.replace(
+                    "--ignore-unfixed --exit-code 1",
+                    "--ignore-unfixed --exit-code 1 --vex /reports/git-vex.json",
+                ),
+                "raw-vex": original.replace(
+                    '"${scan[@]}" --format json',
+                    '"${scan[@]}" --vex /reports/git-vex.json --format json',
+                ),
                 "shared-array": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n"
                     "            --ignorefile /policy/.trivyignore.yaml\n          )",
                 ),
                 "later-append": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          scan+=(--ignorefile /policy/.trivyignore.yaml)",
                 ),
                 "later-indexed-write": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          scan[${#scan[@]}]=--ignorefile\n"
                     "          scan[${#scan[@]}]=/policy/.trivyignore.yaml",
                 ),
                 "later-alias-write": original.replace(
-                    "--skip-version-check\n          )",
-                    "--skip-version-check\n          )\n"
+                    "--config /dev/null\n          )",
+                    "--config /dev/null\n          )\n"
                     "          declare -n scan_alias=scan\n"
                     "          scan_alias+=(--ignorefile /policy/.trivyignore.yaml)",
                 ),

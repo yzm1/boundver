@@ -78,19 +78,36 @@ environment.
 
 ## Temporary v0.17 container risk acceptance
 
-As of November 10, 2026, the proposed v0.17 image contains Debian libraries
+The v0.17 container still contains Debian libraries
 with unpatched HIGH findings. The package/CVE allowlist in `.trivyignore.yaml`
 expires on **November 22, 2026**; it is not a claim that the libraries are fixed.
 An independent, no-exceptions scan still rejects fixable HIGH/CRITICAL findings.
 New findings outside the explicit allowlist block publication.
 
-The maintainer accepted four additional Kerberos IDs on November 10, conditional
-on independent review and successful final exact-image scans on both amd64 and
-arm64: CVE-2026-112321, CVE-2026-112322, CVE-2026-112323 and CVE-2026-119079.
-This adds only 16 package/CVE pairs, against `libgssapi-krb5-2`, `libk5crypto3`,
-`libkrb5-3` and `libkrb5support0`. The pinned Debian inputs currently install
-version `1.21.3-5+deb13u1`; other packages are not covered by these four entries.
-Existing acceptance for the other 17 IDs is not extended or renewed.
+The Debian feed still reports three Git records against the custom upstream
+package: CVE-2026-105437, CVE-2026-111760 and CVE-2026-114466. Upstream Git 2.50.2
+contains their fixes. On November 12 the owner authorized a fixed assessment
+for these three only, not acceptance of vulnerable Git. They are not added to
+the residual-risk allowlist.
+
+`scripts/prepare_git_vex.py` checks the exact offline image, release commit,
+architecture, layer digests, pinned source inputs, reviewed build recipe,
+installed Git executable hashes and package identity before generating three
+temporary OpenVEX `fixed` statements. Offline Trivy matches component PURLs,
+not root image PURLs: image binding is enforced by the CI wrapper and its
+before/after input fingerprints, not by a self-contained root-bound VEX file.
+Never reuse that temporary file for another image. This relies on the trusted
+exact-source build and retained-artifact chain; it is not independent
+source-to-binary recompilation or an upstream signature of our binaries.
+
+Only the scoped policy scan receives VEX. Raw and independent fixable-only
+scans receive neither VEX nor the residual-risk allowlist. A final accounting
+check requires every raw finding to remain visible or have exactly the
+authorized disposition; unexpected suppression fails closed. Exact raw,
+fixable-only, scoped and VEX JSON bytes are retained in bounded, digest-checked
+job-log envelopes. Both final release architectures still require fresh scans
+and independent review. Existing library exceptions retain their November 22
+expiry and operating restrictions.
 
 Acceptance applies only to the built-in CLI running non-root, with no network,
 all capabilities dropped and `no-new-privileges`. Custom providers, overridden
@@ -99,19 +116,34 @@ repository mounts recommended above for verification. The launcher-specific
 review exception in PR #181 does not approve this risk assessment or waive any
 security finding, independent review, expiry or scan gate.
 
-The first three IDs concern the legacy AUTH_GSSAPI server path used by
-`kadmind`; the fourth concerns ASN.1 decoding exploited through KDC requests.
-See Debian's trackers for [112321](https://security-tracker.debian.org/tracker/CVE-2026-112321),
-[112322](https://security-tracker.debian.org/tracker/CVE-2026-112322),
-[112323](https://security-tracker.debian.org/tracker/CVE-2026-112323) and
-[119079](https://security-tracker.debian.org/tracker/CVE-2026-119079).
-The inspected local runtime has no `krb5-kdc`, `krb5-admin-server`, `kadmind`,
-`krb5kdc` or `libgssrpc` installed. This is preliminary reachability evidence,
-not proof that every remaining library path is unreachable or that the final
-release image has been scanned. The built-in CLI performs local Git inspection,
-not Kerberos server operations; the vulnerable libraries remain installed.
+The reduced-feature container Git is built from pinned upstream Git 2.50.2
+without curl, Expat, gettext, OpenSSL or Perl/Tcl/Python helpers. The archive's
+detached signature is verified against a vendored, fingerprint-pinned maintainer
+key before extraction. Its local-inspection contract, original sources, complete build
+recipes, compiler/package records and licences accompany the image. The build
+checks every installed ELF's dependency set, architecture, PIE, non-executable
+stack, RELRO and immediate binding; shell-script interpreters are checked too.
+It tests SHA1 collision detection and requires byte-identical packages from two
+separate source extractions. These checks do not prove general Git feature
+parity, whole-image reproducibility or absence of every vulnerability.
 
-[MIT's 1.22.3 release](https://web.mit.edu/kerberos/krb5-1.22/krb5-1.22.3.html)
-contains upstream fixes. Debian currently reports its packaged version unfixed.
-Prefer patched, reviewed distribution inputs when available; do not renew the
-exceptions automatically or substitute an unreviewed native-library build.
+The custom `git` package records the actual upstream `Source` version and
+adds a `+boundver1` binary suffix. It is not Debian's official Git package, and
+the suffix does not assert a patch. Version 2.50.2 is an upstream security
+release, not a local relabelling of the older 2.47 source. Source archives,
+signature, public key and recipes are
+under `/usr/share/licenses/git/source`, with full COPYING outside dpkg's
+documentation filter. See the [container guide](https://yzm1.github.io/boundver/distribution/#container).
+
+Earlier owner acceptances of Kerberos findings (four IDs on November 10 and six
+on November 11) were conditional on review and both final-platform scans, with
+the same November 22 expiry. They do not authorize other CVEs, extend the
+expiry, or waive independent review. A dependency-removal candidate must pass
+fresh inventory and vulnerability scans before its obsolete exception entries
+can be removed. The complete amd64 candidate's November 11 inventory and scans
+allow removing curl, Expat and Kerberos package exceptions and narrowing Perl
+to `perl-base`. The remaining policy is a subset of the original acceptance:
+11 CVEs and 47 package/CVE pairs, all with the unchanged November 22 expiry.
+No new findings are accepted by this reduction. Final exact-image checks on
+both amd64 and arm64 remain mandatory; the removed libraries are not being
+declared patched. Prefer patched, reviewed distribution inputs whenever available.
