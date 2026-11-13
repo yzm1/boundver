@@ -3786,6 +3786,61 @@ class ReleaseChangelogTests(unittest.TestCase):
 
 
 class ReleaseReviewAuditTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "release audit runs on Linux")
+    def test_receipt_envelope_accepts_exact_code_and_security_only(self):
+        head = "a" * 40
+        header = "<!-- codex-review-receipt:v1 -->\n\n"
+        clean = self._codex_comment(head[:10])
+        security = self._codex_security_comment(head[:10])
+        for prefix in ("", header, header.replace("\n", "\r\n")):
+            result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_REVIEWS="", FAKE_COMMENTS=(
+                self._comment_record(prefix + clean) + "\n" +
+                self._comment_record(prefix + security, record_id="202")))
+            self.assertEqual(result.returncode, 0, result.stderr)
+        for body in (header + header + clean, header.replace(":v1", ":v2") + clean,
+                     clean + "\n" + header, header + clean + "\nFinding remains.",
+                     header + self._codex_comment("b" * 40),
+                     header + security.replace("No security issues were found", "Security issues were found")):
+            result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_REVIEWS="",
+                                     FAKE_COMMENTS=self._comment_record(body))
+            self.assertNotEqual(result.returncode, 0, body)
+        for overrides in (
+            {"FAKE_COMMENTS": self._comment_record(header + clean, actor_id="999")},
+            {"FAKE_COMMENTS": self._comment_record(header + clean, actor_type="User")},
+        ):
+            result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_REVIEWS="", **overrides)
+            self.assertNotEqual(result.returncode, 0)
+        for malformed in (
+            header + security.replace("No security issues were found", "Security issues were found"),
+            header + header + security,
+            " " + header + security,
+            header + self._codex_security_comment("b" * 40),
+        ):
+            result = self._run_audit(
+                FAKE_HEAD_SHA=head, FAKE_REVIEWS="",
+                FAKE_COMMENTS=self._comment_record(header + clean) + "\n" +
+                self._comment_record(malformed, record_id="202"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("security-review evidence", result.stderr)
+        result = self._run_audit(
+            FAKE_HEAD_SHA=head, FAKE_REVIEWS="",
+            FAKE_COMMENTS=self._comment_record(header + security))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no current exact-commit review evidence", result.stderr)
+        for security_marker in (head[:10], "b" * 40):
+            result = self._run_audit(
+                FAKE_HEAD_SHA=head,
+                FAKE_REVIEWS=self._review_record(head, header + self._codex_security_comment(security_marker)),
+                FAKE_COMMENTS=self._comment_record(header + clean))
+            self.assertEqual(result.returncode == 0, security_marker == head[:10], result.stderr)
+        for body in (header + self._suggestions_review(head[:10]),):
+            result = self._run_audit(FAKE_HEAD_SHA=head,
+                                     FAKE_REVIEWS=self._review_record(head, body))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self._run_audit(FAKE_HEAD_SHA=head, FAKE_UNRESOLVED="1",
+                                     FAKE_REVIEWS=self._review_record(head, body))
+            self.assertNotEqual(result.returncode, 0)
+
     def _codex_comment(
         self,
         commit: str,

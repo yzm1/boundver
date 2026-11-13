@@ -648,8 +648,21 @@ resolve_evidence_sha() {
 }
 
 codex_marker_sha=
+# Accept only the observed optional receipt envelope, before any content.
+# This is transport metadata, not evidence: all verdict/SHA/actor checks remain.
+codex_strip_receipt_header() {
+  codex_receipt_body=$1
+  if [[ "$codex_receipt_body" == '<!-- codex-review-receipt:v1 -->'$'\n'* ]]; then
+    codex_receipt_body=${codex_receipt_body#*$'\n'}
+  elif [[ "$codex_receipt_body" == '<!-- codex-review-receipt:v1 -->'$'\r\n'* ]]; then
+    codex_receipt_body=${codex_receipt_body#*$'\n'}
+  fi
+}
+
 codex_body_is_clean() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local marker_policy=$2
   local clean_count=0
   local marker_count=0
@@ -720,6 +733,8 @@ codex_comment_has_unique_marker() {
 
 codex_body_is_clean_security_review() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local state=heading_or_verdict
   local footer_state=outside
   local line
@@ -796,6 +811,8 @@ codex_body_is_security_review_candidate() {
 
 codex_body_is_suggestions_review() {
   local body=$1
+  codex_strip_receipt_header "$body"
+  body=$codex_receipt_body
   local state=heading
   local footer_state=outside
   local line
