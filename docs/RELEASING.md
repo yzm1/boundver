@@ -10,7 +10,7 @@ Do not repair a partial release by rebuilding from a different checkout,
 moving the immutable version tag, replacing release assets, or reusing a PyPI
 version. Prefer **Re-run failed jobs** on the original workflow run so its
 successful build job and artifact IDs are retained; do not use **Re-run all
-jobs**. If the original run is completed and failed, the `resume` command
+jobs**. If the original run failed or was cancelled during the container build, the `resume` command
 described below is the only supported new dispatch: it proves and reuses that
 run's exact retained artifacts and its logged compatibility-alias policy
 instead of creating another candidate. Never dispatch `publish.yml` directly.
@@ -940,8 +940,8 @@ after deletion. Preserve any complete draft and retained workflow artifacts as
 incident evidence until the replacement release verifies, then delete only the
 orphaned draft. See [Immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases).
 
-If the original `publish.yml` run is completed with conclusion `failure` and
-cannot continue through **Re-run failed jobs**, recover from a clean, current
+If the original `publish.yml` run failed or was cancelled during the container
+build and cannot continue through **Re-run failed jobs**, recover from a clean, current
 `main` checkout with the numeric ID of that original run:
 
 ```bash
@@ -987,8 +987,9 @@ candidate before continuing. LF, CRLF, and CR are treated only as equivalent
 transport spellings in release notes; all other text remains exact. This public
 Release reconciliation runs before any TestPyPI or PyPI upload, so an immutable
 conflict cannot strand registry files. It then proves through the GitHub API
-that the source was the completed failed `publish.yml`
-`workflow_dispatch` for the exact tag and SHA,
+that the source was a completed `publish.yml`
+`workflow_dispatch` with either a failure conclusion or exactly one cancelled
+container-build job bound to the latest attempt for the exact tag and SHA,
 and that it contains one uniquely identified successful `verify-release` job.
 The command fetches that job's retained log and requires every GitHub-emitted
 `RELEASE_TAG`, `RELEASE_SHA`, and `COMPATIBILITY_ALIAS` environment triple to

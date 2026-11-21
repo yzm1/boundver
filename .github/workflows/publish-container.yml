@@ -80,7 +80,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The arm64 image builds Git twice under QEMU before export and scanning.
+    timeout-minutes: 90
     permissions:
       actions: read
       contents: read

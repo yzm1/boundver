@@ -2312,7 +2312,7 @@ def _source_release_artifacts(
     container_run_id: int | None = None,
     control_sha: str | None = None,
 ) -> str:
-    """Bind a failed publication to its exact retained verified artifacts."""
+    """Bind an interrupted publication to its exact retained verified artifacts."""
     run_endpoint = f"repos/{REPOSITORY}/actions/runs/{run_id}"
     run = _gh_json(repo, REPOSITORY, run_endpoint)
     jobs_payload = _gh_json(
@@ -2344,7 +2344,7 @@ def _source_release_artifacts(
         alias,
     )
     detail = (
-        f"failed publish run {run_id} attempt {selection.source_run_attempt} "
+        f"source publish run {run_id} attempt {selection.source_run_attempt} "
         f"reuses successful verify-release attempt {selection.artifact_attempt} "
         "and its two exact unexpired artifacts; "
         f"validated {selection.release_note_artifact_count} retained "
