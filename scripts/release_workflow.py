@@ -550,7 +550,7 @@ def select_recovery_artifacts(
     sha: str,
     now: datetime | None = None,
 ) -> RecoverySelection:
-    """Select the sole verified retained artifact pair from a failed run."""
+    """Select the sole verified retained artifact pair from an interrupted run."""
     _require_identity(tag, sha)
     _positive_int(run_id, "source publication run ID")
     if not isinstance(run, dict):
@@ -561,7 +561,6 @@ def select_recovery_artifacts(
         "id": run_id,
         "event": "workflow_dispatch",
         "status": "completed",
-        "conclusion": "failure",
         "path": ".github/workflows/publish.yml",
         "head_branch": tag,
         "head_sha": sha,
@@ -594,6 +593,28 @@ def select_recovery_artifacts(
         raise ReleaseWorkflowError(
             "cannot completely inspect the source publication jobs response"
         )
+    conclusion = run.get("conclusion")
+    if conclusion == "cancelled":
+        container_jobs = [
+            job
+            for job in jobs
+            if job.get("name") == "Publish and verify the release container / build"
+            and type(job.get("run_attempt")) is int
+            and job["run_attempt"] == attempt
+            and type(job.get("run_id")) is int
+            and job["run_id"] == run_id
+            and job.get("head_sha") == sha
+        ]
+        if (
+            len(container_jobs) != 1
+            or container_jobs[0].get("status") != "completed"
+            or container_jobs[0].get("conclusion") != "cancelled"
+        ):
+            raise ReleaseWorkflowError(
+                "cancelled source run must have one cancelled exact container build job"
+            )
+    elif conclusion != "failure":
+        raise ReleaseWorkflowError("source publication run must have failed")
     successful_verify_jobs = [
         job
         for job in jobs

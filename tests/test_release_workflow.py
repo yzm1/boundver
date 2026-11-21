@@ -223,6 +223,25 @@ class RecoverySelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "expired"):
             self._select(run, jobs, artifacts)
 
+    def test_cancelled_source_requires_exact_container_job_on_latest_attempt(self):
+        run, jobs, artifacts = _payloads()
+        run["conclusion"] = "cancelled"
+        build = {
+            "name": "Publish and verify the release container / build",
+            "run_id": RUN_ID,
+            "head_sha": SHA,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "cancelled",
+        }
+        jobs["jobs"].append(build)
+        jobs["total_count"] += 1
+        with self.assertRaisesRegex(self.release.ReleaseWorkflowError, "container build"):
+            self._select(run, jobs, artifacts)
+
+        build["run_attempt"] = 2
+        self.assertEqual(self._select(run, jobs, artifacts).artifact_attempt, 1)
+
     def test_rejects_boolean_identifiers_and_incomplete_artifact_pages(self):
         run, jobs, artifacts = _payloads()
         jobs["jobs"][0]["id"] = True
