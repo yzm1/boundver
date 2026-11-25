@@ -16,7 +16,7 @@
 # Keep the multi-architecture base digest and Debian package snapshot explicit.
 # The base records the older snapshot it was built from; the runtime refreshes
 # inherited packages from the newer immutable security-review snapshot below.
-FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS git-builder
+FROM python:3.15.1-slim-trixie@sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51 AS git-builder
 
 ENV SOURCE_DATE_EPOCH=1794139200
 ARG GIT_SOURCE_VERSION=1:2.50.2
@@ -29,7 +29,7 @@ COPY scripts/minimal_git /recipe/scripts/minimal_git
 RUN sh /recipe/scripts/minimal_git/build.sh
 
 
-FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
+FROM python:3.15.1-slim-trixie@sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51 AS builder
 
 # Clamp archive timestamps to the pinned snapshot's UTC timestamp so identical
 # source inputs produce the same local wheel bytes.
@@ -67,7 +67,7 @@ RUN python -I -m pip wheel \
       .
 
 
-FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
+FROM python:3.15.1-slim-trixie@sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51
 
 # pip compiles installed modules in this stage. Force hash-based bytecode so
 # retries do not embed the wall clock in hundreds of .pyc headers.
