@@ -1253,6 +1253,10 @@ class GuardrailError(BoundverError, ValueError):
     """A safety guardrail was triggered (file count, size, etc.)."""
 
 
+class GitDeadlineError(GuardrailError):
+    """Git could not complete within the available wall-clock budget."""
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------

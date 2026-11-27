@@ -31,6 +31,7 @@ from typing import (
 from ._config_contract import git_tag_prefix_error
 from ._version_paths import version_file_repo_path
 from ._utils import (
+    GitDeadlineError,
     GuardrailError,
     SOURCE_MODE_SET,
     _bounded_diagnostic_repr,
@@ -181,7 +182,7 @@ def _offline_git_command(repo_root: Path, args: List[str]) -> List[str]:
         expiry = _OPERATION_GIT_EXPIRY.get()
         if expiry is not None:
             expiry.set()
-        raise GuardrailError("Git operation deadline expired before command launch")
+        raise GitDeadlineError("Git operation deadline expired before command launch")
     command_index = 0
     while command_index < len(args):
         argument = args[command_index]
@@ -493,7 +494,7 @@ class _GitProcessDeadline:
 
     def raise_if_expired(self) -> None:
         if self.expired.is_set():
-            raise GuardrailError(
+            raise GitDeadlineError(
                 "Git command exceeds the "
                 f"{self.seconds}-second wall-clock limit"
             )
