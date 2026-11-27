@@ -259,6 +259,8 @@ fi
             actor_id="22440724", login="yzm1", actor_type="User"
         ) if records is None else records
         environment = {
+            # These one-time review exceptions only apply to the historical release.
+            "AUDIT_FIXTURE_RELEASE_TAG": "v0.17.0",
             "GITHUB_REPOSITORY": "yzm1/boundver",
             "FAKE_OWNER_ID": "22440724", "FAKE_OWNER_LOGIN": "yzm1",
             "FAKE_AUTHOR_ID": "22440724", "FAKE_AUTHOR_LOGIN": "yzm1",

@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-27
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+### Container and release reliability
+
+- Refresh pinned Python and Debian container inputs, including Debian's fix
+  for the `libzstd1` vulnerability CVE-2026-124851.
+- Bound the full Git source download and publish the archive only after its
+  integrity checks pass.
+- Recover container publication from a retained, verified build artifact
+  after a release workflow times out.
+
 ## [0.17.0] - 2026-11-12
 
 ### Upgrade contract
@@ -1574,7 +1592,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/yzm1/boundver/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/yzm1/boundver/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/yzm1/boundver/compare/v0.15.1...v0.15.2

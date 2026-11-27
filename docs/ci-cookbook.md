@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
 
       # Keep the writer and verifier on the repository's lock-contract version.
-      - uses: yzm1/boundver@v0.17.0
+      - uses: yzm1/boundver@v0.17.1
         with:
           config: boundary.config.json
           lock: boundary.lock.json
@@ -134,7 +134,7 @@ analysis or create a compatibility identity for an unversioned component.
   with:
     fetch-depth: 0
 
-- uses: yzm1/boundver@v0.17.0
+- uses: yzm1/boundver@v0.17.1
   with:
     source: head
     changed-from: origin/${{ github.base_ref }}
@@ -186,7 +186,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: review
-        uses: yzm1/boundver@v0.17.0
+        uses: yzm1/boundver@v0.17.1
         with:
           operation: review
           base: ${{ github.event.pull_request.base.sha }}
@@ -421,7 +421,7 @@ not conflated:
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/yzm1/boundver
-    rev: v0.17.0
+    rev: v0.17.1
     hooks:
       - id: boundver-verify       # pre-commit: source=index, portable exact gate
       - id: boundver-verify-push  # pre-push: source=head, portable exact gate
