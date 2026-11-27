@@ -41,7 +41,7 @@ physical cold-disk measurement.
 
 ### Larger adoption profile (local)
 
-For v0.17 investigation, run:
+For comparison with the original 58-component profile, run:
 
 ```bash
 python -I scripts/benchmark_adoption.py --runs 3 --components 58 --output adoption.json
@@ -52,9 +52,22 @@ generated-artifact receipts with a shared source, consumer chains, and slices.
 It measures validation, verification and generation separately, with first
 and repeated runs, median/range/standard deviation, phase CPU/wall timings,
 Git process counts and generation/verification source-read attribution.
-Use `--components 116` to examine growth; the permitted range is 6 through 232.
+Use 58 components for historical comparison, 100 for the routine scale
+profile, and 250 for the release-scale profile. The permitted range is 6
+through 250.
 
-The profile uses the in-process APIs. It does not include CLI startup,
+To profile the validation command used by a default pre-push hook:
+
+```bash
+python -I scripts/benchmark_adoption.py --components 65 --validate-working-tree
+```
+
+This adds an in-process invocation of the public CLI in working-tree mode.
+It reports the exit status and diagnostics along with Git process counts and
+the number of repository filter-config queries. The HEAD profile also records
+filter-config queries for each measured phase.
+
+The default profile uses the in-process APIs. It does not include CLI startup,
 CLI-only advisory scans, or atomic lock publication, and does not flush OS caches. It is not an adopter
 benchmark or a new enforced CI latency promise. Validation uses the explicit
 HEAD source; the CLI's compatibility default remains working-tree. Compare

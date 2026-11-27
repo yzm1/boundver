@@ -191,8 +191,12 @@ def main() -> int:
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not 6 <= args.components <= 232 or not 0 <= args.outside_files <= 8000 or not 1 <= args.runs <= 20:
-        parser.error("Components 6..232, outside files 0..8000, runs 1..20 required")
+    if (
+        not 6 <= args.components <= adoption.MAX_FIXTURE_COMPONENTS
+        or not 0 <= args.outside_files <= 8000
+        or not 1 <= args.runs <= 20
+    ):
+        parser.error(f"Components 6..{adoption.MAX_FIXTURE_COMPONENTS}, outside files 0..8000, runs 1..20 required")
     try:
         adoption.validate_payload_volume(args.outside_files, args.outside_payload_bytes)
         adoption.validate_payload_volume(args.owned_files, args.owned_payload_bytes)
