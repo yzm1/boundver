@@ -444,8 +444,8 @@ def bundle(
             shutil.copyfile(path, trust / path.name)
     shutil.copyfile("/etc/apt/sources.list.d/debian.sources", trust / "debian.sources")
     shutil.copyfile(
-        "/usr/share/keyrings/debian-archive-keyring.gpg",
-        trust / "debian-archive-keyring.gpg",
+        "/usr/share/keyrings/debian-archive-keyring.pgp",
+        trust / "debian-archive-keyring.pgp",
     )
     metadata = json.loads(audit_path.read_text(encoding="utf-8"))
     check_flags(*(os.environ[key] for key in ("CFLAGS", "CPPFLAGS", "LDFLAGS")))
