@@ -92,6 +92,9 @@ def create_fixture(root: Path, count: int = 58, *, owned_files: int = 0,
     runtime._run(root, "add", "--all")
     runtime._run(root, "commit", "-m", "adoption derivation receipts")
     snapshot = runtime._capture_git_source_snapshot(root, "head")
+    config = runtime.load_config_file(
+        root / "boundary.config.json", repo_root=root, snapshot=snapshot,
+    )
     errors = runtime.validate_config(config, root, source="head", snapshot=snapshot)
     if errors:
         raise RuntimeError("Invalid adoption fixture: " + "; ".join(errors))
