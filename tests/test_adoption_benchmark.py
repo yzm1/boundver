@@ -94,6 +94,14 @@ def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, 
     _config.config_warnings(config, tmp_path)
 
 
+def test_fixture_lock_follows_committed_component_order(adoption, tmp_path):
+    module, _ = adoption
+    module.create_fixture(tmp_path, 101)
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    lock = json.loads((tmp_path / "boundary.lock.json").read_text(encoding="utf-8"))
+    assert list(lock["components"]) == list(config["components"])
+
+
 def test_working_tree_cli_counts_filter_config_queries(adoption):
     module, root = adoption
     lock = (root / "boundary.lock.json").read_bytes()
