@@ -18,6 +18,12 @@ boundver status --format json
 Do not turn exit `2` into success in CI. Correct the input or environment and
 run the same command again.
 
+`validate-config` reports a Git deadline as
+`CONFIG VALIDATION UNAVAILABLE [git-timeout]` on stderr with the Git error.
+The exit code stays `2`. A version-source read error identifies the file and
+the underlying read failure, while a missing version field is reported after
+the file has been read.
+
 ## Local verification ignores my edits
 
 The default source is `head`, which reads committed content. Choose the view

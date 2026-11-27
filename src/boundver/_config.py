@@ -37,6 +37,7 @@ from ._utils import (
     _select_literal_path_prefix,
     boundary_provider_name,
     ConfigError as ConfigError,
+    GitDeadlineError,
     GuardrailError,
 )
 from .providers import (
@@ -624,6 +625,8 @@ def validate_config(
     snapshot: Optional[GitSourceSnapshot] = None,
     require_slice_facets: bool = False,
     validate_provider_runtime: bool = True,
+    *,
+    report_git_deadline: bool = False,
 ) -> List[str]:
     """Validate a configuration without performing digest computation.
 
@@ -667,6 +670,10 @@ def validate_config(
     if source == "working-tree":
         try:
             tracking_snapshot = _capture_working_tree_tracking(repo_root)
+        except GitDeadlineError as exc:
+            if report_git_deadline:
+                raise
+            tracking_snapshot_error = str(exc)
         except (OSError, ValueError) as exc:
             tracking_snapshot_error = str(exc)
     if tracking_snapshot_error is not None:
@@ -1763,6 +1770,8 @@ def validate_config(
                 tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
+            if report_git_deadline and isinstance(exc, GitDeadlineError):
+                raise
             errors.append(
                 f"Component '{name}' path expansion could not be validated: "
                 f"{_bounded_diagnostic_text(str(exc))}"
@@ -1792,6 +1801,8 @@ def validate_config(
                 tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
+            if report_git_deadline and isinstance(exc, GitDeadlineError):
+                raise
             errors.append(
                 f"Component '{name}' path expansion could not be validated: "
                 f"{_bounded_diagnostic_text(str(exc))}"

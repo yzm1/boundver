@@ -21,7 +21,7 @@ from boundver._git import _capture_git_source_snapshot
 from boundver._lockfile import generate_lockfile
 from boundver.core import _capture_operation_snapshot, _get_version
 from tests._repo_fixtures import commit_all, init_git_repo
-from tests._parity import run_cli
+from tests._parity import run_cli, run_cli_in_process
 
 
 @pytest.fixture
@@ -432,6 +432,93 @@ def test_internal_expired_dispatch_preserves_destination(invocation, tmp_path, c
     assert error.value.code == 2
     assert sentinel.read_bytes() == b"prior lock"
     assert "outcome=expired" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("outcome", ["expired", "cancelled"])
+def test_generation_stopped_during_worker_omits_partial_hint(
+    invocation, tmp_path, monkeypatch, dry_run, outcome,
+):
+    from boundver import core
+    from boundver._utils import ConfigError
+
+    def stop(request, *, control, **kwargs):
+        if outcome == "expired":
+            monkeypatch.setattr(control, "_clock", lambda: control.monotonic_deadline)
+        else:
+            control.cancel()
+        raise ConfigError(f"Generation did not publish: {control.state.value}")
+
+    sentinel = tmp_path / "boundary.lock.json"
+    sentinel.write_bytes(b"prior lock")
+    before = (tmp_path / ".git" / "index").read_bytes()
+    monkeypatch.setattr(core, "run_generation", stop)
+    arguments = ["generate", "--source", "head", "--format", "json", "--timeout", "20"]
+    if dry_run:
+        arguments.append("--dry-run")
+    result = run_cli_in_process(tmp_path, *arguments)
+    assert result.returncode == 2
+    assert f"Generation did not publish: {outcome}" in result.stderr
+    assert "--allow-partial" not in result.stderr
+    assert not result.stdout
+    assert sentinel.read_bytes() == b"prior lock"
+    assert (tmp_path / ".git" / "index").read_bytes() == before
+
+
+@pytest.mark.parametrize("error_kind", ["io", "deadline", "missing-field"])
+def test_generation_distinguishes_version_read_failures(
+    invocation, tmp_path, monkeypatch, error_kind,
+):
+    from boundver._lockfile import _SourceAccessor
+    from boundver._utils import GitDeadlineError
+
+    config = invocation["config"]
+    config["components"]["api"]["version_source"] = {"file": "package.json", "field": "version"}
+    (tmp_path / "boundary.config.json").write_text(json.dumps(config), encoding="utf-8")
+    manifest = {} if error_kind == "missing-field" else {"version": "1.2.3"}
+    (tmp_path / "api" / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    commit_all(tmp_path)
+
+    def failed_read(accessor, path):
+        if error_kind == "io":
+            raise OSError("mounted storage unavailable")
+        raise GitDeadlineError("Git command exceeds the 10-second wall-clock limit")
+
+    if error_kind != "missing-field":
+        monkeypatch.setattr(_SourceAccessor, "version_read_file", failed_read)
+    result = run_cli_in_process(
+        tmp_path, "generate", "--source", "head", "--format", "json", "--dry-run",
+    )
+    assert result.returncode == 2
+    assert not result.stdout
+    if error_kind == "missing-field":
+        assert "Configured version source did not produce a version" in result.stderr
+        assert "Could not read version source" not in result.stderr
+    else:
+        assert "Could not read version source 'api/package.json'" in result.stderr
+        assert ("storage unavailable" if error_kind == "io" else "wall-clock limit") in result.stderr
+        assert "did not produce a version" not in result.stderr
+
+
+@pytest.mark.parametrize("source", ["head", "working-tree"])
+def test_validate_config_labels_git_timeout_as_unavailable(
+    invocation, tmp_path, monkeypatch, source,
+):
+    from boundver import _config, core
+    from boundver._utils import GitDeadlineError
+
+    def timeout(repo_root, mode=None):
+        raise GitDeadlineError("Git command exceeds the 10-second wall-clock limit")
+
+    if source == "head":
+        monkeypatch.setattr(core, "_capture_git_source_snapshot", timeout)
+    else:
+        monkeypatch.setattr(_config, "_capture_working_tree_tracking", timeout)
+    result = run_cli_in_process(tmp_path, "validate-config", "--source", source)
+    assert result.returncode == 2
+    assert not result.stdout
+    assert "CONFIG VALIDATION UNAVAILABLE [git-timeout]" in result.stderr
+    assert "10-second wall-clock limit" in result.stderr
 
 
 def test_internal_timed_dispatch_publishes_only_validated_result(invocation, tmp_path, capsys):
