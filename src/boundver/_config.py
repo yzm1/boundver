@@ -11,6 +11,7 @@ from ._git import (
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
+    _snapshot_tracked_files,
     _to_posix,
 )
 from ._hashing import _read_bounded_path_bytes
@@ -350,6 +351,8 @@ def _expand_component_paths(
     source: Optional[str] = "working-tree",
     snapshot: Optional[GitSourceSnapshot] = None,
     _glob_operation: Optional[_PathGlobOperation] = None,
+    *,
+    tracking_snapshot: Optional[GitSourceSnapshot] = None,
 ) -> Set[str]:
     if component_path is None:
         return set()
@@ -365,11 +368,20 @@ def _expand_component_paths(
     # a locally deleted file can hide a HEAD/index mistake.
     if source is not None:
         try:
-            repo_files = (
-                _snapshot_files(snapshot, component_path)
-                if snapshot is not None
-                else _list_files_for_source(repo_root, component_path, source)
-            )
+            if snapshot is not None:
+                repo_files = _snapshot_files(snapshot, component_path)
+            elif (
+                source == "working-tree"
+                and tracking_snapshot is not None
+                and tracking_snapshot.head_oid is not None
+            ):
+                repo_files = [
+                    path
+                    for path in _snapshot_tracked_files(tracking_snapshot, component_path)
+                    if (repo_root / path).exists() or (repo_root / path).is_symlink()
+                ]
+            else:
+                repo_files = _list_files_for_source(repo_root, component_path, source)
         except GuardrailError:
             raise
         except (OSError, subprocess.CalledProcessError, ValueError):
@@ -585,6 +597,19 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
     return sorted(errors)
 
 
+def _capture_working_tree_tracking(repo_root: Path) -> Optional[GitSourceSnapshot]:
+    """Capture tracked names without changing non-Git and unborn fallback rules."""
+    try:
+        snapshot = _capture_git_source_snapshot(repo_root, "index")
+    except GuardrailError:
+        raise
+    except (OSError, ValueError):
+        if _is_git_repository(repo_root):
+            raise
+        return None
+    return snapshot if snapshot.tracked_paths or snapshot.head_oid is not None else None
+
+
 def validate_config(
     config: dict,
     repo_root: Path,
@@ -637,20 +662,13 @@ def validate_config(
     tracking_snapshot_error: Optional[str] = None
     if source == "working-tree":
         try:
-            candidate_tracking = _capture_git_source_snapshot(repo_root, "index")
+            tracking_snapshot = _capture_working_tree_tracking(repo_root)
         except GitDeadlineError as exc:
             if report_git_deadline:
                 raise
             tracking_snapshot_error = str(exc)
         except (OSError, ValueError) as exc:
-            if _is_git_repository(repo_root):
-                tracking_snapshot_error = str(exc)
-        else:
-            if (
-                candidate_tracking.tracked_paths
-                or candidate_tracking.head_oid is not None
-            ):
-                tracking_snapshot = candidate_tracking
+            tracking_snapshot_error = str(exc)
     if tracking_snapshot_error is not None:
         errors.append(
             "Working-tree Git tracking state cannot be read: "
@@ -1717,7 +1735,7 @@ def validate_config(
     # selected tracked file sets against the same source view used by hashing;
     # the behavior envelope independently makes boundary changes observable.
     for name, comp in components.items():
-        if errors.truncated:
+        if errors.truncated or tracking_snapshot_error is not None:
             break
         if not isinstance(comp, dict):
             continue
@@ -1742,6 +1760,7 @@ def validate_config(
                 source=source,
                 snapshot=snapshot,
                 _glob_operation=glob_operation,
+                tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
             if report_git_deadline and isinstance(exc, GitDeadlineError):
@@ -1772,6 +1791,7 @@ def validate_config(
                 source=source,
                 snapshot=snapshot,
                 _glob_operation=glob_operation,
+                tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
             if report_git_deadline and isinstance(exc, GitDeadlineError):
@@ -2023,6 +2043,8 @@ def config_warnings(
     if not isinstance(components, dict):
         return list(warnings)
 
+    tracking_snapshot = None
+    tracking_captured = source != "working-tree"
     for name, comp in components.items():
         if warnings.truncated:
             break
@@ -2045,6 +2067,16 @@ def config_warnings(
         if not boundary_paths:
             continue
 
+        if not tracking_captured:
+            tracking_captured = True
+            try:
+                tracking_snapshot = _capture_working_tree_tracking(repo_root)
+            except (OSError, ValueError) as exc:
+                warnings.append(
+                    "Working-tree Git tracking state cannot be read: "
+                    f"{_bounded_diagnostic_text(str(exc))}"
+                )
+                break
         glob_operation = _PathGlobOperation("Component path expansion")
         try:
             boundary_files = _expand_component_paths(
@@ -2054,6 +2086,7 @@ def config_warnings(
                 source=source,
                 snapshot=snapshot,
                 _glob_operation=glob_operation,
+                tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
             warnings.append(
@@ -2071,6 +2104,7 @@ def config_warnings(
                 source=source,
                 snapshot=snapshot,
                 _glob_operation=glob_operation,
+                tracking_snapshot=tracking_snapshot,
             )
         except GuardrailError as exc:
             warnings.append(
