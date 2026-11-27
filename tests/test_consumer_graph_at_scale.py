@@ -43,12 +43,13 @@ def _verify(root, *, transitive):
     return {row["component"]: row for row in json.loads(result.stdout)["consumer_impact"]}
 
 
-def _review(root, base, target, *, transitive):
+def _review(root, base, target, *, transitive, report_byte_limit):
     args = ["review", f"{base}..{target}", "--format", "json"]
     if transitive:
         args.append("--transitive")
     result = run_cli_in_process(root, *args)
     assert result.returncode == 0, result.stderr
+    assert len(result.stdout.encode("utf-8")) <= report_byte_limit
     payload = json.loads(result.stdout)
     assert payload["complete"]
     return {row["component"]: row for row in payload["consumer_impact"]}
@@ -165,13 +166,16 @@ def test_declared_dependency_impact_at_scale(tmp_path, count):
     removed = leaves[-1]
     components["service"]["consumers"].remove(removed)
     target = _reconcile(tmp_path, config, "remove one declared service edge")
-    direct_rows = _review(tmp_path, base, target, transitive=False)
+    # The measured transitive reports used 168 KB at 100 components and
+    # 407 KB at 250. Keep a per-component ceiling for this fixed-root fixture.
+    report_byte_limit = 2_000 * count
+    direct_rows = _review(tmp_path, base, target, transitive=False, report_byte_limit=report_byte_limit)
     for root in roots:
         assert direct_rows[root]["components"] == [
             {"name": name, "source": "both"} for name in direct[root]["components"]
         ]
 
-    rows = _review(tmp_path, base, target, transitive=True)
+    rows = _review(tmp_path, base, target, transitive=True, report_byte_limit=report_byte_limit)
     for root in roots:
         assert rows[root]["components"] == [
             {"name": name, "source": "base" if name == removed else "both"}

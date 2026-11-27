@@ -50,14 +50,8 @@ def consumer_closure(
         raw_consumers = component.get("consumers", [])
         if not isinstance(raw_consumers, list):
             continue
-        for consumer in sorted(
-            {
-                candidate
-                for candidate in raw_consumers
-                if isinstance(candidate, str) and candidate in components
-            }
-        ):
-            if consumer in seen:
+        for consumer in raw_consumers:
+            if not isinstance(consumer, str) or consumer in seen or consumer not in components:
                 continue
             seen.add(consumer)
             pending.append(consumer)
