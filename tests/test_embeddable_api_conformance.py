@@ -43,8 +43,8 @@ fails. And every row records how far into the git file-listing layer its own
 call got, counted while the row ran, because the corpus's reach is partial and
 saying so is the difference between "boundver did this much work without
 printing" and "boundver printed nothing while failing early". As the corpus
-stands, thirty of the one hundred and seventy-six API rows get there, all on
-the working-tree axis, and six of the fifteen faults never do.
+stands, at least thirty API rows reach tracked-path capture or a fallback
+listing, all on the working-tree axis.
 
 Stdout and stderr are measured at two layers, `sys.stdout` and file descriptor
 1, because they are not interchangeable: `print` lands on the first and leaves
@@ -78,7 +78,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from unittest import mock
 
 import boundver
-from boundver import _git, _hashing, _lockfile, _utils
+from boundver import _config, _git, _hashing, _lockfile, _utils
 from boundver._config import MAX_PROVIDER_DECLARATIONS
 
 from tests._parity import run_cli
@@ -590,7 +590,7 @@ class Row:
     keyed by; `argument` is what the function was actually handed, and the two
     differ only for the case whose overlay poisons the source argument itself.
 
-    `reach` is how many times this one call entered `_list_files_for_source`,
+    `reach` counts tracked-path capture and fallback Git file listings,
     the layer the stdout obligation's warning lives in. It is recorded per row
     rather than reconstructed later because "no API call printed" over a corpus
     of calls that all failed before reaching a writer is a claim about nothing,
@@ -660,9 +660,9 @@ def sweep() -> List[Row]:
     Computed once for the whole module: five test classes read it and building
     it costs one Git repository per case.
 
-    The whole sweep runs with a counting wrapper installed at every module
-    that holds `_list_files_for_source`, and each row records how many times
-    its own call entered it. The wrapper delegates to the original, so nothing
+    The sweep counts working-tree tracking captures and installs a counting
+    wrapper at every module that holds `_list_files_for_source`. Each row
+    records only its own calls. The wrappers delegate to the originals, so nothing
     about the run changes; what it buys is that the reach of *this corpus* is
     measured rather than argued for from a separate repository built to make
     the point.
@@ -682,6 +682,10 @@ def sweep() -> List[Row]:
     sites = list_files_binding_sites()
     _SWEPT_BINDING_SITES[:] = sites
     with contextlib.ExitStack() as instrumented:
+        tracking = instrumented.enter_context(mock.patch.object(
+            _config, "_capture_working_tree_tracking",
+            wraps=_config._capture_working_tree_tracking,
+        ))
         for site in sites:
             instrumented.enter_context(
                 mock.patch.object(sys.modules[site], "_list_files_for_source", counting)
@@ -706,10 +710,11 @@ def sweep() -> List[Row]:
                             function = getattr(boundver, name)
                             kwargs = bind(function, pool)
                             del calls[:]
+                            tracking.reset_mock()
                             captured = call_capturing(function, **kwargs)
                             rows.append(
                                 Row(case.name, source, pool["source"], name,
-                                    captured, len(calls))
+                                    captured, len(calls) + tracking.call_count)
                             )
     _SWEEP = rows
     return rows
@@ -1389,9 +1394,8 @@ class StreamSilenceTests(unittest.TestCase):
             with self.subTest(function=name):
                 cases = {row.case for row in self.reaching if row.function == name}
                 self.assertGreaterEqual(len(cases), 5, sorted(cases))
-        # And the residue, named rather than left implicit: six of the sixteen
-        # cases fail before any file listing runs, so for those the silence
-        # assertions really are about a call that did nothing.
+        # These cases fail before either working-tree tracking route runs.
+        # The over-limit case can now reach capture before validation rejects it.
         silent_cases = sorted(
             {case.name for case in CASES}
             - {row.case for row in self.reaching}
@@ -1399,7 +1403,7 @@ class StreamSilenceTests(unittest.TestCase):
         self.assertEqual(
             silent_cases,
             ["absent-config", "config-garbage", "no-git-binary",
-             "over-limit-config", "parent-traversal", "unknown-source-mode"],
+             "parent-traversal", "unknown-source-mode"],
         )
 
     def test_the_reach_counter_discriminates_between_the_source_modes(self):
@@ -1420,6 +1424,10 @@ class StreamSilenceTests(unittest.TestCase):
                     return target(*args, **kwargs)
 
                 with InRepo(scene.root), contextlib.ExitStack() as stack:
+                    tracking = stack.enter_context(mock.patch.object(
+                        _config, "_capture_working_tree_tracking",
+                        wraps=_config._capture_working_tree_tracking,
+                    ))
                     for site in sites:
                         stack.enter_context(
                             mock.patch.object(
@@ -1428,7 +1436,7 @@ class StreamSilenceTests(unittest.TestCase):
                         )
                     seen = call_capturing(boundver.generate, source=source, out_path=None)
                 self.assertIsNone(seen.exception, seen)
-                observed[source] = len(calls)
+                observed[source] = len(calls) + tracking.call_count
         # Head and index legitimately record nothing: both go through
         # `_capture_git_source_snapshot`, which calls `ls-tree` directly. A
         # check that demanded a hit on all three would be wrong about the code.

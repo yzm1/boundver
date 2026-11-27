@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-27
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
+### Git and checkout reliability
+
+- Allow operators to set `BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS` to a whole
+  number from 1 to 300 seconds. The default remains 10 seconds.
+- Reuse captured tracked paths during working-tree validation. Git filter
+  configuration is still checked before Git operations that require it.
+- Distinguish Git timeouts and version-read failures in validation and lock
+  generation diagnostics.
+
+### Scale and dependency impact
+
+- Extend synthetic adoption and generation profiling to 250 components. Test
+  working-tree validation against the same Git work ceiling at 100 and 250.
+- Avoid sorting each component's consumer list during graph traversal. Keep
+  sorted results, cycle handling, and separate attribution for each drift root.
+- Exercise deep chains, fan-out, changed declarations between review
+  endpoints, inherited versions, and bounded preview output at release scale.
+
 ## [0.17.1] - 2026-11-27
 
 ### Upgrade contract
@@ -1592,7 +1619,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/yzm1/boundver/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/yzm1/boundver/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/yzm1/boundver/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0

@@ -265,23 +265,26 @@ def _git_command_name(command: object) -> str:
 
 
 @contextmanager
-def _count_git_processes() -> Iterator[Counter]:
+def _count_git_processes() -> Iterator[Tuple[Counter, Counter]]:
     original = subprocess.Popen
     counts: Counter = Counter()
+    config_queries: Counter = Counter()
 
     def counted(*args: Any, **kwargs: Any) -> subprocess.Popen:
         command = args[0] if args else kwargs.get("args")
         name = _git_command_name(command)
         if name != "non-git":
             counts[name] += 1
+        if name == "config" and command[-1] == git_helpers._FILTER_COMMAND_CONFIG_PATTERN:
+            config_queries["filter"] += 1
         return original(*args, **kwargs)
 
     with patch.object(subprocess, "Popen", counted):
-        yield counts
+        yield counts, config_queries
 
 
 def _measure(name: str, callback: Callable[[], Any]) -> Tuple[Any, dict]:
-    with _count_git_processes() as process_counts:
+    with _count_git_processes() as (process_counts, config_queries):
         cpu_start = time.process_time()
         wall_start = time.perf_counter()
         value = callback()
@@ -293,6 +296,7 @@ def _measure(name: str, callback: Callable[[], Any]) -> Tuple[Any, dict]:
         "cpu_seconds": round(cpu_seconds, 6),
         "git_processes": sum(process_counts.values()),
         "git_commands": dict(sorted(process_counts.items())),
+        "git_filter_config_queries": config_queries["filter"],
     }
 
 

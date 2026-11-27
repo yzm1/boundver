@@ -12,6 +12,7 @@ from ._config_contract import git_tag_prefix_error
 from ._structured_data import StrictJSONError, strict_json_loads
 from ._version_paths import version_file_repo_path
 from ._utils import (
+    GitDeadlineError,
     GuardrailError,
     MAX_JSON_NUMBER_CHARACTERS,
     MAX_TOML_INTEGER_DIGITS as MAX_TOML_INTEGER_DIGITS,
@@ -144,11 +145,15 @@ def extract_version(
     version_source: Optional[dict],
     git_latest_tag_fn: Optional[Callable[[Path, str], Optional[str]]] = None,
     read_file_fn: Optional[Callable[[str], bytes]] = None,
+    *,
+    report_read_failures: bool = False,
 ) -> Optional[str]:
     """Extract version from a version_source config.
 
     If *read_file_fn* is provided, it is used to read file content (supporting
     head/index/working-tree sources). Otherwise falls back to disk reads.
+    Internal captured-source callers can request operational read failures
+    separately from a successfully read file with no usable version.
     """
     if version_source is None:
         return None
@@ -184,7 +189,11 @@ def extract_version(
     if read_file_fn is not None:
         try:
             raw = read_file_fn(repo_rel)
-        except (OSError, subprocess.CalledProcessError, GuardrailError):
+        except (OSError, subprocess.CalledProcessError, GitDeadlineError):
+            if report_read_failures:
+                raise
+            return None
+        except GuardrailError:
             return None
         return _extract_field_from_bytes(raw, repo_rel, field_path)
     # Fallback: read from disk

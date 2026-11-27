@@ -24,6 +24,7 @@ from ._git import (
     GitSourceSnapshot,
     _capture_git_source_snapshot,
     _git_cat_blob,
+    _git_failure_detail,
     _is_git_repository,
     _list_files_for_source,
     _snapshot_files,
@@ -50,6 +51,7 @@ from ._lockfile_validation import (
     lockfile_structure_issues as _lockfile_structure_issues_impl,
 )
 from ._utils import (
+    GitDeadlineError,
     BoundedDiagnosticList,
     _DIAGNOSTIC_TRUNCATION_MARKER,
     _DiagnosticTruncationMarker,
@@ -80,6 +82,7 @@ from .providers import (
     load_custom_providers,
 )
 from .versions import MAX_VERSION_FILE_BYTES, extract_version, parse_semver
+from ._version_paths import version_file_repo_path
 
 LOCKFILE_SCHEMA = "boundary-lock/v4"
 # v0.16.0 is the immutable canonical publication of the v4 schema. Keep this
@@ -813,6 +816,30 @@ class _SourceAccessor:
 # Per-component fingerprint computation
 # ---------------------------------------------------------------------------
 
+def _read_component_version(
+    repo_root: Path, path: str, source: Optional[dict], accessor: _SourceAccessor
+) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        return extract_version(
+            repo_root, path, source, accessor.latest_tag,
+            read_file_fn=accessor.version_read_file, report_read_failures=True,
+        ), None
+    except (OSError, subprocess.CalledProcessError, GitDeadlineError) as exc:
+        file_path = (
+            version_file_repo_path(path, source)
+            if isinstance(path, str) and isinstance(source, dict)
+            else None
+        )
+        if file_path is None:
+            raise
+        detail = (
+            _bounded_diagnostic_text(str(exc))
+            if isinstance(exc, GitDeadlineError)
+            else _git_failure_detail(exc)
+        )
+        return None, f"Could not read version source {_bounded_diagnostic_repr(file_path)}: {detail}"
+
+
 def _resolve_component_versions(
     components: dict,
     repo_root: Path,
@@ -875,16 +902,7 @@ def _resolve_component_versions(
                 else (None, "Configured version constant is not a string")
             )
         else:
-            result = (
-                extract_version(
-                    repo_root,
-                    component.get("path"),
-                    source,
-                    accessor.latest_tag,
-                    read_file_fn=accessor.version_read_file,
-                ),
-                None,
-            )
+            result = _read_component_version(repo_root, component.get("path"), source, accessor)
         visiting.pop()
         if name not in resolved:
             resolved[name] = result
@@ -918,14 +936,9 @@ def _compute_component_entry(
     comp_path = _to_posix(os.path.normpath(raw_path.strip()))
     comp_path_display = _bounded_diagnostic_text(comp_path)
     if version_result is None:
-        version = extract_version(
-            repo_root,
-            comp_path,
-            comp.get("version_source"),
-            accessor.latest_tag,
-            read_file_fn=accessor.version_read_file,
+        version, version_resolution_error = _read_component_version(
+            repo_root, comp_path, comp.get("version_source"), accessor,
         )
-        version_resolution_error = None
     else:
         version, version_resolution_error = version_result
     compat, api_ver, exact_ver = parse_semver(version)

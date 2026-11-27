@@ -89,6 +89,7 @@ from ._utils import (
     BoundverError as BoundverError,
     ConfigError,
     GuardrailError as GuardrailError,
+    GitDeadlineError,
     LockfileError,
     ProviderError as ProviderError,
     _issue_facet,
@@ -1878,11 +1879,14 @@ def _cmd_generate_observed(args, repo_root: Path, diagnostics: GenerationDiagnos
                 )
     except ValueError as exc:
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
-        print(
-            "Review the reported provider, source, or facet error. Use "
-            "--allow-partial only when null slice facet inputs are intentional.",
-            file=sys.stderr,
-        )
+        if control is None or control.state not in (
+            GenerationState.EXPIRED, GenerationState.CANCELLED,
+        ):
+            print(
+                "Review the reported provider, source, or facet error. Use "
+                "--allow-partial only when null slice facet inputs are intentional.",
+                file=sys.stderr,
+            )
         sys.exit(EXIT_USAGE)
     if args.dry_run:
         if control is not None and control.state is not GenerationState.READY:
@@ -2852,6 +2856,14 @@ def _cmd_slice(args, repo_root: Path) -> None:
         print(f"    {cname} @ {ver}  ({_short(digest)})")
 
 
+def _report_validation_git_timeout(exc: GitDeadlineError) -> None:
+    print(
+        f"CONFIG VALIDATION UNAVAILABLE [git-timeout]: {_bounded_exception_text(exc)}",
+        file=sys.stderr,
+    )
+    sys.exit(EXIT_USAGE)
+
+
 def _cmd_validate_config(args, repo_root: Path) -> None:
     source = getattr(args, "source", "working-tree")
     try:
@@ -2861,21 +2873,30 @@ def _cmd_validate_config(args, repo_root: Path) -> None:
             raise FileNotFoundError(f"Config file not found: {config_path}")
         config = load_config_file(config_path, repo_root=repo_root, snapshot=snapshot)
     except (FileNotFoundError, ValueError) as exc:
+        deadline = exc if isinstance(exc, GitDeadlineError) else exc.__cause__
+        if isinstance(deadline, GitDeadlineError):
+            _report_validation_git_timeout(deadline)
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     allow_custom = _resolve_allow_custom(args, config)
-    errors = validate_config(
-        config,
-        repo_root,
-        allow_custom_providers=allow_custom,
-        source=source,
-        snapshot=snapshot,
-        require_slice_facets=not args.allow_partial,
-    )
+    try:
+        errors = validate_config(
+            config,
+            repo_root,
+            allow_custom_providers=allow_custom,
+            source=source,
+            snapshot=snapshot,
+            require_slice_facets=not args.allow_partial,
+            report_git_deadline=True,
+        )
+    except GitDeadlineError as exc:
+        _report_validation_git_timeout(exc)
     if not errors and config.get("derivations"):
         try:
             with _SourceAccessor(repo_root, source, snapshot=snapshot) as accessor:
                 errors.extend(verify_derivations(config, accessor))
+        except GitDeadlineError as exc:
+            _report_validation_git_timeout(exc)
         except (ConfigError, GuardrailError, OSError, ValueError) as exc:
             errors.append(
                 "Generated-artifact freshness validation failed: "
@@ -3745,6 +3766,8 @@ def main():
     try:
         repo_root = git_root()
     except GuardrailError as exc:
+        if args.command in {"validate-config", "check-config"} and isinstance(exc, GitDeadlineError):
+            _report_validation_git_timeout(exc)
         print(f"ERROR: {_bounded_exception_text(exc)}", file=sys.stderr)
         sys.exit(EXIT_USAGE)
     except (subprocess.CalledProcessError, OSError, ValueError):

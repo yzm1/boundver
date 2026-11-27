@@ -18,6 +18,26 @@ boundver status --format json
 Do not turn exit `2` into success in CI. Correct the input or environment and
 run the same command again.
 
+`validate-config` reports a Git deadline as
+`CONFIG VALIDATION UNAVAILABLE [git-timeout]` on stderr with the Git error.
+The exit code stays `2`. A version-source read error identifies the file and
+the underlying read failure, while a missing version field is reported after
+the file has been read.
+### Git configuration queries time out on slow storage
+
+The default deadline for each Git configuration query and related startup
+probe is 10 seconds. On a slow checkout, set
+`BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS` to a whole number from 1 to 300
+in the environment of the boundver command or hook.
+
+```bash
+BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS=45 boundver validate-config
+```
+
+The setting controls the per-query deadline. A shorter operation deadline,
+such as a generation timeout, still takes precedence. Invalid settings or
+expired queries fail the check. The setting does not change lock fingerprints.
+
 ## Local verification ignores my edits
 
 The default source is `head`, which reads committed content. Choose the view

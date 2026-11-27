@@ -75,9 +75,9 @@ warning to stderr, leaving JSON stdout unchanged.
 
 The index source is different: capturing a coherent index uses `git write-tree`
 and can contend with another index writer. It refuses an unavailable or
-conflicted index rather than falling back to HEAD. The default working-tree
-validation also captures tracked index state; use explicit HEAD validation
-when another session owns the index. Never stage another session's changes
+conflicted index rather than falling back to HEAD. Default working-tree
+validation reads path membership without writing an index tree. Derivation
+checks may still require index capture. Never stage another session's changes
 merely to make a validation or regeneration command succeed.
 
 Source selection is not deployment evidence. HEAD can include committed but
