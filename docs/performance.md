@@ -90,8 +90,10 @@ python -I scripts/benchmark_generation_cli.py --runs 3 --include-inspect --enfor
   --output generation-cli.json
 ```
 
-This runs actual CLI dispatch in-process with `--dry-run`, using the same 58
-components plus 512 tracked files outside every declared component. It includes
+This runs actual CLI dispatch in-process with `--dry-run`, using 58 components
+by default plus 512 tracked files outside every declared component. Use
+`--components 100` and `--components 250` to repeat the profile at the larger
+milestone sizes with the same number of unowned files. It includes
 CLI preparation and rendering, but not interpreter startup, final file
 publication or physical cold-disk measurements. The counterfactual mode
 suppresses only the advisory warning helper, never validation or fingerprinting.
