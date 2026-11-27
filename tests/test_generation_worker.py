@@ -507,13 +507,13 @@ def test_validate_config_labels_git_timeout_as_unavailable(
     from boundver import _config, core
     from boundver._utils import GitDeadlineError
 
-    def timeout(repo_root, mode):
+    def timeout(repo_root, mode=None):
         raise GitDeadlineError("Git command exceeds the 10-second wall-clock limit")
 
     if source == "head":
         monkeypatch.setattr(core, "_capture_git_source_snapshot", timeout)
     else:
-        monkeypatch.setattr(_config, "_capture_git_source_snapshot", timeout)
+        monkeypatch.setattr(_config, "_capture_working_tree_tracking", timeout)
     result = run_cli_in_process(tmp_path, "validate-config", "--source", source)
     assert result.returncode == 2
     assert not result.stdout
