@@ -117,6 +117,7 @@
     "tests/test_review_work_budget.py",
     "tests/test_scanner_and_selector_edges.py",
     "tests/test_scenarios.py",
+    "tests/test_slow_checkout_acceptance.py",
     "tests/test_source_mode_agreement.py",
     "tests/test_source_typing.py",
     "tests/test_structural_budget_symmetry.py",

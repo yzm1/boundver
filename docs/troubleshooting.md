@@ -23,6 +23,20 @@ run the same command again.
 The exit code stays `2`. A version-source read error identifies the file and
 the underlying read failure, while a missing version field is reported after
 the file has been read.
+### Git configuration queries time out on slow storage
+
+The default deadline for each Git configuration query and related startup
+probe is 10 seconds. On a slow checkout, set
+`BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS` to a whole number from 1 to 300
+in the environment of the boundver command or hook.
+
+```bash
+BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS=45 boundver validate-config
+```
+
+The setting controls the per-query deadline. A shorter operation deadline,
+such as a generation timeout, still takes precedence. Invalid settings or
+expired queries fail the check. The setting does not change lock fingerprints.
 
 ## Local verification ignores my edits
 
