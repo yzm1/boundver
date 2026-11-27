@@ -91,10 +91,9 @@ def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, 
         tmp_path, component_path, ["*.txt"], tracking_snapshot=snapshot,
     ) == expected
     config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
-    with module.runtime._count_git_processes() as commands:
-        _config.validate_config(config, tmp_path)
-        _config.config_warnings(config, tmp_path)
-    assert commands["write-tree"] == 0, commands
+    for check in (_config.validate_config, _config.config_warnings):
+        _, work = module.runtime._measure(check.__name__, lambda: check(config, tmp_path))
+        assert work["git_commands"].get("write-tree", 0) == 0, work
 
 
 def test_working_tree_validation_refuses_unmerged_index_membership(adoption, tmp_path):
