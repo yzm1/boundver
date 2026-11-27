@@ -55,6 +55,7 @@
     "tests/test_config_digest_projection.py",
     "tests/test_config_mutation_commands.py",
     "tests/test_config_remaining.py",
+    "tests/test_consumer_graph_at_scale.py",
     "tests/test_contract_tables.py",
     "tests/test_cross_version.py",
     "tests/test_declared_ceilings.py",
