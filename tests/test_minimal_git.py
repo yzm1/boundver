@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import importlib.util
 import io
 import json
 import lzma
 import os
+import subprocess
+import sys
+from threading import Event, Thread
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.request import Request
 
 import pytest
@@ -447,12 +452,21 @@ def test_source_download_checks_exact_size_and_digest(
             open=lambda *args, **kwargs: Response(response_bytes),
         ),
     )
+    def run_worker(command, **kwargs):
+        assert kwargs == {"check": True, "timeout": audit.SOURCE_DOWNLOAD_SECONDS}
+        audit._download_source_worker(Path(command[-2]), command[-1])
+
+    monkeypatch.setattr(audit.subprocess, "run", run_worker)
     if response_bytes == b"source":
         audit.download_source(tmp_path, name)
+        assert (tmp_path / name).read_bytes() == b"source"
+        with pytest.raises(FileExistsError):
+            audit.download_source(tmp_path, name)
         assert (tmp_path / name).read_bytes() == b"source"
     else:
         with pytest.raises(ValueError):
             audit.download_source(tmp_path, name)
+        assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("fault", [None, "signature-exit", "wrong-signer", "wrong-tar"])
@@ -516,27 +530,78 @@ def test_fetch_authenticates_uncompressed_tar_before_recording_provenance(
     }
 
 
-def test_download_deadline_is_enforced_before_reading(tmp_path, monkeypatch):
-    name = "git-2.50.2.tar.sign"
-    ticks = iter([0, 91])
-    monkeypatch.setattr(audit, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+def test_slow_response_cannot_keep_source_download_alive(tmp_path):
+    sent = Event()
+    stop = Event()
 
-    class Response(io.BytesIO):
-        def geturl(self):
-            return "https://www.kernel.org/pub/software/scm/git/" + name
+    class SlowResponse(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            try:
+                while not stop.is_set():
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    sent.set()
+                    stop.wait(0.01)
+            except ConnectionError:
+                pass
 
-        def read(self, *args):
-            pytest.fail("Expired download attempted a read")
+    # Run the real download worker with only its transport directed to the
+    # loopback fixture. Its blocking read receives bytes continuously.
+    worker = """
+import runpy
+import sys
+from pathlib import Path
+from urllib.request import urlopen
 
-    monkeypatch.setattr(
-        audit,
-        "build_opener",
-        lambda *args: SimpleNamespace(
-            open=lambda *args, **kwargs: Response(b"signature"),
-        ),
-    )
-    with pytest.raises(ValueError, match="deadline"):
-        audit.download_source(tmp_path, name)
+download = runpy.run_path(sys.argv[1])["_download_source_worker"]
+
+class LocalTransport:
+    def open(self, url, *, timeout):
+        response = urlopen(sys.argv[2], timeout=timeout)
+        response.geturl = lambda: url
+        return response
+
+download.__globals__["build_opener"] = lambda *_: LocalTransport()
+download(Path(sys.argv[3]), sys.argv[4])
+"""
+    with ThreadingHTTPServer(("127.0.0.1", 0), SlowResponse) as server:
+        serving = Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        url = f"http://127.0.0.1:{server.server_port}/"
+
+        def run_local(command, *, check, timeout):
+            args = [
+                sys.executable, "-I", "-c", worker, str(Path(audit.__file__).resolve()),
+                url, *command[-2:],
+            ]
+            with subprocess.Popen(args) as process:
+                try:
+                    # Wait for the streaming scenario before applying the short
+                    # test deadline. Process startup can be slow on loaded CI.
+                    assert sent.wait(timeout=30), "worker did not reach the HTTP fixture"
+                    result = subprocess.CompletedProcess(args, process.wait(timeout=timeout))
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+            if check:
+                result.check_returncode()
+            return result
+
+        try:
+            with (
+                patch.object(audit, "SOURCE_DOWNLOAD_SECONDS", 2),
+                patch.object(audit.subprocess, "run", side_effect=run_local),
+                pytest.raises(ValueError, match="source download deadline exceeded"),
+            ):
+                audit.download_source(tmp_path, audit.DOWNLOAD_FILES[0])
+        finally:
+            stop.set()
+            server.shutdown()
+            serving.join()
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_vendored_verification_key_matches_the_reviewed_bytes():
