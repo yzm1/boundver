@@ -54,6 +54,39 @@ def _review(root, base, target, *, transitive):
     return {row["component"]: row for row in payload["consumer_impact"]}
 
 
+def _assert_bounded_preview(root):
+    lock_before = (root / "boundary.lock.json").read_bytes()
+    preview = run_cli_in_process(
+        root, "generate", "--source", "head", "--dry-run", "--format", "changes-json",
+        "--limit", "0",
+    )
+    assert preview.returncode == 0, preview.stderr
+    result = json.loads(preview.stdout)
+    assert result["complete"]
+    assert result["counts"]["changed"] == 2
+    assert result["components"] == []
+    assert result["presentation"]["truncated"]
+    assert (root / "boundary.lock.json").read_bytes() == lock_before
+
+
+def _assert_scope_keeps_integrity_gate(root, config):
+    config["components"]["service"]["external_consumers"] = ["migration-audit"]
+    _write_config(root, config)
+    commit_all(root, "change repository declarations without reconciling the lock")
+    scoped = run_cli_in_process(
+        root, "verify", "--source", "head", "--components", "peer", "--format", "scoped-json",
+    )
+    assert scoped.returncode != 0, scoped.stdout + scoped.stderr
+    result = json.loads(scoped.stdout)
+    assert result["selection"]["comparison_complete"]
+    assert result["selection"]["fingerprint_drift"] is False
+    assert not result["verification"]["ok"]
+    assert any(
+        issue.startswith("METADATA MISMATCH config_digest")
+        for issue in result["repository_issues"]
+    )
+
+
 @pytest.mark.parametrize("count", [100, 250])
 def test_declared_dependency_impact_at_scale(tmp_path, count):
     init_git_repo(tmp_path)
@@ -126,6 +159,9 @@ def test_declared_dependency_impact_at_scale(tmp_path, count):
         assert transitive[root]["external_consumers"] == terminal_sets[root]
         assert transitive[root]["transitive"]
 
+    if count == 250:
+        _assert_bounded_preview(tmp_path)
+
     removed = leaves[-1]
     components["service"]["consumers"].remove(removed)
     target = _reconcile(tmp_path, config, "remove one declared service edge")
@@ -151,6 +187,7 @@ def test_declared_dependency_impact_at_scale(tmp_path, count):
         } == {("service", removed, "base")}
 
     if count == 250:
+        _assert_scope_keeps_integrity_gate(tmp_path, config)
         # Reconcile the same source directories with a coarser ownership model,
         # then replay exactly the same two changes.
         coarse = {
