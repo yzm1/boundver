@@ -210,6 +210,41 @@ class GitRunBoundTests(unittest.TestCase):
             git_helpers.MAX_GIT_CONFIG_QUERY_SECONDS,
         )
 
+    def test_repository_filter_query_uses_operator_deadline(self):
+        setting = "BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / ".git").mkdir()
+            response = subprocess.CompletedProcess(["git", "config"], 0, "", "")
+            with patch.object(git_helpers, "_git_run", return_value=response) as run:
+                with patch.dict(os.environ, {setting: "45"}):
+                    self.assertEqual(
+                        git_helpers._repository_filter_config_overrides(str(root)), ()
+                    )
+                self.assertEqual(run.call_args.kwargs["deadline_seconds"], 45)
+                run.reset_mock()
+                for value in ("", "0", "301", "1.5", " 45", "４５", "9" * 100):
+                    with (
+                        self.subTest(value=value),
+                        patch.dict(os.environ, {setting: value}),
+                    ):
+                        with self.assertRaisesRegex(GuardrailError, setting):
+                            git_helpers._repository_filter_config_overrides(str(root))
+                run.assert_not_called()
+
+    def test_repository_filter_query_kills_stalled_git_at_operator_deadline(self):
+        process = _HangingProcess()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS": "1"}),
+            patch.object(git_helpers.subprocess, "Popen", return_value=process),
+        ):
+            root = Path(directory).resolve()
+            (root / ".git").mkdir()
+            with self.assertRaisesRegex(GuardrailError, "1-second wall-clock limit"):
+                git_helpers._repository_filter_config_overrides(str(root))
+        self.assertTrue(process.killed)
+
     def test_repository_filter_query_neutralizes_every_driver_command(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

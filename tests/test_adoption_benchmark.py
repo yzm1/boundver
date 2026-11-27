@@ -65,6 +65,53 @@ def test_fixture_size_parameter_does_not_change_legacy_default(adoption):
     assert signature(adoption[0].create_fixture).parameters["owned_files"].default == 0
 
 
+def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, monkeypatch):
+    from boundver import _config
+
+    module, _ = adoption
+    module.create_fixture(tmp_path, 6)
+    component_path = "components/component-00"
+    component = tmp_path / component_path
+    (component / "contract.txt").unlink()
+    (component / "intent.txt").write_text("intent", encoding="utf-8")
+    (component / "untracked.txt").write_text("untracked", encoding="utf-8")
+    module.runtime._run(tmp_path, "add", "-N", f"{component_path}/intent.txt")
+    snapshot = _config._capture_working_tree_tracking(tmp_path)
+    expected = _config._expand_component_paths(tmp_path, component_path, ["*.txt"])
+    assert "intent.txt" in expected
+    assert "contract.txt" not in expected
+    assert "untracked.txt" not in expected
+
+    def repeated_listing(*args, **kwargs):
+        pytest.fail("Working-tree validation repeated a Git path listing")
+
+    monkeypatch.setattr(_config, "_list_files_for_source", repeated_listing)
+    assert _config._expand_component_paths(
+        tmp_path, component_path, ["*.txt"], tracking_snapshot=snapshot,
+    ) == expected
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    _config.validate_config(config, tmp_path)
+    _config.config_warnings(config, tmp_path)
+
+
+def test_fixture_lock_follows_committed_component_order(adoption, tmp_path):
+    module, _ = adoption
+    module.create_fixture(tmp_path, 101)
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    lock = json.loads((tmp_path / "boundary.lock.json").read_text(encoding="utf-8"))
+    assert list(lock["components"]) == list(config["components"])
+
+
+def test_working_tree_cli_counts_filter_config_queries(adoption):
+    module, root = adoption
+    lock = (root / "boundary.lock.json").read_bytes()
+    result = module.measure_working_tree_validation(root)
+    assert result["ok"], result["stderr"]
+    assert result["source"] == "working-tree"
+    assert 0 < result["git_filter_config_queries"] <= result["git_commands"]["config"]
+    assert (root / "boundary.lock.json").read_bytes() == lock
+
+
 @pytest.mark.parametrize("count,payload", [(-1, 0), (8001, 0), (1, -1), (1, 65537),
                                         (8000, 65536), (4096, 65505), (True, 1)])
 def test_extra_payload_is_refused_before_fixture_creation(adoption, tmp_path, count, payload):
