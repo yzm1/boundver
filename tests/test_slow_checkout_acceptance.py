@@ -8,8 +8,30 @@ import sys
 import pytest
 
 from boundver import _git
-from scripts.benchmark_adoption import create_fixture
+from scripts.benchmark_adoption import create_fixture, runtime
 from tests._parity import run_cli_in_process
+
+
+@pytest.mark.parametrize("components", [100, 250])
+def test_working_tree_validation_stays_within_git_work_budget(tmp_path, components):
+    create_fixture(tmp_path, components)
+    lock_path = tmp_path / "boundary.lock.json"
+    index_path = tmp_path / ".git" / "index"
+    lock_before = lock_path.read_bytes()
+    index_before = index_path.read_bytes()
+
+    result, work = runtime._measure(
+        "validate-config-working-tree",
+        lambda: run_cli_in_process(tmp_path, "validate-config", "--source", "working-tree"),
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Config is valid" in result.stdout
+    # Both fixtures observed 48 Git invocations, including fresh safety probes.
+    # Use the same ceiling at both scales to catch per-component subprocess work.
+    assert work["git_processes"] <= 60, work["git_commands"]
+    assert lock_path.read_bytes() == lock_before
+    assert index_path.read_bytes() == index_before
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses POSIX exec to delay the owned Git PID")
