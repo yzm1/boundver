@@ -17,7 +17,8 @@ import re
 import shlex
 import shutil
 import subprocess
-import time
+import sys
+import tempfile
 from urllib.parse import urlsplit
 from urllib.request import build_opener, HTTPRedirectHandler
 
@@ -59,6 +60,8 @@ SOURCE_FILES = {
 }
 TAR_SIZE = 49971200
 TAR_SHA256 = "d2e48edf942f74fd26db541da6e53cd85b82c46171032e5d86212d6578c75742"
+DOWNLOAD_FILES = ("git-2.50.2.tar.xz", "git-2.50.2.tar.sign")
+SOURCE_DOWNLOAD_SECONDS = 90
 
 
 def check_source_file(path: Path) -> None:
@@ -104,18 +107,32 @@ class SourceRedirects(HTTPRedirectHandler):
 
 
 def download_source(directory: Path, name: str) -> None:
+    with tempfile.TemporaryDirectory(prefix=".git-source-", dir=directory) as staging:
+        # Supervise the entire network operation, including DNS, redirects and
+        # slow reads that make enough progress to avoid the socket timeout.
+        try:
+            subprocess.run(
+                [sys.executable, "-I", str(Path(__file__).resolve()),
+                 "download-source", staging, name],
+                check=True,
+                timeout=SOURCE_DOWNLOAD_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError("upstream source download deadline exceeded") from exc
+        # Publish only the verified file and keep exclusive destination creation.
+        os.link(Path(staging) / name, directory / name)
+
+
+def _download_source_worker(directory: Path, name: str) -> None:
     size, _ = SOURCE_FILES[name]
     url = "https://www.kernel.org/pub/software/scm/git/" + name
     check_source_url(url)
-    deadline = time.monotonic() + 90
     opener = build_opener(SourceRedirects())
     target = directory / name
     with opener.open(url, timeout=30) as response, target.open("xb") as output:
         check_source_url(response.geturl())
         remaining = size
         while True:
-            if time.monotonic() >= deadline:
-                raise ValueError("upstream source download deadline exceeded")
             block = response.read(min(1024 * 1024, remaining + 1))
             if not block:
                 break
@@ -160,7 +177,7 @@ def fetch_source(directory: Path, source_version: str) -> None:
         raise ValueError("upstream source directory must be empty and non-symlink")
     key = Path(__file__).with_name("git-release-key.gpg")
     check_source_file(key)
-    for name in ("git-2.50.2.tar.xz", "git-2.50.2.tar.sign"):
+    for name in DOWNLOAD_FILES:
         print(f"Fetching hash-pinned upstream component: {name}", flush=True)
         download_source(directory, name)
     shutil.copyfile(key, directory / key.name)
@@ -478,6 +495,9 @@ def main() -> None:
     fetch = commands.add_parser("fetch-source")
     fetch.add_argument("directory", type=Path)
     fetch.add_argument("source_version")
+    download = commands.add_parser("download-source")
+    download.add_argument("directory", type=Path)
+    download.add_argument("name", choices=DOWNLOAD_FILES)
     check = commands.add_parser("audit")
     check.add_argument("stage", type=Path)
     check.add_argument("arch", choices=sorted(MACHINES))
@@ -489,9 +509,13 @@ def main() -> None:
     source.add_argument("source_version")
     args = vars(parser.parse_args())
     command = args.pop("command")
-    {"audit": audit, "bundle": bundle, "flags": flags, "fetch-source": fetch_source}[
-        command
-    ](**args)
+    {
+        "audit": audit,
+        "bundle": bundle,
+        "flags": flags,
+        "fetch-source": fetch_source,
+        "download-source": _download_source_worker,
+    }[command](**args)
 
 
 if __name__ == "__main__":
