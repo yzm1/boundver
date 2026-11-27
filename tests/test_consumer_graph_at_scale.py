@@ -110,6 +110,8 @@ def test_declared_dependency_impact_at_scale(tmp_path, count):
         )
     for name in leaves:
         components[name] = _component(f"system/{name}")
+    components["schema"]["version_source"] = {"constant": "1.2.3"}
+    components["sdk-a"]["version_source"] = {"component": "schema"}
     assert len(components) == count
 
     config = {
@@ -126,6 +128,9 @@ def test_declared_dependency_impact_at_scale(tmp_path, count):
         (directory / "contract.txt").write_text("original\n", encoding="utf-8")
 
     base = _reconcile(tmp_path, config, "fine component declarations")
+    base_lock = json.loads((tmp_path / "boundary.lock.json").read_text(encoding="utf-8"))
+    assert base_lock["components"]["schema"]["version"] == "1.2.3"
+    assert base_lock["components"]["sdk-a"]["version"] == "1.2.3"
     roots = ("schema", "sdk-b")
     expected = {
         "schema": sorted(["sdk-a", "sdk-b", "service", *chain, *leaves]),
