@@ -1927,32 +1927,31 @@ def _registered_subcommands() -> List[str]:
 
 
 def _absorbed_exception_names() -> List[str]:
-    """Read the except clause `extract_version` uses, rather than restating it.
+    """Read all handlers protecting the supplied reader in `extract_version`.
 
     The obligation is that this set and the set the production reader raises
     are deliberately aligned. Restating the tuple here would make the test
     agree with itself, so it is parsed out of the function's own source.
     """
     tree = ast.parse(textwrap.dedent(inspect.getsource(versions.extract_version)))
-    names: List[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler) or node.type is None:
+        if not isinstance(node, ast.Try):
             continue
-        candidates = (
-            node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
-        )
-        collected = []
-        for candidate in candidates:
-            collected.append(
-                ast.unparse(candidate) if hasattr(ast, "unparse") else candidate.id
-            )
-        # The reader-facing handler is the one guarding `read_file_fn`; the
-        # other handlers in this function guard path normalisation instead.
-        if "GuardrailError" in collected:
-            names = collected
-    if not names:
-        raise AssertionError("no reader handler found in extract_version")
-    return names
+        if not any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "read_file_fn"
+            for statement in node.body
+            for call in ast.walk(statement)
+        ):
+            continue
+        names = []
+        for handler in node.handlers:
+            assert handler.type is not None, "reader catches every exception"
+            types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+            names.extend(ast.unparse(kind) for kind in types)
+        return names
+    raise AssertionError("no reader handler found in extract_version")
 
 
 def _resolve(name: str) -> type:
@@ -2006,7 +2005,8 @@ class VersionReaderTaxonomyTests(unittest.TestCase):
     def test_the_absorbed_exception_set_is_read_from_the_reader_itself(self):
         names = _absorbed_exception_names()
         self.assertEqual(
-            sorted(names), ["GuardrailError", "OSError", "subprocess.CalledProcessError"]
+            sorted(names),
+            ["GitDeadlineError", "GuardrailError", "OSError", "subprocess.CalledProcessError"],
         )
         for name in names:
             with self.subTest(exception=name):
@@ -2018,6 +2018,7 @@ class VersionReaderTaxonomyTests(unittest.TestCase):
             "OSError": OSError("boom"),
             "CalledProcessError": subprocess.CalledProcessError(1, ["git"]),
             "GuardrailError": GuardrailError("boom"),
+            "GitDeadlineError": versions.GitDeadlineError("boom"),
             "ConfigError": ConfigError("boom"),
             "ValueError": ValueError("boom"),
         }
@@ -2046,6 +2047,27 @@ class VersionReaderTaxonomyTests(unittest.TestCase):
                                 {"file": "meta.json", "field": "version"},
                                 read_file_fn=failing_reader,
                             )
+
+    def test_captured_source_can_report_operational_reader_failures(self):
+        with self._scene() as scene:
+            scene.commit()
+            for error in (
+                OSError("boom"),
+                subprocess.CalledProcessError(1, ["git"]),
+                versions.GitDeadlineError("boom"),
+            ):
+                with self.subTest(raised=type(error).__name__):
+                    def failing_reader(_repo_rel, _error=error):
+                        raise _error
+
+                    with self.assertRaises(type(error)):
+                        extract_version(
+                            scene.root,
+                            "a",
+                            {"file": "meta.json", "field": "version"},
+                            read_file_fn=failing_reader,
+                            report_read_failures=True,
+                        )
 
     def test_a_healthy_version_source_is_read_rather_than_absorbed(self):
         """The premise: `None` above means refusal, not a reader that never ran."""
