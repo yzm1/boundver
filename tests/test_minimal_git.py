@@ -566,18 +566,28 @@ class LocalTransport:
 download.__globals__["build_opener"] = lambda *_: LocalTransport()
 download(Path(sys.argv[3]), sys.argv[4])
 """
-    run = subprocess.run
     with ThreadingHTTPServer(("127.0.0.1", 0), SlowResponse) as server:
         serving = Thread(target=server.serve_forever, daemon=True)
         serving.start()
         url = f"http://127.0.0.1:{server.server_port}/"
 
-        def run_local(command, **kwargs):
-            return run(
-                [sys.executable, "-I", "-c", worker, str(Path(audit.__file__).resolve()),
-                 url, *command[-2:]],
-                **kwargs,
-            )
+        def run_local(command, *, check, timeout):
+            args = [
+                sys.executable, "-I", "-c", worker, str(Path(audit.__file__).resolve()),
+                url, *command[-2:],
+            ]
+            with subprocess.Popen(args) as process:
+                try:
+                    # Wait for the streaming scenario before applying the short
+                    # test deadline. Process startup can be slow on loaded CI.
+                    assert sent.wait(timeout=30), "worker did not reach the HTTP fixture"
+                    result = subprocess.CompletedProcess(args, process.wait(timeout=timeout))
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+            if check:
+                result.check_returncode()
+            return result
 
         try:
             with (
@@ -591,7 +601,6 @@ download(Path(sys.argv[3]), sys.argv[4])
             server.shutdown()
             serving.join()
 
-    assert sent.is_set()
     assert list(tmp_path.iterdir()) == []
 
 
