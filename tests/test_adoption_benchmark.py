@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -63,6 +64,56 @@ def test_fixture_size_parameter_does_not_change_legacy_default(adoption):
 
     assert signature(adoption[0].runtime._write_fixture).parameters["component_count"].default == 20
     assert signature(adoption[0].create_fixture).parameters["owned_files"].default == 0
+
+
+def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, monkeypatch):
+    from boundver import _config
+
+    module, _ = adoption
+    module.create_fixture(tmp_path, 6)
+    component_path = "components/component-00"
+    component = tmp_path / component_path
+    (component / "contract.txt").unlink()
+    (component / "intent.txt").write_text("intent", encoding="utf-8")
+    (component / "untracked.txt").write_text("untracked", encoding="utf-8")
+    module.runtime._run(tmp_path, "add", "-N", f"{component_path}/intent.txt")
+    snapshot = _config._capture_working_tree_tracking(tmp_path)
+    expected = _config._expand_component_paths(tmp_path, component_path, ["*.txt"])
+    assert "intent.txt" in expected
+    assert "contract.txt" not in expected
+    assert "untracked.txt" not in expected
+
+    def repeated_listing(*args, **kwargs):
+        pytest.fail("Working-tree validation repeated a Git path listing")
+
+    monkeypatch.setattr(_config, "_list_files_for_source", repeated_listing)
+    assert _config._expand_component_paths(
+        tmp_path, component_path, ["*.txt"], tracking_snapshot=snapshot,
+    ) == expected
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    for check in (_config.validate_config, _config.config_warnings):
+        _, work = module.runtime._measure(check.__name__, lambda: check(config, tmp_path))
+        assert work["git_commands"].get("write-tree", 0) == 0, work
+
+
+def test_working_tree_validation_refuses_unmerged_index_membership(adoption, tmp_path):
+    from boundver import _config
+
+    module, _ = adoption
+    module.create_fixture(tmp_path, 6)
+    path = "components/component-00/contract.txt"
+    blob = module.runtime._run(tmp_path, "rev-parse", f"HEAD:{path}")
+    module.runtime._run(tmp_path, "update-index", "--force-remove", "--", path)
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        cwd=tmp_path,
+        input=f"100644 {blob} 1\t{path}\n100644 {blob} 2\t{path}\n",
+        text=True,
+        check=True,
+    )
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    errors = _config.validate_config(config, tmp_path)
+    assert any(error.startswith("Working-tree Git tracking state cannot be read:") for error in errors)
 
 
 @pytest.mark.parametrize("count,payload", [(-1, 0), (8001, 0), (1, -1), (1, 65537),

@@ -690,6 +690,14 @@ class _IndexMembership:
     skip_worktree_paths: FrozenSet[str]
 
 
+@dataclass(frozen=True)
+class _WorkingTreeTracking:
+    """Tracked names for disk-backed validation, with unborn HEAD state."""
+
+    tracked_paths: FrozenSet[str]
+    head_oid: Optional[str]
+
+
 def _filesystem_git_root(start: Path) -> Path:
     """Find the nearest plain ``.git`` marker without consulting Git config."""
     current = start.resolve(strict=True)
@@ -1712,6 +1720,8 @@ def _capture_index_membership(repo_root: Path) -> _IndexMembership:
             if len(record) < 3 or record[1:2] != b" ":
                 raise ValueError("Malformed tagged git ls-files record")
             tag = record[:1]
+            if tag == b"M":
+                raise ValueError("Git index has unmerged paths; resolve the merge stages before retrying")
             if tag not in {b"H", b"S"}:
                 raise ValueError(
                     f"Unsupported git ls-files index status tag {tag!r}"
@@ -2009,7 +2019,9 @@ def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
     )
 
 
-def _snapshot_tracked_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
+def _snapshot_tracked_files(
+    snapshot: GitSourceSnapshot | _WorkingTreeTracking, path: str,
+) -> List[str]:
     """List tracked paths, including intent-to-add index membership."""
     normalized = Path(path).as_posix().strip("/")
     if normalized in {"", "."}:
