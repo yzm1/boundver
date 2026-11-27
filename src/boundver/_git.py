@@ -710,6 +710,14 @@ class _IndexMembership:
     skip_worktree_paths: FrozenSet[str]
 
 
+@dataclass(frozen=True)
+class _WorkingTreeTracking:
+    """Tracked names for disk-backed validation, with unborn HEAD state."""
+
+    tracked_paths: FrozenSet[str]
+    head_oid: Optional[str]
+
+
 def _filesystem_git_root(start: Path) -> Path:
     """Find the nearest plain ``.git`` marker without consulting Git config."""
     current = start.resolve(strict=True)
@@ -2035,7 +2043,9 @@ def _snapshot_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
     )
 
 
-def _snapshot_tracked_files(snapshot: GitSourceSnapshot, path: str) -> List[str]:
+def _snapshot_tracked_files(
+    snapshot: GitSourceSnapshot | _WorkingTreeTracking, path: str,
+) -> List[str]:
     """List tracked paths, including intent-to-add index membership."""
     normalized = Path(path).as_posix().strip("/")
     if normalized in {"", "."}:

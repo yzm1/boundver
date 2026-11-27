@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -90,8 +91,30 @@ def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, 
         tmp_path, component_path, ["*.txt"], tracking_snapshot=snapshot,
     ) == expected
     config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
-    _config.validate_config(config, tmp_path)
-    _config.config_warnings(config, tmp_path)
+    with module.runtime._count_git_processes() as commands:
+        _config.validate_config(config, tmp_path)
+        _config.config_warnings(config, tmp_path)
+    assert commands["write-tree"] == 0, commands
+
+
+def test_working_tree_validation_refuses_unmerged_index_membership(adoption, tmp_path):
+    from boundver import _config
+
+    module, _ = adoption
+    module.create_fixture(tmp_path, 6)
+    path = "components/component-00/contract.txt"
+    blob = module.runtime._run(tmp_path, "rev-parse", f"HEAD:{path}")
+    module.runtime._run(tmp_path, "update-index", "--force-remove", "--", path)
+    subprocess.run(
+        ["git", "update-index", "--index-info"],
+        cwd=tmp_path,
+        input=f"100644 {blob} 1\t{path}\n100644 {blob} 2\t{path}\n",
+        text=True,
+        check=True,
+    )
+    config = json.loads((tmp_path / "boundary.config.json").read_text(encoding="utf-8"))
+    errors = _config.validate_config(config, tmp_path)
+    assert any(error.startswith("Working-tree Git tracking state cannot be read:") for error in errors)
 
 
 def test_fixture_lock_follows_committed_component_order(adoption, tmp_path):
