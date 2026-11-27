@@ -2246,7 +2246,7 @@ print(json.dumps(payload, separators=(",", ":")))
         self.assertIn("--no-index", dockerfile)
         self.assertIn("--no-deps", dockerfile)
         self.assertIn("--no-build-isolation", dockerfile)
-        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1794139200"), 3)
+        self.assertEqual(dockerfile.count("ENV SOURCE_DATE_EPOCH=1795737599"), 3)
         for volatile_path in (
             "/var/cache/ldconfig/aux-cache",
             "/var/log/apt/history.log",
@@ -2457,17 +2457,17 @@ print(json.dumps(payload, separators=(",", ":")))
         )
         base = (
             "python:3.12.16-slim-trixie@"
-            "sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
+            "sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b"
         )
         self.assertEqual(dockerfile.count(f"FROM {base}"), 3)
         snapshot = (REPO_ROOT / "scripts/minimal_git/snapshot.sh").read_text(encoding="utf-8")
-        self.assertIn("snapshot.debian.org/archive/debian/20261108T120000Z", snapshot)
+        self.assertIn("snapshot.debian.org/archive/debian/20261126T235959Z", snapshot)
         self.assertIn(
-            "# http://snapshot.debian.org/archive/debian/20261104T212339Z",
+            "# http://snapshot.debian.org/archive/debian/20261123T000000Z",
             snapshot,
         )
         self.assertIn(
-            "# http://snapshot.debian.org/archive/debian-security/20261104T212339Z",
+            "# http://snapshot.debian.org/archive/debian-security/20261123T000000Z",
             snapshot,
         )
         snapshot_stamps = set(
@@ -2477,7 +2477,7 @@ print(json.dumps(payload, separators=(",", ":")))
                 snapshot,
             )
         )
-        self.assertEqual(snapshot_stamps, {"20261108T120000Z"})
+        self.assertEqual(snapshot_stamps, {"20261126T235959Z"})
         snapshot_time = datetime.datetime.strptime(
             snapshot_stamps.pop(), "%Y%m%dT%H%M%SZ"
         ).replace(tzinfo=datetime.timezone.utc)
