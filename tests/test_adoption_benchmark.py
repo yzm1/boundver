@@ -94,6 +94,16 @@ def test_working_tree_expansion_uses_captured_tracked_paths(adoption, tmp_path, 
     _config.config_warnings(config, tmp_path)
 
 
+def test_working_tree_cli_counts_filter_config_queries(adoption):
+    module, root = adoption
+    lock = (root / "boundary.lock.json").read_bytes()
+    result = module.measure_working_tree_validation(root)
+    assert result["ok"], result["stderr"]
+    assert result["source"] == "working-tree"
+    assert 0 < result["git_filter_config_queries"] <= result["git_commands"]["config"]
+    assert (root / "boundary.lock.json").read_bytes() == lock
+
+
 @pytest.mark.parametrize("count,payload", [(-1, 0), (8001, 0), (1, -1), (1, 65537),
                                         (8000, 65536), (4096, 65505), (True, 1)])
 def test_extra_payload_is_refused_before_fixture_creation(adoption, tmp_path, count, payload):

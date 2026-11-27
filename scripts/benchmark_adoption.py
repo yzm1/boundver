@@ -8,23 +8,30 @@ flushed OS caches. Measurements include instrumentation overhead.
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import platform
 import statistics
 import sys
 import tempfile
+from unittest.mock import patch
 
 # Isolated script execution deliberately omits cwd from sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import benchmark_runtime as runtime  # noqa: E402
+from boundver import core  # noqa: E402
 from boundver._config import config_warnings  # noqa: E402
 from boundver._derivations import (  # noqa: E402
     build_derivation_evidence,
     dump_derivation_evidence,
     verify_derivations,
 )
+
+MAX_FIXTURE_COMPONENTS = 250
 
 
 def validate_payload_volume(count: int, payload_bytes: int) -> None:
@@ -183,13 +190,54 @@ def fixture_inventory(root: Path) -> dict:
     return result
 
 
+def measure_working_tree_validation(root: Path) -> dict:
+    """Measure the public validation path used by a default pre-push hook."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+
+    def invoke():
+        try:
+            core.main()
+        except SystemExit as exc:
+            return int(exc.code or 0)
+        return 0
+
+    previous_directory = Path.cwd()
+    try:
+        os.chdir(root)
+        with (
+            patch.object(sys, "argv", ["boundver", "validate-config"]),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            status, metric = runtime._measure("validate_config_cli", invoke)
+    finally:
+        os.chdir(previous_directory)
+    return {
+        **metric,
+        "source": "working-tree",
+        "exit_code": status,
+        "ok": status == 0,
+        "stdout": stdout.getvalue(),
+        "stderr": stderr.getvalue(),
+    }
+
+
 def benchmark(root: Path, count: int, runs: int, *, owned_files: int = 0,
-              owned_payload_bytes: int = 4096) -> dict:
+              owned_payload_bytes: int = 4096, validate_working_tree: bool = False) -> dict:
     create_fixture(root, count, owned_files=owned_files, owned_payload_bytes=owned_payload_bytes)
     operations = {}
-    for operation in ("validate-config", "verify", "generate"):
-        first = measure(root, operation)
-        repeated = [measure(root, operation) for _ in range(runs)]
+    operations_to_measure = {
+        "validate-config": lambda: measure(root, "validate-config"),
+        "verify": lambda: measure(root, "verify"),
+        "generate": lambda: measure(root, "generate"),
+    }
+    if validate_working_tree:
+        operations_to_measure["validate-config-working-tree"] = (
+            lambda: measure_working_tree_validation(root)
+        )
+    for operation, measure_operation in operations_to_measure.items():
+        first = measure_operation()
+        repeated = [measure_operation() for _ in range(runs)]
         wall = [row["wall_seconds"] for row in repeated]
         operations[operation] = {
             "first": first, "repeated": repeated,
@@ -219,17 +267,20 @@ def main() -> int:
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--owned-files", type=int, default=0)
     parser.add_argument("--owned-payload-bytes", type=int, default=4096)
+    parser.add_argument("--validate-working-tree", action="store_true",
+                        help="Also profile the default validate-config CLI path")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    if not 6 <= args.components <= 232 or not 1 <= args.runs <= 20:
-        parser.error("--components must be 6..232 and --runs 1..20")
+    if not 6 <= args.components <= MAX_FIXTURE_COMPONENTS or not 1 <= args.runs <= 20:
+        parser.error(f"--components must be 6..{MAX_FIXTURE_COMPONENTS} and --runs 1..20")
     try:
         validate_payload_volume(args.owned_files, args.owned_payload_bytes)
     except ValueError as error:
         parser.error(str(error))
     with tempfile.TemporaryDirectory(prefix="boundver-adoption-") as directory:
         result = benchmark(Path(directory), args.components, args.runs,
-                           owned_files=args.owned_files, owned_payload_bytes=args.owned_payload_bytes)
+                           owned_files=args.owned_files, owned_payload_bytes=args.owned_payload_bytes,
+                           validate_working_tree=args.validate_working_tree)
     rendered = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output is not None:
         args.output.write_text(rendered, encoding="utf-8")
