@@ -73,19 +73,25 @@ def _stage_reviewed_source_and_placeholder(scene):
     assert scene.git("ls-files", "--unmerged") == ""
 
 
-def test_default_validation_contention_is_the_tracking_snapshot_write_tree(checkout):
+def test_working_tree_validation_does_not_contend_for_the_index_lock(checkout):
     scene = checkout
     index = scene.root / ".git" / "index"
     before = index.read_bytes()
+    contract = scene.root / "boundary.lock.json"
+    contract_before = contract.read_bytes()
     lock = scene.root / ".git" / "index.lock"
     lock.write_bytes(b"other writer")
     try:
         working = run_cli(scene.root, "validate-config")
-        assert working.returncode == 2
-        assert "write-tree" in working.stdout + working.stderr
-        assert "index.lock" in working.stdout + working.stderr
+        assert working.returncode == 0, working.stderr
+        assert "Config is valid" in working.stdout
         head = run_cli(scene.root, "validate-config", "--source", "head")
         assert head.returncode == 0, head.stderr
+        staged = run_cli(scene.root, "validate-config", "--source", "index")
+        assert staged.returncode == 2
+        assert "write-tree" in staged.stdout + staged.stderr
+        assert "index.lock" in staged.stdout + staged.stderr
+        assert contract.read_bytes() == contract_before
         assert index.read_bytes() == before and lock.read_bytes() == b"other writer"
     finally:
         lock.unlink()
@@ -99,7 +105,7 @@ def test_unresolved_merge_refuses_generation_without_modifying_lock_or_index(
     entries = scene.git("ls-files", "--stage", "-z")
     result = run_cli(scene.root, "generate", "--source", "working-tree")
     assert result.returncode == 2
-    assert "write-tree" in result.stdout + result.stderr
+    assert "Git index has unmerged paths" in result.stderr
     assert (scene.root / "boundary.lock.json").read_bytes() == before
     assert scene.git("ls-files", "--stage", "-z") == entries
 
