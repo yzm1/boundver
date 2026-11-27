@@ -68,6 +68,7 @@ MAX_GIT_DIAGNOSTIC_BYTES = 64 * 1024
 MAX_GIT_FAILURE_DETAIL_CHARS = 4096
 MAX_GIT_COMMAND_SECONDS = 300
 MAX_GIT_CONFIG_QUERY_SECONDS = 10
+_GIT_CONFIG_QUERY_TIMEOUT_ENV = "BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS"
 MINIMUM_GIT_VERSION = (2, 32, 0)
 MINIMUM_PARTIAL_CLONE_GIT_VERSION = (2, 45, 0)
 MAX_GIT_FILTER_DRIVERS = 64
@@ -438,6 +439,24 @@ class _BoundedGitDiagnosticDrain:
         return diagnostic
 
 
+def _git_config_query_seconds() -> int:
+    """Read the operator's per-query budget without changing Git's environment."""
+    value = os.environ.get(_GIT_CONFIG_QUERY_TIMEOUT_ENV)
+    if value is None:
+        return MAX_GIT_CONFIG_QUERY_SECONDS
+    if (
+        1 <= len(value) <= 3
+        and value.isascii()
+        and value.isdecimal()
+        and 1 <= int(value) <= MAX_GIT_COMMAND_SECONDS
+    ):
+        return int(value)
+    raise GuardrailError(
+        f"{_GIT_CONFIG_QUERY_TIMEOUT_ENV} must be an integer from 1 to "
+        f"{MAX_GIT_COMMAND_SECONDS} seconds"
+    )
+
+
 class _GitProcessDeadline:
     """Kill one Git process if repository input makes it stop making progress."""
 
@@ -741,7 +760,7 @@ def git_root() -> Path:
         expected,
         ["rev-parse", "--is-inside-work-tree"],
         environment=probe_environment,
-        deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+        deadline_seconds=_git_config_query_seconds(),
     )
     if probe.stderr or probe.stdout.strip().lower() != "true":
         raise ValueError(f"Git did not recognize {expected} as a worktree")
@@ -843,7 +862,7 @@ def _ambient_worktree_config_overrides(
                 _SAFE_AMBIENT_WORKTREE_CONFIG_PATTERN,
             ],
             environment=_git_config_query_environment(),
-            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+            deadline_seconds=_git_config_query_seconds(),
         )
     except GuardrailError:
         raise
@@ -925,7 +944,7 @@ def _repository_filter_config_overrides(
                 _FILTER_COMMAND_CONFIG_PATTERN,
             ],
             environment=environment,
-            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+            deadline_seconds=_git_config_query_seconds(),
         )
     except GuardrailError:
         # GuardrailError is also a ValueError. Preserve the bounded query's
@@ -1033,8 +1052,10 @@ def _installed_git_version(resolved_repo_root: str) -> Tuple[Tuple[int, int, int
             repo_root,
             ["version"],
             environment=_git_config_query_environment(),
-            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+            deadline_seconds=_git_config_query_seconds(),
         )
+    except GuardrailError:
+        raise
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         raise GuardrailError("Cannot determine the installed Git version") from exc
     raw = result.stdout.strip()
@@ -1097,8 +1118,10 @@ def _require_process_local_git_config(
                 _PROCESS_CONFIG_PROBE_KEY,
             ],
             environment=environment,
-            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+            deadline_seconds=_git_config_query_seconds(),
         )
+    except GuardrailError:
+        raise
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         raise GuardrailError(
             f"Git {display} did not apply process-local security configuration "
@@ -1130,7 +1153,7 @@ def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
                 _PARTIAL_CLONE_CONFIG_PATTERN,
             ],
             environment=environment,
-            deadline_seconds=MAX_GIT_CONFIG_QUERY_SECONDS,
+            deadline_seconds=_git_config_query_seconds(),
         )
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 1 and not exc.output and not exc.stderr:
@@ -1138,6 +1161,8 @@ def _partial_clone_signals(resolved_repo_root: str) -> Tuple[str, ...]:
         raise GuardrailError(
             "Cannot safely inspect partial-clone configuration"
         ) from exc
+    except GuardrailError:
+        raise
     except (OSError, ValueError) as exc:
         raise GuardrailError(
             "Cannot safely inspect partial-clone configuration"
