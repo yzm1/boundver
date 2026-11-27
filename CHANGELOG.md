@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-27
+
+### Upgrade contract
+
+- Semantic config: `boundver-semantic-config/v3`
+- Lock schema: `boundary-lock/v4`
+- Fingerprint compatibility: `digest-neutral`
+- Lock regeneration: `not-required`
+
 ### Git and checkout reliability
 
 - Allow operators to set `BOUNDVER_GIT_CONFIG_QUERY_TIMEOUT_SECONDS` to a whole
@@ -1610,7 +1619,8 @@ relative to `v0.9.1`; it does not attribute later corrections to that release.
   providers, version sources, discovery, generation, verification, diff/status,
   GitHub Action, Docker, pre-commit, PyPI, and standalone archive entry points.
 
-[Unreleased]: https://github.com/yzm1/boundver/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/yzm1/boundver/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/yzm1/boundver/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/yzm1/boundver/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/yzm1/boundver/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/yzm1/boundver/compare/v0.15.2...v0.16.0

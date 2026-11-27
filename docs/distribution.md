@@ -21,7 +21,7 @@ not intended for production installation.
 ## GitHub Action
 
 ```yaml
-- uses: yzm1/boundver@v0.17.1
+- uses: yzm1/boundver@v0.18.0
 ```
 
 Pin the exact patch release used to write the lockfile. The compatibility alias
@@ -43,7 +43,7 @@ test routing.
     fetch-depth: 0
     persist-credentials: false
 - id: review
-  uses: yzm1/boundver@v0.17.1
+  uses: yzm1/boundver@v0.18.0
   with:
     operation: review
     base: ${{ github.event.pull_request.base.sha }}
