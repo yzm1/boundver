@@ -7,9 +7,11 @@ from typing import Any, Dict, List, Optional, Set
 
 from ._git import (
     GitSourceSnapshot,
-    _capture_git_source_snapshot,
+    _WorkingTreeTracking,
+    _capture_index_membership,
     _is_git_repository,
     _list_files_for_source,
+    _resolve_head_oid,
     _snapshot_files,
     _snapshot_tracked_files,
     _to_posix,
@@ -351,7 +353,7 @@ def _expand_component_paths(
     snapshot: Optional[GitSourceSnapshot] = None,
     _glob_operation: Optional[_PathGlobOperation] = None,
     *,
-    tracking_snapshot: Optional[GitSourceSnapshot] = None,
+    tracking_snapshot: Optional[_WorkingTreeTracking] = None,
 ) -> Set[str]:
     if component_path is None:
         return set()
@@ -596,17 +598,22 @@ def _schema_engine_errors(config: dict, schema: Optional[dict]) -> List[str]:
     return sorted(errors)
 
 
-def _capture_working_tree_tracking(repo_root: Path) -> Optional[GitSourceSnapshot]:
+def _capture_working_tree_tracking(repo_root: Path) -> Optional[_WorkingTreeTracking]:
     """Capture tracked names without changing non-Git and unborn fallback rules."""
     try:
-        snapshot = _capture_git_source_snapshot(repo_root, "index")
+        head_oid = _resolve_head_oid(repo_root)
+        membership = _capture_index_membership(repo_root)
+        if _capture_index_membership(repo_root) != membership:
+            raise ValueError("Index path membership changed while capturing tracked paths; retry")
     except GuardrailError:
         raise
     except (OSError, ValueError):
         if _is_git_repository(repo_root):
             raise
         return None
-    return snapshot if snapshot.tracked_paths or snapshot.head_oid is not None else None
+    if not membership.tracked_paths and head_oid is None:
+        return None
+    return _WorkingTreeTracking(membership.tracked_paths, head_oid)
 
 
 def validate_config(
@@ -655,7 +662,7 @@ def validate_config(
     # an unborn repository with staged entries) has authoritative tracked
     # state; a non-Git directory or truly empty unborn index retains the
     # documented first-run filesystem fallback.
-    tracking_snapshot: Optional[GitSourceSnapshot] = None
+    tracking_snapshot: Optional[_WorkingTreeTracking] = None
     tracking_snapshot_error: Optional[str] = None
     if source == "working-tree":
         try:

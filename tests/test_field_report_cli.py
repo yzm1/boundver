@@ -590,14 +590,15 @@ class IndexCaptureDiagnosticTests(unittest.TestCase):
             "slices": {},
         }
         detail = (
-            "Cannot capture index as a complete Git tree: git write-tree failed "
+            "Cannot capture index path membership: git ls-files failed "
             "(return code 128; stderr='fatal: index file corrupt')"
         )
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with (
+                patch("boundver._config._resolve_head_oid", return_value=None),
                 patch(
-                    "boundver._config._capture_git_source_snapshot",
+                    "boundver._config._capture_index_membership",
                     side_effect=ValueError(detail),
                 ),
                 patch("boundver._config._is_git_repository", return_value=True),
